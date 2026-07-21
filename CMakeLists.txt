@@ -35,12 +35,6 @@ include(cmake/CPM.cmake)
 
 # PackageProject.cmake will be used to make our target installable
 CPMAddPackage(NAME PackageProject.cmake GIT_REPOSITORY "git://127.0.0.1/PackageProject.cmake.git" GIT_TAG master)
-
-find_package(Boost 1.84 REQUIRED COMPONENTS fiber json)
-find_package(OpenSSL REQUIRED)
-find_package(Threads REQUIRED)
-
-
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files
@@ -65,12 +59,8 @@ target_compile_options(${PROJECT_NAME} PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${sources})
 
 # Link dependencies
-target_link_libraries(${PROJECT_NAME} PUBLIC
-  Boost::fiber
-  Boost::json
-  OpenSSL::SSL
-  Threads::Threads
-)
+#target_link_libraries(${PROJECT_NAME} PUBLIC
+#)
 
 
 # ---- Create an installable target ----
