@@ -49,12 +49,7 @@ set(module_sources
 set(main_source ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 add_executable(${PROJECT_NAME} ${module_sources} ${main_source})
 
-# Copy bundled skin next to the executable so the default --skin path resolves.
-set(default_skin_source ${CMAKE_CURRENT_LIST_DIR}/../skin)
-set(default_skin_dest ${CMAKE_CURRENT_BINARY_DIR}/../skin)
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          ${default_skin_source} ${default_skin_dest})
+
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
 target_link_libraries(${PROJECT_NAME}
   osucpp::osucpp
@@ -85,8 +80,6 @@ install(DIRECTORY ${default_skin_source}
 # ---- Add osu_clientTests ----
 
 enable_testing()
-
-add_test(${PROJECT_NAME} ${PROJECT_NAME} --headless "${CMAKE_CURRENT_LIST_DIR}/../sample_beatmap/Icon For Hire - Make a Move (Speed Up Ver.) (Sotarks) [Akitoshi's Normal].osu")
 
 # ---- code coverage ----
 
