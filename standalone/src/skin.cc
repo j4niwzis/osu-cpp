@@ -337,8 +337,10 @@ public:
     if (bodyAlpha <= 0.0f)
       return;
 
-    // Slider body: webosu-2 SliderMesh geometry with mitered inside joints
-    // to remove the bright overlapping triangles at sharp turns.
+    // Slider body: triangle-strip mesh over the path centerline. Inside
+    // joints are mitered only while the miter stays inside the body;
+    // sharper turns are clipped at the joint perpendiculars so the body
+    // never grows spikes at sharp corners.
     if (auto texture = this->sliderTexture(tint); texture && !points.empty()) {
       // Filter duplicate points.
       std::vector<osu::Vec2> curve;
@@ -358,6 +360,7 @@ public:
       struct Seg {
         osu::Vec2 u;
         osu::Vec2 n;
+        double len;
       };
       std::vector<Seg> segs;
       segs.reserve(m - 1);
@@ -366,16 +369,32 @@ public:
         const double dy = curve[i + 1].fY - curve[i].fY;
         const double len = std::hypot(dx, dy);
         if (len > 1e-6) {
-          segs.push_back(
-              {{dx / len, dy / len}, {-dy / len * radius, dx / len * radius}});
+          segs.push_back({{dx / len, dy / len},
+                          {-dy / len * radius, dx / len * radius},
+                          len});
         } else {
-          segs.push_back({{1.0, 0.0}, {0.0, radius}});
+          segs.push_back({{1.0, 0.0}, {0.0, radius}, 0.0});
         }
       }
 
+      auto pointSegDist = [](const osu::Vec2 &p, const osu::Vec2 &a,
+                             const osu::Vec2 &b) {
+        const double dx = b.fX - a.fX;
+        const double dy = b.fY - a.fY;
+        const double lenSq = dx * dx + dy * dy;
+        double t = 0.0;
+        if (lenSq > 0.0) {
+          t = std::clamp(((p.fX - a.fX) * dx + (p.fY - a.fY) * dy) / lenSq,
+                         0.0, 1.0);
+        }
+        return std::hypot(p.fX - (a.fX + t * dx), p.fY - (a.fY + t * dy));
+      };
+
       struct Joint {
         double cross;
+        double dot;
         osu::Vec2 miter;
+        bool useMiter;
       };
       std::vector<Joint> joints(m);
       for (std::size_t i = 1; i + 1 < m; ++i) {
@@ -384,20 +403,37 @@ public:
         const double dot = a.u.fX * b.u.fX + a.u.fY * b.u.fY;
         const double cross = a.u.fX * b.u.fY - b.u.fX * a.u.fY;
         const double denom = 1.0 + dot;
-        osu::Vec2 miter;
-        if (denom > 1e-6) {
+        // The mitered inside corner sits radius*tan(turn/2) back along the
+        // segments and radius/cos(turn/2) away from the joint, which blows
+        // up for sharp turns. Use it only when it stays inside the slider
+        // body; otherwise clip the inside edges at the joint perpendiculars
+        // so no spike triangles shoot outside the body.
+        bool useMiter = denom > 1e-6;
+        osu::Vec2 miter = a.n;
+        if (useMiter) {
           miter = {(a.n.fX + b.n.fX) / denom, (a.n.fY + b.n.fY) / denom};
-        } else {
-          miter = a.n;
+          const double miterRun = radius * std::abs(cross) / denom;
+          if (miterRun > a.len || miterRun > b.len) {
+            const osu::Vec2 tip =
+                cross > 0.0 ? curve[i] + miter : curve[i] - miter;
+            useMiter = false;
+            const std::size_t lo = i >= 2 ? i - 2 : 0;
+            const std::size_t hi = std::min(i + 1, m - 2);
+            for (std::size_t k = lo; k <= hi && !useMiter; ++k) {
+              if (pointSegDist(tip, curve[k], curve[k + 1]) <= radius + 0.5) {
+                useMiter = true;
+              }
+            }
+          }
         }
-        joints[i] = {cross, miter};
+        joints[i] = {cross, dot, miter, useMiter};
       }
 
       auto side1Start = [&](std::size_t i) -> osu::Vec2 {
         if (i == 0)
           return {curve[0].fX + segs[0].n.fX, curve[0].fY + segs[0].n.fY};
         const auto &j = joints[i];
-        if (j.cross > 0.0)
+        if (j.useMiter && j.cross > 0.0)
           return {curve[i].fX + j.miter.fX, curve[i].fY + j.miter.fY};
         return {curve[i].fX + segs[i].n.fX, curve[i].fY + segs[i].n.fY};
       };
@@ -405,7 +441,7 @@ public:
         if (i == 0)
           return {curve[0].fX - segs[0].n.fX, curve[0].fY - segs[0].n.fY};
         const auto &j = joints[i];
-        if (j.cross < 0.0)
+        if (j.useMiter && j.cross < 0.0)
           return {curve[i].fX - j.miter.fX, curve[i].fY - j.miter.fY};
         return {curve[i].fX - segs[i].n.fX, curve[i].fY - segs[i].n.fY};
       };
@@ -414,7 +450,7 @@ public:
         if (k + 1 == m)
           return {curve[k].fX + segs[i].n.fX, curve[k].fY + segs[i].n.fY};
         const auto &j = joints[k];
-        if (j.cross > 0.0)
+        if (j.useMiter && j.cross > 0.0)
           return {curve[k].fX + j.miter.fX, curve[k].fY + j.miter.fY};
         return {curve[k].fX + segs[i].n.fX, curve[k].fY + segs[i].n.fY};
       };
@@ -423,7 +459,7 @@ public:
         if (k + 1 == m)
           return {curve[k].fX - segs[i].n.fX, curve[k].fY - segs[i].n.fY};
         const auto &j = joints[k];
-        if (j.cross < 0.0)
+        if (j.useMiter && j.cross < 0.0)
           return {curve[k].fX - j.miter.fX, curve[k].fY - j.miter.fY};
         return {curve[k].fX - segs[i].n.fX, curve[k].fY - segs[i].n.fY};
       };
@@ -505,10 +541,13 @@ public:
       // End cap.
       addArc(lastCenter, static_cast<std::uint16_t>(lastCenter - 1),
              static_cast<std::uint16_t>(lastCenter - 2));
-      // Joint arcs (outside only).
+      // Joint arcs fill the wedge outside the turn that neither segment
+      // quad covers. The inside of the turn is always covered by the quads
+      // themselves, so it never needs an arc.
       for (std::size_t i = 1; i + 1 < m; ++i) {
         const std::uint16_t center = static_cast<std::uint16_t>(5 * i);
-        if (joints[i].cross > 0.0) {
+        if (joints[i].cross > 0.0 ||
+            (joints[i].cross == 0.0 && joints[i].dot < 0.0)) {
           addArc(center, static_cast<std::uint16_t>(center - 1),
                  static_cast<std::uint16_t>(center + 2));
         } else if (joints[i].cross < 0.0) {
@@ -542,8 +581,15 @@ public:
       skia::Sp<skia::SkVertices> vertices = skia::SkVertices::MakeCopy(
           skia::SkVertices::kTriangles_VertexMode, verts.size(), verts.data(),
           texs.data(), colors.data(), indices.size(), indices.data());
+      // Overlapping triangles at joints would double-blend the texture
+      // and brighten it. Draw into a temporary layer with max blending so
+      // the brightest sample wins instead of accumulating.
+      skia::SkPaint layerPaint;
+      layerPaint.setBlendMode(skia::SkBlendMode::kLighten);
+      canvas->saveLayer(nullptr, &layerPaint);
       canvas->drawVertices(vertices.get(), skia::SkBlendMode::kModulate,
-                           bodyPaint);
+                            bodyPaint);
+      canvas->restore();
     }
 
     // Slider ticks.
