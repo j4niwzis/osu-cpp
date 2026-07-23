@@ -34,7 +34,7 @@ endif()
 include(cmake/CPM.cmake)
 
 # PackageProject.cmake will be used to make our target installable
-CPMAddPackage(NAME PackageProject.cmake GIT_REPOSITORY "git://127.0.0.1/PackageProject.cmake.git" GIT_TAG master)
+CPMAddPackage(NAME PackageProject.cmake GIT_REPOSITORY "https://github.com/j4niwzis/PackageProject.cmake" GIT_TAG master)
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files
