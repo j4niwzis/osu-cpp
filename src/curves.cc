@@ -56,7 +56,7 @@ inline void appendPoint(std::vector<Vec2> &out, Vec2 p) {
 
 inline void subdivideBezier(std::span<const Vec2> ctrl, std::vector<Vec2> &out,
                             int depth = 0) {
-  constexpr double kToleranceSq = 0.25 * 0.25;
+  constexpr double kTolerance = 0.5;
   constexpr int kMaxDepth = 12;
 
   const Vec2 first = ctrl.front();
@@ -67,9 +67,11 @@ inline void subdivideBezier(std::span<const Vec2> ctrl, std::vector<Vec2> &out,
     containment =
         std::max(containment, first.distanceTo(p) + p.distanceTo(last));
   }
+  // Negative for straight (2-point) segments; must stay a signed test or
+  // lines would be subdivided to the depth limit for no reason.
   const double deviation = containment - chord;
 
-  if (depth >= kMaxDepth || deviation * deviation <= kToleranceSq * 4.0) {
+  if (depth >= kMaxDepth || deviation <= kTolerance) {
     appendPoint(out, last);
     return;
   }

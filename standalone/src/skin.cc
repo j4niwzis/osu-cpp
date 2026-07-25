@@ -337,10 +337,10 @@ public:
     if (bodyAlpha <= 0.0f)
       return;
 
-    // Slider body: triangle-strip mesh over the path centerline. Inside
-    // joints are mitered only while the miter stays inside the body;
-    // sharper turns are clipped at the joint perpendiculars so the body
-    // never grows spikes at sharp corners.
+    // Slider body: triangle mesh over the path centerline. Inside joints
+    // are mitered only while the miter stays inside the body; at sharper
+    // turns the adjacent quads are clipped against the segment bisector so
+    // the body never spikes and never double-blends at sharp corners.
     if (auto texture = this->sliderTexture(tint); texture && !points.empty()) {
       // Filter duplicate points.
       std::vector<osu::Vec2> curve;
@@ -395,6 +395,8 @@ public:
         double dot;
         osu::Vec2 miter;
         bool useMiter;
+        osu::Vec2 bis;
+        bool clip;
       };
       std::vector<Joint> joints(m);
       for (std::size_t i = 1; i + 1 < m; ++i) {
@@ -426,7 +428,21 @@ public:
             }
           }
         }
-        joints[i] = {cross, dot, miter, useMiter};
+        // Without a miter the two adjacent quads overlap in the lens
+        // between the segments and the texture double-blends there.
+        // Partition the lens along the angle bisector of the two segment
+        // lines (the equidistance line, over which the distance-based
+        // texture is continuous): each quad keeps the half closer to its
+        // own segment.
+        osu::Vec2 bis{0.0, 0.0};
+        const osu::Vec2 dbis{a.u.fX - b.u.fX, a.u.fY - b.u.fY};
+        const double bisLen = dbis.length();
+        const bool clip =
+            !useMiter && bisLen > 1e-6 && std::abs(cross) > 1e-6;
+        if (clip) {
+          bis = dbis / bisLen;
+        }
+        joints[i] = {cross, dot, miter, useMiter, bis, clip};
       }
 
       auto side1Start = [&](std::size_t i) -> osu::Vec2 {
@@ -467,92 +483,132 @@ public:
       std::vector<osu::Vec2> vpos;
       std::vector<skia::SkPoint> vtexs;
       std::vector<std::uint16_t> indices;
-      vpos.reserve(curve.size() * 5 + 64 * 3);
+      vpos.reserve(curve.size() * 8 + 64 * 3);
       vtexs.reserve(vpos.capacity());
 
       const float texW = static_cast<float>(texture->width());
-      auto texFromOffset = [&](const osu::Vec2 &off) -> skia::SkPoint {
-        const double d =
-            std::clamp(std::hypot(off.fX, off.fY) / radius, 0.0, 1.0);
-        return {static_cast<float>(d * texW), 0.5f};
-      };
-      auto pushVert = [&](const osu::Vec2 &p, const osu::Vec2 &off) {
+      auto pushVertD = [&](const osu::Vec2 &p, double d) {
         vpos.push_back(p);
-        vtexs.push_back(texFromOffset(off));
+        vtexs.push_back(
+            {static_cast<float>(std::clamp(d, 0.0, 1.0) * texW), 0.5f});
       };
 
-      pushVert(curve[0], {0.0, 0.0});
-      for (std::size_t i = 0; i + 1 < m; ++i) {
-        const osu::Vec2 s1 = side1Start(i);
-        const osu::Vec2 s2 = side2Start(i);
-        const osu::Vec2 e1 = side1End(i);
-        const osu::Vec2 e2 = side2End(i);
+      // Clips a convex polygon to the half-plane where side(P)*keepSign >= 0.
+      auto clipByBisector = [&](std::vector<osu::Vec2> &poly,
+                                const osu::Vec2 &J, const osu::Vec2 &dir,
+                                double keepSign) {
+        std::vector<osu::Vec2> out;
+        out.reserve(poly.size() + 2);
+        auto side = [&](const osu::Vec2 &P) {
+          return (dir.fX * (P.fY - J.fY) - dir.fY * (P.fX - J.fX)) * keepSign;
+        };
+        for (std::size_t a = 0, na = poly.size(); a < na; ++a) {
+          const osu::Vec2 &A = poly[a];
+          const osu::Vec2 &B = poly[(a + 1) % na];
+          const double sa = side(A);
+          const double sb = side(B);
+          if (sa >= 0.0)
+            out.push_back(A);
+          if ((sa < 0.0) != (sb < 0.0)) {
+            const double t = sa / (sa - sb);
+            out.push_back(A.lerp(B, t));
+          }
+        }
+        poly = std::move(out);
+      };
 
-        pushVert(s1, {s1.fX - curve[i].fX, s1.fY - curve[i].fY});
-        pushVert(s2, {s2.fX - curve[i].fX, s2.fY - curve[i].fY});
-        pushVert(e1, {e1.fX - curve[i + 1].fX, e1.fY - curve[i + 1].fY});
-        pushVert(e2, {e2.fX - curve[i + 1].fX, e2.fY - curve[i + 1].fY});
-        pushVert(curve[i + 1], {0.0, 0.0});
+      // Emits a convex polygon as a triangle fan. The texture coordinate is
+      // the perpendicular distance to the segment line, so it stays
+      // continuous across bisector partitions.
+      auto emitPoly = [&](const std::vector<osu::Vec2> &poly, const Seg &seg,
+                          const osu::Vec2 &c0) {
+        if (poly.size() < 3)
+          return;
+        const std::uint16_t base = static_cast<std::uint16_t>(vpos.size());
+        for (const osu::Vec2 &p : poly) {
+          const double d = std::abs(seg.u.fX * (p.fY - c0.fY) -
+                                    seg.u.fY * (p.fX - c0.fX)) /
+                           radius;
+          pushVertD(p, d);
+        }
+        for (std::size_t k = 1; k + 1 < poly.size(); ++k) {
+          indices.insert(indices.end(),
+                         {base, static_cast<std::uint16_t>(base + k),
+                          static_cast<std::uint16_t>(base + k + 1)});
+        }
+      };
 
-        const std::uint16_t n = static_cast<std::uint16_t>(5 * (i + 1) + 1);
-        indices.insert(indices.end(), {static_cast<std::uint16_t>(n - 6),
-                                       static_cast<std::uint16_t>(n - 5),
-                                       static_cast<std::uint16_t>(n - 1),
-                                       static_cast<std::uint16_t>(n - 5),
-                                       static_cast<std::uint16_t>(n - 1),
-                                       static_cast<std::uint16_t>(n - 3),
-                                       static_cast<std::uint16_t>(n - 6),
-                                       static_cast<std::uint16_t>(n - 4),
-                                       static_cast<std::uint16_t>(n - 1),
-                                       static_cast<std::uint16_t>(n - 4),
-                                       static_cast<std::uint16_t>(n - 1),
-                                       static_cast<std::uint16_t>(n - 2)});
-      }
-
-      constexpr int kDivides = 64;
-      auto addArc = [&](std::uint16_t c, std::uint16_t p1, std::uint16_t p2) {
-        double theta1 =
-            std::atan2(vpos[p1].fY - vpos[c].fY, vpos[p1].fX - vpos[c].fX);
-        double theta2 =
-            std::atan2(vpos[p2].fY - vpos[c].fY, vpos[p2].fX - vpos[c].fX);
+      // Emits a fan of the body radius around C sweeping CCW from theta1.
+      auto emitFan = [&](const osu::Vec2 &C, double theta1, double theta2) {
         if (theta1 > theta2)
           theta2 += 2.0 * std::numbers::pi;
         const double theta = theta2 - theta1;
-        const int divs = static_cast<int>(
-            std::ceil(kDivides * std::abs(theta) / (2.0 * std::numbers::pi)));
-        std::uint16_t last = p1;
-        for (int j = 1; j < divs; ++j) {
+        const int divs =
+            std::max(1, static_cast<int>(std::ceil(
+                            64.0 * std::abs(theta) / (2.0 * std::numbers::pi))));
+        const std::uint16_t cIdx = static_cast<std::uint16_t>(vpos.size());
+        pushVertD(C, 0.0);
+        std::uint16_t prev = cIdx;
+        for (int j = 0; j <= divs; ++j) {
           const double angle = theta1 + theta * j / divs;
-          const osu::Vec2 off = {std::cos(angle) * radius,
-                                 std::sin(angle) * radius};
-          pushVert(vpos[c] + off, off);
-          const std::uint16_t newv =
-              static_cast<std::uint16_t>(vpos.size() - 1);
-          indices.insert(indices.end(), {c, last, newv});
-          last = newv;
+          pushVertD({C.fX + std::cos(angle) * radius,
+                     C.fY + std::sin(angle) * radius},
+                    1.0);
+          const std::uint16_t cur = static_cast<std::uint16_t>(vpos.size() - 1);
+          if (j > 0)
+            indices.insert(indices.end(), {cIdx, prev, cur});
+          prev = cur;
         }
-        indices.insert(indices.end(), {c, last, p2});
+      };
+      auto angleOf = [](const osu::Vec2 &v) {
+        return std::atan2(v.fY, v.fX);
       };
 
-      const std::uint16_t lastCenter = static_cast<std::uint16_t>(5 * (m - 1));
+      // Segment quads, clipped against the bisectors of adjacent invalid
+      // joints so overlapping lenses are partitioned instead of drawn twice.
+      for (std::size_t i = 0; i + 1 < m; ++i) {
+        for (int side = 0; side < 2; ++side) {
+          std::vector<osu::Vec2> poly;
+          if (side == 0)
+            poly = {curve[i], side1Start(i), side1End(i), curve[i + 1]};
+          else
+            poly = {curve[i], side2Start(i), side2End(i), curve[i + 1]};
+          if (i >= 1 && joints[i].clip) {
+            const osu::Vec2 dir = joints[i].bis;
+            const double keep =
+                (dir.fX * segs[i].u.fY - dir.fY * segs[i].u.fX) >= 0.0 ? 1.0
+                                                                       : -1.0;
+            clipByBisector(poly, curve[i], dir, keep);
+          }
+          if (i + 2 < m && joints[i + 1].clip) {
+            const osu::Vec2 dir = joints[i + 1].bis;
+            const double keep =
+                (dir.fX * segs[i].u.fY - dir.fY * segs[i].u.fX) >= 0.0 ? -1.0
+                                                                       : 1.0;
+            clipByBisector(poly, curve[i + 1], dir, keep);
+          }
+          emitPoly(poly, segs[i], curve[i]);
+        }
+      }
 
       // Start cap.
-      addArc(0, 1, 2);
+      emitFan(curve[0], angleOf(segs[0].n),
+              angleOf(segs[0].n) + std::numbers::pi);
       // End cap.
-      addArc(lastCenter, static_cast<std::uint16_t>(lastCenter - 1),
-             static_cast<std::uint16_t>(lastCenter - 2));
+      emitFan(curve[m - 1], angleOf(segs[m - 2].n) + std::numbers::pi,
+              angleOf(segs[m - 2].n) + 2.0 * std::numbers::pi);
       // Joint arcs fill the wedge outside the turn that neither segment
       // quad covers. The inside of the turn is always covered by the quads
       // themselves, so it never needs an arc.
       for (std::size_t i = 1; i + 1 < m; ++i) {
-        const std::uint16_t center = static_cast<std::uint16_t>(5 * i);
+        const auto &a = segs[i - 1];
+        const auto &b = segs[i];
         if (joints[i].cross > 0.0 ||
             (joints[i].cross == 0.0 && joints[i].dot < 0.0)) {
-          addArc(center, static_cast<std::uint16_t>(center - 1),
-                 static_cast<std::uint16_t>(center + 2));
+          emitFan(curve[i], angleOf(a.n) + std::numbers::pi,
+                  angleOf(b.n) + std::numbers::pi);
         } else if (joints[i].cross < 0.0) {
-          addArc(center, static_cast<std::uint16_t>(center + 1),
-                 static_cast<std::uint16_t>(center - 2));
+          emitFan(curve[i], angleOf(b.n), angleOf(a.n));
         }
       }
 
@@ -581,15 +637,8 @@ public:
       skia::Sp<skia::SkVertices> vertices = skia::SkVertices::MakeCopy(
           skia::SkVertices::kTriangles_VertexMode, verts.size(), verts.data(),
           texs.data(), colors.data(), indices.size(), indices.data());
-      // Overlapping triangles at joints would double-blend the texture
-      // and brighten it. Draw into a temporary layer with max blending so
-      // the brightest sample wins instead of accumulating.
-      skia::SkPaint layerPaint;
-      layerPaint.setBlendMode(skia::SkBlendMode::kLighten);
-      canvas->saveLayer(nullptr, &layerPaint);
       canvas->drawVertices(vertices.get(), skia::SkBlendMode::kModulate,
                             bodyPaint);
-      canvas->restore();
     }
 
     // Slider ticks.
