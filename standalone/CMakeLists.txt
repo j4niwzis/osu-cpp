@@ -30,6 +30,7 @@ pkg_check_modules(GLFW REQUIRED glfw3)
 pkg_check_modules(OPENAL REQUIRED openal)
 pkg_check_modules(SNDFILE REQUIRED sndfile)
 pkg_check_modules(MPG123 REQUIRED libmpg123)
+pkg_check_modules(LIBZIP REQUIRED libzip)
 
 if(TEST_INSTALLED_VERSION)
   find_package(osucpp REQUIRED)
@@ -44,6 +45,8 @@ set(module_sources
   ${CMAKE_CURRENT_SOURCE_DIR}/src/skia.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/audio.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/skin.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/osz.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/archive.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/app.cc
 )
 set(main_source ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
@@ -59,9 +62,11 @@ target_link_libraries(${PROJECT_NAME}
   openal
   sndfile
   mpg123
+  ${LIBZIP_LIBRARIES}
 )
 target_include_directories(${PROJECT_NAME} PRIVATE
   /usr/include/skia
+  ${LIBZIP_INCLUDE_DIRS}
 )
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 26)
 

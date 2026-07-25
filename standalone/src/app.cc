@@ -6,6 +6,7 @@ import glfw;
 import skia;
 import audio;
 import skin;
+import archive;
 
 namespace client {
 
@@ -19,8 +20,29 @@ inline std::string lowerExtension(const std::filesystem::path &path) {
   return ext;
 }
 
+inline std::string fileExtension(std::string_view name) {
+  std::string ext;
+  if (const auto dot = name.rfind('.'); dot != std::string_view::npos) {
+    ext = name.substr(dot);
+  }
+  std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return ext;
+}
+
 inline audio::ALenum alFormat(int channels) {
   return channels == 1 ? audio::kFormatMono16 : audio::kFormatStereo16;
+}
+
+[[nodiscard]] inline std::vector<std::uint8_t>
+readFile(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return {};
+  }
+  return {std::istreambuf_iterator<char>(file),
+          std::istreambuf_iterator<char>()};
 }
 
 } // namespace detail
@@ -83,6 +105,13 @@ public:
 
   bool load(const std::filesystem::path &path) {
     std::cerr << "[audio] AudioPlayer::load(" << path << ")\n";
+    const auto ext = detail::lowerExtension(path);
+    const auto data = detail::readFile(path);
+    return this->load(data, ext);
+  }
+
+  bool load(std::span<const std::uint8_t> data, std::string_view ext) {
+    std::cerr << "[audio] AudioPlayer::load(" << data.size() << " bytes)\n";
     if (!audioContext().ok()) {
       std::cerr << "[audio] AudioPlayer::load: no context\n";
       return false;
@@ -92,34 +121,21 @@ public:
     int channels = 2;
     std::vector<std::int16_t> samples;
 
-    const auto ext = detail::lowerExtension(path);
     std::cerr << "[audio] decoding " << ext << " audio\n";
     if (ext == ".mp3") {
-      samples = audio::decode_mp3(path, rate, channels);
+      samples = audio::decode_mp3_memory(data, rate, channels);
     } else {
-      samples = audio::decode_sndfile(path, rate, channels);
+      samples = audio::decode_sndfile_memory(data, rate, channels);
     }
 
     if (samples.empty()) {
-      std::cerr << "[audio] failed to decode audio: " << path << '\n';
+      std::cerr << "[audio] failed to decode audio\n";
       return false;
     }
     std::cerr << "[audio] decoded " << samples.size() << " samples (" << rate
               << " Hz, " << channels << " ch)\n";
 
-    audio::alGenBuffers(1, &fBuffer);
-    std::cerr << "[audio] generated buffer " << fBuffer << '\n';
-    audio::alBufferData(
-        fBuffer, detail::alFormat(channels), samples.data(),
-        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
-        rate);
-    std::cerr << "[audio] uploaded buffer data\n";
-    audio::alGenSources(1, &fSource);
-    std::cerr << "[audio] generated source " << fSource << '\n';
-    audio::alSourcei(fSource, audio::kBuffer,
-                     static_cast<audio::ALint>(fBuffer));
-    std::cerr << "[audio] AudioPlayer::load complete\n";
-    return true;
+    return this->upload(samples, rate, channels);
   }
 
   void play() {
@@ -158,6 +174,23 @@ private:
   audio::ALuint fBuffer = 0;
   audio::ALuint fSource = 0;
 
+  bool upload(const std::vector<std::int16_t> &samples, int rate,
+              int channels) {
+    audio::alGenBuffers(1, &fBuffer);
+    std::cerr << "[audio] generated buffer " << fBuffer << '\n';
+    audio::alBufferData(
+        fBuffer, detail::alFormat(channels), samples.data(),
+        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
+        rate);
+    std::cerr << "[audio] uploaded buffer data\n";
+    audio::alGenSources(1, &fSource);
+    std::cerr << "[audio] generated source " << fSource << '\n';
+    audio::alSourcei(fSource, audio::kBuffer,
+                     static_cast<audio::ALint>(fBuffer));
+    std::cerr << "[audio] AudioPlayer::upload complete\n";
+    return true;
+  }
+
   void shutdown() {
     if (fSource != 0) {
       audio::alDeleteSources(1, &fSource);
@@ -176,6 +209,13 @@ public:
 
   bool load(const std::filesystem::path &path) {
     std::cerr << "[audio] SamplePlayer::load(" << path << ")\n";
+    const auto ext = detail::lowerExtension(path);
+    const auto data = detail::readFile(path);
+    return this->load(data, ext);
+  }
+
+  bool load(std::span<const std::uint8_t> data, std::string_view ext) {
+    std::cerr << "[audio] SamplePlayer::load(" << data.size() << " bytes)\n";
     if (fBuffer != 0) {
       return true;
     }
@@ -188,35 +228,20 @@ public:
     int channels = 2;
     std::vector<std::int16_t> samples;
 
-    const auto ext = detail::lowerExtension(path);
     std::cerr << "[audio] decoding sample " << ext << "\n";
     if (ext == ".mp3") {
-      samples = audio::decode_mp3(path, rate, channels);
+      samples = audio::decode_mp3_memory(data, rate, channels);
     } else {
-      samples = audio::decode_sndfile(path, rate, channels);
+      samples = audio::decode_sndfile_memory(data, rate, channels);
     }
 
     if (samples.empty()) {
-      std::cerr << "[audio] failed to decode sample: " << path << '\n';
+      std::cerr << "[audio] failed to decode sample\n";
       return false;
     }
     std::cerr << "[audio] decoded sample " << samples.size() << " samples\n";
 
-    audio::alGenBuffers(1, &fBuffer);
-    std::cerr << "[audio] generated sample buffer " << fBuffer << '\n';
-    audio::alBufferData(
-        fBuffer, detail::alFormat(channels), samples.data(),
-        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
-        rate);
-    std::cerr << "[audio] uploaded sample buffer data\n";
-
-    constexpr std::size_t kPoolSize = 8;
-    fSources.resize(kPoolSize, 0);
-    audio::alGenSources(static_cast<audio::ALsizei>(fSources.size()),
-                        fSources.data());
-    std::cerr << "[audio] SamplePlayer::load complete (" << fSources.size()
-              << " sources)\n";
-    return true;
+    return this->upload(samples, rate, channels);
   }
 
   [[nodiscard]] bool loaded() const noexcept { return fBuffer != 0; }
@@ -241,6 +266,25 @@ private:
   audio::ALuint fBuffer = 0;
   std::vector<audio::ALuint> fSources;
 
+  bool upload(const std::vector<std::int16_t> &samples, int rate,
+              int channels) {
+    audio::alGenBuffers(1, &fBuffer);
+    std::cerr << "[audio] generated sample buffer " << fBuffer << '\n';
+    audio::alBufferData(
+        fBuffer, detail::alFormat(channels), samples.data(),
+        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
+        rate);
+    std::cerr << "[audio] uploaded sample buffer data\n";
+
+    constexpr std::size_t kPoolSize = 8;
+    fSources.resize(kPoolSize, 0);
+    audio::alGenSources(static_cast<audio::ALsizei>(fSources.size()),
+                        fSources.data());
+    std::cerr << "[audio] SamplePlayer::upload complete (" << fSources.size()
+              << " sources)\n";
+    return true;
+  }
+
   void shutdown() {
     if (!fSources.empty()) {
       audio::alDeleteSources(static_cast<audio::ALsizei>(fSources.size()),
@@ -256,18 +300,10 @@ private:
 
 export class App {
 public:
-  App(osu::Beatmap map, osu::ModSet mods, bool headless, bool autoplay,
-      std::filesystem::path beatmapDir = {},
+  App(osu::BeatmapSet set, osu::ModSet mods, bool headless, bool autoplay,
       std::filesystem::path skinPath = {})
-      : fMap(std::move(map)), fEngine(fMap, mods), fHeadless(headless),
-        fAutoplay(autoplay), fBeatmapDir(std::move(beatmapDir)),
-        fSkin(std::move(skinPath)) {
-    if (autoplay) {
-      fAutoplayEvents = osu::buildAutoplay(fMap, mods);
-    }
-    this->loadComboInfo();
-    fSkin.setComboColors(fMap.fComboColors);
-  }
+      : fSet(std::move(set)), fMods(mods), fHeadless(headless),
+        fAutoplay(autoplay), fSkin(std::move(skinPath)) {}
 
   ~App() { this->shutdown(); }
 
@@ -279,13 +315,14 @@ public:
   }
 
 private:
-  osu::Beatmap fMap;
-  osu::Engine fEngine;
+  osu::BeatmapSet fSet;
+  osu::ModSet fMods = osu::mod::kNone;
+  std::optional<osu::Beatmap> fMap;
+  std::optional<osu::Engine> fEngine;
   bool fHeadless = false;
   bool fAutoplay = false;
   std::vector<osu::InputEvent> fAutoplayEvents;
   std::size_t fAutoplayIndex = 0;
-  std::filesystem::path fBeatmapDir;
   Skin fSkin;
   skia::Sp<skia::SkImage> fBackground;
 
@@ -308,6 +345,17 @@ private:
   osu::Vec2 fCursor = osu::kPlayfieldCenter;
   bool fKeyDown = false;
   bool fKeyWasDown = false;
+  float fMouseX = 0.0f;
+  float fMouseY = 0.0f;
+
+  // Selection screen.
+  enum class State { kSelecting, kPlaying };
+  State fState = State::kSelecting;
+  int fSelectedDifficulty = 0;
+  bool fDifficultyConfirmed = false;
+  bool fClickPending = false;
+  int fHoveredDifficulty = -1;
+  float fSelectScrollY = 0.0f;
 
   // Timing
   double fStartMs = 0.0;
@@ -365,10 +413,42 @@ private:
   // Combo color group for each object.
   osu::ComboInfo fComboInfo;
 
-  void loadComboInfo() { fComboInfo = osu::buildComboInfo(fMap); }
+  void loadComboInfo() { fComboInfo = osu::buildComboInfo(*fMap); }
+
+  void startGameplay(const osu::BeatmapInfo &info) {
+    fMap.emplace(client::loadBeatmap(fSet, info));
+    fEngine.emplace(*fMap, fMods);
+    this->loadComboInfo();
+    fSkin.setComboColors(fMap->fComboColors);
+    if (fAutoplay) {
+      fAutoplayEvents = osu::buildAutoplay(*fMap, fMods);
+      fAutoplayIndex = 0;
+    }
+
+    if (!fMap->fMeta.fAudioFilename.empty()) {
+      const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
+      if (!bytes.empty()) {
+        fAudio.load(bytes, detail::fileExtension(fMap->fMeta.fAudioFilename));
+      }
+    }
+
+    if (!fMap->fMeta.fBackground.empty()) {
+      const auto bytes = fSet.findFile(fMap->fMeta.fBackground);
+      if (!bytes.empty()) {
+        fBackground = loadImage(bytes);
+      }
+    }
+
+    fStartMs = glfw::glfwGetTime() * 1000.0;
+    fAudio.play();
+  }
 
   [[nodiscard]] int runHeadless() {
-    const auto result = osu::runAutoplay(fMap, fEngine.mods());
+    if (fSet.fBeatmaps.empty()) {
+      return 1;
+    }
+    this->startGameplay(fSet.fBeatmaps.front());
+    const auto result = osu::runAutoplay(*fMap, fEngine->mods());
     std::println("{}", result.fScore);
     return 0;
   }
@@ -396,7 +476,7 @@ private:
       glfw::glfwTerminate();
       return 1;
     }
-    glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorHidden);
+    glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorNormal);
 
     glfw::glfwSetWindowUserPointer(fWindow, this);
     glfw::glfwSetKeyCallback(
@@ -404,42 +484,28 @@ private:
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          if (action == glfw::kPress) {
-            if (key == glfw::kKeyF11) {
-              self->toggleFullscreen();
-            } else if (key == glfw::kKeyEscape) {
-              glfw::glfwSetWindowShouldClose(w, glfw::kTrue);
-            }
-          }
-          if (action == glfw::kPress || action == glfw::kRepeat) {
-            if (key == glfw::kKeyZ || key == glfw::kKeyX ||
-                key == glfw::kKeySpace) {
-              self->fKeyDown = true;
-            }
-          } else if (action == glfw::kRelease) {
-            if (key == glfw::kKeyZ || key == glfw::kKeyX ||
-                key == glfw::kKeySpace) {
-              self->fKeyDown = false;
-            }
-          }
+          self->onKey(key, action);
         });
-    glfw::glfwSetMouseButtonCallback(fWindow, [](glfw::GLFWwindow *w,
-                                                 int button, int action, int) {
-      auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-      if (self == nullptr)
-        return;
-      if (button == glfw::kMouseButtonLeft ||
-          button == glfw::kMouseButtonRight) {
-        self->fKeyDown = (action == glfw::kPress || action == glfw::kRepeat);
-      }
-    });
+    glfw::glfwSetMouseButtonCallback(
+        fWindow, [](glfw::GLFWwindow *w, int button, int action, int) {
+          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+          if (self == nullptr)
+            return;
+          self->onMouseButton(button, action);
+        });
     glfw::glfwSetCursorPosCallback(
         fWindow, [](glfw::GLFWwindow *w, double x, double y) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          self->fCursor =
-              self->toPlayfield(static_cast<float>(x), static_cast<float>(y));
+          self->onCursorMove(static_cast<float>(x), static_cast<float>(y));
+        });
+    glfw::glfwSetScrollCallback(
+        fWindow, [](glfw::GLFWwindow *w, double, double y) {
+          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+          if (self == nullptr)
+            return;
+          self->onScroll(static_cast<float>(y));
         });
     glfw::glfwSetFramebufferSizeCallback(
         fWindow, [](glfw::GLFWwindow *w, int width, int height) {
@@ -459,31 +525,110 @@ private:
     }
 
     fFont = this->loadFont(20.0f);
-
-    if (!fMap.fMeta.fAudioFilename.empty()) {
-      const auto audioPath = fBeatmapDir / fMap.fMeta.fAudioFilename;
-      if (std::filesystem::exists(audioPath)) {
-        fAudio.load(audioPath);
-      }
-    }
-
-    if (!fMap.fMeta.fBackground.empty()) {
-      const auto bgPath = fBeatmapDir / fMap.fMeta.fBackground;
-      if (std::filesystem::exists(bgPath)) {
-        fBackground = loadImage(bgPath);
-      }
-    }
-
     this->resize(fScreenW, fScreenH);
-    fStartMs = glfw::glfwGetTime() * 1000.0;
-    fAudio.play();
+
+    int selected = 0;
+    if (fSet.fBeatmaps.size() > 1) {
+      selected = this->runDifficultySelect();
+      if (selected < 0 || selected >= static_cast<int>(fSet.fBeatmaps.size())) {
+        return 0;
+      }
+    }
+
+    glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorHidden);
+    this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(selected)]);
+    return this->runGameplayLoop();
+  }
+
+  void onKey(int key, int action) {
+    if (fState == State::kSelecting) {
+      if (action == glfw::kPress) {
+        if (key == glfw::kKeyEscape) {
+          glfw::glfwSetWindowShouldClose(fWindow, glfw::kTrue);
+        } else if (key == glfw::kKeyUp || key == glfw::kKeyLeft) {
+          fSelectedDifficulty = std::max(0, fSelectedDifficulty - 1);
+        } else if (key == glfw::kKeyDown || key == glfw::kKeyRight) {
+          fSelectedDifficulty =
+              std::min(static_cast<int>(fSet.fBeatmaps.size()) - 1,
+                       fSelectedDifficulty + 1);
+        } else if (key == glfw::kKeyEnter || key == glfw::kKeySpace) {
+          fDifficultyConfirmed = true;
+        }
+      }
+      return;
+    }
+
+    if (action == glfw::kPress) {
+      if (key == glfw::kKeyF11) {
+        this->toggleFullscreen();
+      } else if (key == glfw::kKeyEscape) {
+        glfw::glfwSetWindowShouldClose(fWindow, glfw::kTrue);
+      }
+    }
+    if (action == glfw::kPress || action == glfw::kRepeat) {
+      if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
+        fKeyDown = true;
+      }
+    } else if (action == glfw::kRelease) {
+      if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
+        fKeyDown = false;
+      }
+    }
+  }
+
+  void onMouseButton(int button, int action) {
+    if (fState == State::kSelecting) {
+      if (button == glfw::kMouseButtonLeft && action == glfw::kPress) {
+        fClickPending = true;
+      }
+      return;
+    }
+    if (button == glfw::kMouseButtonLeft || button == glfw::kMouseButtonRight) {
+      fKeyDown = (action == glfw::kPress || action == glfw::kRepeat);
+    }
+  }
+
+  void onCursorMove(float sx, float sy) {
+    fMouseX = sx;
+    fMouseY = sy;
+    if (fState == State::kPlaying) {
+      fCursor = this->toPlayfield(sx, sy);
+    }
+  }
+
+  void onScroll(float delta) {
+    if (fState == State::kSelecting) {
+      fSelectScrollY -= delta * 30.0f;
+    }
+  }
+
+  [[nodiscard]] int runDifficultySelect() {
+    fState = State::kSelecting;
+    this->loadSelectBackground();
+
+    while (!glfw::glfwWindowShouldClose(fWindow) && !fDifficultyConfirmed) {
+      glfw::glfwPollEvents();
+      this->updateSelectHover();
+      this->renderDifficultySelect();
+      fContext->flushAndSubmit(fSurface.get());
+      glfw::glfwSwapBuffers(fWindow);
+    }
+
+    if (glfw::glfwWindowShouldClose(fWindow)) {
+      return -1;
+    }
+    return fSelectedDifficulty;
+  }
+
+  [[nodiscard]] int runGameplayLoop() {
+    fState = State::kPlaying;
 
     while (!glfw::glfwWindowShouldClose(fWindow) &&
            !this->shouldStop(this->nowMs())) {
       glfw::glfwPollEvents();
       const double now = this->nowMs();
       this->handleInput(now);
-      fEngine.advance(now);
+      fEngine->advance(now);
       this->playHitsounds(now);
       this->render();
       fContext->flushAndSubmit(fSurface.get());
@@ -492,6 +637,161 @@ private:
 
     this->printResult();
     return 0;
+  }
+
+  void loadSelectBackground() {
+    for (const auto &info : fSet.fBeatmaps) {
+      if (!info.fMeta.fBackground.empty()) {
+        const auto bytes = fSet.findFile(info.fMeta.fBackground);
+        if (!bytes.empty()) {
+          fBackground = loadImage(bytes);
+          return;
+        }
+      }
+    }
+    fBackground.reset();
+  }
+
+  void updateSelectHover() {
+    fHoveredDifficulty = -1;
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    const float cardW = std::min(600.0f, sw * 0.8f);
+    const float cardH = 70.0f;
+    const float gap = 12.0f;
+    const float startY = sh * 0.35f;
+    const float listH = sh * 0.55f;
+    const float x = (sw - cardW) * 0.5f;
+
+    if (fMouseX < x || fMouseX > x + cardW || fMouseY < startY ||
+        fMouseY > startY + listH) {
+      fClickPending = false;
+      return;
+    }
+
+    for (std::size_t i = 0; i < fSet.fBeatmaps.size(); ++i) {
+      const float y =
+          startY + static_cast<float>(i) * (cardH + gap) - fSelectScrollY;
+      if (fMouseY >= y && fMouseY <= y + cardH) {
+        fHoveredDifficulty = static_cast<int>(i);
+        if (fClickPending) {
+          fSelectedDifficulty = static_cast<int>(i);
+          fDifficultyConfirmed = true;
+        }
+        break;
+      }
+    }
+    fClickPending = false;
+  }
+
+  void renderDifficultySelect() {
+    auto *canvas = fSurface->getCanvas();
+    canvas->clear(skia::kBlack);
+    this->drawBackground(canvas);
+
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+
+    // Title.
+    const auto &first = fSet.fBeatmaps.front();
+    const std::string title =
+        (first.fMeta.fArtistUnicode.empty() ? first.fMeta.fArtist
+                                            : first.fMeta.fArtistUnicode) +
+        " - " +
+        (first.fMeta.fTitleUnicode.empty() ? first.fMeta.fTitle
+                                           : first.fMeta.fTitleUnicode);
+    fFont.setSize(42.0f);
+    paint.setColor(skia::kWhite);
+    const float titleWidth = fFont.measureText(title.c_str(), title.size(),
+                                               skia::SkTextEncoding::kUTF8);
+    canvas->drawString(title.c_str(), (sw - titleWidth) * 0.5f, sh * 0.18f,
+                       fFont, paint);
+
+    // Mapper.
+    fFont.setSize(20.0f);
+    paint.setAlphaf(0.7f);
+    const std::string mapper = "mapped by " + first.fMeta.fCreator;
+    const float mapperWidth = fFont.measureText(mapper.c_str(), mapper.size(),
+                                                skia::SkTextEncoding::kUTF8);
+    canvas->drawString(mapper.c_str(), (sw - mapperWidth) * 0.5f,
+                       sh * 0.18f + 32.0f, fFont, paint);
+
+    // Difficulty cards.
+    const float cardW = std::min(600.0f, sw * 0.8f);
+    const float cardH = 70.0f;
+    const float gap = 12.0f;
+    const float startY = sh * 0.35f;
+    const float x = (sw - cardW) * 0.5f;
+    const float listH = sh * 0.55f;
+    const float contentH =
+        static_cast<float>(fSet.fBeatmaps.size()) * (cardH + gap) - gap;
+    fSelectScrollY =
+        std::clamp(fSelectScrollY, 0.0f, std::max(0.0f, contentH - listH));
+
+    canvas->save();
+    canvas->clipRect(skia::SkRect::MakeXYWH(x, startY, cardW, listH));
+    canvas->translate(0.0f, -fSelectScrollY);
+
+    for (std::size_t i = 0; i < fSet.fBeatmaps.size(); ++i) {
+      const auto &info = fSet.fBeatmaps[i];
+      const float y = startY + static_cast<float>(i) * (cardH + gap);
+      if (y + cardH < startY + fSelectScrollY ||
+          y > startY + fSelectScrollY + listH) {
+        continue;
+      }
+      const bool hovered = (fHoveredDifficulty == static_cast<int>(i));
+      const bool selected = (fSelectedDifficulty == static_cast<int>(i));
+
+      skia::SkPaint card;
+      card.setAntiAlias(true);
+      if (selected) {
+        card.setColor(skia::colorSetARGB(255, 80, 140, 200));
+      } else if (hovered) {
+        card.setColor(skia::colorSetARGB(255, 60, 60, 70));
+      } else {
+        card.setColor(skia::colorSetARGB(255, 35, 35, 40));
+      }
+      canvas->drawRect(skia::SkRect::MakeXYWH(x, y, cardW, cardH), card);
+
+      skia::SkPaint border;
+      border.setAntiAlias(true);
+      border.setStyle(skia::kStrokeStyle);
+      border.setStrokeWidth(selected ? 3.0f : 1.0f);
+      border.setColor(selected ? skia::colorSetARGB(255, 120, 180, 255)
+                               : skia::colorSetARGB(255, 80, 80, 90));
+      canvas->drawRect(skia::SkRect::MakeXYWH(x, y, cardW, cardH), border);
+
+      fFont.setSize(24.0f);
+      paint.setColor(skia::kWhite);
+      paint.setAlphaf(1.0f);
+      canvas->drawString(info.fMeta.fVersion.c_str(), x + 20.0f,
+                         y + cardH * 0.55f, fFont, paint);
+
+      fFont.setSize(15.0f);
+      paint.setAlphaf(0.75f);
+      const std::string stats = std::format(
+          "{:.2f}*  CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f}  {} objects  "
+          "{:.1f}s",
+          info.fStars, info.fDiff.fCs, info.fDiff.fAr, info.fDiff.fOd,
+          info.fDiff.fHp, info.fObjectCount, info.fLengthMs / 1000.0);
+      canvas->drawString(stats.c_str(), x + 20.0f, y + cardH * 0.82f, fFont,
+                         paint);
+    }
+    canvas->restore();
+
+    // Instructions.
+    fFont.setSize(16.0f);
+    paint.setColor(skia::kWhite);
+    paint.setAlphaf(0.6f);
+    const std::string hint =
+        "Click / Enter to play    Arrow keys to navigate    Esc to quit";
+    const float hintWidth = fFont.measureText(hint.c_str(), hint.size(),
+                                              skia::SkTextEncoding::kUTF8);
+    canvas->drawString(hint.c_str(), (sw - hintWidth) * 0.5f, sh - 30.0f, fFont,
+                       paint);
   }
 
   bool initSkia() {
@@ -640,20 +940,20 @@ private:
   }
 
   [[nodiscard]] bool shouldStop(double now) const {
-    return fEngine.finished() && now > fMap.lastObjectEndTime() + 1000.0;
+    return fEngine->finished() && now > fMap->lastObjectEndTime() + 1000.0;
   }
 
   void handleInput(double now) {
     this->submitAutoplay(now);
 
     if (fCursor.fX != fLastCursor.fX || fCursor.fY != fLastCursor.fY) {
-      fEngine.submit({now, fCursor, osu::InputAction::kMove});
+      fEngine->submit({now, fCursor, osu::InputAction::kMove});
       fLastCursor = fCursor;
     }
     if (fKeyDown && !fKeyWasDown) {
-      fEngine.submit({now, fCursor, osu::InputAction::kPress});
+      fEngine->submit({now, fCursor, osu::InputAction::kPress});
     } else if (!fKeyDown && fKeyWasDown) {
-      fEngine.submit({now, fCursor, osu::InputAction::kRelease});
+      fEngine->submit({now, fCursor, osu::InputAction::kRelease});
     }
     fKeyWasDown = fKeyDown;
   }
@@ -661,13 +961,13 @@ private:
   void submitAutoplay(double now) {
     while (fAutoplayIndex < fAutoplayEvents.size() &&
            fAutoplayEvents[fAutoplayIndex].fTime <= now) {
-      fEngine.submit(fAutoplayEvents[fAutoplayIndex]);
+      fEngine->submit(fAutoplayEvents[fAutoplayIndex]);
       ++fAutoplayIndex;
     }
   }
 
   void playHitsounds(double now) {
-    const auto &events = fEngine.events();
+    const auto &events = fEngine->events();
     while (fPlayedEvents < events.size()) {
       const auto &ev = events[fPlayedEvents++];
       const auto pos = this->objectPosition(ev.fIndex);
@@ -681,8 +981,8 @@ private:
         continue;
       }
       ++fCombo;
-      const double hitTime = ev.fIndex < fMap.fObjects.size()
-                                 ? osu::startTime(fMap.fObjects[ev.fIndex])
+      const double hitTime = ev.fIndex < fMap->fObjects.size()
+                                 ? osu::startTime(fMap->fObjects[ev.fIndex])
                                  : now;
       this->playObjectHitsound(hitTime, ev.fIndex);
       if (ev.fIndex < fComboInfo.fIndices.size()) {
@@ -707,7 +1007,7 @@ private:
                                                    double time) const {
     if (const char *name = sampleSetName(set))
       return name;
-    if (const auto *tp = fMap.activeTiming(time)) {
+    if (const auto *tp = fMap->activeTiming(time)) {
       if (const char *name = sampleSetName(tp->fSet))
         return name;
     }
@@ -715,14 +1015,11 @@ private:
   }
 
   [[nodiscard]] std::filesystem::path
-  findSamplePath(const std::string &name) const {
+  findSkinSamplePath(const std::string &name) const {
     for (const std::string_view ext : {".wav", ".ogg"}) {
       const auto skinPath = fSkin.root() / (name + std::string(ext));
       if (std::filesystem::exists(skinPath))
         return skinPath;
-      const auto beatmapPath = fBeatmapDir / (name + std::string(ext));
-      if (std::filesystem::exists(beatmapPath))
-        return beatmapPath;
     }
     return {};
   }
@@ -730,7 +1027,20 @@ private:
   void playSample(const std::string &name) {
     if (name.empty())
       return;
-    const auto path = this->findSamplePath(name);
+
+    for (const std::string_view ext : {".wav", ".ogg"}) {
+      const std::string key = name + std::string(ext);
+      const auto bytes = fSet.findFile(key);
+      if (!bytes.empty()) {
+        auto &player = fSamples[key];
+        if (!player.loaded())
+          player.load(bytes, std::string(ext));
+        player.play();
+        return;
+      }
+    }
+
+    const auto path = this->findSkinSamplePath(name);
     if (path.empty())
       return;
     auto &player = fSamples[path.string()];
@@ -755,7 +1065,7 @@ private:
   }
 
   void playObjectHitsound(double time, std::size_t index) {
-    if (index >= fMap.fObjects.size())
+    if (index >= fMap->fObjects.size())
       return;
     std::visit(osu::Overloaded{
                    [this, time](const osu::Circle &o) {
@@ -768,42 +1078,42 @@ private:
                      this->playHitSample(time, o.fSound, o.fSample);
                    },
                },
-               fMap.fObjects[index]);
+               fMap->fObjects[index]);
   }
 
   [[nodiscard]] osu::Vec2 objectPosition(std::size_t index) const {
-    if (index >= fMap.fObjects.size()) {
+    if (index >= fMap->fObjects.size()) {
       return osu::kPlayfieldCenter;
     }
-    return osu::objectPosition(fMap.fObjects[index]);
+    return osu::objectPosition(fMap->fObjects[index]);
   }
 
   [[nodiscard]] std::pair<osu::Vec2, double>
   objectEnd(std::size_t index) const {
-    if (index >= fMap.fObjects.size()) {
+    if (index >= fMap->fObjects.size()) {
       return {osu::kPlayfieldCenter, 0.0};
     }
-    return osu::objectEnd(fMap.fObjects[index], fMap);
+    return osu::objectEnd(fMap->fObjects[index], *fMap);
   }
 
   void drawFollowPoints(skia::SkCanvas *canvas, double now, double ar,
                         double cs) {
-    if (fMap.fObjects.size() < 2)
+    if (fMap->fObjects.size() < 2)
       return;
     const double preempt = osu::preemptTime(ar);
     const double fadeIn = osu::fadeInTime(ar);
     const double radius = osu::circleRadius(cs);
     const double spacing = radius * 0.7;
-    for (std::size_t i = 0; i + 1 < fMap.fObjects.size(); ++i) {
+    for (std::size_t i = 0; i + 1 < fMap->fObjects.size(); ++i) {
       if (fComboInfo.fGroups[i] != fComboInfo.fGroups[i + 1])
         continue;
-      if (std::holds_alternative<osu::Spinner>(fMap.fObjects[i]) ||
-          std::holds_alternative<osu::Spinner>(fMap.fObjects[i + 1])) {
+      if (std::holds_alternative<osu::Spinner>(fMap->fObjects[i]) ||
+          std::holds_alternative<osu::Spinner>(fMap->fObjects[i + 1])) {
         continue;
       }
       const auto [startPos, startTime] = this->objectEnd(i);
       const osu::Vec2 endPos = this->objectPosition(i + 1);
-      const double endTime = osu::startTime(fMap.fObjects[i + 1]);
+      const double endTime = osu::startTime(fMap->fObjects[i + 1]);
       const osu::Vec2 dir = endPos - startPos;
       const double distance = dir.length();
       if (distance < spacing * 3.0)
@@ -858,17 +1168,17 @@ private:
 
     this->drawPlayfield(canvas);
     const double now = this->nowMs();
-    const double ar = fEngine.clockRate() > 0.0
-                          ? fMap.fDiff.fAr * fEngine.clockRate()
-                          : fMap.fDiff.fAr;
-    const double cs = fMap.fDiff.fCs;
-    const double od = fMap.fDiff.fOd;
+    const double ar = fEngine->clockRate() > 0.0
+                          ? fMap->fDiff.fAr * fEngine->clockRate()
+                          : fMap->fDiff.fAr;
+    const double cs = fMap->fDiff.fCs;
+    const double od = fMap->fDiff.fOd;
 
     this->updateCursorTrail(now);
     this->drawFollowPoints(canvas, now, ar, cs);
 
-    for (std::size_t i = 0; i < fMap.fObjects.size(); ++i) {
-      this->drawObject(canvas, fMap.fObjects[i], i, now, ar, cs, od);
+    for (std::size_t i = 0; i < fMap->fObjects.size(); ++i) {
+      this->drawObject(canvas, fMap->fObjects[i], i, now, ar, cs, od);
     }
 
     this->drawFadingObjects(canvas, now, ar, cs, od);
@@ -917,7 +1227,7 @@ private:
     if (now < time - preempt) {
       return;
     }
-    if (fEngine.isJudged(index)) {
+    if (fEngine->isJudged(index)) {
       return;
     }
 
@@ -930,10 +1240,10 @@ private:
                      osu::SliderPath path(o.fCurveType, std::span{o.fControl},
                                           o.fPixelLength);
                      fSkin.drawSlider(canvas, o, index, path,
-                                      fMap.sliderSpanDuration(o),
-                                      fMap.sliderTickDistance(o), now, cs, ar,
+                                      fMap->sliderSpanDuration(o),
+                                      fMap->sliderTickDistance(o), now, cs, ar,
                                       od, o.fCombo, fComboInfo.fIndices[index],
-                                      1.0f, fEngine.isTracking(index));
+                                      1.0f, fEngine->isTracking(index));
                    },
                    [&](const osu::Spinner &o) {
                      this->drawSpinner(canvas, o, index, now, cs, od);
@@ -963,13 +1273,13 @@ private:
                 osu::SliderPath path(o.fCurveType, std::span{o.fControl},
                                      o.fPixelLength);
                 fSkin.drawSlider(
-                    canvas, o, it->fIndex, path, fMap.sliderSpanDuration(o),
-                    fMap.sliderTickDistance(o), now, cs, ar, od, o.fCombo,
+                    canvas, o, it->fIndex, path, fMap->sliderSpanDuration(o),
+                    fMap->sliderTickDistance(o), now, cs, ar, od, o.fCombo,
                     fComboInfo.fIndices[it->fIndex], alpha, false);
               },
               [&](const osu::Spinner &) {},
           },
-          fMap.fObjects[it->fIndex]);
+          fMap->fObjects[it->fIndex]);
       ++it;
     }
   }
@@ -983,7 +1293,7 @@ private:
     const double progress =
         now < s.fTime
             ? 0.0
-            : std::clamp(osu::spinnerProgress(fEngine.spinnerRotations(index),
+            : std::clamp(osu::spinnerProgress(fEngine->spinnerRotations(index),
                                               s.fEnd - s.fTime, od),
                          0.0, 1.0);
     fSkin.drawSpinner(canvas, cx, cy, radius, progress);
@@ -994,7 +1304,7 @@ private:
     textPaint.setAntiAlias(true);
     fFont.setSize(20.0f / fScale);
     const std::string label =
-        std::format("{}/{}", std::max(0, fEngine.spinnerRotations(index)),
+        std::format("{}/{}", std::max(0, fEngine->spinnerRotations(index)),
                     static_cast<int>(std::ceil(
                         osu::spinnerRequiredRotations(s.fEnd - s.fTime, od))));
     canvas->drawString(label.c_str(), cx, cy + 6.0f / fScale, fFont, textPaint);
@@ -1092,7 +1402,7 @@ private:
   }
 
   void drawHud(skia::SkCanvas *canvas, double now) {
-    const auto &score = fEngine.score();
+    const auto &score = fEngine->score();
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
 
@@ -1130,8 +1440,8 @@ private:
     // Difficulty / mods (top-right).
     fFont.setSize(16.0f);
     const std::string diffText = std::format(
-        "CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f} {}", fMap.fDiff.fCs,
-        fMap.fDiff.fAr, fMap.fDiff.fOd, fMap.fDiff.fHp, fEngine.mods());
+        "CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f} {}", fMap->fDiff.fCs,
+        fMap->fDiff.fAr, fMap->fDiff.fOd, fMap->fDiff.fHp, fEngine->mods());
     canvas->drawString(diffText.c_str(), 20.0f, 115.0f, fFont, paint);
 
     // Health bar (top).
@@ -1212,7 +1522,7 @@ private:
     canvas->drawRect(skia::SkRect::MakeXYWH(x, y, w, h), border);
   }
 
-  void printResult() { std::println("{}", fEngine.score()); }
+  void printResult() { std::println("{}", fEngine->score()); }
 
   [[nodiscard]] osu::Vec2 toPlayfield(float sx, float sy) const {
     return {(static_cast<double>(sx) - fOffsetX) / fScale,

@@ -26,7 +26,7 @@ public:
     if (d <= 0.0) {
       return fPoints.front();
     }
-    if (d >= fTotalLength) {
+    if (d >= fTotalLength || fCumulative.size() < 2) {
       return fPoints.back();
     }
     const auto it = std::ranges::upper_bound(fCumulative, d);

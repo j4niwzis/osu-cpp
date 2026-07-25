@@ -8,8 +8,7 @@ namespace client {
 
 namespace detail {
 
-inline skia::Sp<skia::SkImage> decodeImage(const std::filesystem::path &path) {
-  skia::Sp<skia::SkData> data = skia::SkData::MakeFromFileName(path.c_str());
+inline skia::Sp<skia::SkImage> decodeImage(skia::Sp<skia::SkData> data) {
   if (!data || data->isEmpty()) {
     return nullptr;
   }
@@ -28,6 +27,15 @@ inline skia::Sp<skia::SkImage> decodeImage(const std::filesystem::path &path) {
     return nullptr;
   }
   return skia::RasterFromBitmap(bitmap);
+}
+
+inline skia::Sp<skia::SkImage> decodeImage(const std::filesystem::path &path) {
+  return decodeImage(skia::SkData::MakeFromFileName(path.c_str()));
+}
+
+inline skia::Sp<skia::SkImage>
+decodeImage(std::span<const std::uint8_t> bytes) {
+  return decodeImage(skia::SkData::MakeWithoutCopy(bytes.data(), bytes.size()));
 }
 
 inline std::filesystem::path findFile(const std::filesystem::path &root,
@@ -384,8 +392,8 @@ public:
         const double lenSq = dx * dx + dy * dy;
         double t = 0.0;
         if (lenSq > 0.0) {
-          t = std::clamp(((p.fX - a.fX) * dx + (p.fY - a.fY) * dy) / lenSq,
-                         0.0, 1.0);
+          t = std::clamp(((p.fX - a.fX) * dx + (p.fY - a.fY) * dy) / lenSq, 0.0,
+                         1.0);
         }
         return std::hypot(p.fX - (a.fX + t * dx), p.fY - (a.fY + t * dy));
       };
@@ -437,8 +445,7 @@ public:
         osu::Vec2 bis{0.0, 0.0};
         const osu::Vec2 dbis{a.u.fX - b.u.fX, a.u.fY - b.u.fY};
         const double bisLen = dbis.length();
-        const bool clip =
-            !useMiter && bisLen > 1e-6 && std::abs(cross) > 1e-6;
+        const bool clip = !useMiter && bisLen > 1e-6 && std::abs(cross) > 1e-6;
         if (clip) {
           bis = dbis / bisLen;
         }
@@ -526,9 +533,9 @@ public:
           return;
         const std::uint16_t base = static_cast<std::uint16_t>(vpos.size());
         for (const osu::Vec2 &p : poly) {
-          const double d = std::abs(seg.u.fX * (p.fY - c0.fY) -
-                                    seg.u.fY * (p.fX - c0.fX)) /
-                           radius;
+          const double d =
+              std::abs(seg.u.fX * (p.fY - c0.fY) - seg.u.fY * (p.fX - c0.fX)) /
+              radius;
           pushVertD(p, d);
         }
         for (std::size_t k = 1; k + 1 < poly.size(); ++k) {
@@ -544,8 +551,8 @@ public:
           theta2 += 2.0 * std::numbers::pi;
         const double theta = theta2 - theta1;
         const int divs =
-            std::max(1, static_cast<int>(std::ceil(
-                            64.0 * std::abs(theta) / (2.0 * std::numbers::pi))));
+            std::max(1, static_cast<int>(std::ceil(64.0 * std::abs(theta) /
+                                                   (2.0 * std::numbers::pi))));
         const std::uint16_t cIdx = static_cast<std::uint16_t>(vpos.size());
         pushVertD(C, 0.0);
         std::uint16_t prev = cIdx;
@@ -560,9 +567,7 @@ public:
           prev = cur;
         }
       };
-      auto angleOf = [](const osu::Vec2 &v) {
-        return std::atan2(v.fY, v.fX);
-      };
+      auto angleOf = [](const osu::Vec2 &v) { return std::atan2(v.fY, v.fX); };
 
       // Segment quads, clipped against the bisectors of adjacent invalid
       // joints so overlapping lenses are partitioned instead of drawn twice.
@@ -638,7 +643,7 @@ public:
           skia::SkVertices::kTriangles_VertexMode, verts.size(), verts.data(),
           texs.data(), colors.data(), indices.size(), indices.data());
       canvas->drawVertices(vertices.get(), skia::SkBlendMode::kModulate,
-                            bodyPaint);
+                           bodyPaint);
     }
 
     // Slider ticks.
@@ -1029,6 +1034,11 @@ private:
 export [[nodiscard]] inline skia::Sp<skia::SkImage>
 loadImage(const std::filesystem::path &path) {
   return detail::decodeImage(path);
+}
+
+export [[nodiscard]] inline skia::Sp<skia::SkImage>
+loadImage(std::span<const std::uint8_t> bytes) {
+  return detail::decodeImage(bytes);
 }
 
 } // namespace client

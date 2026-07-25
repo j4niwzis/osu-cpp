@@ -102,6 +102,52 @@ private:
   return init.ok();
 }
 
+struct SndfileMemory {
+  std::span<const std::uint8_t> data;
+  sf_count_t offset = 0;
+};
+
+static sf_count_t sndfileGetFilelen(void *user) {
+  const auto *m = static_cast<const SndfileMemory *>(user);
+  return static_cast<sf_count_t>(m->data.size());
+}
+
+static sf_count_t sndfileSeek(sf_count_t offset, int whence, void *user) {
+  auto *m = static_cast<SndfileMemory *>(user);
+  switch (whence) {
+  case SEEK_SET:
+    m->offset = offset;
+    break;
+  case SEEK_CUR:
+    m->offset += offset;
+    break;
+  case SEEK_END:
+    m->offset = static_cast<sf_count_t>(m->data.size()) + offset;
+    break;
+  }
+  return m->offset;
+}
+
+static sf_count_t sndfileRead(void *ptr, sf_count_t count, void *user) {
+  auto *m = static_cast<SndfileMemory *>(user);
+  const sf_count_t available =
+      static_cast<sf_count_t>(m->data.size()) - m->offset;
+  const sf_count_t toRead = std::min(count, available);
+  if (toRead > 0) {
+    std::memcpy(ptr, m->data.data() + m->offset,
+                static_cast<std::size_t>(toRead));
+    m->offset += toRead;
+  }
+  return toRead;
+}
+
+static sf_count_t sndfileWrite(const void *, sf_count_t, void *) { return 0; }
+
+static sf_count_t sndfileTell(void *user) {
+  const auto *m = static_cast<const SndfileMemory *>(user);
+  return m->offset;
+}
+
 } // namespace audio
 
 export namespace audio {
@@ -161,8 +207,8 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
     mpg123_delete(handle);
     return {};
   }
-  std::cerr << "[audio] decode_mp3: " << nativeRate << " Hz, "
-            << nativeChannels << " ch\n";
+  std::cerr << "[audio] decode_mp3: " << nativeRate << " Hz, " << nativeChannels
+            << " ch\n";
   mpg123_format_none(handle);
   mpg123_format(handle, nativeRate, nativeChannels, MPG123_ENC_SIGNED_16);
   rate = static_cast<int>(nativeRate);
@@ -186,15 +232,16 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
     if (done > 0) {
       emptyReads = 0;
       const std::size_t samples = done / sizeof(std::int16_t);
-      const auto *pcm = reinterpret_cast<const std::int16_t *>(buffer.data());
-      out.insert(out.end(), pcm, pcm + samples);
+      const std::size_t oldSize = out.size();
+      out.resize(oldSize + samples);
+      std::memcpy(out.data() + oldSize, buffer.data(),
+                  samples * sizeof(std::int16_t));
     } else if (err == MPG123_OK) {
       // Some decoders return OK with no data for a few iterations; prevent
       // an infinite loop by bailing out after repeated empty reads.
       if (++emptyReads >= kMaxEmptyReads) {
         std::cerr << "[audio] decode_mp3: no data for " << kMaxEmptyReads
-                  << " consecutive reads, aborting decode of " << path
-                  << '\n';
+                  << " consecutive reads, aborting decode of " << path << '\n';
         break;
       }
     }
@@ -209,6 +256,125 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
   }
 
   std::cerr << "[audio] decode_mp3: closing, produced " << out.size()
+            << " samples\n";
+  mpg123_close(handle);
+  mpg123_delete(handle);
+  return out;
+}
+
+[[nodiscard]] inline std::vector<std::int16_t>
+decode_sndfile_memory(std::span<const std::uint8_t> data, int &rate,
+                      int &channels) {
+  std::cerr << "[audio] decode_sndfile_memory: " << data.size() << " bytes\n";
+  SF_VIRTUAL_IO io{};
+  io.get_filelen = sndfileGetFilelen;
+  io.seek = sndfileSeek;
+  io.read = sndfileRead;
+  io.write = sndfileWrite;
+  io.tell = sndfileTell;
+
+  SndfileMemory mem{data, 0};
+  SF_INFO info{};
+  SNDFILE *file = sf_open_virtual(&io, SFM_READ, &info, &mem);
+  if (file == nullptr) {
+    std::cerr << "[audio] decode_sndfile_memory: sf_open_virtual failed\n";
+    return {};
+  }
+  rate = info.samplerate;
+  channels = info.channels;
+  const auto frames = static_cast<sf_count_t>(info.frames);
+  std::cerr << "[audio] decode_sndfile_memory: " << frames << " frames, "
+            << rate << " Hz, " << channels << " ch\n";
+  std::vector<std::int16_t> out(
+      static_cast<std::size_t>(frames * info.channels));
+  const auto read = sf_readf_short(file, out.data(), frames);
+  out.resize(static_cast<std::size_t>(read * info.channels));
+  sf_close(file);
+  std::cerr << "[audio] decode_sndfile_memory: returned " << out.size()
+            << " samples\n";
+  return out;
+}
+
+[[nodiscard]] inline std::vector<std::int16_t>
+decode_mp3_memory(std::span<const std::uint8_t> data, int &rate,
+                  int &channels) {
+  std::cerr << "[audio] decode_mp3_memory: " << data.size() << " bytes\n";
+  if (!ensureMpg123Init()) {
+    std::cerr << "[audio] decode_mp3_memory: mpg123_init failed\n";
+    return {};
+  }
+  mpg123_handle *handle = mpg123_new(nullptr, nullptr);
+  if (handle == nullptr) {
+    std::cerr << "[audio] decode_mp3_memory: mpg123_new failed\n";
+    return {};
+  }
+  if (mpg123_open_feed(handle) != MPG123_OK) {
+    std::cerr << "[audio] decode_mp3_memory: mpg123_open_feed failed\n";
+    mpg123_delete(handle);
+    return {};
+  }
+  if (mpg123_feed(handle, data.data(), data.size()) != MPG123_OK) {
+    std::cerr << "[audio] decode_mp3_memory: mpg123_feed failed\n";
+    mpg123_close(handle);
+    mpg123_delete(handle);
+    return {};
+  }
+
+  long nativeRate = 0;
+  int nativeChannels = 0;
+  int encoding = 0;
+
+  std::vector<unsigned char> probe(4096);
+  std::size_t done = 0;
+  int err = MPG123_OK;
+  while ((err = mpg123_read(handle, probe.data(), probe.size(), &done)) ==
+             MPG123_OK &&
+         done == 0) {
+  }
+
+  if ((err != MPG123_OK && err != MPG123_NEW_FORMAT && err != MPG123_DONE) ||
+      mpg123_getformat(handle, &nativeRate, &nativeChannels, &encoding) !=
+          MPG123_OK) {
+    std::cerr << "[audio] decode_mp3_memory: format detection failed\n";
+    mpg123_close(handle);
+    mpg123_delete(handle);
+    return {};
+  }
+
+  mpg123_format_none(handle);
+  mpg123_format(handle, nativeRate, nativeChannels, MPG123_ENC_SIGNED_16);
+  rate = static_cast<int>(nativeRate);
+  channels = nativeChannels;
+  std::cerr << "[audio] decode_mp3_memory: " << rate << " Hz, " << channels
+            << " ch\n";
+
+  std::vector<std::int16_t> out;
+  if (done > 0) {
+    const std::size_t samples = done / sizeof(std::int16_t);
+    const std::size_t oldSize = out.size();
+    out.resize(oldSize + samples);
+    std::memcpy(out.data() + oldSize, probe.data(),
+                samples * sizeof(std::int16_t));
+  }
+
+  constexpr std::size_t kBlock = 256 * 1024;
+  std::vector<unsigned char> buffer(kBlock);
+  while (err != MPG123_DONE) {
+    err = mpg123_read(handle, buffer.data(), buffer.size(), &done);
+    if (done > 0) {
+      const std::size_t samples = done / sizeof(std::int16_t);
+      const std::size_t oldSize = out.size();
+      out.resize(oldSize + samples);
+      std::memcpy(out.data() + oldSize, buffer.data(),
+                  samples * sizeof(std::int16_t));
+    }
+    if (err != MPG123_OK && err != MPG123_NEW_FORMAT && err != MPG123_DONE) {
+      std::cerr << "[audio] decode_mp3_memory: error " << err << '\n';
+      break;
+    }
+  }
+
+  std::cerr << "[audio] decode_mp3_memory: produced " << out.size()
             << " samples\n";
   mpg123_close(handle);
   mpg123_delete(handle);

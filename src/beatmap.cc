@@ -3,6 +3,7 @@ export module osu.beatmap;
 import std;
 import osu.types;
 import osu.rules;
+import osu.curves;
 
 export namespace osu {
 
@@ -11,10 +12,6 @@ public:
   using std::runtime_error::runtime_error;
 };
 
-class FileNotFoundError : public ParseError {
-public:
-  explicit FileNotFoundError(std::string path) : ParseError(std::move(path)) {}
-};
 class BadHeaderError : public ParseError {
 public:
   using ParseError::ParseError;
@@ -206,87 +203,166 @@ splitKeyValue(std::string_view line) {
   return {trim(line.substr(0, colon)), trim(line.substr(colon + 1))};
 }
 
+inline std::string toLower(std::string_view s) {
+  std::string out(s);
+  std::ranges::transform(out, out.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return out;
+}
+
 } // namespace detail
 
-inline std::pair<Vec2, int *> objectStackRef(HitObject &obj) {
-  return std::visit(osu::Overloaded{
-                        [](Circle &o) -> std::pair<Vec2, int *> {
-                          return {o.fPos, &o.fStack};
-                        },
-                        [](Slider &o) -> std::pair<Vec2, int *> {
-                          return {o.fPos, &o.fStack};
-                        },
-                        [](Spinner &) -> std::pair<Vec2, int *> {
-                          return {osu::kPlayfieldCenter, nullptr};
+inline Vec2 nonStackedEndPosition(const HitObject &obj) {
+  return std::visit(
+      Overloaded{
+          [](const Circle &o) -> Vec2 { return o.fPos; },
+          [](const Spinner &) -> Vec2 { return kPlayfieldCenter; },
+          [](const Slider &s) -> Vec2 {
+            SliderPath path(s.fCurveType, s.fControl, s.fPixelLength);
+            return path.positionAt(path.length());
+          },
+      },
+      obj);
+}
+
+inline int &stackHeight(HitObject &obj) {
+  return std::visit(Overloaded{
+                        [](Circle &c) -> int & { return c.fStack; },
+                        [](Slider &s) -> int & { return s.fStack; },
+                        [](Spinner &) -> int & {
+                          static int dummy;
+                          return dummy;
                         },
                     },
                     obj);
 }
 
-inline std::pair<Vec2, const int *> objectStackRef(const HitObject &obj) {
-  return std::visit(osu::Overloaded{
-                        [](const Circle &o) -> std::pair<Vec2, const int *> {
-                          return {o.fPos, &o.fStack};
-                        },
-                        [](const Slider &o) -> std::pair<Vec2, const int *> {
-                          return {o.fPos, &o.fStack};
-                        },
-                        [](const Spinner &) -> std::pair<Vec2, const int *> {
-                          return {osu::kPlayfieldCenter, nullptr};
-                        },
-                    },
-                    obj);
+inline void resetStack(HitObject &obj) {
+  std::visit(Overloaded{
+                 [](Circle &c) { c.fStack = 0; },
+                 [](Slider &s) { s.fStack = 0; },
+                 [](Spinner &) {},
+             },
+             obj);
 }
 
 inline void applyStacking(Beatmap &bm) {
-  if (bm.fObjects.empty()) {
+  if (bm.fObjects.empty())
     return;
-  }
-  const double stackThreshold =
-      osu::preemptTime(bm.fDiff.fAr) * bm.fStackLeniency;
+  const int count = static_cast<int>(bm.fObjects.size());
   constexpr double kStackDistance = 3.0;
 
-  for (std::ptrdiff_t i = static_cast<std::ptrdiff_t>(bm.fObjects.size()) - 1;
-       i >= 0; --i) {
-    const auto [posI, stackI] =
-        objectStackRef(bm.fObjects[static_cast<std::size_t>(i)]);
-    if (stackI == nullptr)
-      continue;
-    const double timeI = startTime(bm.fObjects[static_cast<std::size_t>(i)]);
+  if (bm.fFormatVersion >= 6) {
+    for (auto &obj : bm.fObjects)
+      resetStack(obj);
 
-    for (std::ptrdiff_t j = i - 1; j >= 0; --j) {
-      const auto [posJ, stackJ] =
-          objectStackRef(bm.fObjects[static_cast<std::size_t>(j)]);
-      if (stackJ == nullptr)
+    int extendedStartIndex = 0;
+    for (int i = count - 1; i > 0; --i) {
+      HitObject &objI = bm.fObjects[static_cast<std::size_t>(i)];
+      if (std::holds_alternative<Spinner>(objI))
         continue;
-      const double timeJ = startTime(bm.fObjects[static_cast<std::size_t>(j)]);
-      if (timeI - timeJ > stackThreshold) {
-        break;
-      }
-      if (posI.distanceTo(posJ) < kStackDistance) {
-        *stackJ = std::max(*stackJ, *stackI + 1);
-        break;
+      int &stackI = stackHeight(objI);
+      if (stackI != 0)
+        continue;
+
+      double stackThreshold =
+          std::floor(osu::preemptTime(bm.fDiff.fAr)) * bm.fStackLeniency;
+
+      if (std::holds_alternative<Circle>(objI)) {
+        int iBase = i;
+        for (int n = i - 1; n >= 0; --n) {
+          HitObject &objN = bm.fObjects[static_cast<std::size_t>(n)];
+          if (std::holds_alternative<Spinner>(objN))
+            continue;
+          if (static_cast<int>(startTime(objI)) -
+                  static_cast<int>(objectEndTime(objN, bm)) >
+              stackThreshold)
+            break;
+          if (n < extendedStartIndex) {
+            resetStack(objN);
+            extendedStartIndex = n;
+          }
+          if (std::holds_alternative<Slider>(objN)) {
+            Vec2 endN = nonStackedEndPosition(objN);
+            if (objectPosition(bm.fObjects[static_cast<std::size_t>(iBase)])
+                    .distanceTo(endN) < kStackDistance) {
+              int offset = stackI - stackHeight(objN) + 1;
+              for (int j = n + 1; j <= i; ++j) {
+                HitObject &objJ = bm.fObjects[static_cast<std::size_t>(j)];
+                if (objectPosition(objJ).distanceTo(endN) < kStackDistance) {
+                  std::visit(Overloaded{
+                                 [offset](Circle &c) { c.fStack -= offset; },
+                                 [offset](Slider &s) { s.fStack -= offset; },
+                                 [](Spinner &) {},
+                             },
+                             objJ);
+                }
+              }
+              break;
+            }
+          }
+          if (objectPosition(bm.fObjects[static_cast<std::size_t>(iBase)])
+                  .distanceTo(objectPosition(objN)) < kStackDistance) {
+            stackHeight(objN) = stackI + 1;
+            iBase = n;
+          }
+        }
+      } else { // Slider
+        int iBase = i;
+        for (int n = i - 1; n >= 0; --n) {
+          HitObject &objN = bm.fObjects[static_cast<std::size_t>(n)];
+          if (std::holds_alternative<Spinner>(objN))
+            continue;
+          if (startTime(objI) - startTime(objN) > stackThreshold)
+            break;
+          if (objectPosition(bm.fObjects[static_cast<std::size_t>(iBase)])
+                  .distanceTo(nonStackedEndPosition(objN)) < kStackDistance) {
+            stackHeight(objN) = stackI + 1;
+            iBase = n;
+          }
+        }
       }
     }
-  }
+  } else {
+    for (int i = 0; i < count; ++i) {
+      HitObject &objI = bm.fObjects[static_cast<std::size_t>(i)];
+      if (std::holds_alternative<Spinner>(objI))
+        continue;
+      int &stackI = stackHeight(objI);
+      if (stackI != 0 && !std::holds_alternative<Slider>(objI))
+        continue;
 
-  const Vec2 offsetScale = osu::stackOffset(1, bm.fDiff.fCs);
-  for (auto &obj : bm.fObjects) {
-    std::visit(osu::Overloaded{
-                   [&](Circle &o) {
-                     o.fPos += offsetScale * static_cast<double>(o.fStack);
-                   },
-                   [&](Slider &o) {
-                     const Vec2 off =
-                         offsetScale * static_cast<double>(o.fStack);
-                     o.fPos += off;
-                     for (auto &p : o.fControl) {
-                       p += off;
-                     }
-                   },
-                   [&](Spinner &) {},
-               },
-               obj);
+      double startT = objectEndTime(objI, bm);
+      int sliderStack = 0;
+
+      for (int j = i + 1; j < count; ++j) {
+        HitObject &objJ = bm.fObjects[static_cast<std::size_t>(j)];
+        double threshold =
+            std::floor(osu::preemptTime(bm.fDiff.fAr)) * bm.fStackLeniency;
+        if (startTime(objJ) - threshold > startT)
+          break;
+
+        Vec2 pos2 = std::holds_alternative<Slider>(objI)
+                        ? nonStackedEndPosition(objI)
+                        : objectPosition(objI);
+
+        if (objectPosition(objJ).distanceTo(objectPosition(objI)) <
+            kStackDistance) {
+          ++stackI;
+          startT = startTime(objJ);
+        } else if (objectPosition(objJ).distanceTo(pos2) < kStackDistance) {
+          ++sliderStack;
+          std::visit(Overloaded{
+                         [sliderStack](Circle &c) { c.fStack -= sliderStack; },
+                         [sliderStack](Slider &s) { s.fStack -= sliderStack; },
+                         [](Spinner &) {},
+                     },
+                     objJ);
+          startT = startTime(objJ);
+        }
+      }
+    }
   }
 }
 
@@ -588,12 +664,48 @@ inline Beatmap parseBeatmap(std::string_view text) {
   return bm;
 }
 
-inline Beatmap loadBeatmap(const std::filesystem::path &path) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
-    throw FileNotFoundError{path.string()};
+struct BeatmapInfo {
+  std::string fFilename;
+  Metadata fMeta;
+  Difficulty fDiff;
+  double fLengthMs = 0.0;
+  int fObjectCount = 0;
+  double fStars = 0.0;
+};
+
+class BeatmapSet {
+public:
+  std::vector<BeatmapInfo> fBeatmaps;
+  std::unordered_map<std::string, std::vector<std::uint8_t>> fFiles;
+
+  [[nodiscard]] std::span<const std::uint8_t>
+  findFile(std::string_view name) const {
+    const std::string lower = detail::toLower(name);
+    for (const auto &[key, value] : fFiles) {
+      if (detail::toLower(key) == lower) {
+        return std::span{value};
+      }
+    }
+    return {};
   }
-  const std::string text(std::istreambuf_iterator<char>(file), {});
+
+  [[nodiscard]] bool hasFile(std::string_view name) const {
+    return !this->findFile(name).empty();
+  }
+};
+
+[[nodiscard]] inline BeatmapInfo buildBeatmapInfo(std::string_view filename,
+                                                  const Beatmap &bm) {
+  BeatmapInfo info;
+  info.fFilename = filename;
+  info.fMeta = bm.fMeta;
+  info.fDiff = bm.fDiff;
+  info.fObjectCount = static_cast<int>(bm.fObjects.size());
+  info.fLengthMs = std::max(0.0, bm.lastObjectEndTime() - bm.firstObjectTime());
+  return info;
+}
+
+[[nodiscard]] inline Beatmap loadBeatmap(std::string_view text) {
   return parseBeatmap(text);
 }
 

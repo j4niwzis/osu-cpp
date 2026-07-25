@@ -1,6 +1,7 @@
 import std;
 import osu;
 import app;
+import archive;
 
 namespace {
 
@@ -119,10 +120,8 @@ int main(int argc, char **argv) {
   }
 
   try {
-    osu::Beatmap map = osu::loadBeatmap(beatmapPath);
-    const std::filesystem::path beatmapDir = beatmapPath.parent_path();
-    client::App app(std::move(map), mods, headless, autoplay, beatmapDir,
-                    skinPath);
+    osu::BeatmapSet set = client::loadBeatmapSet(beatmapPath);
+    client::App app(std::move(set), mods, headless, autoplay, skinPath);
     return app.run();
   } catch (const osu::ParseError &e) {
     std::cerr << "Parse error: " << e.what() << '\n';

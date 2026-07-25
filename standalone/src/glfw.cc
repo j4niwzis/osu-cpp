@@ -33,6 +33,7 @@ using ::glfwSetFramebufferSizeCallback;
 using ::glfwSetInputMode;
 using ::glfwSetKeyCallback;
 using ::glfwSetMouseButtonCallback;
+using ::glfwSetScrollCallback;
 using ::glfwSetWindowMonitor;
 using ::glfwSetWindowShouldClose;
 using ::glfwSetWindowUserPointer;
@@ -62,6 +63,10 @@ inline constexpr int kKeyZ = GLFW_KEY_Z;
 inline constexpr int kKeyX = GLFW_KEY_X;
 inline constexpr int kKeyF11 = GLFW_KEY_F11;
 inline constexpr int kKeyLeftShift = GLFW_KEY_LEFT_SHIFT;
+inline constexpr int kKeyUp = GLFW_KEY_UP;
+inline constexpr int kKeyDown = GLFW_KEY_DOWN;
+inline constexpr int kKeyLeft = GLFW_KEY_LEFT;
+inline constexpr int kKeyRight = GLFW_KEY_RIGHT;
 
 inline constexpr int kMouseButtonLeft = GLFW_MOUSE_BUTTON_LEFT;
 inline constexpr int kMouseButtonRight = GLFW_MOUSE_BUTTON_RIGHT;

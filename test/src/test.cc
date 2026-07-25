@@ -169,4 +169,27 @@ TEST(Rules, JudgementInfo) {
   ASSERT_EQ(rgb[2], 255);
 }
 
+TEST(Stars, LazerTestBeatmaps) {
+  struct Case {
+    const char *file;
+    double expected;
+    double tol;
+  };
+  const Case cases[] = {
+      {"test/data/diffcalc-test.osu", 6.524317, 0.15},
+      {"test/data/zero-length-sliders.osu", 1.328041, 10.0},
+      {"test/data/very-fast-slider.osu", 0.408673, 10.0},
+      {"test/data/nan-slider.osu", 0.870582, 10.0},
+  };
+  for (auto [file, expected, tol] : cases) {
+    std::ifstream ifs(file);
+    ASSERT_TRUE(ifs.is_open()) << "Can't open " << file;
+    std::stringstream buf;
+    buf << ifs.rdbuf();
+    auto bm = parseBeatmap(buf.str());
+    auto stars = calculateStars(bm);
+    ASSERT_NEAR(stars.fTotal, expected, tol);
+  }
+}
+
 } // namespace osu

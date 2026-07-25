@@ -7,3 +7,4 @@ export import osu.rules;
 export import osu.engine;
 export import osu.autopilot;
 export import osu.replay;
+export import osu.stars;
