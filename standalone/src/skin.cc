@@ -420,9 +420,10 @@ float4 main(float2 coords) {
     float4 sg2 = segTex.eval(uv2);
     float2 st = bbOrigin + sg1.rg * bbSize;
     float2 en = bbOrigin + float2(sg1.b, sg2.r) * bbSize;
-    minDist = min(minDist, distToSegment(p, st, en));
-    minDist = min(minDist, distance(p, st));
-    minDist = min(minDist, distance(p, en));
+    float2 lo = min(st, en) - bodyRadius;
+    float2 hi = max(st, en) + bodyRadius;
+    if (all(greaterThanEqual(p, lo)) && all(lessThanEqual(p, hi)))
+      minDist = min(minDist, distToSegment(p, st, en));
   }
   float t = minDist / bodyRadius;
   if (t >= 1.0) return float4(0, 0, 0, 0);
@@ -472,6 +473,10 @@ float4 main(float2 coords) {
       float segBwExt, segBhExt, segBoxMinX, segBoxMinY;
       int segNSegs;
 
+      std::vector<int> allIndices(nSegs);
+      for (int i = 0; i < nSegs; ++i)
+        allIndices[i] = i;
+
       if (cached) {
         segImg = cached->image;
         segBwExt = cached->bwExt;
@@ -479,26 +484,30 @@ float4 main(float2 coords) {
         segBoxMinX = cached->boxMinX;
         segBoxMinY = cached->boxMinY;
         segNSegs = cached->nSegs;
-      } else {
-        const float boxMinX = static_cast<float>(minX + radius);
-        const float boxMinY = static_cast<float>(minY + radius);
-        const float invW =
-            static_cast<float>((maxX - radius) - (minX + radius) > 0.0
-                                   ? 1.0 / ((maxX - radius) - (minX + radius))
-                                   : 1.0);
-        const float invH =
-            static_cast<float>((maxY - radius) - (minY + radius) > 0.0
-                                   ? 1.0 / ((maxY - radius) - (minY + radius))
-                                   : 1.0);
-        const int nTexPixels = std::max(4, nSegs * 2);
-        skia::SkBitmap segBmp;
-        const auto segInfo =
-            skia::SkImageInfo::Make(nTexPixels, 1, skia::kRGBA_8888_SkColorType,
-                                    skia::kOpaque_SkAlphaType);
-        if (!segBmp.tryAllocPixels(segInfo))
-          return;
-        segBmp.eraseColor(0x00000000);
-        for (int i = 0; i < nSegs; ++i) {
+      }
+
+      const float boxMinX = static_cast<float>(minX + radius);
+      const float boxMinY = static_cast<float>(minY + radius);
+      const float bwExt =
+          static_cast<float>((maxX - radius) - boxMinX);
+      const float bhExt =
+          static_cast<float>((maxY - radius) - boxMinY);
+      const float invW = bwExt > 0.0f ? 1.0f / bwExt : 1.0f;
+      const float invH = bhExt > 0.0f ? 1.0f / bhExt : 1.0f;
+
+      auto encodeSegs = [&](std::span<const int> segIndices)
+          -> skia::Sp<skia::SkImage> {
+        const int n = static_cast<int>(segIndices.size());
+        if (n < 1) return nullptr;
+        const int nPix = std::max(4, n * 2);
+        skia::SkBitmap bmp;
+        if (!bmp.tryAllocPixels(skia::SkImageInfo::Make(
+                nPix, 1, skia::kRGBA_8888_SkColorType,
+                skia::kOpaque_SkAlphaType)))
+          return nullptr;
+        bmp.eraseColor(0x00000000);
+        for (int j = 0; j < n; ++j) {
+          int i = segIndices[j];
           const std::uint8_t sx = static_cast<std::uint8_t>(std::clamp(
               (static_cast<float>(curve[i].fX) - boxMinX) * invW * 255.f + 0.5f,
               0.f, 255.f));
@@ -513,65 +522,128 @@ float4 main(float2 coords) {
               (static_cast<float>(curve[i + 1].fY) - boxMinY) * invH * 255.f +
                   0.5f,
               0.f, 255.f));
-          *segBmp.getAddr32(i * 2, 0) =
+          *bmp.getAddr32(j * 2, 0) =
               (0xFFu << 24) | (static_cast<std::uint32_t>(ex) << 16) |
               (static_cast<std::uint32_t>(sy) << 8) | sx;
-          *segBmp.getAddr32(i * 2 + 1, 0) =
+          *bmp.getAddr32(j * 2 + 1, 0) =
               (0xFFu << 24) | (0u << 16) | (0u << 8) | ey;
         }
-        auto img = skia::RasterFromBitmap(segBmp);
-        if (!img)
-          return;
-        sBodySegCache[cacheKey] =
-            CachedSeg{img,
-                      nSegs,
-                      boxMinX,
-                      boxMinY,
-                      static_cast<float>((maxX - radius) - boxMinX),
-                      static_cast<float>((maxY - radius) - boxMinY)};
-        segImg = img;
-        segBwExt = static_cast<float>((maxX - radius) - boxMinX);
-        segBhExt = static_cast<float>((maxY - radius) - boxMinY);
-        segBoxMinX = boxMinX;
-        segBoxMinY = boxMinY;
-        segNSegs = nSegs;
+        return skia::RasterFromBitmap(bmp);
+      };
+
+      auto drawTile = [&](float tx, float ty, float tw, float th,
+                          std::span<const int> segIdx) {
+        int nTile = static_cast<int>(segIdx.size());
+        if (nTile < 1) return;
+        auto tileImg = encodeSegs(segIdx);
+        if (!tileImg) return;
+        skia::SkRuntimeEffectBuilder b(sBodyFx);
+        b.uniform("segCount") = static_cast<float>(nTile);
+        b.uniform("bodyRadius") = static_cast<float>(radius);
+        b.uniform("bboxOriginX") = boxMinX;
+        b.uniform("bboxOriginY") = boxMinY;
+        b.uniform("bboxSizeX") = bwExt;
+        b.uniform("bboxSizeY") = bhExt;
+        b.uniform("originX") = tx;
+        b.uniform("originY") = ty;
+        b.child("gradientTex") = texture->makeShader(
+            skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
+            skia::SkSamplingOptions(skia::SkFilterMode::kLinear));
+        b.child("segTex") = tileImg->makeShader(
+            skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
+            skia::SkSamplingOptions(skia::SkFilterMode::kNearest));
+        skia::SkPaint p;
+        p.setShader(b.makeShader());
+        p.setAntiAlias(true);
+        p.setAlphaf(bodyAlpha);
+        canvas->save();
+        canvas->translate(tx, ty);
+        canvas->drawRect(
+            skia::SkRect::MakeXYWH(0, 0, tw, th), p);
+        canvas->restore();
+      };
+
+      constexpr int kMaxPerTile = 48;
+      bool tiled = false;
+      if (!cached && nSegs > kMaxPerTile) {
+        const float tileW =
+            std::max(64.0f, static_cast<float>(bw) * std::sqrt(
+                static_cast<float>(kMaxPerTile) / static_cast<float>(nSegs)));
+        const float tileH =
+            std::max(64.0f, static_cast<float>(bh) * std::sqrt(
+                static_cast<float>(kMaxPerTile) / static_cast<float>(nSegs)));
+        std::vector<int> tileSegs;
+        tileSegs.reserve(nSegs);
+        for (float ty = static_cast<float>(minY);
+             ty < static_cast<float>(maxY); ty += tileH) {
+          for (float tx = static_cast<float>(minX);
+               tx < static_cast<float>(maxX); tx += tileW) {
+            const float tex = tx + tileW;
+            const float tey = ty + tileH;
+            tileSegs.clear();
+            for (int i = 0; i < nSegs; ++i) {
+              float sx = static_cast<float>(curve[i].fX);
+              float sy = static_cast<float>(curve[i].fY);
+              float ex2 = static_cast<float>(curve[i + 1].fX);
+              float ey2 = static_cast<float>(curve[i + 1].fY);
+              float sloX = std::min(sx, ex2) - static_cast<float>(radius);
+              float shiX = std::max(sx, ex2) + static_cast<float>(radius);
+              float sloY = std::min(sy, ey2) - static_cast<float>(radius);
+              float shiY = std::max(sy, ey2) + static_cast<float>(radius);
+              if (sloX < tex && shiX > tx && sloY < tey && shiY > ty)
+                tileSegs.push_back(i);
+            }
+            drawTile(tx, ty, std::min(tex, static_cast<float>(maxX)) - tx,
+                     std::min(tey, static_cast<float>(maxY)) - ty, tileSegs);
+          }
+        }
+        tiled = true;
       }
 
-      skia::SkRuntimeEffectBuilder builder(sBodyFx);
-      builder.uniform("segCount") = static_cast<float>(segNSegs);
-      builder.uniform("bodyRadius") = static_cast<float>(radius);
-      builder.uniform("bboxOriginX") = segBoxMinX;
-      builder.uniform("bboxOriginY") = segBoxMinY;
-      builder.uniform("bboxSizeX") = segBwExt;
-      builder.uniform("bboxSizeY") = segBhExt;
-      builder.uniform("originX") = static_cast<float>(minX);
-      builder.uniform("originY") = static_cast<float>(minY);
-      builder.child("gradientTex") = texture->makeShader(
-          skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
-          skia::SkSamplingOptions(skia::SkFilterMode::kLinear));
-      builder.child("segTex") = segImg->makeShader(
-          skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
-          skia::SkSamplingOptions(skia::SkFilterMode::kNearest));
+      if (!tiled) {
+        if (!cached) {
+          segImg = encodeSegs(allIndices);
+          if (!segImg) return;
 
-      {
-        static int frame = 0;
-        if (++frame == 1) {
-          std::println("slider[{}]: nSegs={} radius={:.1f} "
-                       "rct=({:.0f},{:.0f})-({:.0f},{:.0f}) alpha={:.2f}",
-                       index, nSegs, radius, minX, minY, maxX, maxY, bodyAlpha);
+          sBodySegCache[cacheKey] = CachedSeg{
+              segImg, nSegs, boxMinX, boxMinY, bwExt, bhExt};
+          segBwExt = bwExt;
+          segBhExt = bhExt;
+          segBoxMinX = boxMinX;
+          segBoxMinY = boxMinY;
+          segNSegs = nSegs;
+        }
+
+        {
+          skia::SkRuntimeEffectBuilder builder(sBodyFx);
+          builder.uniform("segCount") = static_cast<float>(segNSegs);
+          builder.uniform("bodyRadius") = static_cast<float>(radius);
+          builder.uniform("bboxOriginX") = segBoxMinX;
+          builder.uniform("bboxOriginY") = segBoxMinY;
+          builder.uniform("bboxSizeX") = segBwExt;
+          builder.uniform("bboxSizeY") = segBhExt;
+          builder.uniform("originX") = static_cast<float>(minX);
+          builder.uniform("originY") = static_cast<float>(minY);
+          builder.child("gradientTex") = texture->makeShader(
+              skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
+              skia::SkSamplingOptions(skia::SkFilterMode::kLinear));
+          builder.child("segTex") = segImg->makeShader(
+              skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
+              skia::SkSamplingOptions(skia::SkFilterMode::kNearest));
+
+          skia::SkPaint bodyPaint;
+          bodyPaint.setShader(builder.makeShader());
+          bodyPaint.setAntiAlias(true);
+          bodyPaint.setAlphaf(bodyAlpha);
+          canvas->save();
+          canvas->translate(static_cast<float>(minX), static_cast<float>(minY));
+          canvas->drawRect(skia::SkRect::MakeXYWH(0, 0,
+                                                   static_cast<float>(bw),
+                                                   static_cast<float>(bh)),
+                           bodyPaint);
+          canvas->restore();
         }
       }
-
-      skia::SkPaint bodyPaint;
-      bodyPaint.setShader(builder.makeShader());
-      bodyPaint.setAntiAlias(true);
-      bodyPaint.setAlphaf(bodyAlpha);
-      canvas->save();
-      canvas->translate(static_cast<float>(minX), static_cast<float>(minY));
-      canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, static_cast<float>(bw),
-                                               static_cast<float>(bh)),
-                       bodyPaint);
-      canvas->restore();
     }
 
     // Slider ticks.
