@@ -192,4 +192,145 @@ TEST(Stars, LazerTestBeatmaps) {
   }
 }
 
+TEST(SliderBody, CuspDetection) {
+  // The user's problematic 18-point slider with duplicate anchors.
+  const std::vector<Vec2> ctrl{
+      {451, 8},   {405, -31}, {349, -10}, {325, 35},  {322, 63},  {334, 106},
+      {371, 132}, {413, 136}, {445, 117}, {465, 90},  {465, 90},  {438, 142},
+      {441, 173}, {460, 210}, {460, 210}, {475, 235}, {475, 276}, {465, 306},
+  };
+  SliderPath path(curve::Bezier{}, std::span{ctrl}, 540.8);
+  const auto pts = path.points();
+
+  // Verify the path has the expected number of points.
+  ASSERT_GE(pts.size(), 2u);
+
+  // Build segments and check for cusp-like direction reversals.
+  struct Seg {
+    Vec2 u;
+    Vec2 n;
+    double len;
+  };
+  std::vector<Seg> segs;
+  for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
+    double dx = pts[i + 1].fX - pts[i].fX;
+    double dy = pts[i + 1].fY - pts[i].fY;
+    double l = std::hypot(dx, dy);
+    if (l > 1e-6)
+      segs.push_back({{dx / l, dy / l}, {-dy / l, dx / l}, l});
+    else
+      segs.push_back({{1, 0}, {0, 1}, 0});
+  }
+
+  // Check adjacent-segment dot product (local cusp).
+  double minAdjDot = 1.0;
+  // Check spatial dot product at ~10 px distance.
+  double minSpatialDot = 1.0;
+  for (std::size_t i = 1; i + 1 < segs.size(); ++i) {
+    double adjDot =
+        segs[i - 1].u.fX * segs[i].u.fX + segs[i - 1].u.fY * segs[i].u.fY;
+    if (adjDot < minAdjDot)
+      minAdjDot = adjDot;
+
+    // Walk backward and forward ~10 px.
+    double db = 0.0, df = 0.0;
+    std::size_t wb = 1, wf = 1;
+    while (i >= wb && db < 10.0 && wb < 2000) {
+      db += segs[i - wb].len;
+      ++wb;
+    }
+    while (i + wf < segs.size() && df < 10.0 && wf < 2000) {
+      df += segs[i + wf - 1].len;
+      ++wf;
+    }
+    if (wb > 1 && wf > 1) {
+      double d = segs[i - (wb - 1)].u.fX * segs[i + (wf - 1) - 1].u.fX +
+                 segs[i - (wb - 1)].u.fY * segs[i + (wf - 1) - 1].u.fY;
+      if (d < minSpatialDot)
+        minSpatialDot = d;
+    }
+  }
+
+  // Print diagnostics.
+  std::println("path points = {}", pts.size());
+  std::println("segs = {}", segs.size());
+  std::println("minAdjDot = {}", minAdjDot);
+  std::println("minSpatialDot = {}", minSpatialDot);
+  // Search ALL window sizes for the minimum dot product.
+  double bestSpatial = 1.0;
+  std::size_t bestI = 0;
+  for (std::size_t i = 1; i + 1 < segs.size(); ++i) {
+    for (int w = 1; i >= static_cast<std::size_t>(w) && i + w < segs.size();
+         ++w) {
+      double d = segs[i - w].u.fX * segs[i + w - 1].u.fX +
+                 segs[i - w].u.fY * segs[i + w - 1].u.fY;
+      if (d < bestSpatial) {
+        bestSpatial = d;
+        bestI = i;
+      }
+      if (w >= 500)
+        break;
+    }
+  }
+  std::println("best spatial dot = {} at joint {}", bestSpatial, bestI);
+  // Also report the distance at the best match.
+  {
+    double db = 0.0, df = 0.0;
+    std::size_t wb = 1, wf = 1;
+    while (bestI >= wb && db < 100.0 && wb < 2000) {
+      db += segs[bestI - wb].len;
+      if (wb > 1) {
+        double d = segs[bestI - wb].u.fX * segs[bestI + wb - 1].u.fX +
+                   segs[bestI - wb].u.fY * segs[bestI + wb - 1].u.fY;
+        if (d < -0.5)
+          break;
+      }
+      ++wb;
+    }
+    wf = wb;
+    while (bestI + wf < segs.size() && df < 100.0 && wf < 2000) {
+      df += segs[bestI + wf - 1].len;
+      ++wf;
+    }
+    std::println("  at dist back={:.1f} fwd={:.1f} (w={})", db, df, wb);
+  }
+
+  constexpr double kRadius = 50.0;
+  if (bestSpatial < -0.9) {
+    std::println("CUSP DETECTED at joint {}", bestI);
+
+    // Incoming quad end (side 1): curve[bestI] + n_in
+    // Outgoing quad start (side 1): curve[bestI] + n_out
+    const auto &a = segs[bestI - 1];
+    const auto &b = segs[bestI];
+    Vec2 inSide1 = {pts[bestI].fX + a.n.fX * kRadius,
+                    pts[bestI].fY + a.n.fY * kRadius};
+    Vec2 outSide1 = {pts[bestI].fX + b.n.fX * kRadius,
+                     pts[bestI].fY + b.n.fY * kRadius};
+    std::println("  incoming side1 end = ({:.1f}, {:.1f})  dir = ({:.3f}, "
+                 "{:.3f})  n = ({:.1f}, {:.1f})",
+                 inSide1.fX, inSide1.fY, a.u.fX, a.u.fY, a.n.fX * kRadius,
+                 a.n.fY * kRadius);
+    std::println("  outgoing side1 start = ({:.1f}, {:.1f})  dir = ({:.3f}, "
+                 "{:.3f})  n = ({:.1f}, {:.1f})",
+                 outSide1.fX, outSide1.fY, b.u.fX, b.u.fY, b.n.fX * kRadius,
+                 b.n.fY * kRadius);
+
+    // After the cusp clip (both using incoming normal):
+    // Incoming keeps: P·u_in <= 0. Outgoing keeps: P·u_in >= 0.
+    Vec2 refDir = a.u; // incoming direction
+    double inDot = (inSide1.fX - pts[bestI].fX) * refDir.fX +
+                   (inSide1.fY - pts[bestI].fY) * refDir.fY;
+    double outDot = (outSide1.fX - pts[bestI].fX) * refDir.fX +
+                    (outSide1.fY - pts[bestI].fY) * refDir.fY;
+    std::println("  (P-J)·u_in  in={:.3f}  out={:.3f}", inDot, outDot);
+    std::println("  incoming on side: {}", inDot <= 0 ? "before" : "after");
+    std::println("  outgoing on side: {}", outDot >= 0 ? "after" : "before");
+    ASSERT_LE(inDot, 0.0) << "incoming quad should be clipped to 'before'";
+    ASSERT_GE(outDot, 0.0) << "outgoing quad should be clipped to 'after'";
+  } else {
+    std::println("NO CUSP DETECTED (best spatial dot = {:.3f})", bestSpatial);
+  }
+}
+
 } // namespace osu

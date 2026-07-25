@@ -345,12 +345,11 @@ public:
     if (bodyAlpha <= 0.0f)
       return;
 
-    // Slider body: triangle mesh over the path centerline. Inside joints
-    // are mitered only while the miter stays inside the body; at sharper
-    // turns the adjacent quads are clipped against the segment bisector so
-    // the body never spikes and never double-blends at sharp corners.
+    // Slider body: per-pixel distance-field shader over the full bounding
+    // box. The shader computes the minimum distance from each pixel to all
+    // centerline segments and uses it to index into the 1D gradient texture.
+    // Overlaps are resolved naturally (no double-blending).
     if (auto texture = this->sliderTexture(tint); texture && !points.empty()) {
-      // Filter duplicate points.
       std::vector<osu::Vec2> curve;
       curve.reserve(points.size());
       for (std::size_t i = 0; i < points.size(); ++i) {
@@ -364,286 +363,215 @@ public:
       if (curve.size() < 2)
         return;
 
-      const std::size_t m = curve.size();
-      struct Seg {
-        osu::Vec2 u;
-        osu::Vec2 n;
-        double len;
-      };
-      std::vector<Seg> segs;
-      segs.reserve(m - 1);
-      for (std::size_t i = 0; i + 1 < m; ++i) {
-        const double dx = curve[i + 1].fX - curve[i].fX;
-        const double dy = curve[i + 1].fY - curve[i].fY;
-        const double len = std::hypot(dx, dy);
-        if (len > 1e-6) {
-          segs.push_back({{dx / len, dy / len},
-                          {-dy / len * radius, dx / len * radius},
-                          len});
-        } else {
-          segs.push_back({{1.0, 0.0}, {0.0, radius}, 0.0});
-        }
+      const int nSegs = static_cast<int>(curve.size()) - 1;
+      constexpr int kMaxSegs = 512;
+      if (nSegs < 1 || nSegs > kMaxSegs)
+        return;
+
+      double minX = curve[0].fX, maxX = curve[0].fX;
+      double minY = curve[0].fY, maxY = curve[0].fY;
+      for (const auto &p : curve) {
+        minX = std::min(minX, p.fX);
+        maxX = std::max(maxX, p.fX);
+        minY = std::min(minY, p.fY);
+        maxY = std::max(maxY, p.fY);
       }
+      minX -= radius;
+      maxX += radius;
+      minY -= radius;
+      maxY += radius;
+      const double bw = maxX - minX;
+      const double bh = maxY - minY;
+      if (bw <= 0.0 || bh <= 0.0)
+        return;
 
-      auto pointSegDist = [](const osu::Vec2 &p, const osu::Vec2 &a,
-                             const osu::Vec2 &b) {
-        const double dx = b.fX - a.fX;
-        const double dy = b.fY - a.fY;
-        const double lenSq = dx * dx + dy * dy;
-        double t = 0.0;
-        if (lenSq > 0.0) {
-          t = std::clamp(((p.fX - a.fX) * dx + (p.fY - a.fY) * dy) / lenSq, 0.0,
-                         1.0);
-        }
-        return std::hypot(p.fX - (a.fX + t * dx), p.fY - (a.fY + t * dy));
-      };
+static const skia::Sp<skia::SkRuntimeEffect> sBodyFx =
+    []() -> skia::Sp<skia::SkRuntimeEffect> {
+  constexpr const char *kSL = R"(
+uniform shader gradientTex;
+uniform shader segTex;
+uniform float segCount;
+uniform float bboxOriginX;
+uniform float bboxOriginY;
+uniform float bboxSizeX;
+uniform float bboxSizeY;
+uniform float bodyRadius;
+uniform float originX;
+uniform float originY;
 
-      struct Joint {
-        double cross;
-        double dot;
-        osu::Vec2 miter;
-        bool useMiter;
-        osu::Vec2 bis;
-        bool clip;
-      };
-      std::vector<Joint> joints(m);
-      for (std::size_t i = 1; i + 1 < m; ++i) {
-        const auto &a = segs[i - 1];
-        const auto &b = segs[i];
-        const double dot = a.u.fX * b.u.fX + a.u.fY * b.u.fY;
-        const double cross = a.u.fX * b.u.fY - b.u.fX * a.u.fY;
-        const double denom = 1.0 + dot;
-        // The mitered inside corner sits radius*tan(turn/2) back along the
-        // segments and radius/cos(turn/2) away from the joint, which blows
-        // up for sharp turns. Use it only when it stays inside the slider
-        // body; otherwise clip the inside edges at the joint perpendiculars
-        // so no spike triangles shoot outside the body.
-        bool useMiter = denom > 1e-6;
-        osu::Vec2 miter = a.n;
-        if (useMiter) {
-          miter = {(a.n.fX + b.n.fX) / denom, (a.n.fY + b.n.fY) / denom};
-          const double miterRun = radius * std::abs(cross) / denom;
-          if (miterRun > a.len || miterRun > b.len) {
-            const osu::Vec2 tip =
-                cross > 0.0 ? curve[i] + miter : curve[i] - miter;
-            useMiter = false;
-            const std::size_t lo = i >= 2 ? i - 2 : 0;
-            const std::size_t hi = std::min(i + 1, m - 2);
-            for (std::size_t k = lo; k <= hi && !useMiter; ++k) {
-              if (pointSegDist(tip, curve[k], curve[k + 1]) <= radius + 0.5) {
-                useMiter = true;
-              }
-            }
+float distToSegment(float2 p, float2 a, float2 b) {
+  float2 ab  = b - a;
+  float2 ap  = p - a;
+  float  t   = clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0);
+  return distance(p, a + t * ab);
+}
+
+float4 main(float2 coords) {
+  float2 p = coords + float2(originX, originY);
+  float minDist   = 1e10;
+  int   count     = int(segCount);
+  float2 bbOrigin = float2(bboxOriginX, bboxOriginY);
+  float2 bbSize   = float2(bboxSizeX, bboxSizeY);
+  for (int i = 0; i < 512; i++) {
+    if (i >= count) break;
+    float2 uv1 = float2(float(i * 2) + 0.5, 0.5);
+    float2 uv2 = float2(float(i * 2 + 1) + 0.5, 0.5);
+    float4 sg1 = segTex.eval(uv1);
+    float4 sg2 = segTex.eval(uv2);
+    float2 st = bbOrigin + sg1.rg * bbSize;
+    float2 en = bbOrigin + float2(sg1.b, sg2.r) * bbSize;
+    minDist = min(minDist, distToSegment(p, st, en));
+    minDist = min(minDist, distance(p, st));
+    minDist = min(minDist, distance(p, en));
+  }
+  float t = minDist / bodyRadius;
+  if (t >= 1.0) return float4(0, 0, 0, 0);
+  return gradientTex.eval(float2(t * 199.0, 0.5));
+}
+)";
+        auto [effect, err] =
+            skia::SkRuntimeEffect::MakeForShader(skia::SkString(kSL));
+        if (!effect) {
+          static bool once = false;
+          if (!once) {
+            once = true;
+            std::println("Slider shader compile error: {}", err.c_str());
           }
         }
-        // Without a miter the two adjacent quads overlap in the lens
-        // between the segments and the texture double-blends there.
-        // Partition the lens along the angle bisector of the two segment
-        // lines (the equidistance line, over which the distance-based
-        // texture is continuous): each quad keeps the half closer to its
-        // own segment.
-        osu::Vec2 bis{0.0, 0.0};
-        const osu::Vec2 dbis{a.u.fX - b.u.fX, a.u.fY - b.u.fY};
-        const double bisLen = dbis.length();
-        const bool clip = !useMiter && bisLen > 1e-6 && std::abs(cross) > 1e-6;
-        if (clip) {
-          bis = dbis / bisLen;
+        return effect;
+      }();
+
+      if (!sBodyFx) {
+        static bool once = false;
+        if (!once) {
+          once = true;
+          std::println("Slider shader is null, falling back");
         }
-        joints[i] = {cross, dot, miter, useMiter, bis, clip};
+        return;
       }
 
-      auto side1Start = [&](std::size_t i) -> osu::Vec2 {
-        if (i == 0)
-          return {curve[0].fX + segs[0].n.fX, curve[0].fY + segs[0].n.fY};
-        const auto &j = joints[i];
-        if (j.useMiter && j.cross > 0.0)
-          return {curve[i].fX + j.miter.fX, curve[i].fY + j.miter.fY};
-        return {curve[i].fX + segs[i].n.fX, curve[i].fY + segs[i].n.fY};
+      // Build RGBA8 segment texture: 2 pixels per segment, kOpaque.
+      // Cached segment texture and bbox uniforms.
+      struct CachedSeg {
+        skia::Sp<skia::SkImage> image;
+        int nSegs;
+        float boxMinX, boxMinY;
+        float bwExt, bhExt;
       };
-      auto side2Start = [&](std::size_t i) -> osu::Vec2 {
-        if (i == 0)
-          return {curve[0].fX - segs[0].n.fX, curve[0].fY - segs[0].n.fY};
-        const auto &j = joints[i];
-        if (j.useMiter && j.cross < 0.0)
-          return {curve[i].fX - j.miter.fX, curve[i].fY - j.miter.fY};
-        return {curve[i].fX - segs[i].n.fX, curve[i].fY - segs[i].n.fY};
-      };
-      auto side1End = [&](std::size_t i) -> osu::Vec2 {
-        const std::size_t k = i + 1;
-        if (k + 1 == m)
-          return {curve[k].fX + segs[i].n.fX, curve[k].fY + segs[i].n.fY};
-        const auto &j = joints[k];
-        if (j.useMiter && j.cross > 0.0)
-          return {curve[k].fX + j.miter.fX, curve[k].fY + j.miter.fY};
-        return {curve[k].fX + segs[i].n.fX, curve[k].fY + segs[i].n.fY};
-      };
-      auto side2End = [&](std::size_t i) -> osu::Vec2 {
-        const std::size_t k = i + 1;
-        if (k + 1 == m)
-          return {curve[k].fX - segs[i].n.fX, curve[k].fY - segs[i].n.fY};
-        const auto &j = joints[k];
-        if (j.useMiter && j.cross < 0.0)
-          return {curve[k].fX - j.miter.fX, curve[k].fY - j.miter.fY};
-        return {curve[k].fX - segs[i].n.fX, curve[k].fY - segs[i].n.fY};
-      };
+      const auto cacheKey = static_cast<std::uint64_t>(index) << 32 |
+                            static_cast<std::uint64_t>(cs * 100.0);
+      static std::unordered_map<std::uint64_t, CachedSeg> sBodySegCache;
+      auto *cached = [&]() -> CachedSeg * {
+        auto it = sBodySegCache.find(cacheKey);
+        if (it != sBodySegCache.end())
+          return &it->second;
+        return nullptr;
+      }();
 
-      std::vector<osu::Vec2> vpos;
-      std::vector<skia::SkPoint> vtexs;
-      std::vector<std::uint16_t> indices;
-      vpos.reserve(curve.size() * 8 + 64 * 3);
-      vtexs.reserve(vpos.capacity());
+      skia::Sp<skia::SkImage> segImg;
+      float segBwExt, segBhExt, segBoxMinX, segBoxMinY;
+      int segNSegs;
 
-      const float texW = static_cast<float>(texture->width());
-      auto pushVertD = [&](const osu::Vec2 &p, double d) {
-        vpos.push_back(p);
-        vtexs.push_back(
-            {static_cast<float>(std::clamp(d, 0.0, 1.0) * texW), 0.5f});
-      };
-
-      // Clips a convex polygon to the half-plane where side(P)*keepSign >= 0.
-      auto clipByBisector = [&](std::vector<osu::Vec2> &poly,
-                                const osu::Vec2 &J, const osu::Vec2 &dir,
-                                double keepSign) {
-        std::vector<osu::Vec2> out;
-        out.reserve(poly.size() + 2);
-        auto side = [&](const osu::Vec2 &P) {
-          return (dir.fX * (P.fY - J.fY) - dir.fY * (P.fX - J.fX)) * keepSign;
-        };
-        for (std::size_t a = 0, na = poly.size(); a < na; ++a) {
-          const osu::Vec2 &A = poly[a];
-          const osu::Vec2 &B = poly[(a + 1) % na];
-          const double sa = side(A);
-          const double sb = side(B);
-          if (sa >= 0.0)
-            out.push_back(A);
-          if ((sa < 0.0) != (sb < 0.0)) {
-            const double t = sa / (sa - sb);
-            out.push_back(A.lerp(B, t));
-          }
-        }
-        poly = std::move(out);
-      };
-
-      // Emits a convex polygon as a triangle fan. The texture coordinate is
-      // the perpendicular distance to the segment line, so it stays
-      // continuous across bisector partitions.
-      auto emitPoly = [&](const std::vector<osu::Vec2> &poly, const Seg &seg,
-                          const osu::Vec2 &c0) {
-        if (poly.size() < 3)
+      if (cached) {
+        segImg = cached->image;
+        segBwExt = cached->bwExt;
+        segBhExt = cached->bhExt;
+        segBoxMinX = cached->boxMinX;
+        segBoxMinY = cached->boxMinY;
+        segNSegs = cached->nSegs;
+      } else {
+        const float boxMinX = static_cast<float>(minX + radius);
+        const float boxMinY = static_cast<float>(minY + radius);
+        const float invW =
+            static_cast<float>((maxX - radius) - (minX + radius) > 0.0
+                                   ? 1.0 / ((maxX - radius) - (minX + radius))
+                                   : 1.0);
+        const float invH =
+            static_cast<float>((maxY - radius) - (minY + radius) > 0.0
+                                   ? 1.0 / ((maxY - radius) - (minY + radius))
+                                   : 1.0);
+        const int nTexPixels = std::max(4, nSegs * 2);
+        skia::SkBitmap segBmp;
+        const auto segInfo =
+            skia::SkImageInfo::Make(nTexPixels, 1, skia::kRGBA_8888_SkColorType,
+                                    skia::kOpaque_SkAlphaType);
+        if (!segBmp.tryAllocPixels(segInfo))
           return;
-        const std::uint16_t base = static_cast<std::uint16_t>(vpos.size());
-        for (const osu::Vec2 &p : poly) {
-          const double d =
-              std::abs(seg.u.fX * (p.fY - c0.fY) - seg.u.fY * (p.fX - c0.fX)) /
-              radius;
-          pushVertD(p, d);
+        segBmp.eraseColor(0x00000000);
+        for (int i = 0; i < nSegs; ++i) {
+          const std::uint8_t sx = static_cast<std::uint8_t>(std::clamp(
+              (static_cast<float>(curve[i].fX) - boxMinX) * invW * 255.f + 0.5f,
+              0.f, 255.f));
+          const std::uint8_t sy = static_cast<std::uint8_t>(std::clamp(
+              (static_cast<float>(curve[i].fY) - boxMinY) * invH * 255.f + 0.5f,
+              0.f, 255.f));
+          const std::uint8_t ex = static_cast<std::uint8_t>(std::clamp(
+              (static_cast<float>(curve[i + 1].fX) - boxMinX) * invW * 255.f +
+                  0.5f,
+              0.f, 255.f));
+          const std::uint8_t ey = static_cast<std::uint8_t>(std::clamp(
+              (static_cast<float>(curve[i + 1].fY) - boxMinY) * invH * 255.f +
+                  0.5f,
+              0.f, 255.f));
+          *segBmp.getAddr32(i * 2, 0) =
+              (0xFFu << 24) | (static_cast<std::uint32_t>(ex) << 16) |
+              (static_cast<std::uint32_t>(sy) << 8) | sx;
+          *segBmp.getAddr32(i * 2 + 1, 0) =
+              (0xFFu << 24) | (0u << 16) | (0u << 8) | ey;
         }
-        for (std::size_t k = 1; k + 1 < poly.size(); ++k) {
-          indices.insert(indices.end(),
-                         {base, static_cast<std::uint16_t>(base + k),
-                          static_cast<std::uint16_t>(base + k + 1)});
-        }
-      };
-
-      // Emits a fan of the body radius around C sweeping CCW from theta1.
-      auto emitFan = [&](const osu::Vec2 &C, double theta1, double theta2) {
-        if (theta1 > theta2)
-          theta2 += 2.0 * std::numbers::pi;
-        const double theta = theta2 - theta1;
-        const int divs =
-            std::max(1, static_cast<int>(std::ceil(64.0 * std::abs(theta) /
-                                                   (2.0 * std::numbers::pi))));
-        const std::uint16_t cIdx = static_cast<std::uint16_t>(vpos.size());
-        pushVertD(C, 0.0);
-        std::uint16_t prev = cIdx;
-        for (int j = 0; j <= divs; ++j) {
-          const double angle = theta1 + theta * j / divs;
-          pushVertD({C.fX + std::cos(angle) * radius,
-                     C.fY + std::sin(angle) * radius},
-                    1.0);
-          const std::uint16_t cur = static_cast<std::uint16_t>(vpos.size() - 1);
-          if (j > 0)
-            indices.insert(indices.end(), {cIdx, prev, cur});
-          prev = cur;
-        }
-      };
-      auto angleOf = [](const osu::Vec2 &v) { return std::atan2(v.fY, v.fX); };
-
-      // Segment quads, clipped against the bisectors of adjacent invalid
-      // joints so overlapping lenses are partitioned instead of drawn twice.
-      for (std::size_t i = 0; i + 1 < m; ++i) {
-        for (int side = 0; side < 2; ++side) {
-          std::vector<osu::Vec2> poly;
-          if (side == 0)
-            poly = {curve[i], side1Start(i), side1End(i), curve[i + 1]};
-          else
-            poly = {curve[i], side2Start(i), side2End(i), curve[i + 1]};
-          if (i >= 1 && joints[i].clip) {
-            const osu::Vec2 dir = joints[i].bis;
-            const double keep =
-                (dir.fX * segs[i].u.fY - dir.fY * segs[i].u.fX) >= 0.0 ? 1.0
-                                                                       : -1.0;
-            clipByBisector(poly, curve[i], dir, keep);
-          }
-          if (i + 2 < m && joints[i + 1].clip) {
-            const osu::Vec2 dir = joints[i + 1].bis;
-            const double keep =
-                (dir.fX * segs[i].u.fY - dir.fY * segs[i].u.fX) >= 0.0 ? -1.0
-                                                                       : 1.0;
-            clipByBisector(poly, curve[i + 1], dir, keep);
-          }
-          emitPoly(poly, segs[i], curve[i]);
-        }
+        auto img = skia::RasterFromBitmap(segBmp);
+        if (!img)
+          return;
+        sBodySegCache[cacheKey] =
+            CachedSeg{img,
+                      nSegs,
+                      boxMinX,
+                      boxMinY,
+                      static_cast<float>((maxX - radius) - boxMinX),
+                      static_cast<float>((maxY - radius) - boxMinY)};
+        segImg = img;
+        segBwExt = static_cast<float>((maxX - radius) - boxMinX);
+        segBhExt = static_cast<float>((maxY - radius) - boxMinY);
+        segBoxMinX = boxMinX;
+        segBoxMinY = boxMinY;
+        segNSegs = nSegs;
       }
 
-      // Start cap.
-      emitFan(curve[0], angleOf(segs[0].n),
-              angleOf(segs[0].n) + std::numbers::pi);
-      // End cap.
-      emitFan(curve[m - 1], angleOf(segs[m - 2].n) + std::numbers::pi,
-              angleOf(segs[m - 2].n) + 2.0 * std::numbers::pi);
-      // Joint arcs fill the wedge outside the turn that neither segment
-      // quad covers. The inside of the turn is always covered by the quads
-      // themselves, so it never needs an arc.
-      for (std::size_t i = 1; i + 1 < m; ++i) {
-        const auto &a = segs[i - 1];
-        const auto &b = segs[i];
-        if (joints[i].cross > 0.0 ||
-            (joints[i].cross == 0.0 && joints[i].dot < 0.0)) {
-          emitFan(curve[i], angleOf(a.n) + std::numbers::pi,
-                  angleOf(b.n) + std::numbers::pi);
-        } else if (joints[i].cross < 0.0) {
-          emitFan(curve[i], angleOf(b.n), angleOf(a.n));
+      skia::SkRuntimeEffectBuilder builder(sBodyFx);
+      builder.uniform("segCount") = static_cast<float>(segNSegs);
+      builder.uniform("bodyRadius") = static_cast<float>(radius);
+      builder.uniform("bboxOriginX") = segBoxMinX;
+      builder.uniform("bboxOriginY") = segBoxMinY;
+      builder.uniform("bboxSizeX") = segBwExt;
+      builder.uniform("bboxSizeY") = segBhExt;
+      builder.uniform("originX") = static_cast<float>(minX);
+      builder.uniform("originY") = static_cast<float>(minY);
+      builder.child("gradientTex") = texture->makeShader(
+          skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
+          skia::SkSamplingOptions(skia::SkFilterMode::kLinear));
+      builder.child("segTex") = segImg->makeShader(
+          skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
+          skia::SkSamplingOptions(skia::SkFilterMode::kNearest));
+
+      {
+        static int frame = 0;
+        if (++frame == 1) {
+          std::println("slider[{}]: nSegs={} radius={:.1f} "
+                       "rct=({:.0f},{:.0f})-({:.0f},{:.0f}) alpha={:.2f}",
+                       index, nSegs, radius, minX, minY, maxX, maxY, bodyAlpha);
         }
       }
-
-      std::vector<skia::SkPoint> verts;
-      std::vector<skia::SkPoint> texs;
-      verts.reserve(vpos.size());
-      texs.reserve(vpos.size());
-      for (std::size_t i = 0; i < vpos.size(); ++i) {
-        verts.push_back(
-            {static_cast<float>(vpos[i].fX), static_cast<float>(vpos[i].fY)});
-        texs.push_back(vtexs[i]);
-      }
-
-      std::vector<skia::SkColor> colors;
-      colors.assign(verts.size(), skia::colorSetARGB(static_cast<std::uint8_t>(
-                                                         bodyAlpha * 255.0f),
-                                                     255, 255, 255));
 
       skia::SkPaint bodyPaint;
-      bodyPaint.setShader(texture->makeShader(
-          skia::SkTileMode::kClamp, skia::SkTileMode::kClamp,
-          skia::SkSamplingOptions(skia::SkFilterMode::kLinear)));
-      bodyPaint.setColor(skia::kWhite);
+      bodyPaint.setShader(builder.makeShader());
       bodyPaint.setAntiAlias(true);
-
-      skia::Sp<skia::SkVertices> vertices = skia::SkVertices::MakeCopy(
-          skia::SkVertices::kTriangles_VertexMode, verts.size(), verts.data(),
-          texs.data(), colors.data(), indices.size(), indices.data());
-      canvas->drawVertices(vertices.get(), skia::SkBlendMode::kModulate,
-                           bodyPaint);
+      bodyPaint.setAlphaf(bodyAlpha);
+      canvas->save();
+      canvas->translate(static_cast<float>(minX), static_cast<float>(minY));
+      canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, static_cast<float>(bw),
+                                               static_cast<float>(bh)),
+                       bodyPaint);
+      canvas->restore();
     }
 
     // Slider ticks.
@@ -976,7 +904,9 @@ private:
     constexpr double borderA = 1.0;
 
     skia::SkBitmap bitmap;
-    const skia::SkImageInfo info = skia::SkImageInfo::MakeN32Premul(kWidth, 1);
+    constexpr int kGradH = 4;
+    const skia::SkImageInfo info =
+        skia::SkImageInfo::MakeN32Premul(kWidth, kGradH);
     if (!bitmap.tryAllocPixels(info))
       return nullptr;
 
@@ -1022,7 +952,9 @@ private:
           static_cast<std::uint8_t>(std::clamp(G * 255.0, 0.0, 255.0));
       const std::uint8_t b =
           static_cast<std::uint8_t>(std::clamp(B * 255.0, 0.0, 255.0));
-      *bitmap.getAddr32(x, 0) = skia::colorSetARGB(a, r, g, b);
+      const auto pix = skia::colorSetARGB(a, r, g, b);
+      for (int y = 0; y < kGradH; ++y)
+        *bitmap.getAddr32(x, y) = pix;
     }
 
     skia::Sp<skia::SkImage> image = skia::RasterFromBitmap(bitmap);

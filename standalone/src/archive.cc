@@ -31,7 +31,9 @@ private:
   bool fActive = true;
 };
 
-template <class F> ScopeGuard<F> scopeGuard(F f) { return ScopeGuard<F>(std::move(f)); }
+template <class F> ScopeGuard<F> scopeGuard(F f) {
+  return ScopeGuard<F>(std::move(f));
+}
 
 inline std::string toLower(std::string_view s) {
   std::string out(s);
@@ -123,7 +125,8 @@ readOsz(const std::filesystem::path &path) {
 
 } // namespace detail
 
-export [[nodiscard]] inline osu::BeatmapSet loadBeatmapSet(const std::filesystem::path &path) {
+export [[nodiscard]] inline osu::BeatmapSet
+loadBeatmapSet(const std::filesystem::path &path) {
   if (!std::filesystem::exists(path)) {
     throw std::runtime_error{"beatmap path does not exist: " + path.string()};
   }
@@ -157,10 +160,10 @@ export [[nodiscard]] inline osu::BeatmapSet loadBeatmapSet(const std::filesystem
       try {
         const std::string text(bytes.begin(), bytes.end());
         const osu::Beatmap bm = osu::loadBeatmap(text);
-    auto info = osu::buildBeatmapInfo(name, bm);
-    info.fStars = osu::calculateStars(bm).fTotal;
-    std::println("{} -> {:.2f}*", info.fMeta.fVersion, info.fStars);
-    set.fBeatmaps.push_back(std::move(info));
+        auto info = osu::buildBeatmapInfo(name, bm);
+        info.fStars = osu::calculateStars(bm).fTotal;
+        std::println("{} -> {:.2f}*", info.fMeta.fVersion, info.fStars);
+        set.fBeatmaps.push_back(std::move(info));
       } catch (const osu::UnsupportedModeError &) {
         // Skip non-standard difficulties (taiko, catch, mania).
       }
@@ -178,7 +181,8 @@ export [[nodiscard]] inline osu::Beatmap
 loadBeatmap(const osu::BeatmapSet &set, const osu::BeatmapInfo &info) {
   const auto bytes = set.findFile(info.fFilename);
   if (bytes.empty()) {
-    throw std::runtime_error{"beatmap file not found in set: " + info.fFilename};
+    throw std::runtime_error{"beatmap file not found in set: " +
+                             info.fFilename};
   }
   const std::string text(bytes.begin(), bytes.end());
   return osu::loadBeatmap(text);

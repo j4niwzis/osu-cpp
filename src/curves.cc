@@ -56,40 +56,73 @@ inline void appendPoint(std::vector<Vec2> &out, Vec2 p) {
 
 inline void subdivideBezier(std::span<const Vec2> ctrl, std::vector<Vec2> &out,
                             int depth = 0) {
-  constexpr double kTolerance = 0.5;
-  constexpr int kMaxDepth = 12;
+  constexpr double kTolerance = 0.125;
+  constexpr int kMaxDepth = 14;
 
-  const Vec2 first = ctrl.front();
-  const Vec2 last = ctrl.back();
-  const double chord = first.distanceTo(last);
-  double containment = 0.0;
-  for (const Vec2 p : ctrl.subspan(1, ctrl.size() - 2)) {
-    containment =
-        std::max(containment, first.distanceTo(p) + p.distanceTo(last));
+  const std::size_t n = ctrl.size();
+
+  // osu!lazer 2nd-order finite-difference flatness test:
+  //   control points form a straight line when each interior P[i]
+  //   lies close to the midpoint of P[i-1] and P[i+1].
+  bool flat = true;
+  for (std::size_t i = 1; i + 1 < n; ++i) {
+    const Vec2 d{
+        ctrl[i - 1].fX - 2.0 * ctrl[i].fX + ctrl[i + 1].fX,
+        ctrl[i - 1].fY - 2.0 * ctrl[i].fY + ctrl[i + 1].fY,
+    };
+    if (d.dot(d) > kTolerance * kTolerance * 4.0) {
+      flat = false;
+      break;
+    }
   }
-  // Negative for straight (2-point) segments; must stay a signed test or
-  // lines would be subdivided to the depth limit for no reason.
-  const double deviation = containment - chord;
 
-  if (depth >= kMaxDepth || deviation <= kTolerance) {
-    appendPoint(out, last);
+  // De Casteljau subdivision at t=0.5, producing left/right sub-curves.
+  auto subdivide = [&](auto &l, auto &r) {
+    std::vector<Vec2> tmp(ctrl.begin(), ctrl.end());
+    l[0] = tmp[0];
+    r[n - 1] = tmp[n - 1];
+    for (std::size_t level = 0; level < n - 1; ++level) {
+      for (std::size_t i = 0; i < n - level - 1; ++i) {
+        tmp[i] = tmp[i].lerp(tmp[i + 1], 0.5);
+      }
+      l[level + 1] = tmp[0];
+      r[n - level - 2] = tmp[n - level - 2];
+    }
+  };
+
+  if (depth >= kMaxDepth || flat) {
+    // osu!lazer bezierApproximate: subdivide once more, then emit
+    // start point + smoothed interior points from the twice-subdivided
+    // control cage. This produces n output points per flat segment
+    // instead of just 1, giving 4x-18x denser sampling.
+    std::vector<Vec2> lsub(n), rsub(n);
+    subdivide(lsub, rsub);
+
+    // L = left[0..n-1] + right[1..n-1] (skip shared midpoint right[0]).
+    std::vector<Vec2> L(2 * n - 1);
+    for (std::size_t i = 0; i < n; ++i)
+      L[i] = lsub[i];
+    for (std::size_t i = 1; i < n; ++i)
+      L[n + i - 1] = rsub[i];
+
+    // Emit start point, then for each interior control index i,
+    // the smoothed point 0.25*(L[2i-1] + 2*L[2i] + L[2i+1]).
+    appendPoint(out, ctrl.front());
+    for (std::size_t i = 1; i + 1 < n; ++i) {
+      const std::size_t idx = 2 * i;
+      const Vec2 p{
+          0.25 * (L[idx - 1].fX + 2.0 * L[idx].fX + L[idx + 1].fX),
+          0.25 * (L[idx - 1].fY + 2.0 * L[idx].fY + L[idx + 1].fY),
+      };
+      appendPoint(out, p);
+    }
+    appendPoint(out, ctrl.back());
     return;
   }
 
-  std::array<Vec2, 16> left{};
-  std::array<Vec2, 16> right{};
-  std::array<Vec2, 16> tmp{};
-  std::ranges::copy(ctrl, tmp.begin());
-  const std::size_t n = ctrl.size();
-  left[0] = tmp[0];
-  right[n - 1] = tmp[n - 1];
-  for (std::size_t level = 0; level < n - 1; ++level) {
-    for (std::size_t i = 0; i < n - level - 1; ++i) {
-      tmp[i] = tmp[i].lerp(tmp[i + 1], 0.5);
-    }
-    left[level + 1] = tmp[0];
-    right[n - level - 2] = tmp[n - level - 2];
-  }
+  // Not flat: subdivide and recurse into both halves.
+  std::vector<Vec2> left(n), right(n);
+  subdivide(left, right);
   subdivideBezier(std::span<const Vec2>(left.data(), n), out, depth + 1);
   subdivideBezier(std::span<const Vec2>(right.data(), n), out, depth + 1);
 }
@@ -101,8 +134,8 @@ inline void bake(curve::Bezier, std::span<const Vec2> ctrl,
     return;
   }
   appendPoint(out, ctrl.front());
-  if (ctrl.size() > 16) {
-    constexpr int kSamples = 256;
+  if (ctrl.size() > 60) {
+    constexpr int kSamples = 1024;
     const std::size_t n = ctrl.size();
     std::vector<Vec2> work(ctrl.begin(), ctrl.end());
     for (int s = 1; s <= kSamples; ++s) {
@@ -217,22 +250,7 @@ inline void SliderPath::bake(CurveType type, std::span<const Vec2> control,
     return;
   }
 
-  std::size_t segmentStart = 0;
-  const auto flushSegment = [&](std::size_t end) {
-    const auto seg = control.subspan(segmentStart, end - segmentStart);
-    if (seg.empty()) {
-      return;
-    }
-    std::visit([&](auto tag) { detail::bake(tag, seg, fPoints); }, type);
-  };
-
-  for (std::size_t i = 1; i < control.size(); ++i) {
-    if (control[i] == control[i - 1]) {
-      flushSegment(i);
-      segmentStart = i;
-    }
-  }
-  flushSegment(control.size());
+  std::visit([&](auto tag) { detail::bake(tag, control, fPoints); }, type);
   this->finish(pixelLength);
 }
 

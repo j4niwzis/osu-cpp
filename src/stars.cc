@@ -18,7 +18,8 @@ namespace diffutil {
 inline double logistic(double ex, double maxValue = 1.0) {
   return maxValue / (1.0 + std::exp(ex));
 }
-inline double logistic(double x, double mid, double mult, double maxValue = 1.0) {
+inline double logistic(double x, double mid, double mult,
+                       double maxValue = 1.0) {
   return maxValue / (1.0 + std::exp(mult * (mid - x)));
 }
 inline double norm(double p, double a, double b, double c = 0.0) {
@@ -38,12 +39,8 @@ inline double smootherstep(double x, double a, double b) {
 inline double reverseLerp(double x, double a, double b) {
   return std::clamp((x - a) / (b - a), 0.0, 1.0);
 }
-inline double bpmToMs(double bpm, int del = 4) {
-  return 60000.0 / del / bpm;
-}
-inline double msToBpm(double ms, int del = 4) {
-  return 60000.0 / (ms * del);
-}
+inline double bpmToMs(double bpm, int del = 4) { return 60000.0 / del / bpm; }
+inline double msToBpm(double ms, int del = 4) { return 60000.0 / (ms * del); }
 inline double smoothstepBellCurve(double x) {
   x = 0.5 - std::abs(x - 0.5);
   x = std::clamp(x * 2.0, 0.0, 1.0);
@@ -147,8 +144,8 @@ public:
         o);
   }
 
-  double calculateDoubleTapFeasibility(
-      const OsuDifficultyHitObject *nxt) const {
+  double
+  calculateDoubleTapFeasibility(const OsuDifficultyHitObject *nxt) const {
     if (!nxt)
       return 0;
     double a = std::max(1.0, fRawDT);
@@ -160,17 +157,14 @@ public:
     return 1.0 - std::pow(sr, df * (1.0 - wr));
   }
 
-  [[nodiscard]] double opacityAt(double rawTime,
-                                  bool hidden = false) const {
+  [[nodiscard]] double opacityAt(double rawTime, bool hidden = false) const {
     double rawStart = startTime(*fBase);
     if (rawTime > rawStart)
       return 0.0;
     double rawPreempt = fPreempt * fRate;
     double fadeInStart = rawStart - rawPreempt;
-    double fadeInDuration =
-        400.0 * std::min(1.0, rawPreempt / 450.0);
-    return std::clamp((rawTime - fadeInStart) / fadeInDuration, 0.0,
-                      1.0);
+    double fadeInDuration = 400.0 * std::min(1.0, rawPreempt / 450.0);
+    return std::clamp((rawTime - fadeInStart) / fadeInDuration, 0.0, 1.0);
   }
 
 private:
@@ -181,9 +175,8 @@ private:
     double rawDur =
         bm.sliderSpanDuration(*sl) * static_cast<double>(sl->fRepeat);
     double rawStart = sl->fTime;
-    double trackingEndTime = std::max(
-        rawStart + rawDur + (-36.0),
-        rawStart + rawDur / 2.0);
+    double trackingEndTime =
+        std::max(rawStart + rawDur + (-36.0), rawStart + rawDur / 2.0);
     fLTT = trackingEndTime - rawStart;
     double spanDur = bm.sliderSpanDuration(*sl);
     double endTimeMin = fLTT / spanDur;
@@ -203,8 +196,7 @@ private:
 
     double vel = bm.sliderVelocityAt(sl->fTime);
     double pathLen = path.length();
-    double tickDist = std::clamp(
-        bm.sliderTickDistance(*sl), 0.0, pathLen);
+    double tickDist = std::clamp(bm.sliderTickDistance(*sl), 0.0, pathLen);
     double minDistEnd = vel * 10.0;
 
     std::vector<Vec2> nestedPositions;
@@ -218,24 +210,23 @@ private:
             break;
           double progress = d / pathLen;
           double ratio = reversed ? 1.0 - progress : progress;
-          nestedPositions.push_back(
-              path.positionAt(ratio * pathLen) + stackOff);
+          nestedPositions.push_back(path.positionAt(ratio * pathLen) +
+                                    stackOff);
         }
       }
       if (span < sl->fRepeat - 1) {
         double repeatProgress = (span + 1) % 2;
-        nestedPositions.push_back(
-            path.positionAt(repeatProgress * pathLen) + stackOff);
+        nestedPositions.push_back(path.positionAt(repeatProgress * pathLen) +
+                                  stackOff);
       } else {
         double tailProgress = static_cast<double>(sl->fRepeat % 2);
-        nestedPositions.push_back(
-            path.positionAt(tailProgress * pathLen) + stackOff);
+        nestedPositions.push_back(path.positionAt(tailProgress * pathLen) +
+                                  stackOff);
       }
     }
 
     if (nestedPositions.size() >= 2)
-      fSliderSecondLastNestedPos =
-          nestedPositions[nestedPositions.size() - 2];
+      fSliderSecondLastNestedPos = nestedPositions[nestedPositions.size() - 2];
 
     for (std::size_t i = 1; i < nestedPositions.size(); ++i) {
       Vec2 mv = nestedPositions[i] - cur;
@@ -261,9 +252,8 @@ private:
     const auto *cs = std::get_if<Slider>(fBase);
     const auto *ls = std::get_if<Slider>(fLast);
     if (cs) {
-      fTD = fLTD *
-            std::max(1.0,
-                     std::pow(static_cast<double>(cs->fRepeat), 0.3));
+      fTD =
+          fLTD * std::max(1.0, std::pow(static_cast<double>(cs->fRepeat), 0.3));
       fTT = std::max(fLTT / cr, static_cast<double>(kMDT));
     }
     fMJT = fADT;
@@ -288,9 +278,7 @@ private:
       Vec2 tail = path.positionAt(path.length()) +
                   stackOffset(ls->fStack, bm.fDiff.fCs);
       double tailJump = (tail - sp(*fBase, bm.fDiff.fCs)).length() * sf;
-      fMJD = std::max(0.0,
-                      std::min(fLJD - (kMSR - kASR),
-                               tailJump - kMSR));
+      fMJD = std::max(0.0, std::min(fLJD - (kMSR - kASR), tailJump - kMSR));
     }
 
     const auto *lld = prev(1);
@@ -318,8 +306,8 @@ private:
     return std::abs(std::atan2(v1.fX * v2.fY - v1.fY * v2.fX,
                                v1.fX * v2.fX + v1.fY * v2.fY));
   }
-  static double calcSliderAngle(const OsuDifficultyHitObject *ld,
-                                Vec2 last2CP, const Beatmap &bm) {
+  static double calcSliderAngle(const OsuDifficultyHitObject *ld, Vec2 last2CP,
+                                const Beatmap &bm) {
     Vec2 lastCP = getEndPos(*ld);
     if (ld && std::holds_alternative<Slider>(*ld->fBase) && ld->fTD > 0)
       last2CP = ld->fSliderSecondLastNestedPos;
@@ -352,19 +340,16 @@ public:
       double vi = std::min(cv, pv);
       double ab = 0;
       // If rhythms are the same
-      if (std::max(c.fADT, pr.fADT) <
-          1.25 * std::min(c.fADT, pr.fADT)) {
+      if (std::max(c.fADT, pr.fADT) < 1.25 * std::min(c.fADT, pr.fADT)) {
         ab = acu(ca);
-        ab *= 0.08 +
-              0.92 * (1.0 - std::min(ab, std::pow(acu(pa), 3)));
-        ab *= vi *
-              diffutil::smootherstep(
-                  diffutil::msToBpm(c.fADT, 2), 300.0, 400.0) *
-              diffutil::smootherstep(cd, 0.0, kND * 2.0);
+        ab *= 0.08 + 0.92 * (1.0 - std::min(ab, std::pow(acu(pa), 3)));
+        ab *=
+            vi *
+            diffutil::smootherstep(diffutil::msToBpm(c.fADT, 2), 300.0, 400.0) *
+            diffutil::smootherstep(cd, 0.0, kND * 2.0);
       }
       double wb = wid(ca);
-      wb *= 0.25 +
-            0.75 * (1.0 - std::min(wb, std::pow(wid(pa), 3)));
+      wb *= 0.25 + 0.75 * (1.0 - std::min(wb, std::pow(wid(pa), 3)));
       constexpr double kT = 1.45;
       double wcv = cd / std::pow(c.fADT, kT);
       if (std::holds_alternative<Slider>(*pr.fBase) && wst) {
@@ -385,8 +370,7 @@ public:
 
       s += std::max(ab * kA, wb * kW);
 
-      double wgl = vi *
-                   diffutil::smootherstep(cd, kNR, kND) *
+      double wgl = vi * diffutil::smootherstep(cd, kNR, kND) *
                    std::pow(diffutil::reverseLerp(cd, kND * 3.0, kND), 1.8) *
                    diffutil::smootherstep(ca, std::acos(-1.0) * 110.0 / 180.0,
                                           std::acos(-1.0) * 60.0 / 180.0) *
@@ -399,13 +383,13 @@ public:
     if (std::max(pv, cv) != 0) {
       if (wst)
         cv = cd / c.fADT;
-      double dr = diffutil::smoothstep(
-          std::abs(pv - cv) / std::max(pv, cv), 0.0, 1.0);
-      double ob = std::min(
-          kND * 1.25 / std::min(c.fADT, pr.fADT), std::abs(pv - cv));
+      double dr =
+          diffutil::smoothstep(std::abs(pv - cv) / std::max(pv, cv), 0.0, 1.0);
+      double ob =
+          std::min(kND * 1.25 / std::min(c.fADT, pr.fADT), std::abs(pv - cv));
       double vc = ob * dr;
-      vc *= std::pow(
-          std::min(c.fADT, pr.fADT) / std::max(c.fADT, pr.fADT), 2.0);
+      vc *=
+          std::pow(std::min(c.fADT, pr.fADT) / std::max(c.fADT, pr.fADT), 2.0);
       s += vc * kV;
     }
     if (std::holds_alternative<Slider>(*c.fBase) && wst) {
@@ -438,22 +422,19 @@ private:
       const auto *pp = c.prev(i);
       if (!pp)
         break;
-      if (std::max(c.fADT, pp->fADT) >
-          1.1 * std::min(c.fADT, pp->fADT))
+      if (std::max(c.fADT, pp->fADT) > 1.1 * std::min(c.fADT, pp->fADT))
         break;
       if (pp->fNVA && c.fNVA) {
         double d = std::abs(*c.fNVA - *pp->fNVA);
-        cc += std::cos(8.0 *
-                       std::min(std::acos(-1.0) * 11.25 / 180.0, d));
+        cc += std::cos(8.0 * std::min(std::acos(-1.0) * 11.25 / 180.0, d));
       }
     }
     if (cc <= 0)
       return 1.0;
     double r = std::pow(std::min(0.5 / cc, 1.0), 2.0);
     double st = diffutil::smootherstep(c.fLJD, 0.0, kND);
-    double ad = std::cos(
-        2.0 * std::min(std::acos(-1.0) * 45.0 / 180.0,
-                       std::abs(*c.fA - *p.fA) * st));
+    double ad = std::cos(2.0 * std::min(std::acos(-1.0) * 45.0 / 180.0,
+                                        std::abs(*c.fA - *p.fA) * st));
     double bn = 1.0 - kMN * acu(*p.fA) * ad;
     return std::pow(bn + (1.0 - bn) * r * kMV * st, 2.0);
   }
@@ -478,12 +459,11 @@ public:
     double pv = pd / pr.fADT;
     double fl = cv * std::sqrt(c.fSCB);
     fl *= 1.0 + std::min(0.25, std::pow((std::max(c.fADT, pr.fADT) -
-                                          std::min(c.fADT, pr.fADT)) /
-                                             50.0,
-                                         4));
+                                         std::min(c.fADT, pr.fADT)) /
+                                            50.0,
+                                        4));
     if (c.fA && pr.fA) {
-      double ad =
-          std::sin(std::abs(*c.fA - *pr.fA) / 2.0) * 180.0;
+      double ad = std::sin(std::abs(*c.fA - *pr.fA) / 2.0) * 180.0;
       fl *= 0.8 + std::sqrt(ad / (c.fADT * 0.1) / 270.0);
     }
     double overlappedNotesWeight = 1.0;
@@ -498,11 +478,10 @@ public:
     if (std::max(pv, cv) != 0) {
       if (wst)
         cv = cd / c.fADT;
-      fl += std::min(kND * 1.25 / std::min(c.fADT, pr.fADT),
-                     std::abs(pv - cv)) *
-            diffutil::smoothstep(
-                std::abs(pv - cv) / std::max(pv, cv), 0.0, 1.0) *
-            overlappedNotesWeight * kV;
+      fl +=
+          std::min(kND * 1.25 / std::min(c.fADT, pr.fADT), std::abs(pv - cv)) *
+          diffutil::smoothstep(std::abs(pv - cv) / std::max(pv, cv), 0.0, 1.0) *
+          overlappedNotesWeight * kV;
     }
     if (std::holds_alternative<Slider>(*c.fBase) && wst)
       fl += c.fTD / c.fTT;
@@ -517,8 +496,7 @@ private:
     Vec2 pb = OsuDifficultyHitObject::sp(*b.fBase, b.fCsR);
     double r = a.fRad;
     double d = (pa - pb).length();
-    return std::clamp(
-        1.0 - std::pow(std::max(d - r, 0.0) / r, 2.0), 0.0, 1.0);
+    return std::clamp(1.0 - std::pow(std::max(d - r, 0.0) / r, 2.0), 0.0, 1.0);
   }
 };
 
@@ -529,11 +507,9 @@ public:
       return 0;
     double cap = kND * 1.2;
     const auto *p = c.fIdx > 0 ? c.prev(0) : nullptr;
-    double dd =
-        std::min((p ? p->fLTD : 0.0) + c.fLJD, cap) / cap;
+    double dd = std::min((p ? p->fLTD : 0.0) + c.fLJD, cap) / cap;
     double a = dd * 1000.0 / c.fADT;
-    a *= std::pow(c.fSCB, 1.5) *
-         (1.0 / (1.0 - std::pow(0.2, c.fADT / 1000.0)));
+    a *= std::pow(c.fSCB, 1.5) * (1.0 / (1.0 - std::pow(0.2, c.fADT / 1000.0)));
     return a;
   }
 };
@@ -546,10 +522,10 @@ public:
     double st = c.fADT;
     double df = 1.0 - c.calculateDoubleTapFeasibility(c.next(0));
     st /= std::clamp((st / c.fHW) / 0.93, 0.92, 1.0);
-    double sb = diffutil::msToBpm(st) > 200.0
-                    ? 0.75 *
-                          std::pow((diffutil::bpmToMs(200.0) - st) / 40.0, 2.0)
-                    : 0.0;
+    double sb =
+        diffutil::msToBpm(st) > 200.0
+            ? 0.75 * std::pow((diffutil::bpmToMs(200.0) - st) / 40.0, 2.0)
+            : 0.0;
     double sp = (1.0 + sb) * 1000.0 / st;
     sp *= 1.0 / (1.0 - std::pow(0.3, c.fADT / 1000.0));
     return sp * df;
@@ -562,8 +538,7 @@ class RhEvaluator {
     int fDelta;
     int fDeltaCount = 1;
     int fOccurrences = 1;
-    explicit Island(int delta)
-        : fDelta(std::max(delta, kMDT)) {}
+    explicit Island(int delta) : fDelta(std::max(delta, kMDT)) {}
     void addDelta(int d) {
       if (fDelta == std::numeric_limits<int>::max())
         fDelta = std::max(d, kMDT);
@@ -576,8 +551,7 @@ class RhEvaluator {
              fDeltaCount % 2 == o.fDeltaCount % 2;
     }
     bool almostEquals(const Island &o, double eps) const {
-      return std::abs(fDelta - o.fDelta) < eps &&
-             fDeltaCount == o.fDeltaCount;
+      return std::abs(fDelta - o.fDelta) < eps && fDeltaCount == o.fDeltaCount;
     }
   };
 
@@ -607,9 +581,9 @@ public:
 
     int histCount = std::min(c.fIdx, kHistoryObjMax);
     int rhythmStart = 0;
-    while (
-        rhythmStart < histCount - 2 &&
-        c.fStart - c.prev(rhythmStart)->fStart < static_cast<double>(kHistoryTimeMax))
+    while (rhythmStart < histCount - 2 &&
+           c.fStart - c.prev(rhythmStart)->fStart <
+               static_cast<double>(kHistoryTimeMax))
       ++rhythmStart;
 
     const auto *pPrevObj = c.prev(rhythmStart);
@@ -637,26 +611,21 @@ public:
 
       double deltaDiffRatio =
           std::max(prevDelta, currDelta) / std::min(prevDelta, currDelta);
-      double diffMul =
-          std::clamp(2.0 - deltaDiffRatio / 8.0, 0.0, 1.0);
-      double windowPenalty =
-          std::clamp((deltaDiff - eps) / eps, 0.0, 1.0);
+      double diffMul = std::clamp(2.0 - deltaDiffRatio / 8.0, 0.0, 1.0);
+      double windowPenalty = std::clamp((deltaDiff - eps) / eps, 0.0, 1.0);
 
       double effectiveDiff =
           getEffectiveDifficulty(deltaDiffRatio) * windowPenalty * diffMul;
 
       if (std::holds_alternative<Slider>(*pPrevObj->fBase)) {
         double slideLazyEndDelta = pCurrObj->fMJT;
-        double slideLazyRatio =
-            std::max(slideLazyEndDelta, currDelta) /
-            std::min(slideLazyEndDelta, currDelta);
+        double slideLazyRatio = std::max(slideLazyEndDelta, currDelta) /
+                                std::min(slideLazyEndDelta, currDelta);
         double slideRealEndDelta = pCurrObj->fLEDT;
-        double slideRealRatio =
-            std::max(slideRealEndDelta, currDelta) /
-            std::min(slideRealEndDelta, currDelta);
-        double slideEff =
-            std::min(getEffectiveDifficulty(slideLazyRatio),
-                     getEffectiveDifficulty(slideRealRatio));
+        double slideRealRatio = std::max(slideRealEndDelta, currDelta) /
+                                std::min(slideRealEndDelta, currDelta);
+        double slideEff = std::min(getEffectiveDifficulty(slideLazyRatio),
+                                   getEffectiveDifficulty(slideRealRatio));
         effectiveDiff = std::min(slideEff, effectiveDiff);
       }
 
@@ -672,8 +641,7 @@ public:
           if (island.isSimilarPolarity(prevIsland, eps))
             effectiveDiff *= 0.5;
 
-          if (std::max(pPrevPrevObj->fRawDT, kDeltaMin) >
-                  prevDelta + eps &&
+          if (std::max(pPrevPrevObj->fRawDT, kDeltaMin) > prevDelta + eps &&
               prevDelta > currDelta + eps)
             effectiveDiff *= 0.125;
 
@@ -691,12 +659,11 @@ public:
                 ++ex.fOccurrences;
               double power = diffutil::logistic(
                   static_cast<double>(island.fDelta), 58.33, 0.24, 2.75);
-              effectiveDiff *= std::min(
-                  3.0 / ex.fOccurrences,
-                  std::pow(1.0 / ex.fOccurrences, power));
+              effectiveDiff *= std::min(3.0 / ex.fOccurrences,
+                                        std::pow(1.0 / ex.fOccurrences, power));
               found = true;
               break;
-    }
+            }
           }
 
           if (!found && island.fDeltaCount > 0)
@@ -734,8 +701,8 @@ public:
       pPrevObj = pCurrObj;
     }
 
-    rcSum *= diffutil::reverseLerp(
-        static_cast<double>(island.fDeltaCount), 22.0, 3.0);
+    rcSum *= diffutil::reverseLerp(static_cast<double>(island.fDeltaCount),
+                                   22.0, 3.0);
 
     return std::sqrt(4.0 + rcSum * kOverallMul) / 2.0;
   }
@@ -758,14 +725,12 @@ public:
     double pastInfluence = getPastObjectDifficultyInfluence(c);
     double angleNerf = getConstantAngleNerfFactor(c);
 
-    double densityDiff =
-        calculateDensityDifficulty(nextObj, velocity, angleNerf,
-                                   pastInfluence, currentDensity);
+    double densityDiff = calculateDensityDifficulty(
+        nextObj, velocity, angleNerf, pastInfluence, currentDensity);
     double preemptDiff =
         calculatePreemptDifficulty(velocity, angleNerf, c.fPreempt);
 
-    double rd =
-        diffutil::norm(1.5, preemptDiff, 0.0, densityDiff);
+    double rd = diffutil::norm(1.5, preemptDiff, 0.0, densityDiff);
     if (!std::isfinite(rd))
       return 0.0;
     rd *= hbb(c.fADT);
@@ -773,39 +738,35 @@ public:
   }
 
 private:
-  static double calculateDensityDifficulty(
-      const OsuDifficultyHitObject *nextObj, double velocity,
-      double angleNerf, double pastInfluence,
-      double currentDensity) {
+  static double
+  calculateDensityDifficulty(const OsuDifficultyHitObject *nextObj,
+                             double velocity, double angleNerf,
+                             double pastInfluence, double currentDensity) {
     double futureInfluence = std::sqrt(currentDensity);
     if (nextObj)
-      futureInfluence *=
-          diffutil::smootherstep(nextObj->fLJD, 15.0, kDIT);
-    double ndd = std::pow(pastInfluence + futureInfluence, 1.7) *
-                 0.4 * angleNerf * velocity;
+      futureInfluence *= diffutil::smootherstep(nextObj->fLJD, 15.0, kDIT);
+    double ndd = std::pow(pastInfluence + futureInfluence, 1.7) * 0.4 *
+                 angleNerf * velocity;
     ndd = std::max(0.0, ndd - 2.5);
     ndd = std::pow(ndd, 0.45) * 2.4;
     return ndd;
   }
 
-  static double calculatePreemptDifficulty(double velocity,
-                                           double angleNerf,
+  static double calculatePreemptDifficulty(double velocity, double angleNerf,
                                            double preempt) {
     constexpr double kPF = 140000.0;
     constexpr double kPS = 500.0;
-    double pd = std::pow(
-        (kPS - preempt + std::abs(preempt - kPS)) / 2.0, 2.5) /
-        kPF;
+    double pd =
+        std::pow((kPS - preempt + std::abs(preempt - kPS)) / 2.0, 2.5) / kPF;
     return pd * angleNerf * velocity;
   }
 
-  static double getPastObjectDifficultyInfluence(
-      const OsuDifficultyHitObject &c) {
+  static double
+  getPastObjectDifficultyInfluence(const OsuDifficultyHitObject &c) {
     double influence = 0;
     for (int i = 0; i < c.fIdx; ++i) {
       const auto *p = c.prev(i);
-      if (!p || c.fStart - p->fStart > kRW ||
-          p->fStart < c.fStart - c.fPreempt)
+      if (!p || c.fStart - p->fStart > kRW || p->fStart < c.fStart - c.fPreempt)
         break;
       double d = c.opacityAt(startTime(*p->fBase)) *
                  diffutil::smootherstep(p->fLJD, 15.0, kDIT);
@@ -816,24 +777,21 @@ private:
     return influence;
   }
 
-  static double retrieveCurrentVisibleObjectDensity(
-      const OsuDifficultyHitObject &c) {
+  static double
+  retrieveCurrentVisibleObjectDensity(const OsuDifficultyHitObject &c) {
     double count = 0;
     const OsuDifficultyHitObject *ho = c.next(0);
     while (ho) {
-      if (ho->fStart - c.fStart > kRW ||
-          c.fStart < ho->fStart - ho->fPreempt)
+      if (ho->fStart - c.fStart > kRW || c.fStart < ho->fStart - ho->fPreempt)
         break;
       double dt = ho->fStart - c.fStart;
-      count += ho->opacityAt(startTime(*c.fBase)) *
-               timeNerfFactor(dt);
+      count += ho->opacityAt(startTime(*c.fBase)) * timeNerfFactor(dt);
       ho = ho->next(0);
     }
     return count;
   }
 
-  static double getConstantAngleNerfFactor(
-      const OsuDifficultyHitObject &c) {
+  static double getConstantAngleNerfFactor(const OsuDifficultyHitObject &c) {
     constexpr double kAMT = 2000.0;
     constexpr double kAMi = 200.0;
 
@@ -848,8 +806,7 @@ private:
       const auto *lp = c.prev(idx);
       if (!lp)
         break;
-      double longInterval =
-          1.0 - diffutil::reverseLerp(lp->fADT, kAMi, kAMT);
+      double longInterval = 1.0 - diffutil::reverseLerp(lp->fADT, kAMi, kAMT);
 
       if (lp->fA && c.fA) {
         double aDiff = std::abs(*c.fA - *lp->fA);
@@ -857,36 +814,26 @@ private:
 
         if (lp0->fA && lp1 && lp1->fA && lp2 && lp2->fA) {
           aAlt = std::abs(lp1->fA.value() - lp->fA.value());
-          aAlt +=
-              std::abs(lp2->fA.value() - lp0->fA.value());
+          aAlt += std::abs(lp2->fA.value() - lp0->fA.value());
 
           double w = 1.0;
-          w *= diffutil::reverseLerp(
-              std::min(lp->fA.value(),
-                       lp0->fA.value()) *
-                  180.0 / std::acos(-1.0),
-              20.0, 5.0);
-          w *= diffutil::reverseLerp(
-              std::max(lp->fA.value(),
-                       lp0->fA.value()) *
-                  180.0 / std::acos(-1.0),
-              60.0, 120.0);
+          w *= diffutil::reverseLerp(std::min(lp->fA.value(), lp0->fA.value()) *
+                                         180.0 / std::acos(-1.0),
+                                     20.0, 5.0);
+          w *= diffutil::reverseLerp(std::max(lp->fA.value(), lp0->fA.value()) *
+                                         180.0 / std::acos(-1.0),
+                                     60.0, 120.0);
           double lerpFactor = std::isfinite(w) ? w : 0.0;
-          aAlt = std::acos(-1.0) * (1.0 - lerpFactor) +
-                 0.1 * aAlt * lerpFactor;
+          aAlt = std::acos(-1.0) * (1.0 - lerpFactor) + 0.1 * aAlt * lerpFactor;
         }
 
-        double stackF = diffutil::smootherstep(
-            lp->fLJD, 0.0, kNR);
+        double stackF = diffutil::smootherstep(lp->fLJD, 0.0, kNR);
         double minAngle = std::min(aDiff, aAlt);
         if (!std::isfinite(minAngle))
           minAngle = 0.0;
-        count +=
-            std::cos(3.0 *
-                     std::min(
-                         std::acos(-1.0) * 30.0 / 180.0,
-                         minAngle * stackF)) *
-            longInterval;
+        count += std::cos(3.0 * std::min(std::acos(-1.0) * 30.0 / 180.0,
+                                         minAngle * stackF)) *
+                 longInterval;
       }
 
       timeGap = c.fStart - lp->fStart;
@@ -975,7 +922,10 @@ public:
     std::vector<Pk> all = fPks;
     all.push_back({fSecP, std::round(fSecE - fSecB)});
     for (auto it = all.begin(); it != all.end();)
-      if (it->v <= 0) it = all.erase(it); else ++it;
+      if (it->v <= 0)
+        it = all.erase(it);
+      else
+        ++it;
     std::ranges::sort(all, [](const Pk &a, const Pk &b) { return a.v > b.v; });
 
     std::vector<Pk> result;
@@ -985,8 +935,7 @@ public:
     for (const auto &p : all) {
       if (skip >= static_cast<int>(all.size()) || timeSum >= kReducedTime)
         break;
-      for (int added = 0; added < static_cast<int>(p.l);
-           added += kChunk) {
+      for (int added = 0; added < static_cast<int>(p.l); added += kChunk) {
         double scale = std::log10(
             std::clamp((timeSum + added) / static_cast<double>(kReducedTime),
                        0.0, 1.0) *
@@ -994,8 +943,7 @@ public:
             1.0);
         double m = kBase + (1.0 - kBase) * scale;
         result.push_back(
-            {p.v * m,
-             std::min(static_cast<double>(kChunk), p.l - added)});
+            {p.v * m, std::min(static_cast<double>(kChunk), p.l - added)});
       }
       timeSum += p.l;
       ++skip;
@@ -1041,13 +989,11 @@ private:
         auto [v, t] = fQ.front();
         fQ.erase(fQ.begin());
         fSecE = t + kSL;
-        fSecP =
-            std::max(fCur * std::pow(0.2, (fSecB - c.prev(0)->fStart) / 1000.0),
-                     v);
+        fSecP = std::max(
+            fCur * std::pow(0.2, (fSecB - c.prev(0)->fStart) / 1000.0), v);
       } else {
         fSecE = fSecB + kSL;
-        fSecP =
-            fCur * std::pow(0.2, (fSecB - c.prev(0)->fStart) / 1000.0);
+        fSecP = fCur * std::pow(0.2, (fSecB - c.prev(0)->fStart) / 1000.0);
       }
     }
   }
@@ -1076,9 +1022,9 @@ public:
     for (double v : ds) {
       if (v <= 0)
         break;
-      double w = (1.0 + 20.0 / (1.0 + i)) /
-                 (std::pow(static_cast<double>(i), 0.9) + 1.0 +
-                  20.0 / (1.0 + i));
+      double w =
+          (1.0 + 20.0 / (1.0 + i)) /
+          (std::pow(static_cast<double>(i), 0.9) + 1.0 + 20.0 / (1.0 + i));
       fWeightSum += w;
       diff += v * w;
       ++i;
@@ -1106,8 +1052,7 @@ public:
     double d = std::pow(0.8, c.fRawDT / 1000.0);
     fCur *= d;
     double rawReading = ReadingEvaluator::eval(c);
-    rawReading *=
-        0.825 + std::pow(std::max(0.0, c.fODv), 2.2) / 1125.0;
+    rawReading *= 0.825 + std::pow(std::max(0.0, c.fODv), 2.2) / 1125.0;
     fCur += rawReading * (1.0 - d) * kSM;
     fDiffs.push_back(fCur);
   }
@@ -1124,9 +1069,9 @@ public:
     for (double v : ds) {
       if (v <= 0)
         break;
-      double w = (1.0 + 1.0 / (1.0 + i)) /
-          (std::pow(static_cast<double>(i), 0.9) + 1.0 +
-           1.0 / (1.0 + i));
+      double w =
+          (1.0 + 1.0 / (1.0 + i)) /
+          (std::pow(static_cast<double>(i), 0.9) + 1.0 + 1.0 / (1.0 + i));
       fWeightSum += w;
       diff += v * w;
       ++i;
@@ -1151,12 +1096,10 @@ private:
       if (v > 0)
         result.push_back(v);
     int reducedCount =
-        static_cast<int>(std::min(result.size(),
-                                   calculateReducedNoteCount()));
+        static_cast<int>(std::min(result.size(), calculateReducedNoteCount()));
     for (int i = 0; i < reducedCount; ++i) {
       double scale = std::log10(
-          std::clamp(static_cast<double>(i) /
-                         static_cast<double>(reducedCount),
+          std::clamp(static_cast<double>(i) / static_cast<double>(reducedCount),
                      0.0, 1.0) *
               9.0 +
           1.0);
@@ -1190,9 +1133,9 @@ private:
   std::vector<OsuDifficultyHitObject> objs;
   objs.reserve(bm.fObjects.size());
   for (std::size_t i = 1; i < bm.fObjects.size(); ++i)
-    objs.push_back(
-        OsuDifficultyHitObject(bm.fObjects[i], bm.fObjects[i - 1], rate, objs,
-                               static_cast<int>(objs.size()), bm));
+    objs.push_back(OsuDifficultyHitObject(bm.fObjects[i], bm.fObjects[i - 1],
+                                          rate, objs,
+                                          static_cast<int>(objs.size()), bm));
   if (objs.empty())
     return {};
   AimSkill aimSkill(true);
@@ -1206,15 +1149,17 @@ private:
       double sp = SpeedEvaluator::eval(o);
       double rh = RhEvaluator::eval(o);
       auto typeName = [](const HitObject &o) -> std::string {
-        if (std::holds_alternative<Circle>(o)) return "C";
-        if (std::holds_alternative<Slider>(o)) return "S";
+        if (std::holds_alternative<Circle>(o))
+          return "C";
+        if (std::holds_alternative<Slider>(o))
+          return "S";
         return "X";
       };
-      std::println("obj[{}]: snap={:.3f} flow={:.3f} ag={:.3f} spd={:.3f} rh={:.3f} dt={:.0f} dist={:.1f} hw={:.1f} od={:.2f} angle={} type={}",
-        o.fIdx, s, f, a, sp, rh, o.fADT, o.fLJD,
-        o.fHW, o.fODv,
-        o.fA ? std::format("{:.2f}", *o.fA) : "null",
-        typeName(*o.fBase));
+      std::println(
+          "obj[{}]: snap={:.3f} flow={:.3f} ag={:.3f} spd={:.3f} rh={:.3f} "
+          "dt={:.0f} dist={:.1f} hw={:.1f} od={:.2f} angle={} type={}",
+          o.fIdx, s, f, a, sp, rh, o.fADT, o.fLJD, o.fHW, o.fODv,
+          o.fA ? std::format("{:.2f}", *o.fA) : "null", typeName(*o.fBase));
     }
     aimSkill.process(o);
     spdSkill.process(o);
@@ -1241,9 +1186,11 @@ private:
     totalWtSum += w;
     totalTime = et;
   }
-  std::println("aimDiff={:.2f} spdDiff={:.2f} rdDiff={:.2f} aimPks={} reducedPks={} topV={:.0f} top10V={:.0f} top10L={:.0f} wtSum={:.6f} totTime={:.2f}",
-               aimDiff, spdDiff, rdDiff, aimSkill.fPks.size(),
-               rpks.size(), topV, top10V, top10L, totalWtSum, totalTime);
+  std::println(
+      "aimDiff={:.2f} spdDiff={:.2f} rdDiff={:.2f} aimPks={} reducedPks={} "
+      "topV={:.0f} top10V={:.0f} top10L={:.0f} wtSum={:.6f} totTime={:.2f}",
+      aimDiff, spdDiff, rdDiff, aimSkill.fPks.size(), rpks.size(), topV, top10V,
+      top10L, totalWtSum, totalTime);
 
   double ar = std::pow(aimDiff, 0.63) * 0.02275;
   double speedRating = std::sqrt(spdDiff) * 0.0675;
@@ -1256,8 +1203,9 @@ private:
 
   double total = std::cbrt(bp * 1.12);
 
-  std::println("aimRating={:.2f} spdRating={:.2f} rdRating={:.2f} totalStars={:.2f}",
-               ar, speedRating, readingRating, total);
+  std::println(
+      "aimRating={:.2f} spdRating={:.2f} rdRating={:.2f} totalStars={:.2f}", ar,
+      speedRating, readingRating, total);
 
   return {ar, speedRating, total};
 }

@@ -24,9 +24,11 @@ module;
 #include <skia/core/SkSamplingOptions.h>
 #include <skia/core/SkShader.h>
 #include <skia/core/SkStream.h>
+#include <skia/core/SkString.h>
 #include <skia/core/SkSurface.h>
 #include <skia/core/SkTypeface.h>
 #include <skia/core/SkVertices.h>
+#include <skia/effects/SkRuntimeEffect.h>
 #include <skia/gpu/ganesh/GrBackendSurface.h>
 #include <skia/gpu/ganesh/GrDirectContext.h>
 #include <skia/gpu/ganesh/SkSurfaceGanesh.h>
@@ -36,6 +38,7 @@ module;
 #include <skia/gpu/ganesh/gl/GrGLTypes.h>
 #include <skia/ports/SkFontMgr_data.h>
 #include <skia/ports/SkFontMgr_directory.h>
+#include <sksl/SkSLVersion.h>
 
 export module skia;
 
@@ -71,10 +74,13 @@ using ::SkPathBuilder;
 using ::SkPoint;
 using ::SkRect;
 using ::SkRRect;
+using ::SkRuntimeEffect;
+using ::SkRuntimeEffectBuilder;
 using ::SkSamplingOptions;
 using ::SkShader;
 using ::SkStream;
 using ::SkStreamAsset;
+using ::SkString;
 using ::SkSurface;
 using ::SkSurfaceProps;
 using ::SkTextEncoding;
@@ -113,7 +119,9 @@ using ::kN32_SkColorType;
 using ::kOpaque_SkAlphaType;
 using ::kPremul_SkAlphaType;
 using ::kRGBA_8888_SkColorType;
+using ::kRGBA_F32_SkColorType;
 using ::kTopLeft_GrSurfaceOrigin;
+using ::kUnpremul_SkAlphaType;
 
 inline constexpr SkColor kBlack = SK_ColorBLACK;
 inline constexpr SkColor kWhite = SK_ColorWHITE;
@@ -137,5 +145,8 @@ using Cap = ::SkPaint::Cap;
 inline constexpr Cap kButtCap = ::SkPaint::Cap::kButt_Cap;
 inline constexpr Cap kRoundCap = ::SkPaint::Cap::kRound_Cap;
 inline constexpr Cap kSquareCap = ::SkPaint::Cap::kSquare_Cap;
+
+using Version = ::SkSL::Version;
+inline constexpr Version kSL300 = ::SkSL::Version::k300;
 
 } // namespace skia
