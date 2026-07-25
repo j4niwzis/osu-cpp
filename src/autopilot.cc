@@ -20,8 +20,7 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
   paths.reserve(map.fObjects.size());
   for (const auto &obj : map.fObjects) {
     if (const Slider *s = std::get_if<Slider>(&obj)) {
-      paths.emplace_back(s->fCurveType, std::span{s->fControl},
-                         s->fPixelLength);
+      paths.push_back(SliderPath::from(*s));
     } else {
       paths.emplace_back();
     }
@@ -68,7 +67,7 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
                         ? std::min(dInSpan / span, 1.0) * total
                         : (1.0 - std::min(dInSpan / span, 1.0)) * total;
                 append(InputAction::kMove, o.fTime + t,
-                       paths[i].positionAt(dist));
+                       sliderBallPosition(paths[i], t, span, o.fPixelLength));
               }
               append(InputAction::kMove, end, o.fPos);
               const double releaseTime = std::max(end + 15.0, pressTime);

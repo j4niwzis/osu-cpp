@@ -40,17 +40,9 @@ endif()
 
 # ---- Create binary ----
 
-set(module_sources
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/glfw.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/skia.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/audio.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/skin.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/osz.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/archive.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/app.cc
-)
-set(main_source ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
-add_executable(${PROJECT_NAME} ${module_sources} ${main_source})
+file(GLOB_RECURSE module_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
+list(REMOVE_ITEM module_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
+add_executable(${PROJECT_NAME} ${module_sources} ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
@@ -76,10 +68,6 @@ include(GNUInstallDirs)
 
 install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-
-install(DIRECTORY ${default_skin_source}
-  DESTINATION ${CMAKE_INSTALL_DATADIR}/osu_client
 )
 
 # ---- Add osu_clientTests ----

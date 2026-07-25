@@ -29,8 +29,7 @@ public:
     fDiff = applyMods(map.fDiff, mods);
     for (std::size_t i = 0; i < map.fObjects.size(); ++i) {
       if (const Slider *s = std::get_if<Slider>(&map.fObjects[i])) {
-        fPaths.emplace_back(s->fCurveType, std::span{s->fControl},
-                            s->fPixelLength);
+        fPaths.push_back(SliderPath::from(*s));
       } else {
         fPaths.emplace_back();
       }
@@ -239,16 +238,10 @@ private:
                        const double span = fMap.sliderSpanDuration(o);
                        if (span <= 0.0 || local < 0)
                          return;
-                       const int spanIdx = static_cast<int>(local / span);
-                       if (spanIdx >= o.fRepeat)
+                       if (static_cast<int>(local / span) >= o.fRepeat)
                          return;
-                       const double dInSpan = std::fmod(local, span);
-                       const double total = o.fPixelLength;
-                       const double dist =
-                           (spanIdx & 1) == 0
-                               ? std::min(dInSpan / span, 1.0) * total
-                               : (1.0 - std::min(dInSpan / span, 1.0)) * total;
-                       const Vec2 ball = fPaths[i].positionAt(dist);
+                       const Vec2 ball = sliderBallPosition(
+                           fPaths[i], local, span, o.fPixelLength);
                        const bool inside = fCursor.distanceTo(ball) <=
                                            circleRadius(fDiff.fCs) * 2.4;
                        fStates[i].fTracking = fKeyDown && inside;

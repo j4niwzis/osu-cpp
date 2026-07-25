@@ -240,4 +240,12 @@ struct Metadata {
   int fBeatmapSetId = 0;
 };
 
+inline std::string toLower(std::string_view s) {
+  std::string out(s);
+  std::ranges::transform(out, out.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return out;
+}
+
 } // namespace osu

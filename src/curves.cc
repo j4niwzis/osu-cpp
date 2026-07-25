@@ -13,6 +13,10 @@ public:
     this->bake(type, controlPoints, pixelLength);
   }
 
+  [[nodiscard]] static SliderPath from(const Slider &s) {
+    return SliderPath(s.fCurveType, s.fControl, s.fPixelLength);
+  }
+
   [[nodiscard]] double length() const noexcept { return fTotalLength; }
   [[nodiscard]] bool empty() const noexcept { return fPoints.empty(); }
   [[nodiscard]] std::span<const Vec2> points() const noexcept {
@@ -277,6 +281,21 @@ inline void SliderPath::finish(double pixelLength) {
     fCumulative.push_back(pixelLength);
     fTotalLength = pixelLength;
   }
+}
+
+[[nodiscard]] inline Vec2 sliderBallPosition(const SliderPath &path,
+                                             double localTime,
+                                             double spanDuration,
+                                             double pixelLength) noexcept {
+  if (spanDuration <= 0.0 || localTime < 0.0)
+    return path.positionAt(0.0);
+  const int spanIdx = static_cast<int>(localTime / spanDuration);
+  const double dInSpan = std::fmod(localTime, spanDuration);
+  const double dist =
+      (spanIdx & 1) == 0
+          ? std::min(dInSpan / spanDuration, 1.0) * pixelLength
+          : (1.0 - std::min(dInSpan / spanDuration, 1.0)) * pixelLength;
+  return path.positionAt(dist);
 }
 
 } // namespace osu

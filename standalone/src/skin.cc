@@ -3,6 +3,7 @@ export module skin;
 import std;
 import skia;
 import osu;
+import client.util;
 
 namespace client {
 
@@ -43,10 +44,7 @@ inline std::filesystem::path findFile(const std::filesystem::path &root,
   if (root.empty()) {
     return {};
   }
-  std::string lower(base);
-  std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
+  std::string lower = detail::toLower(base);
 
   const std::vector<std::string_view> exts{"", ".png", ".jpg", ".jpeg"};
   for (const auto &ext : exts) {
@@ -385,9 +383,9 @@ public:
       if (bw <= 0.0 || bh <= 0.0)
         return;
 
-static const skia::Sp<skia::SkRuntimeEffect> sBodyFx =
-    []() -> skia::Sp<skia::SkRuntimeEffect> {
-  constexpr const char *kSL = R"(
+      static const skia::Sp<skia::SkRuntimeEffect> sBodyFx =
+          []() -> skia::Sp<skia::SkRuntimeEffect> {
+        constexpr const char *kSL = R"(
 uniform shader gradientTex;
 uniform shader segTex;
 uniform float segCount;
@@ -488,22 +486,21 @@ float4 main(float2 coords) {
 
       const float boxMinX = static_cast<float>(minX + radius);
       const float boxMinY = static_cast<float>(minY + radius);
-      const float bwExt =
-          static_cast<float>((maxX - radius) - boxMinX);
-      const float bhExt =
-          static_cast<float>((maxY - radius) - boxMinY);
+      const float bwExt = static_cast<float>((maxX - radius) - boxMinX);
+      const float bhExt = static_cast<float>((maxY - radius) - boxMinY);
       const float invW = bwExt > 0.0f ? 1.0f / bwExt : 1.0f;
       const float invH = bhExt > 0.0f ? 1.0f / bhExt : 1.0f;
 
-      auto encodeSegs = [&](std::span<const int> segIndices)
-          -> skia::Sp<skia::SkImage> {
+      auto encodeSegs =
+          [&](std::span<const int> segIndices) -> skia::Sp<skia::SkImage> {
         const int n = static_cast<int>(segIndices.size());
-        if (n < 1) return nullptr;
+        if (n < 1)
+          return nullptr;
         const int nPix = std::max(4, n * 2);
         skia::SkBitmap bmp;
-        if (!bmp.tryAllocPixels(skia::SkImageInfo::Make(
-                nPix, 1, skia::kRGBA_8888_SkColorType,
-                skia::kOpaque_SkAlphaType)))
+        if (!bmp.tryAllocPixels(
+                skia::SkImageInfo::Make(nPix, 1, skia::kRGBA_8888_SkColorType,
+                                        skia::kOpaque_SkAlphaType)))
           return nullptr;
         bmp.eraseColor(0x00000000);
         for (int j = 0; j < n; ++j) {
@@ -522,9 +519,9 @@ float4 main(float2 coords) {
               (static_cast<float>(curve[i + 1].fY) - boxMinY) * invH * 255.f +
                   0.5f,
               0.f, 255.f));
-          *bmp.getAddr32(j * 2, 0) =
-              (0xFFu << 24) | (static_cast<std::uint32_t>(ex) << 16) |
-              (static_cast<std::uint32_t>(sy) << 8) | sx;
+          *bmp.getAddr32(j * 2, 0) = (0xFFu << 24) |
+                                     (static_cast<std::uint32_t>(ex) << 16) |
+                                     (static_cast<std::uint32_t>(sy) << 8) | sx;
           *bmp.getAddr32(j * 2 + 1, 0) =
               (0xFFu << 24) | (0u << 16) | (0u << 8) | ey;
         }
@@ -534,9 +531,11 @@ float4 main(float2 coords) {
       auto drawTile = [&](float tx, float ty, float tw, float th,
                           std::span<const int> segIdx) {
         int nTile = static_cast<int>(segIdx.size());
-        if (nTile < 1) return;
+        if (nTile < 1)
+          return;
         auto tileImg = encodeSegs(segIdx);
-        if (!tileImg) return;
+        if (!tileImg)
+          return;
         skia::SkRuntimeEffectBuilder b(sBodyFx);
         b.uniform("segCount") = static_cast<float>(nTile);
         b.uniform("bodyRadius") = static_cast<float>(radius);
@@ -558,8 +557,7 @@ float4 main(float2 coords) {
         p.setAlphaf(bodyAlpha);
         canvas->save();
         canvas->translate(tx, ty);
-        canvas->drawRect(
-            skia::SkRect::MakeXYWH(0, 0, tw, th), p);
+        canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, tw, th), p);
         canvas->restore();
       };
 
@@ -567,15 +565,17 @@ float4 main(float2 coords) {
       bool tiled = false;
       if (!cached && nSegs > kMaxPerTile) {
         const float tileW =
-            std::max(64.0f, static_cast<float>(bw) * std::sqrt(
-                static_cast<float>(kMaxPerTile) / static_cast<float>(nSegs)));
+            std::max(64.0f, static_cast<float>(bw) *
+                                std::sqrt(static_cast<float>(kMaxPerTile) /
+                                          static_cast<float>(nSegs)));
         const float tileH =
-            std::max(64.0f, static_cast<float>(bh) * std::sqrt(
-                static_cast<float>(kMaxPerTile) / static_cast<float>(nSegs)));
+            std::max(64.0f, static_cast<float>(bh) *
+                                std::sqrt(static_cast<float>(kMaxPerTile) /
+                                          static_cast<float>(nSegs)));
         std::vector<int> tileSegs;
         tileSegs.reserve(nSegs);
-        for (float ty = static_cast<float>(minY);
-             ty < static_cast<float>(maxY); ty += tileH) {
+        for (float ty = static_cast<float>(minY); ty < static_cast<float>(maxY);
+             ty += tileH) {
           for (float tx = static_cast<float>(minX);
                tx < static_cast<float>(maxX); tx += tileW) {
             const float tex = tx + tileW;
@@ -603,10 +603,11 @@ float4 main(float2 coords) {
       if (!tiled) {
         if (!cached) {
           segImg = encodeSegs(allIndices);
-          if (!segImg) return;
+          if (!segImg)
+            return;
 
-          sBodySegCache[cacheKey] = CachedSeg{
-              segImg, nSegs, boxMinX, boxMinY, bwExt, bhExt};
+          sBodySegCache[cacheKey] =
+              CachedSeg{segImg, nSegs, boxMinX, boxMinY, bwExt, bhExt};
           segBwExt = bwExt;
           segBhExt = bhExt;
           segBoxMinX = boxMinX;
@@ -637,9 +638,8 @@ float4 main(float2 coords) {
           bodyPaint.setAlphaf(bodyAlpha);
           canvas->save();
           canvas->translate(static_cast<float>(minX), static_cast<float>(minY));
-          canvas->drawRect(skia::SkRect::MakeXYWH(0, 0,
-                                                   static_cast<float>(bw),
-                                                   static_cast<float>(bh)),
+          canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, static_cast<float>(bw),
+                                                  static_cast<float>(bh)),
                            bodyPaint);
           canvas->restore();
         }
@@ -711,14 +711,8 @@ float4 main(float2 coords) {
                         comboIndex, alphaScale);
 
     if (now >= s.fTime && now <= end) {
-      const double local = now - s.fTime;
-      const int spanIdx = static_cast<int>(local / duration);
-      const double dInSpan = std::fmod(local, duration);
-      const double dist =
-          (spanIdx & 1) == 0
-              ? std::min(dInSpan / duration, 1.0) * total
-              : (1.0 - std::min(dInSpan / duration, 1.0)) * total;
-      const osu::Vec2 ball = path.positionAt(dist);
+      const osu::Vec2 ball =
+          osu::sliderBallPosition(path, now - s.fTime, duration, total);
       const float bx = static_cast<float>(ball.fX);
       const float by = static_cast<float>(ball.fY);
 

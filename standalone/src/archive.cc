@@ -4,55 +4,14 @@ import std;
 import osu;
 import osu.stars;
 import osz;
+import client.util;
 
 namespace client {
 
 namespace detail {
 
-template <class F> class ScopeGuard {
-public:
-  explicit ScopeGuard(F f) : fFunc(std::move(f)) {}
-  ~ScopeGuard() {
-    if (fActive) {
-      fFunc();
-    }
-  }
-  ScopeGuard(const ScopeGuard &) = delete;
-  ScopeGuard &operator=(const ScopeGuard &) = delete;
-  ScopeGuard(ScopeGuard &&other) noexcept
-      : fFunc(std::move(other.fFunc)), fActive(other.fActive) {
-    other.fActive = false;
-  }
-  ScopeGuard &operator=(ScopeGuard &&) = delete;
-  void dismiss() noexcept { fActive = false; }
-
-private:
-  F fFunc;
-  bool fActive = true;
-};
-
-template <class F> ScopeGuard<F> scopeGuard(F f) {
-  return ScopeGuard<F>(std::move(f));
-}
-
-inline std::string toLower(std::string_view s) {
-  std::string out(s);
-  std::ranges::transform(out, out.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return out;
-}
-
-inline bool isOsz(const std::filesystem::path &path) {
-  return toLower(path.extension().string()) == ".osz";
-}
-
-inline bool isOsu(std::string_view name) {
-  return toLower(std::string(name)).ends_with(".osu");
-}
-
 [[nodiscard]] inline std::vector<std::uint8_t>
-readFile(const std::filesystem::path &path) {
+readDirFile(const std::filesystem::path &path) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error{"failed to read file: " + path.string()};
@@ -69,7 +28,7 @@ readDirectory(const std::filesystem::path &dir) {
       continue;
     }
     const auto name = entry.path().filename().string();
-    out.emplace(name, readFile(entry.path()));
+    out.emplace(name, readDirFile(entry.path()));
   }
   return out;
 }

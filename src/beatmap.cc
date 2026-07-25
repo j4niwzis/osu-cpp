@@ -203,14 +203,6 @@ splitKeyValue(std::string_view line) {
   return {trim(line.substr(0, colon)), trim(line.substr(colon + 1))};
 }
 
-inline std::string toLower(std::string_view s) {
-  std::string out(s);
-  std::ranges::transform(out, out.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return out;
-}
-
 } // namespace detail
 
 inline Vec2 nonStackedEndPosition(const HitObject &obj) {
@@ -680,9 +672,9 @@ public:
 
   [[nodiscard]] std::span<const std::uint8_t>
   findFile(std::string_view name) const {
-    const std::string lower = detail::toLower(name);
+    const std::string lower = toLower(name);
     for (const auto &[key, value] : fFiles) {
-      if (detail::toLower(key) == lower) {
+      if (toLower(key) == lower) {
         return std::span{value};
       }
     }

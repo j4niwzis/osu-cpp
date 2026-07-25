@@ -7,296 +7,16 @@ import skia;
 import audio;
 import skin;
 import archive;
+import client.util;
+import client.audio;
 
 namespace client {
 
-namespace detail {
-
-inline std::string lowerExtension(const std::filesystem::path &path) {
-  auto ext = path.extension().string();
-  std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return ext;
-}
-
-inline std::string fileExtension(std::string_view name) {
-  std::string ext;
-  if (const auto dot = name.rfind('.'); dot != std::string_view::npos) {
-    ext = name.substr(dot);
-  }
-  std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return ext;
-}
-
-inline audio::ALenum alFormat(int channels) {
-  return channels == 1 ? audio::kFormatMono16 : audio::kFormatStereo16;
-}
-
-[[nodiscard]] inline std::vector<std::uint8_t>
-readFile(const std::filesystem::path &path) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
-    return {};
-  }
-  return {std::istreambuf_iterator<char>(file),
-          std::istreambuf_iterator<char>()};
-}
-
-} // namespace detail
-
-class AudioContext {
-public:
-  AudioContext() { this->init(); }
-  ~AudioContext() { this->shutdown(); }
-
-  [[nodiscard]] bool ok() const noexcept { return fContext != nullptr; }
-
-private:
-  audio::ALCdevice *fDevice = nullptr;
-  audio::ALCcontext *fContext = nullptr;
-
-  void init() {
-    std::cerr << "[audio] opening OpenAL device\n";
-    fDevice = audio::alcOpenDevice(nullptr);
-    if (fDevice == nullptr) {
-      std::cerr << "[audio] failed to open OpenAL audio device\n";
-      return;
-    }
-    std::cerr << "[audio] creating OpenAL context\n";
-    fContext = audio::alcCreateContext(fDevice, nullptr);
-    if (fContext == nullptr) {
-      std::cerr << "[audio] failed to create OpenAL context\n";
-      audio::alcCloseDevice(fDevice);
-      fDevice = nullptr;
-      return;
-    }
-    std::cerr << "[audio] making context current\n";
-    audio::alcMakeContextCurrent(fContext);
-    audio::alListenerf(audio::kListenerGain, 1.0f);
-    std::cerr << "[audio] context ready\n";
-  }
-
-  void shutdown() {
-    std::cerr << "[audio] shutting down OpenAL\n";
-    if (fContext != nullptr) {
-      audio::alcMakeContextCurrent(nullptr);
-      audio::alcDestroyContext(fContext);
-      fContext = nullptr;
-    }
-    if (fDevice != nullptr) {
-      audio::alcCloseDevice(fDevice);
-      fDevice = nullptr;
-    }
-    std::cerr << "[audio] shutdown complete\n";
-  }
-};
-
-AudioContext &audioContext() {
-  static AudioContext ctx;
-  return ctx;
-}
-
-class AudioPlayer {
-public:
-  ~AudioPlayer() { this->shutdown(); }
-
-  bool load(const std::filesystem::path &path) {
-    std::cerr << "[audio] AudioPlayer::load(" << path << ")\n";
-    const auto ext = detail::lowerExtension(path);
-    const auto data = detail::readFile(path);
-    return this->load(data, ext);
-  }
-
-  bool load(std::span<const std::uint8_t> data, std::string_view ext) {
-    std::cerr << "[audio] AudioPlayer::load(" << data.size() << " bytes)\n";
-    if (!audioContext().ok()) {
-      std::cerr << "[audio] AudioPlayer::load: no context\n";
-      return false;
-    }
-
-    int rate = 44100;
-    int channels = 2;
-    std::vector<std::int16_t> samples;
-
-    std::cerr << "[audio] decoding " << ext << " audio\n";
-    if (ext == ".mp3") {
-      samples = audio::decode_mp3_memory(data, rate, channels);
-    } else {
-      samples = audio::decode_sndfile_memory(data, rate, channels);
-    }
-
-    if (samples.empty()) {
-      std::cerr << "[audio] failed to decode audio\n";
-      return false;
-    }
-    std::cerr << "[audio] decoded " << samples.size() << " samples (" << rate
-              << " Hz, " << channels << " ch)\n";
-
-    return this->upload(samples, rate, channels);
-  }
-
-  void play() {
-    if (fSource != 0) {
-      std::cerr << "[audio] AudioPlayer::play\n";
-      audio::alSourcePlay(fSource);
-    }
-  }
-
-  void stop() {
-    if (fSource != 0) {
-      std::cerr << "[audio] AudioPlayer::stop\n";
-      audio::alSourceStop(fSource);
-    }
-  }
-
-  [[nodiscard]] double positionSec() const {
-    if (fSource == 0) {
-      return 0.0;
-    }
-    audio::ALfloat sec = 0.0f;
-    audio::alGetSourcef(fSource, audio::kSecOffset, &sec);
-    return static_cast<double>(sec);
-  }
-
-  [[nodiscard]] bool playing() const {
-    if (fSource == 0) {
-      return false;
-    }
-    audio::ALint state = audio::kInitial;
-    audio::alGetSourcei(fSource, audio::kSourceState, &state);
-    return state == audio::kPlaying;
-  }
-
-private:
-  audio::ALuint fBuffer = 0;
-  audio::ALuint fSource = 0;
-
-  bool upload(const std::vector<std::int16_t> &samples, int rate,
-              int channels) {
-    audio::alGenBuffers(1, &fBuffer);
-    std::cerr << "[audio] generated buffer " << fBuffer << '\n';
-    audio::alBufferData(
-        fBuffer, detail::alFormat(channels), samples.data(),
-        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
-        rate);
-    std::cerr << "[audio] uploaded buffer data\n";
-    audio::alGenSources(1, &fSource);
-    std::cerr << "[audio] generated source " << fSource << '\n';
-    audio::alSourcei(fSource, audio::kBuffer,
-                     static_cast<audio::ALint>(fBuffer));
-    std::cerr << "[audio] AudioPlayer::upload complete\n";
-    return true;
-  }
-
-  void shutdown() {
-    if (fSource != 0) {
-      audio::alDeleteSources(1, &fSource);
-      fSource = 0;
-    }
-    if (fBuffer != 0) {
-      audio::alDeleteBuffers(1, &fBuffer);
-      fBuffer = 0;
-    }
-  }
-};
-
-class SamplePlayer {
-public:
-  ~SamplePlayer() { this->shutdown(); }
-
-  bool load(const std::filesystem::path &path) {
-    std::cerr << "[audio] SamplePlayer::load(" << path << ")\n";
-    const auto ext = detail::lowerExtension(path);
-    const auto data = detail::readFile(path);
-    return this->load(data, ext);
-  }
-
-  bool load(std::span<const std::uint8_t> data, std::string_view ext) {
-    std::cerr << "[audio] SamplePlayer::load(" << data.size() << " bytes)\n";
-    if (fBuffer != 0) {
-      return true;
-    }
-    if (!audioContext().ok()) {
-      std::cerr << "[audio] SamplePlayer::load: no context\n";
-      return false;
-    }
-
-    int rate = 44100;
-    int channels = 2;
-    std::vector<std::int16_t> samples;
-
-    std::cerr << "[audio] decoding sample " << ext << "\n";
-    if (ext == ".mp3") {
-      samples = audio::decode_mp3_memory(data, rate, channels);
-    } else {
-      samples = audio::decode_sndfile_memory(data, rate, channels);
-    }
-
-    if (samples.empty()) {
-      std::cerr << "[audio] failed to decode sample\n";
-      return false;
-    }
-    std::cerr << "[audio] decoded sample " << samples.size() << " samples\n";
-
-    return this->upload(samples, rate, channels);
-  }
-
-  [[nodiscard]] bool loaded() const noexcept { return fBuffer != 0; }
-
-  void play() {
-    if (fBuffer == 0 || fSources.empty() || !audioContext().ok()) {
-      return;
-    }
-    for (audio::ALuint source : fSources) {
-      audio::ALint state = audio::kInitial;
-      audio::alGetSourcei(source, audio::kSourceState, &state);
-      if (state != audio::kPlaying) {
-        audio::alSourcei(source, audio::kBuffer,
-                         static_cast<audio::ALint>(fBuffer));
-        audio::alSourcePlay(source);
-        return;
-      }
-    }
-  }
-
-private:
-  audio::ALuint fBuffer = 0;
-  std::vector<audio::ALuint> fSources;
-
-  bool upload(const std::vector<std::int16_t> &samples, int rate,
-              int channels) {
-    audio::alGenBuffers(1, &fBuffer);
-    std::cerr << "[audio] generated sample buffer " << fBuffer << '\n';
-    audio::alBufferData(
-        fBuffer, detail::alFormat(channels), samples.data(),
-        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
-        rate);
-    std::cerr << "[audio] uploaded sample buffer data\n";
-
-    constexpr std::size_t kPoolSize = 8;
-    fSources.resize(kPoolSize, 0);
-    audio::alGenSources(static_cast<audio::ALsizei>(fSources.size()),
-                        fSources.data());
-    std::cerr << "[audio] SamplePlayer::upload complete (" << fSources.size()
-              << " sources)\n";
-    return true;
-  }
-
-  void shutdown() {
-    if (!fSources.empty()) {
-      audio::alDeleteSources(static_cast<audio::ALsizei>(fSources.size()),
-                             fSources.data());
-      fSources.clear();
-    }
-    if (fBuffer != 0) {
-      audio::alDeleteBuffers(1, &fBuffer);
-      fBuffer = 0;
-    }
-  }
-};
+using audio_client::alFormat;
+using audio_client::AudioContext;
+using audio_client::audioContext;
+using audio_client::AudioPlayer;
+using audio_client::SamplePlayer;
 
 export class App {
 public:
@@ -1237,8 +957,7 @@ private:
                                          o.fCombo, fComboInfo.fIndices[index]);
                    },
                    [&](const osu::Slider &o) {
-                     osu::SliderPath path(o.fCurveType, std::span{o.fControl},
-                                          o.fPixelLength);
+                     osu::SliderPath path = osu::SliderPath::from(o);
                      fSkin.drawSlider(canvas, o, index, path,
                                       fMap->sliderSpanDuration(o),
                                       fMap->sliderTickDistance(o), now, cs, ar,
@@ -1270,8 +989,7 @@ private:
                                     alpha);
               },
               [&](const osu::Slider &o) {
-                osu::SliderPath path(o.fCurveType, std::span{o.fControl},
-                                     o.fPixelLength);
+                osu::SliderPath path = osu::SliderPath::from(o);
                 fSkin.drawSlider(
                     canvas, o, it->fIndex, path, fMap->sliderSpanDuration(o),
                     fMap->sliderTickDistance(o), now, cs, ar, od, o.fCombo,
