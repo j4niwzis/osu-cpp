@@ -59,8 +59,14 @@ target_compile_options(${PROJECT_NAME} PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${sources})
 
 # Link dependencies
-#target_link_libraries(${PROJECT_NAME} PUBLIC
-#)
+find_package(PkgConfig)
+pkg_check_modules(LIBLZMA REQUIRED liblzma)
+target_link_libraries(${PROJECT_NAME} PUBLIC
+  ${LIBLZMA_LIBRARIES}
+)
+target_include_directories(${PROJECT_NAME} PUBLIC
+  ${LIBLZMA_INCLUDE_DIRS}
+)
 
 
 # ---- Create an installable target ----

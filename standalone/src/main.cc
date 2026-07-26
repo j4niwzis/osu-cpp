@@ -47,6 +47,8 @@ void printUsage(std::string_view program) {
       << "  --skin <path>      Path to an osu! skin folder\n"
       << "  --headless         Run without a window (implies autoplay)\n"
       << "  --autoplay         Let the engine play the beatmap automatically\n"
+      << "  --replay <path>    Play a saved .osr replay file\n"
+      << "  --record           Record input events and save to .osr after play\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"
@@ -61,8 +63,10 @@ int main(int argc, char **argv) {
 
   std::filesystem::path beatmapPath;
   std::filesystem::path skinPath;
+  std::filesystem::path replayPath;
   bool headless = false;
   bool autoplay = false;
+  bool record = false;
   osu::ModSet mods = osu::mod::kNone;
 
   for (std::size_t i = 0; i < args.size(); ++i) {
@@ -76,6 +80,8 @@ int main(int argc, char **argv) {
       autoplay = true;
     } else if (arg == "--autoplay") {
       autoplay = true;
+    } else if (arg == "--record") {
+      record = true;
     } else if (arg == "--dt") {
       mods |= osu::mod::kDoubleTime;
     } else if (arg == "--ht") {
@@ -88,6 +94,9 @@ int main(int argc, char **argv) {
       beatmapPath = args[++i];
     } else if (arg == "--skin" && i + 1 < args.size()) {
       skinPath = args[++i];
+    } else if (arg == "--replay" && i + 1 < args.size()) {
+      replayPath = args[++i];
+      autoplay = true;
     } else if (!arg.starts_with('-')) {
       beatmapPath = arg;
     }
@@ -121,7 +130,8 @@ int main(int argc, char **argv) {
 
   try {
     osu::BeatmapSet set = client::loadBeatmapSet(beatmapPath);
-    client::App app(std::move(set), mods, headless, autoplay, skinPath);
+    client::App app(std::move(set), mods, headless, autoplay, replayPath,
+                    record, skinPath);
     return app.run();
   } catch (const osu::ParseError &e) {
     std::cerr << "Parse error: " << e.what() << '\n';

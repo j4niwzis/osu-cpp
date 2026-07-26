@@ -21,9 +21,12 @@ using audio_client::SamplePlayer;
 export class App {
 public:
   App(osu::BeatmapSet set, osu::ModSet mods, bool headless, bool autoplay,
+      std::filesystem::path replayPath = {},
+      bool record = false,
       std::filesystem::path skinPath = {})
       : fSet(std::move(set)), fMods(mods), fHeadless(headless),
-        fAutoplay(autoplay), fSkin(std::move(skinPath)) {}
+        fAutoplay(autoplay), fReplayPath(std::move(replayPath)), fRecord(record),
+        fSkin(std::move(skinPath)) {}
 
   ~App() { this->shutdown(); }
 
@@ -41,7 +44,11 @@ private:
   std::optional<osu::Engine> fEngine;
   bool fHeadless = false;
   bool fAutoplay = false;
+  std::filesystem::path fReplayPath;
+  bool fRecord = false;
+  std::string fBeatmapFilename;
   std::vector<osu::InputEvent> fAutoplayEvents;
+  std::vector<osu::InputEvent> fRecordedEvents;
   std::size_t fAutoplayIndex = 0;
   Skin fSkin;
   skia::Sp<skia::SkImage> fBackground;
@@ -137,11 +144,24 @@ private:
 
   void startGameplay(const osu::BeatmapInfo &info) {
     fMap.emplace(client::loadBeatmap(fSet, info));
+    fBeatmapFilename = info.fFilename;
     fEngine.emplace(*fMap, fMods);
     this->loadComboInfo();
     fSkin.setComboColors(fMap->fComboColors);
     if (fAutoplay) {
-      fAutoplayEvents = osu::buildAutoplay(*fMap, fMods);
+      if (!fReplayPath.empty()) {
+        std::ifstream file(fReplayPath, std::ios::binary);
+        if (file) {
+          std::vector<std::uint8_t> bytes{
+              std::istreambuf_iterator<char>(file),
+              std::istreambuf_iterator<char>()};
+          auto replayData = osu::decodeReplay(bytes);
+          fAutoplayEvents = std::move(replayData.fEvents);
+          fMods = replayData.fMods;
+        }
+      } else {
+        fAutoplayEvents = osu::buildAutoplay(*fMap, fMods);
+      }
       fAutoplayIndex = 0;
     }
 
@@ -357,6 +377,7 @@ private:
     }
 
     this->printResult();
+    if (fRecord) this->saveReplay();
     return 0;
   }
 
@@ -669,13 +690,19 @@ private:
 
     if (!fAutoplay) {
       if (fCursor.fX != fLastCursor.fX || fCursor.fY != fLastCursor.fY) {
-        fEngine->submit({now, fCursor, osu::InputAction::kMove});
+        auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kMove};
+        fEngine->submit(ev);
+        if (fRecord) fRecordedEvents.push_back(ev);
         fLastCursor = fCursor;
       }
       if (fKeyDown && !fKeyWasDown) {
-        fEngine->submit({now, fCursor, osu::InputAction::kPress});
+        auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kPress};
+        fEngine->submit(ev);
+        if (fRecord) fRecordedEvents.push_back(ev);
       } else if (!fKeyDown && fKeyWasDown) {
-        fEngine->submit({now, fCursor, osu::InputAction::kRelease});
+        auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kRelease};
+        fEngine->submit(ev);
+        if (fRecord) fRecordedEvents.push_back(ev);
       }
     }
     fKeyWasDown = fKeyDown;
@@ -686,6 +713,7 @@ private:
            fAutoplayEvents[fAutoplayIndex].fTime <= now) {
       const auto &ev = fAutoplayEvents[fAutoplayIndex];
       fEngine->submit(ev);
+      if (fRecord) fRecordedEvents.push_back(ev);
       if (ev.fAction == osu::InputAction::kMove) {
         fCursor = ev.fPos;
         fCursorTrail.push_back({fCursor, ev.fTime});
@@ -1282,6 +1310,33 @@ private:
   }
 
   void printResult() { std::println("{}", fEngine->score()); }
+
+  [[nodiscard]] std::string beatmapMd5() const {
+    if (!fMap)
+      return {};
+    const auto bytes = fSet.findFile(fBeatmapFilename);
+    if (bytes.empty())
+      return {};
+    return osu::md5HashString(bytes);
+  }
+
+  void saveReplay() {
+    if (fRecordedEvents.empty() || !fMap)
+      return;
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+    std::ostringstream nameStream;
+    nameStream << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S");
+    auto replayBytes =
+        osu::encodeReplay(fRecordedEvents, this->beatmapMd5(), "Player",
+                          fMods);
+    std::filesystem::path outPath =
+        fMap->fMeta.fVersion + "_" + nameStream.str() + ".osr";
+    std::ofstream out(outPath, std::ios::binary);
+    for (std::uint8_t b : replayBytes)
+      out.put(static_cast<char>(b));
+    std::println("Saved replay to {}", outPath.string());
+  }
 
   [[nodiscard]] osu::Vec2 toPlayfield(float sx, float sy) const {
     return {(static_cast<double>(sx) - fOffsetX) / fScale,
