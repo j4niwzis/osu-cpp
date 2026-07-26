@@ -41,6 +41,10 @@ endif()
 # ---- Create binary ----
 
 file(GLOB sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
+endif()
 add_executable(${PROJECT_NAME} ${sources})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -64,7 +68,19 @@ endif()
 
 enable_testing()
 
-add_test(NAME ${PROJECT_NAME} COMMAND ${PROJECT_NAME} WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  target_link_options(${PROJECT_NAME} PRIVATE
+    "SHELL:-sEXIT_RUNTIME=1"
+    "SHELL:-sNO_DISABLE_EXCEPTION_CATCHING"
+  )
+  set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".js")
+  add_test(NAME ${PROJECT_NAME}
+    COMMAND node ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.js
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+else()
+  add_test(NAME ${PROJECT_NAME} COMMAND ${PROJECT_NAME}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..)
+endif()
 
 # ---- code coverage ----
 

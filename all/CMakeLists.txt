@@ -1,3 +1,7 @@
+if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  set(CMAKE_CXX_FLAGS "-fexceptions" CACHE STRING "" FORCE)
+endif()
+
 cmake_minimum_required(VERSION 4.3.3 FATAL_ERROR)
 
 set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
@@ -17,5 +21,5 @@ include(../cmake/tools.cmake)
 # needed to generate test target
 enable_testing()
 
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../test ${CMAKE_BINARY_DIR}/test)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../standalone ${CMAKE_BINARY_DIR}/standalone)
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../test ${CMAKE_BINARY_DIR}/test)

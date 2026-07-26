@@ -2,6 +2,69 @@ import std;
 import osu;
 import app;
 import archive;
+import osz;
+
+#ifdef __EMSCRIPTEN__
+#include "emscripten_macro.h"
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE int extractSkin() {
+  osz::zip_t *handle = osz::zip_open("/skin.osk", osz::kRdOnly, nullptr);
+  if (handle == nullptr)
+    return 1;
+
+  const osz::zip_int64_t count = osz::zip_get_num_entries(handle, 0);
+  if (count < 0) {
+    osz::zip_close(handle);
+    return 1;
+  }
+
+  std::filesystem::create_directories("/skin");
+
+  for (osz::zip_uint64_t i = 0; i < static_cast<osz::zip_uint64_t>(count);
+       ++i) {
+    const char *rawName = osz::zip_get_name(handle, i, osz::kFlEncGuess);
+    if (rawName == nullptr)
+      continue;
+    std::string name(rawName);
+    if (name.empty() || name.back() == '/')
+      continue;
+
+    osz::zip_stat_t stat{};
+    if (osz::zip_stat_index(handle, i, 0, &stat) < 0)
+      continue;
+
+    osz::zip_file_t *file = osz::zip_fopen_index(handle, i, 0);
+    if (file == nullptr)
+      continue;
+
+    std::vector<std::uint8_t> buffer(stat.size);
+    if (!buffer.empty()) {
+      const osz::zip_int64_t read =
+          osz::zip_fread(file, buffer.data(), buffer.size());
+      if (read < 0 ||
+          static_cast<osz::zip_uint64_t>(read) != stat.size) {
+        osz::zip_fclose(file);
+        continue;
+      }
+    }
+    osz::zip_fclose(file);
+
+    std::filesystem::path outPath =
+        std::filesystem::path("/skin") / name;
+    std::filesystem::create_directories(outPath.parent_path());
+
+    std::ofstream out(outPath, std::ios::binary);
+    if (!out)
+      continue;
+    for (auto b : buffer)
+      out.put(static_cast<char>(b));
+  }
+  osz::zip_close(handle);
+  return 0;
+}
+}
+#endif
 
 namespace {
 
@@ -103,9 +166,15 @@ int main(int argc, char **argv) {
   }
 
   if (beatmapPath.empty() || !std::filesystem::exists(beatmapPath)) {
+#ifdef __EMSCRIPTEN__
+    std::cout << "osu! client (WebAssembly)\n"
+              << "Upload a .osz beatmap file to begin.\n";
+    return 0;
+#else
     std::cerr << "Error: beatmap path not provided or does not exist\n";
     printUsage(argc > 0 ? argv[0] : "osu_client");
     return 1;
+#endif
   }
 
   if (skinPath.empty()) {

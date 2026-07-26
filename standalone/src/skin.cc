@@ -979,8 +979,8 @@ private:
 
     skia::SkBitmap bitmap;
     constexpr int kGradH = 4;
-    const skia::SkImageInfo info =
-        skia::SkImageInfo::MakeN32Premul(kWidth, kGradH);
+    const skia::SkImageInfo info = skia::SkImageInfo::Make(
+        kWidth, kGradH, skia::kRGBA_8888_SkColorType, skia::kPremul_SkAlphaType);
     if (!bitmap.tryAllocPixels(info))
       return nullptr;
 
@@ -1026,7 +1026,10 @@ private:
           static_cast<std::uint8_t>(std::clamp(G * 255.0, 0.0, 255.0));
       const std::uint8_t b =
           static_cast<std::uint8_t>(std::clamp(B * 255.0, 0.0, 255.0));
-      const auto pix = skia::colorSetARGB(a, r, g, b);
+      const auto pix = (static_cast<std::uint32_t>(a) << 24) |
+                       (static_cast<std::uint32_t>(b) << 16) |
+                       (static_cast<std::uint32_t>(g) << 8) |
+                       static_cast<std::uint32_t>(r);
       for (int y = 0; y < kGradH; ++y)
         *bitmap.getAddr32(x, y) = pix;
     }

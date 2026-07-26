@@ -1,3 +1,9 @@
+module;
+
+#ifdef __EMSCRIPTEN__
+#include "emscripten_macro.h"
+#endif
+
 export module app;
 
 import std;
@@ -9,6 +15,9 @@ import skin;
 import archive;
 import client.util;
 import client.audio;
+#ifdef __EMSCRIPTEN__
+import emscripten;
+#endif
 
 namespace client {
 
@@ -80,9 +89,10 @@ private:
   State fState = State::kSelecting;
   int fSelectedDifficulty = 0;
   bool fDifficultyConfirmed = false;
-  bool fClickPending = false;
+  int fEmscriptenResult = 0;
   int fHoveredDifficulty = -1;
   float fSelectScrollY = 0.0f;
+  bool fClickPending = false;
 
   // Timing
   double fStartMs = 0.0;
@@ -198,6 +208,17 @@ private:
       return 1;
     }
 
+#ifdef __EMSCRIPTEN__
+    glfw::glfwWindowHint(glfw::kClientApi, glfw::kOpenGLApi);
+    glfw::glfwWindowHint(glfw::kContextVersionMajor, 3);
+    glfw::glfwWindowHint(glfw::kContextVersionMinor, 0);
+    glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
+    glfw::glfwWindowHint(glfw::kSamples, 0);
+
+    int fsw = EM_ASM_INT({ return Module.canvas.width; });
+    int fsh = EM_ASM_INT({ return Module.canvas.height; });
+    fWindow = glfw::glfwCreateWindow(fsw, fsh, "osu_client", nullptr, nullptr);
+#else
     glfw::glfwWindowHint(glfw::kClientApi, glfw::kOpenGLApi);
     glfw::glfwWindowHint(glfw::kContextVersionMajor, 4);
     glfw::glfwWindowHint(glfw::kContextVersionMinor, 1);
@@ -212,11 +233,15 @@ private:
 
     fWindow = glfw::glfwCreateWindow(fScreenW, fScreenH, "osu_client", monitor,
                                      nullptr);
+#endif
     if (fWindow == nullptr) {
       glfw::glfwTerminate();
       return 1;
     }
     glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorNormal);
+#ifdef __EMSCRIPTEN__
+    EM_ASM(Module.setCursorVisible(true));
+#endif
 
     glfw::glfwSetWindowUserPointer(fWindow, this);
     glfw::glfwSetKeyCallback(
@@ -256,7 +281,9 @@ private:
         });
 
     glfw::glfwMakeContextCurrent(fWindow);
+#ifndef __EMSCRIPTEN__
     glfw::glfwSwapInterval(1);
+#endif
 
     if (!this->initSkia()) {
       glfw::glfwDestroyWindow(fWindow);
@@ -270,17 +297,37 @@ private:
     int selected = 0;
     if (fSet.fBeatmaps.size() > 1) {
       selected = this->runDifficultySelect();
+#ifdef __EMSCRIPTEN__
+      emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
+      return 0;
+#else
       if (selected < 0 || selected >= static_cast<int>(fSet.fBeatmaps.size())) {
         return 0;
       }
+#endif
     }
 
+#ifndef __EMSCRIPTEN__
     glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorHidden);
+#endif
+#ifdef __EMSCRIPTEN__
+    EM_ASM(Module.setCursorVisible(false));
+#endif
     this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(selected)]);
+
+#ifdef __EMSCRIPTEN__
+    emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
+    return 0;
+#else
     return this->runGameplayLoop();
+#endif
   }
 
   void onKey(int key, int action) {
+#ifdef __EMSCRIPTEN__
+    if (action == glfw::kPress || action == glfw::kRepeat)
+      EM_ASM(console.log('key:', $0, 'action:', $1), key, action);
+#endif
     if (fState == State::kSelecting) {
       if (action == glfw::kPress) {
         if (key == glfw::kKeyEscape) {
@@ -347,6 +394,10 @@ private:
     fState = State::kSelecting;
     this->loadSelectBackground();
 
+#ifdef __EMSCRIPTEN__
+    fEmscriptenResult = 0;
+    return 0;
+#else
     while (!glfw::glfwWindowShouldClose(fWindow) && !fDifficultyConfirmed) {
       glfw::glfwPollEvents();
       this->updateSelectHover();
@@ -359,11 +410,15 @@ private:
       return -1;
     }
     return fSelectedDifficulty;
+#endif
   }
 
   [[nodiscard]] int runGameplayLoop() {
     fState = State::kPlaying;
 
+#ifdef __EMSCRIPTEN__
+    return 0;
+#else
     while (!glfw::glfwWindowShouldClose(fWindow) &&
            !this->shouldStop(this->nowMs())) {
       glfw::glfwPollEvents();
@@ -379,7 +434,73 @@ private:
     this->printResult();
     if (fRecord) this->saveReplay();
     return 0;
+#endif
   }
+
+#ifdef __EMSCRIPTEN__
+  static void emscriptenFrameProc(void *arg) {
+    static_cast<App *>(arg)->emscriptenFrame();
+  }
+
+  void emscriptenFrame() {
+    glfw::glfwPollEvents();
+
+    {
+      double cx = 0, cy = 0;
+      glfw::glfwGetCursorPos(fWindow, &cx, &cy);
+      this->onCursorMove(static_cast<float>(cx), static_cast<float>(cy));
+    }
+
+    int fw = 0, fh = 0;
+    glfw::glfwGetFramebufferSize(fWindow, &fw, &fh);
+    if (fw != fScreenW || fh != fScreenH) {
+      this->resize(fw, fh);
+    }
+
+    if (glfw::glfwWindowShouldClose(fWindow)) {
+      this->printResult();
+      if (fRecord) this->saveReplay();
+      emscripten::emscripten_cancel_main_loop();
+      return;
+    }
+
+    if (fState == State::kSelecting) {
+      if (fDifficultyConfirmed) {
+        if (fSelectedDifficulty < 0 ||
+            fSelectedDifficulty >= static_cast<int>(fSet.fBeatmaps.size())) {
+          emscripten::emscripten_cancel_main_loop();
+          return;
+        }
+        EM_ASM(Module.setCursorVisible(false));
+        this->startGameplay(
+            fSet.fBeatmaps[static_cast<std::size_t>(fSelectedDifficulty)]);
+        fState = State::kPlaying;
+      } else {
+        this->updateSelectHover();
+        this->renderDifficultySelect();
+        fContext->flushAndSubmit(fSurface.get());
+        glfw::glfwSwapBuffers(fWindow);
+        return;
+      }
+    }
+
+    if (fState == State::kPlaying) {
+      if (this->shouldStop(this->nowMs())) {
+        this->printResult();
+        if (fRecord) this->saveReplay();
+        emscripten::emscripten_cancel_main_loop();
+        return;
+      }
+      const double now = this->nowMs();
+      this->handleInput(now);
+      fEngine->advance(now);
+      this->playHitsounds(now);
+      this->render();
+      fContext->flushAndSubmit(fSurface.get());
+      glfw::glfwSwapBuffers(fWindow);
+    }
+  }
+#endif
 
   void loadSelectBackground() {
     for (const auto &info : fSet.fBeatmaps) {
@@ -651,6 +772,7 @@ private:
   void toggleFullscreen() {
     if (fWindow == nullptr)
       return;
+#ifndef __EMSCRIPTEN__
     fFullscreen = !fFullscreen;
     if (fFullscreen) {
       const auto monitor = glfw::glfwGetPrimaryMonitor();
@@ -661,6 +783,7 @@ private:
       glfw::glfwSetWindowMonitor(fWindow, nullptr, fWindowedX, fWindowedY,
                                  fWindowedW, fWindowedH, 0);
     }
+#endif
   }
 
   void shutdown() {
@@ -675,10 +798,14 @@ private:
   }
 
   [[nodiscard]] double nowMs() const {
+#ifdef __EMSCRIPTEN__
+    return glfw::glfwGetTime() * 1000.0 - fStartMs;
+#else
     if (fAudio.playing()) {
       return fAudio.positionSec() * 1000.0;
     }
     return glfw::glfwGetTime() * 1000.0 - fStartMs;
+#endif
   }
 
   [[nodiscard]] bool shouldStop(double now) const {

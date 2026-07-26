@@ -17,6 +17,7 @@ using ::GLFWwindow;
 
 using ::glfwCreateWindow;
 using ::glfwDestroyWindow;
+using ::glfwGetCursorPos;
 using ::glfwGetFramebufferSize;
 using ::glfwGetPrimaryMonitor;
 using ::glfwGetProcAddress;
@@ -53,6 +54,8 @@ inline constexpr int kOpenGLProfile = GLFW_OPENGL_PROFILE;
 inline constexpr int kOpenGLCoreProfile = GLFW_OPENGL_CORE_PROFILE;
 inline constexpr int kOpenGLForwardCompat = GLFW_OPENGL_FORWARD_COMPAT;
 inline constexpr int kResizable = GLFW_RESIZABLE;
+inline constexpr int kSamples = GLFW_SAMPLES;
+inline constexpr int kScaleToMonitor = GLFW_SCALE_TO_MONITOR;
 inline constexpr int kVisible = GLFW_VISIBLE;
 inline constexpr int kDecorated = GLFW_DECORATED;
 
