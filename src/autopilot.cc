@@ -15,7 +15,6 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
   std::vector<InputEvent> events;
   events.reserve(map.fObjects.size() * 4 + 64);
 
-  // Pre-build slider paths so we can sample cursor motion.
   std::vector<SliderPath> paths;
   paths.reserve(map.fObjects.size());
   for (const auto &obj : map.fObjects) {
@@ -26,10 +25,25 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
     }
   }
 
+  constexpr double kMoveStep = 6.0;
+
   Vec2 prev = kPlayfieldCenter;
   double lastEnd = 0.0;
   const auto append = [&](InputAction action, double time, Vec2 pos) {
     events.push_back({time, pos, action});
+  };
+
+  const auto moveTo = [&](Vec2 from, Vec2 to, double startTime,
+                          double duration) {
+    if (duration <= kMoveStep) {
+      append(InputAction::kMove, startTime + duration, to);
+      return;
+    }
+    for (double t = kMoveStep; t < duration; t += kMoveStep) {
+      const double frac = t / duration;
+      append(InputAction::kMove, startTime + t, from + (to - from) * frac);
+    }
+    append(InputAction::kMove, startTime + duration, to);
   };
 
   for (std::size_t i = 0; i < map.fObjects.size(); ++i) {
@@ -38,10 +52,9 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
         Overloaded{
             [&](const Circle &o) {
               const double pressTime = std::max(o.fTime, lastEnd);
-              const double moveTime = o.fTime >= lastEnd
-                                          ? o.fTime - preemptTime(diff.fAr)
-                                          : lastEnd;
-              append(InputAction::kMove, moveTime, o.fPos);
+              if (pressTime > lastEnd) {
+                moveTo(prev, o.fPos, lastEnd, pressTime - lastEnd);
+              }
               append(InputAction::kPress, pressTime, o.fPos);
               append(InputAction::kRelease, pressTime + 15.0, o.fPos);
               lastEnd = pressTime + 15.0;
@@ -49,16 +62,14 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
             },
             [&](const Slider &o) {
               const double span = map.sliderSpanDuration(o);
-              const double end = o.fTime + span * o.fRepeat;
+              const double sliderEnd = o.fTime + span * o.fRepeat;
               const double pressTime = std::max(o.fTime, lastEnd);
-              const double moveTime = o.fTime >= lastEnd
-                                          ? o.fTime - preemptTime(diff.fAr)
-                                          : lastEnd;
-              append(InputAction::kMove, moveTime, o.fPos);
+              if (pressTime > lastEnd) {
+                moveTo(prev, o.fPos, lastEnd, pressTime - lastEnd);
+              }
               append(InputAction::kPress, pressTime, o.fPos);
-              // Move along the slider body in small steps.
-              const double step = 6.0;
-              for (double t = step; t < end - o.fTime; t += step) {
+              for (double t = kMoveStep; t < sliderEnd - o.fTime;
+                   t += kMoveStep) {
                 const int spanIdx = static_cast<int>(t / span);
                 const double dInSpan = std::fmod(t, span);
                 const double total = o.fPixelLength;
@@ -67,32 +78,37 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
                         ? std::min(dInSpan / span, 1.0) * total
                         : (1.0 - std::min(dInSpan / span, 1.0)) * total;
                 append(InputAction::kMove, o.fTime + t,
-                       sliderBallPosition(paths[i], t, span, o.fPixelLength));
+                       sliderBallPosition(paths[i], t, span,
+                                          o.fPixelLength));
               }
-              append(InputAction::kMove, end, o.fPos);
-              const double releaseTime = std::max(end + 15.0, pressTime);
-              append(InputAction::kRelease, releaseTime, o.fPos);
+              const double releaseTime =
+                  std::max(sliderEnd + 15.0, pressTime);
+              append(InputAction::kRelease, releaseTime, sliderEnd > o.fTime
+                                                             ? o.fPos
+                                                             : kPlayfieldCenter);
               lastEnd = releaseTime;
               prev = o.fPos;
             },
             [&](const Spinner &o) {
               const double pressTime = std::max(o.fTime, lastEnd);
-              const double moveTime =
-                  o.fTime >= lastEnd ? o.fTime - 200.0 : lastEnd;
-              append(InputAction::kMove, moveTime, kPlayfieldCenter);
+              if (pressTime > lastEnd) {
+                moveTo(prev, kPlayfieldCenter, lastEnd,
+                       pressTime - lastEnd);
+              }
               append(InputAction::kPress, pressTime, kPlayfieldCenter);
-              // Spin around the center at roughly 480 rpm.
               constexpr double kRpm = 480.0;
               const double omega =
                   kRpm * 2.0 * std::numbers::pi / 60.0 / 1000.0;
-              const double step = 6.0;
-              for (double t = step; t < o.fEnd - o.fTime; t += step) {
+              for (double t = kMoveStep; t < o.fEnd - o.fTime;
+                   t += kMoveStep) {
                 const double ang = t * omega;
-                const Vec2 p{kPlayfieldCenter.fX + 80.0 * std::cos(ang),
-                             kPlayfieldCenter.fY + 80.0 * std::sin(ang)};
+                const Vec2 p{
+                    kPlayfieldCenter.fX + 80.0 * std::cos(ang),
+                    kPlayfieldCenter.fY + 80.0 * std::sin(ang)};
                 append(InputAction::kMove, o.fTime + t, p);
               }
-              const double releaseTime = std::max(o.fEnd + 15.0, pressTime);
+              const double releaseTime =
+                  std::max(o.fEnd + 15.0, pressTime);
               append(InputAction::kRelease, releaseTime, kPlayfieldCenter);
               lastEnd = releaseTime;
               prev = kPlayfieldCenter;

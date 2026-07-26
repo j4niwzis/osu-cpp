@@ -111,8 +111,8 @@ private:
     double fTime;
   };
   std::deque<CursorTrailPoint> fCursorTrail;
-  static constexpr double kCursorTrailLifetime = 80.0;
-  static constexpr std::size_t kCursorTrailMax = 16;
+  static constexpr double kCursorTrailLifetime = 140.0;
+  static constexpr std::size_t kCursorTrailMax = 40;
 
   // Fading judged objects.
   struct FadingObject {
@@ -287,7 +287,7 @@ private:
     }
     if (action == glfw::kPress || action == glfw::kRepeat) {
       if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
-        fKeyDown = true;
+        if (!fAutoplay) fKeyDown = true;
       }
     } else if (action == glfw::kRelease) {
       if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
@@ -303,6 +303,7 @@ private:
       }
       return;
     }
+    if (fAutoplay) return;
     if (button == glfw::kMouseButtonLeft || button == glfw::kMouseButtonRight) {
       fKeyDown = (action == glfw::kPress || action == glfw::kRepeat);
     }
@@ -311,7 +312,7 @@ private:
   void onCursorMove(float sx, float sy) {
     fMouseX = sx;
     fMouseY = sy;
-    if (fState == State::kPlaying) {
+    if (fState == State::kPlaying && !fAutoplay) {
       fCursor = this->toPlayfield(sx, sy);
     }
   }
@@ -666,14 +667,16 @@ private:
   void handleInput(double now) {
     this->submitAutoplay(now);
 
-    if (fCursor.fX != fLastCursor.fX || fCursor.fY != fLastCursor.fY) {
-      fEngine->submit({now, fCursor, osu::InputAction::kMove});
-      fLastCursor = fCursor;
-    }
-    if (fKeyDown && !fKeyWasDown) {
-      fEngine->submit({now, fCursor, osu::InputAction::kPress});
-    } else if (!fKeyDown && fKeyWasDown) {
-      fEngine->submit({now, fCursor, osu::InputAction::kRelease});
+    if (!fAutoplay) {
+      if (fCursor.fX != fLastCursor.fX || fCursor.fY != fLastCursor.fY) {
+        fEngine->submit({now, fCursor, osu::InputAction::kMove});
+        fLastCursor = fCursor;
+      }
+      if (fKeyDown && !fKeyWasDown) {
+        fEngine->submit({now, fCursor, osu::InputAction::kPress});
+      } else if (!fKeyDown && fKeyWasDown) {
+        fEngine->submit({now, fCursor, osu::InputAction::kRelease});
+      }
     }
     fKeyWasDown = fKeyDown;
   }
@@ -681,7 +684,12 @@ private:
   void submitAutoplay(double now) {
     while (fAutoplayIndex < fAutoplayEvents.size() &&
            fAutoplayEvents[fAutoplayIndex].fTime <= now) {
-      fEngine->submit(fAutoplayEvents[fAutoplayIndex]);
+      const auto &ev = fAutoplayEvents[fAutoplayIndex];
+      fEngine->submit(ev);
+      if (ev.fAction == osu::InputAction::kMove) {
+        fCursor = ev.fPos;
+        fCursorTrail.push_back({fCursor, ev.fTime});
+      }
       ++fAutoplayIndex;
     }
   }
@@ -1045,13 +1053,46 @@ private:
 
   void drawCursorTrail(skia::SkCanvas *canvas, double now) {
     const float scale = 1.0f / fScale;
+    const bool hasImg = static_cast<bool>(fSkin.cursorTrail());
+
+    struct TrailPt {
+      float fX, fY;
+      float fAlpha;
+    };
+    std::vector<TrailPt> pts;
     for (const auto &p : fCursorTrail) {
       const double age = now - p.fTime;
       if (age > kCursorTrailLifetime)
         continue;
       const float alpha =
           static_cast<float>((1.0 - age / kCursorTrailLifetime) * 0.6);
-      fSkin.drawCursorTrail(canvas, p.fPos, scale, alpha);
+      pts.push_back({static_cast<float>(p.fPos.fX),
+                     static_cast<float>(p.fPos.fY), alpha});
+    }
+    if (pts.size() < 2)
+      return;
+
+    const float baseW = hasImg ? 6.0f * scale : 12.0f * scale;
+
+    for (std::size_t i = 1; i < pts.size(); ++i) {
+      const float t = static_cast<float>(i) / static_cast<float>(pts.size());
+      const float w = baseW * (0.12f + 0.88f * t * (2.0f - t));
+      const float a = (pts[i - 1].fAlpha + pts[i].fAlpha) * 0.5f;
+      skia::SkPaint paint;
+      paint.setAntiAlias(true);
+      paint.setStrokeWidth(w);
+      paint.setStrokeCap(skia::SkPaint::kRound_Cap);
+      paint.setAlphaf(a);
+      paint.setColor(skia::kWhite);
+      paint.setStyle(skia::kStrokeStyle);
+      if (hasImg)
+        paint.setBlendMode(skia::SkBlendMode::kPlus);
+      canvas->drawLine(pts[i - 1].fX, pts[i - 1].fY, pts[i].fX, pts[i].fY,
+                       paint);
+    }
+
+    if (hasImg) {
+      fSkin.drawCursorTrail(canvas, fCursorTrail.back().fPos, scale, 0.6f);
     }
   }
 

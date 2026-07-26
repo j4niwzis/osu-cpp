@@ -883,14 +883,22 @@ float4 main(float2 coords) {
   void drawCursorTrail(skia::SkCanvas *canvas, osu::Vec2 pos, float scale,
                        float alpha) {
     auto img = this->cursorTrail();
-    if (!img)
-      return;
+    const float x = static_cast<float>(pos.fX);
+    const float y = static_cast<float>(pos.fY);
     skia::SkPaint paint;
     paint.setAntiAlias(true);
     paint.setAlphaf(alpha);
-    paint.setBlendMode(skia::SkBlendMode::kPlus);
-    detail::drawImageCentered(canvas, img.get(), static_cast<float>(pos.fX),
-                              static_cast<float>(pos.fY), 0.35f * scale, paint);
+    if (img) {
+      paint.setBlendMode(skia::SkBlendMode::kPlus);
+      detail::drawImageCentered(canvas, img.get(), x, y, 0.35f * scale, paint);
+    } else {
+      paint.setColor(skia::kWhite);
+      paint.setStyle(skia::kFillStyle);
+      float r = 4.0f * scale * (1.0f - alpha * 0.5f);
+      if (r > 0.0f) {
+        canvas->drawCircle(x, y, r, paint);
+      }
+    }
   }
 
   void drawComboNumber(skia::SkCanvas *canvas, int number, float x, float y,
