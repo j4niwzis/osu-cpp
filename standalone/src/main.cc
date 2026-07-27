@@ -42,16 +42,14 @@ EMSCRIPTEN_KEEPALIVE int extractSkin() {
     if (!buffer.empty()) {
       const osz::zip_int64_t read =
           osz::zip_fread(file, buffer.data(), buffer.size());
-      if (read < 0 ||
-          static_cast<osz::zip_uint64_t>(read) != stat.size) {
+      if (read < 0 || static_cast<osz::zip_uint64_t>(read) != stat.size) {
         osz::zip_fclose(file);
         continue;
       }
     }
     osz::zip_fclose(file);
 
-    std::filesystem::path outPath =
-        std::filesystem::path("/skin") / name;
+    std::filesystem::path outPath = std::filesystem::path("/skin") / name;
     std::filesystem::create_directories(outPath.parent_path());
 
     std::ofstream out(outPath, std::ios::binary);
@@ -111,7 +109,8 @@ void printUsage(std::string_view program) {
       << "  --headless         Run without a window (implies autoplay)\n"
       << "  --autoplay         Let the engine play the beatmap automatically\n"
       << "  --replay <path>    Play a saved .osr replay file\n"
-      << "  --record           Record input events and save to .osr after play\n"
+      << "  --record           Record input events and save to .osr after "
+         "play\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"

@@ -116,10 +116,10 @@ private:
   bool upload(const std::vector<std::int16_t> &samples, int rate,
               int channels) {
     audio::alGenBuffers(1, &fBuffer);
-    audio::alBufferData(fBuffer, alFormat(channels), samples.data(),
-                        static_cast<audio::ALsizei>(samples.size() *
-                                                     sizeof(std::int16_t)),
-                        rate);
+    audio::alBufferData(
+        fBuffer, alFormat(channels), samples.data(),
+        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
+        rate);
     audio::alGenSources(1, &fSource);
     audio::alSourcei(fSource, audio::kBuffer,
                      static_cast<audio::ALint>(fBuffer));
@@ -193,10 +193,10 @@ private:
   bool upload(const std::vector<std::int16_t> &samples, int rate,
               int channels) {
     audio::alGenBuffers(1, &fBuffer);
-    audio::alBufferData(fBuffer, alFormat(channels), samples.data(),
-                        static_cast<audio::ALsizei>(samples.size() *
-                                                     sizeof(std::int16_t)),
-                        rate);
+    audio::alBufferData(
+        fBuffer, alFormat(channels), samples.data(),
+        static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
+        rate);
 
     constexpr std::size_t kPoolSize = 8;
     fSources.resize(kPoolSize, 0);

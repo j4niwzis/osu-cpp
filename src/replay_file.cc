@@ -27,9 +27,7 @@ inline constexpr Word G(Word x, Word y, Word z) { return (x & z) | (y & ~z); }
 inline constexpr Word H(Word x, Word y, Word z) { return x ^ y ^ z; }
 inline constexpr Word I(Word x, Word y, Word z) { return y ^ (x | ~z); }
 
-inline constexpr Word rotl(Word v, int s) {
-  return (v << s) | (v >> (32 - s));
-}
+inline constexpr Word rotl(Word v, int s) { return (v << s) | (v >> (32 - s)); }
 
 inline constexpr std::array<Word, 64> kK = {
     0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a,
@@ -46,7 +44,7 @@ inline constexpr std::array<Word, 64> kK = {
 
 inline constexpr int kS[64] = {
     7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
+    5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,
     4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
     6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
 
@@ -79,8 +77,7 @@ inline void transform(State &st, std::span<const std::uint8_t, 64> block) {
   st.a += a, st.b += b, st.c += c, st.d += d;
 }
 
-inline std::array<std::uint8_t, 16>
-hash(std::span<const std::uint8_t> input) {
+inline std::array<std::uint8_t, 16> hash(std::span<const std::uint8_t> input) {
   State st;
   std::uint64_t bits = static_cast<std::uint64_t>(input.size()) * 8;
   std::vector<std::uint8_t> buf(input.begin(), input.end());
@@ -220,7 +217,8 @@ inline std::vector<std::uint8_t>
 lzmaDecompress(std::span<const std::uint8_t> input) {
   std::vector<std::uint8_t> out(1024 * 1024);
   lzma::lzma_stream strm = lzma::kStreamInit;
-  if (lzma::lzma_stream_decoder(&strm, std::numeric_limits<std::uint64_t>::max(), 0) != lzma::kOk)
+  if (lzma::lzma_stream_decoder(
+          &strm, std::numeric_limits<std::uint64_t>::max(), 0) != lzma::kOk)
     return {};
   strm.next_in = input.data();
   strm.avail_in = input.size();
@@ -255,17 +253,16 @@ encodeReplayData(std::span<const InputEvent> events) {
       keys |= 5;
     else if (ev.fAction == InputAction::kRelease)
       keys &= ~5;
-    s += std::format("{}|{:.7f}|{:.7f}|{},",
-                     static_cast<std::int64_t>(ev.fTime), ev.fPos.fX, ev.fPos.fY,
-                     keys);
+    s +=
+        std::format("{}|{:.7f}|{:.7f}|{},", static_cast<std::int64_t>(ev.fTime),
+                    ev.fPos.fX, ev.fPos.fY, keys);
   }
   if (!s.empty())
     s.pop_back();
   return std::vector<std::uint8_t>(s.begin(), s.end());
 }
 
-inline std::vector<InputEvent>
-decodeReplayData(std::string_view replayStr) {
+inline std::vector<InputEvent> decodeReplayData(std::string_view replayStr) {
   std::vector<InputEvent> events;
   int keys = 0;
   std::size_t pos = 0;
@@ -285,12 +282,9 @@ decodeReplayData(std::string_view replayStr) {
 
     auto ts = static_cast<double>(
         std::stoll(std::string(replayStr.substr(pos, s1 - pos))));
-    double x =
-        std::stod(std::string(replayStr.substr(s1 + 1, s2 - s1 - 1)));
-    double y =
-        std::stod(std::string(replayStr.substr(s2 + 1, s3 - s2 - 1)));
-    int newKeys =
-        std::stoi(std::string(replayStr.substr(s3 + 1, s4 - s3 - 1)));
+    double x = std::stod(std::string(replayStr.substr(s1 + 1, s2 - s1 - 1)));
+    double y = std::stod(std::string(replayStr.substr(s2 + 1, s3 - s2 - 1)));
+    int newKeys = std::stoi(std::string(replayStr.substr(s3 + 1, s4 - s3 - 1)));
 
     if ((keys & 5) == 0 && (newKeys & 5) != 0)
       events.push_back({ts, {x, y}, InputAction::kPress});
@@ -307,9 +301,8 @@ decodeReplayData(std::string_view replayStr) {
 } // namespace detail
 
 [[nodiscard]] inline std::vector<std::uint8_t>
-encodeReplay(std::span<const InputEvent> events,
-             const std::string &beatmapMd5, const std::string &playerName,
-             ModSet mods) {
+encodeReplay(std::span<const InputEvent> events, const std::string &beatmapMd5,
+             const std::string &playerName, ModSet mods) {
   using namespace detail;
   std::vector<std::uint8_t> out;
 
@@ -361,11 +354,18 @@ decodeReplay(std::span<const std::uint8_t> data) {
   result.fBeatmapMd5 = readString(sp);
   result.fPlayerName = readString(sp);
   readString(sp);
-  readShort(sp); readShort(sp); readShort(sp);
-  readShort(sp); readShort(sp); readShort(sp);
-  readInt(sp); readShort(sp); readByte(sp);
+  readShort(sp);
+  readShort(sp);
+  readShort(sp);
+  readShort(sp);
+  readShort(sp);
+  readShort(sp);
+  readInt(sp);
+  readShort(sp);
+  readByte(sp);
   result.fMods = osu::ModSet(static_cast<std::uint32_t>(readInt(sp)));
-  readString(sp); readLong(sp);
+  readString(sp);
+  readLong(sp);
 
   std::int32_t replayLen = readInt(sp);
   auto replayBytes = sp.subspan(0, static_cast<std::size_t>(replayLen));

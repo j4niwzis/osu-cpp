@@ -78,37 +78,30 @@ buildAutoplay(const Beatmap &map, ModSet mods = mod::kNone) {
                         ? std::min(dInSpan / span, 1.0) * total
                         : (1.0 - std::min(dInSpan / span, 1.0)) * total;
                 append(InputAction::kMove, o.fTime + t,
-                       sliderBallPosition(paths[i], t, span,
-                                          o.fPixelLength));
+                       sliderBallPosition(paths[i], t, span, o.fPixelLength));
               }
-              const double releaseTime =
-                  std::max(sliderEnd + 15.0, pressTime);
-              append(InputAction::kRelease, releaseTime, sliderEnd > o.fTime
-                                                             ? o.fPos
-                                                             : kPlayfieldCenter);
+              const double releaseTime = std::max(sliderEnd + 15.0, pressTime);
+              append(InputAction::kRelease, releaseTime,
+                     sliderEnd > o.fTime ? o.fPos : kPlayfieldCenter);
               lastEnd = releaseTime;
               prev = o.fPos;
             },
             [&](const Spinner &o) {
               const double pressTime = std::max(o.fTime, lastEnd);
               if (pressTime > lastEnd) {
-                moveTo(prev, kPlayfieldCenter, lastEnd,
-                       pressTime - lastEnd);
+                moveTo(prev, kPlayfieldCenter, lastEnd, pressTime - lastEnd);
               }
               append(InputAction::kPress, pressTime, kPlayfieldCenter);
               constexpr double kRpm = 480.0;
               const double omega =
                   kRpm * 2.0 * std::numbers::pi / 60.0 / 1000.0;
-              for (double t = kMoveStep; t < o.fEnd - o.fTime;
-                   t += kMoveStep) {
+              for (double t = kMoveStep; t < o.fEnd - o.fTime; t += kMoveStep) {
                 const double ang = t * omega;
-                const Vec2 p{
-                    kPlayfieldCenter.fX + 80.0 * std::cos(ang),
-                    kPlayfieldCenter.fY + 80.0 * std::sin(ang)};
+                const Vec2 p{kPlayfieldCenter.fX + 80.0 * std::cos(ang),
+                             kPlayfieldCenter.fY + 80.0 * std::sin(ang)};
                 append(InputAction::kMove, o.fTime + t, p);
               }
-              const double releaseTime =
-                  std::max(o.fEnd + 15.0, pressTime);
+              const double releaseTime = std::max(o.fEnd + 15.0, pressTime);
               append(InputAction::kRelease, releaseTime, kPlayfieldCenter);
               lastEnd = releaseTime;
               prev = kPlayfieldCenter;

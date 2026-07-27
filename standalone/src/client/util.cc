@@ -33,15 +33,17 @@ template <class F> ScopeGuard<F> scopeGuard(F f) {
 
 inline std::string toLower(std::string_view s) {
   std::string out(s);
-  std::ranges::transform(out, out.begin(),
-                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::ranges::transform(out, out.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
   return out;
 }
 
 inline std::string lowerExtension(const std::filesystem::path &path) {
   auto ext = path.extension().string();
-  std::ranges::transform(ext, ext.begin(),
-                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
   return ext;
 }
 
@@ -50,8 +52,9 @@ inline std::string fileExtension(std::string_view name) {
   if (const auto dot = name.rfind('.'); dot != std::string_view::npos) {
     ext = name.substr(dot);
   }
-  std::ranges::transform(ext, ext.begin(),
-                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
   return ext;
 }
 

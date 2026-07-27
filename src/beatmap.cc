@@ -31,6 +31,7 @@ public:
   Difficulty fDiff;
   std::vector<TimingPoint> fTiming;
   std::vector<HitObject> fObjects;
+  std::vector<SliderPath> fSliderPaths;
   std::vector<std::array<std::uint8_t, 3>> fComboColors;
   int fFormatVersion = 14;
   int fMode = 0;
@@ -653,6 +654,14 @@ inline Beatmap parseBeatmap(std::string_view text) {
   std::ranges::sort(bm.fTiming, {}, &TimingPoint::fTime);
   std::ranges::sort(bm.fObjects, {}, &startTime);
   applyStacking(bm);
+
+  bm.fSliderPaths.resize(bm.fObjects.size());
+  for (std::size_t i = 0; i < bm.fObjects.size(); ++i) {
+    if (auto *s = std::get_if<Slider>(&bm.fObjects[i])) {
+      bm.fSliderPaths[i] = SliderPath::from(*s);
+    }
+  }
+
   return bm;
 }
 

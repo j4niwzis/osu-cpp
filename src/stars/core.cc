@@ -317,4 +317,4 @@ private:
 
 } // namespace stars
 
-}
+} // namespace osu

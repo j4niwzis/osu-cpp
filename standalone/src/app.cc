@@ -1120,8 +1120,8 @@ private:
                                          o.fCombo, fComboInfo.fIndices[index]);
                    },
                    [&](const osu::Slider &o) {
-                     osu::SliderPath path = osu::SliderPath::from(o);
-                     fSkin.drawSlider(canvas, o, index, path,
+                     fSkin.drawSlider(canvas, o, index,
+                                      fMap->fSliderPaths[index],
                                       fMap->sliderSpanDuration(o),
                                       fMap->sliderTickDistance(o), now, cs, ar,
                                       od, o.fCombo, fComboInfo.fIndices[index],
@@ -1152,11 +1152,12 @@ private:
                                     alpha);
               },
               [&](const osu::Slider &o) {
-                osu::SliderPath path = osu::SliderPath::from(o);
-                fSkin.drawSlider(
-                    canvas, o, it->fIndex, path, fMap->sliderSpanDuration(o),
-                    fMap->sliderTickDistance(o), now, cs, ar, od, o.fCombo,
-                    fComboInfo.fIndices[it->fIndex], alpha, false);
+                fSkin.drawSlider(canvas, o, it->fIndex,
+                                 fMap->fSliderPaths[it->fIndex],
+                                 fMap->sliderSpanDuration(o),
+                                 fMap->sliderTickDistance(o), now, cs, ar, od,
+                                 o.fCombo, fComboInfo.fIndices[it->fIndex],
+                                 alpha, false);
               },
               [&](const osu::Spinner &) {},
           },
