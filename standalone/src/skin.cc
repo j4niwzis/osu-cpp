@@ -301,6 +301,20 @@ public:
     }
   }
 
+  void precomputeSliderBodies(const osu::Beatmap &map,
+                              const osu::ComboInfo &comboInfo, float scale,
+                              skia::GrDirectContext *grContext) {
+    fPrecomputedBodies.clear();
+    for (std::size_t i = 0; i < map.fObjects.size(); ++i) {
+      if (auto *s = std::get_if<osu::Slider>(&map.fObjects[i])) {
+        precomputeSliderBody(*s, i, map.fSliderPaths[i],
+                             map.sliderSpanDuration(*s),
+                             map.sliderTickDistance(*s), map.fDiff.fCs,
+                             comboInfo.fIndices[i], scale, grContext);
+      }
+    }
+  }
+
   void drawSlider(skia::SkCanvas *canvas, const osu::Slider &s,
                   std::size_t index, const osu::SliderPath &path,
                   double spanDuration, double tickDistance, double now,
@@ -343,10 +357,80 @@ public:
     if (bodyAlpha <= 0.0f)
       return;
 
-    // Slider body: per-pixel distance-field shader over the full bounding
-    // box. The shader computes the minimum distance from each pixel to all
-    // centerline segments and uses it to index into the 1D gradient texture.
-    // Overlaps are resolved naturally (no double-blending).
+    const auto bodyCacheKey = static_cast<std::uint64_t>(index) << 32 |
+                              static_cast<std::uint64_t>(cs * 100.0);
+    if (auto it = fPrecomputedBodies.find(bodyCacheKey);
+        it != fPrecomputedBodies.end()) {
+      skia::SkPaint bodyPaint;
+      bodyPaint.setAntiAlias(true);
+      bodyPaint.setAlphaf(bodyAlpha);
+      canvas->drawImageRect(
+          it->second.image.get(),
+          skia::SkRect::MakeXYWH(it->second.originX, it->second.originY,
+                                 it->second.width, it->second.height),
+          skia::SkSamplingOptions(skia::SkFilterMode::kNearest), &bodyPaint);
+    } else {
+      throw std::runtime_error(
+          std::format("Slider precomputed body not found for index {}", index));
+    }
+
+    this->drawHitCircle(canvas, s.fPos, s.fTime, now, cs, ar, comboNumber,
+                        comboIndex, alphaScale);
+
+    if (now >= s.fTime && now <= end) {
+      const osu::Vec2 ball =
+          osu::sliderBallPosition(path, now - s.fTime, duration, total);
+      const float bx = static_cast<float>(ball.fX);
+      const float by = static_cast<float>(ball.fY);
+
+      auto ballImg = this->sliderB();
+      skia::SkPaint paint;
+      paint.setAntiAlias(true);
+      if (ballImg) {
+        detail::drawImageCentered(canvas, ballImg.get(), bx, by,
+                                  0.5f * static_cast<float>(radius / 60.0),
+                                  paint);
+      } else {
+        skia::SkPaint ballPaint;
+        ballPaint.setColor(skia::kRed);
+        ballPaint.setStyle(skia::kFillStyle);
+        ballPaint.setAntiAlias(true);
+        canvas->drawCircle(bx, by, static_cast<float>(radius), ballPaint);
+      }
+
+      if (tracking) {
+        auto follow = this->sliderFollowCircle();
+        if (follow) {
+          skia::SkPaint followPaint;
+          followPaint.setAntiAlias(true);
+          followPaint.setBlendMode(skia::SkBlendMode::kPlus);
+          detail::drawImageCentered(canvas, follow.get(), bx, by,
+                                    0.9f * static_cast<float>(radius / 60.0),
+                                    followPaint);
+        } else {
+          skia::SkPaint ringPaint;
+          ringPaint.setColor(skia::kRed);
+          ringPaint.setStyle(skia::kStrokeStyle);
+          ringPaint.setStrokeWidth(3.0f);
+          ringPaint.setAntiAlias(true);
+          ringPaint.setAlphaf(0.7f);
+          canvas->drawCircle(bx, by, static_cast<float>(radius * 2.4),
+                             ringPaint);
+        }
+      }
+    }
+  }
+
+  void precomputeSliderBody(const osu::Slider &s, std::size_t index,
+                            const osu::SliderPath &path, double spanDuration,
+                            double tickDistance, double cs,
+                            std::size_t comboIndex, float scale,
+                            skia::GrDirectContext *grContext) {
+    const double radius = detail::circleVisualRadius(cs);
+    const double total = s.fPixelLength;
+    const auto points = path.points();
+    const skia::SkColor tint = this->comboColor(comboIndex);
+
     if (auto texture = this->sliderTexture(tint); texture && !points.empty()) {
       std::vector<osu::Vec2> curve;
       curve.reserve(points.size());
@@ -382,6 +466,35 @@ public:
       const double bh = maxY - minY;
       if (bw <= 0.0 || bh <= 0.0)
         return;
+
+      const int imgW = static_cast<int>(std::ceil(bw * scale));
+      const int imgH = static_cast<int>(std::ceil(bh * scale));
+      if (imgW <= 0 || imgH <= 0)
+        return;
+      // Create offscreen surface — GPU if available, raster fallback.
+      skia::SkBitmap rasterBmp;
+      skia::Sp<skia::SkSurface> gpuSurface;
+      std::unique_ptr<skia::SkCanvas> rasterCanvas;
+      skia::SkCanvas *oc = nullptr;
+      if (grContext) {
+        gpuSurface = skia::RenderTarget(
+            grContext, skia::kNo,
+            skia::SkImageInfo::Make(imgW, imgH, skia::kRGBA_8888_SkColorType,
+                                    skia::kPremul_SkAlphaType));
+      }
+      if (gpuSurface) {
+        oc = gpuSurface->getCanvas();
+      } else {
+        if (!rasterBmp.tryAllocPixels(skia::SkImageInfo::Make(
+                imgW, imgH, skia::kRGBA_8888_SkColorType,
+                skia::kPremul_SkAlphaType)))
+          return;
+        rasterCanvas = std::make_unique<skia::SkCanvas>(rasterBmp);
+        oc = rasterCanvas.get();
+      }
+      oc->clear(0x00000000);
+      oc->scale(scale, scale);
+      oc->translate(static_cast<float>(-minX), static_cast<float>(-minY));
 
       static const skia::Sp<skia::SkRuntimeEffect> sBodyFx =
           []() -> skia::Sp<skia::SkRuntimeEffect> {
@@ -440,17 +553,9 @@ float4 main(float2 coords) {
         return effect;
       }();
 
-      if (!sBodyFx) {
-        static bool once = false;
-        if (!once) {
-          once = true;
-          std::println("Slider shader is null, falling back");
-        }
+      if (!sBodyFx)
         return;
-      }
 
-      // Build RGBA8 segment texture: 2 pixels per segment, kOpaque.
-      // Cached segment texture and bbox uniforms.
       struct CachedSeg {
         skia::Sp<skia::SkImage> image;
         int nSegs;
@@ -497,12 +602,12 @@ float4 main(float2 coords) {
         if (n < 1)
           return nullptr;
         const int nPix = std::max(4, n * 2);
-        skia::SkBitmap bmp;
-        if (!bmp.tryAllocPixels(
+        skia::SkBitmap segBmp;
+        if (!segBmp.tryAllocPixels(
                 skia::SkImageInfo::Make(nPix, 1, skia::kRGBA_8888_SkColorType,
                                         skia::kOpaque_SkAlphaType)))
           return nullptr;
-        bmp.eraseColor(0x00000000);
+        segBmp.eraseColor(0x00000000);
         for (int j = 0; j < n; ++j) {
           int i = segIndices[j];
           const std::uint8_t sx = static_cast<std::uint8_t>(std::clamp(
@@ -519,13 +624,13 @@ float4 main(float2 coords) {
               (static_cast<float>(curve[i + 1].fY) - boxMinY) * invH * 255.f +
                   0.5f,
               0.f, 255.f));
-          *bmp.getAddr32(j * 2, 0) = (0xFFu << 24) |
-                                     (static_cast<std::uint32_t>(ex) << 16) |
-                                     (static_cast<std::uint32_t>(sy) << 8) | sx;
-          *bmp.getAddr32(j * 2 + 1, 0) =
+          *segBmp.getAddr32(j * 2, 0) =
+              (0xFFu << 24) | (static_cast<std::uint32_t>(ex) << 16) |
+              (static_cast<std::uint32_t>(sy) << 8) | sx;
+          *segBmp.getAddr32(j * 2 + 1, 0) =
               (0xFFu << 24) | (0u << 16) | (0u << 8) | ey;
         }
-        return skia::RasterFromBitmap(bmp);
+        return skia::RasterFromBitmap(segBmp);
       };
 
       auto drawTile = [&](float tx, float ty, float tw, float th,
@@ -554,11 +659,11 @@ float4 main(float2 coords) {
         skia::SkPaint p;
         p.setShader(b.makeShader());
         p.setAntiAlias(true);
-        p.setAlphaf(bodyAlpha);
-        canvas->save();
-        canvas->translate(tx, ty);
-        canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, tw, th), p);
-        canvas->restore();
+        p.setAlphaf(1.0f);
+        oc->save();
+        oc->translate(tx, ty);
+        oc->drawRect(skia::SkRect::MakeXYWH(0, 0, tw, th), p);
+        oc->restore();
       };
 
       constexpr int kMaxPerTile = 48;
@@ -635,122 +740,83 @@ float4 main(float2 coords) {
           skia::SkPaint bodyPaint;
           bodyPaint.setShader(builder.makeShader());
           bodyPaint.setAntiAlias(true);
-          bodyPaint.setAlphaf(bodyAlpha);
-          canvas->save();
-          canvas->translate(static_cast<float>(minX), static_cast<float>(minY));
-          canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, static_cast<float>(bw),
-                                                  static_cast<float>(bh)),
-                           bodyPaint);
-          canvas->restore();
+          bodyPaint.setAlphaf(1.0f);
+          oc->save();
+          oc->translate(static_cast<float>(minX), static_cast<float>(minY));
+          oc->drawRect(skia::SkRect::MakeXYWH(0, 0, static_cast<float>(bw),
+                                              static_cast<float>(bh)),
+                       bodyPaint);
+          oc->restore();
         }
       }
-    }
 
-    // Slider ticks.
-    if (tickDistance > 1.0) {
-      auto tickImg = this->sliderScorePoint();
-      const float tickScale =
-          tickImg ? 0.5f * static_cast<float>(radius / 60.0) : 0.15f;
-      skia::SkPaint tickPaint;
-      tickPaint.setAntiAlias(true);
-      tickPaint.setAlphaf(bodyAlpha);
-      for (int span = 0; span < s.fRepeat; ++span) {
-        const bool reverse = (span & 1) != 0;
-        for (double d = tickDistance; d < total - 1.0; d += tickDistance) {
-          const double dist = reverse ? total - d : d;
-          const osu::Vec2 p = path.positionAt(dist);
-          const float px = static_cast<float>(p.fX);
-          const float py = static_cast<float>(p.fY);
-          if (tickImg) {
-            detail::drawImageCentered(canvas, tickImg.get(), px, py, tickScale,
-                                      tickPaint);
-          } else {
-            canvas->drawCircle(px, py, static_cast<float>(radius * 0.15),
-                               tickPaint);
+      if (tickDistance > 1.0) {
+        auto tickImg = this->sliderScorePoint();
+        const float tickScale =
+            tickImg ? 0.5f * static_cast<float>(radius / 60.0) : 0.15f;
+        skia::SkPaint tickPaint;
+        tickPaint.setAntiAlias(true);
+        tickPaint.setAlphaf(1.0f);
+        for (int span = 0; span < s.fRepeat; ++span) {
+          const bool reverse = (span & 1) != 0;
+          for (double d = tickDistance; d < total - 1.0; d += tickDistance) {
+            const double dist = reverse ? total - d : d;
+            const osu::Vec2 p = path.positionAt(dist);
+            const float px = static_cast<float>(p.fX);
+            const float py = static_cast<float>(p.fY);
+            if (tickImg) {
+              detail::drawImageCentered(oc, tickImg.get(), px, py, tickScale,
+                                        tickPaint);
+            } else {
+              oc->drawCircle(px, py, static_cast<float>(radius * 0.15),
+                             tickPaint);
+            }
           }
         }
       }
-    }
 
-    // Reverse arrows at span ends (except the final end).
-    if (s.fRepeat > 1) {
-      auto arrowImg = this->reverseArrow();
-      const float arrowScale =
-          arrowImg ? 0.36f * static_cast<float>(radius / 60.0) : 0.5f;
-      skia::SkPaint arrowPaint;
-      arrowPaint.setAntiAlias(true);
-      arrowPaint.setAlphaf(bodyAlpha);
-      if (arrowImg)
-        arrowPaint.setColorFilter(
-            skia::SkColorFilters::Blend(tint, skia::SkBlendMode::kSrcIn));
-      for (int span = 0; span < s.fRepeat - 1; ++span) {
-        const bool reverse = (span & 1) != 0;
-        const double dist = reverse ? 0.0 : total;
-        const osu::Vec2 p = path.positionAt(dist);
-        const double tangentDist = reverse ? 5.0 : total - 5.0;
-        const osu::Vec2 t =
-            path.positionAt(std::clamp(tangentDist, 0.0, total));
-        const double angle = std::atan2(t.fY - p.fY, t.fX - p.fX) +
-                             (reverse ? std::numbers::pi : 0.0);
-        if (arrowImg) {
-          canvas->save();
-          canvas->translate(static_cast<float>(p.fX), static_cast<float>(p.fY));
-          canvas->rotate(static_cast<float>(angle * 180.0 / std::numbers::pi));
-          detail::drawImageCentered(canvas, arrowImg.get(), 0.0f, 0.0f,
-                                    arrowScale, arrowPaint);
-          canvas->restore();
-        } else {
-          this->drawArrow(canvas, static_cast<float>(p.fX),
-                          static_cast<float>(p.fY), angle,
-                          static_cast<float>(radius * 0.5), arrowPaint);
+      if (s.fRepeat > 1) {
+        auto arrowImg = this->reverseArrow();
+        const float arrowScale =
+            arrowImg ? 0.36f * static_cast<float>(radius / 60.0) : 0.5f;
+        skia::SkPaint arrowPaint;
+        arrowPaint.setAntiAlias(true);
+        arrowPaint.setAlphaf(1.0f);
+        if (arrowImg)
+          arrowPaint.setColorFilter(
+              skia::SkColorFilters::Blend(tint, skia::SkBlendMode::kSrcIn));
+        for (int span = 0; span < s.fRepeat - 1; ++span) {
+          const bool reverse = (span & 1) != 0;
+          const double dist = reverse ? 0.0 : total;
+          const osu::Vec2 p = path.positionAt(dist);
+          const double tangentDist = reverse ? 5.0 : total - 5.0;
+          const osu::Vec2 t =
+              path.positionAt(std::clamp(tangentDist, 0.0, total));
+          const double angle = std::atan2(t.fY - p.fY, t.fX - p.fX) +
+                               (reverse ? std::numbers::pi : 0.0);
+          if (arrowImg) {
+            oc->save();
+            oc->translate(static_cast<float>(p.fX), static_cast<float>(p.fY));
+            oc->rotate(static_cast<float>(angle * 180.0 / std::numbers::pi));
+            detail::drawImageCentered(oc, arrowImg.get(), 0.0f, 0.0f,
+                                      arrowScale, arrowPaint);
+            oc->restore();
+          } else {
+            this->drawArrow(oc, static_cast<float>(p.fX),
+                            static_cast<float>(p.fY), angle,
+                            static_cast<float>(radius * 0.5), arrowPaint);
+          }
         }
       }
-    }
 
-    this->drawHitCircle(canvas, s.fPos, s.fTime, now, cs, ar, comboNumber,
-                        comboIndex, alphaScale);
-
-    if (now >= s.fTime && now <= end) {
-      const osu::Vec2 ball =
-          osu::sliderBallPosition(path, now - s.fTime, duration, total);
-      const float bx = static_cast<float>(ball.fX);
-      const float by = static_cast<float>(ball.fY);
-
-      auto ballImg = this->sliderB();
-      skia::SkPaint paint;
-      paint.setAntiAlias(true);
-      if (ballImg) {
-        detail::drawImageCentered(canvas, ballImg.get(), bx, by,
-                                  0.5f * static_cast<float>(radius / 60.0),
-                                  paint);
-      } else {
-        skia::SkPaint ballPaint;
-        ballPaint.setColor(skia::kRed);
-        ballPaint.setStyle(skia::kFillStyle);
-        ballPaint.setAntiAlias(true);
-        canvas->drawCircle(bx, by, static_cast<float>(radius), ballPaint);
-      }
-
-      if (tracking) {
-        auto follow = this->sliderFollowCircle();
-        if (follow) {
-          skia::SkPaint followPaint;
-          followPaint.setAntiAlias(true);
-          followPaint.setBlendMode(skia::SkBlendMode::kPlus);
-          detail::drawImageCentered(canvas, follow.get(), bx, by,
-                                    0.9f * static_cast<float>(radius / 60.0),
-                                    followPaint);
-        } else {
-          skia::SkPaint ringPaint;
-          ringPaint.setColor(skia::kRed);
-          ringPaint.setStyle(skia::kStrokeStyle);
-          ringPaint.setStrokeWidth(3.0f);
-          ringPaint.setAntiAlias(true);
-          ringPaint.setAlphaf(0.7f);
-          canvas->drawCircle(bx, by, static_cast<float>(radius * 2.4),
-                             ringPaint);
-        }
-      }
+      rasterCanvas.reset();
+      auto image = gpuSurface ? gpuSurface->makeImageSnapshot()
+                              : skia::RasterFromBitmap(rasterBmp);
+      if (!image)
+        return;
+      fPrecomputedBodies[cacheKey] = {
+          image, static_cast<float>(minX), static_cast<float>(minY),
+          static_cast<float>(bw), static_cast<float>(bh)};
     }
   }
 
@@ -957,6 +1023,13 @@ private:
   std::vector<skia::SkColor> fComboColors;
   std::unordered_map<skia::SkColor, skia::Sp<skia::SkImage>> fSliderTextures;
 
+  struct PrecomputedBody {
+    skia::Sp<skia::SkImage> image;
+    float originX, originY;
+    float width, height;
+  };
+  std::unordered_map<std::uint64_t, PrecomputedBody> fPrecomputedBodies;
+
   [[nodiscard]] skia::Sp<skia::SkImage> sliderTexture(skia::SkColor tint) {
     if (auto it = fSliderTextures.find(tint); it != fSliderTextures.end()) {
       return it->second;
@@ -979,8 +1052,9 @@ private:
 
     skia::SkBitmap bitmap;
     constexpr int kGradH = 4;
-    const skia::SkImageInfo info = skia::SkImageInfo::Make(
-        kWidth, kGradH, skia::kRGBA_8888_SkColorType, skia::kPremul_SkAlphaType);
+    const skia::SkImageInfo info =
+        skia::SkImageInfo::Make(kWidth, kGradH, skia::kRGBA_8888_SkColorType,
+                                skia::kPremul_SkAlphaType);
     if (!bitmap.tryAllocPixels(info))
       return nullptr;
 

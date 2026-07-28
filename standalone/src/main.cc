@@ -129,6 +129,7 @@ int main(int argc, char **argv) {
   bool headless = false;
   bool autoplay = false;
   bool record = false;
+  bool profile = false;
   osu::ModSet mods = osu::mod::kNone;
 
   for (std::size_t i = 0; i < args.size(); ++i) {
@@ -144,6 +145,8 @@ int main(int argc, char **argv) {
       autoplay = true;
     } else if (arg == "--record") {
       record = true;
+    } else if (arg == "--profile") {
+      profile = true;
     } else if (arg == "--dt") {
       mods |= osu::mod::kDoubleTime;
     } else if (arg == "--ht") {
@@ -199,7 +202,7 @@ int main(int argc, char **argv) {
   try {
     osu::BeatmapSet set = client::loadBeatmapSet(beatmapPath);
     client::App app(std::move(set), mods, headless, autoplay, replayPath,
-                    record, skinPath);
+                    record, skinPath, profile);
     return app.run();
   } catch (const osu::ParseError &e) {
     std::cerr << "Parse error: " << e.what() << '\n';

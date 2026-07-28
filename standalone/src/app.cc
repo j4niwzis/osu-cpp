@@ -30,12 +30,11 @@ using audio_client::SamplePlayer;
 export class App {
 public:
   App(osu::BeatmapSet set, osu::ModSet mods, bool headless, bool autoplay,
-      std::filesystem::path replayPath = {},
-      bool record = false,
-      std::filesystem::path skinPath = {})
+      std::filesystem::path replayPath = {}, bool record = false,
+      std::filesystem::path skinPath = {}, bool profile = false)
       : fSet(std::move(set)), fMods(mods), fHeadless(headless),
-        fAutoplay(autoplay), fReplayPath(std::move(replayPath)), fRecord(record),
-        fSkin(std::move(skinPath)) {}
+        fAutoplay(autoplay), fReplayPath(std::move(replayPath)),
+        fRecord(record), fSkin(std::move(skinPath)), fShowProfile(profile) {}
 
   ~App() { this->shutdown(); }
 
@@ -60,6 +59,7 @@ private:
   std::vector<osu::InputEvent> fRecordedEvents;
   std::size_t fAutoplayIndex = 0;
   Skin fSkin;
+  bool fShowProfile = false;
   skia::Sp<skia::SkImage> fBackground;
 
   // Window / GL / Skia
@@ -147,6 +147,21 @@ private:
   double fDisplayAccuracy = 1.0;
   double fLastHudTime = 0.0;
 
+  static constexpr std::size_t kFpsSampleCount = 120;
+  double fFrameTimes[kFpsSampleCount]{};
+  std::size_t fFrameTimeIdx = 0;
+  std::size_t fFrameTimeCount = 0;
+  double fLastFrameTime = 0.0;
+
+  static constexpr std::size_t kProfileCount = 60;
+  struct ProfileFrame {
+    double advUs, renderUs, flushUs, swapUs;
+    double renderFollowUs, renderObjectsUs, renderRestUs, renderHudUs;
+  };
+  ProfileFrame fProfile[kProfileCount]{};
+  std::size_t fProfileIdx = 0;
+  std::size_t fProfileNum = 0;
+
   // Combo color group for each object.
   osu::ComboInfo fComboInfo;
 
@@ -158,13 +173,13 @@ private:
     fEngine.emplace(*fMap, fMods);
     this->loadComboInfo();
     fSkin.setComboColors(fMap->fComboColors);
+    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get());
     if (fAutoplay) {
       if (!fReplayPath.empty()) {
         std::ifstream file(fReplayPath, std::ios::binary);
         if (file) {
-          std::vector<std::uint8_t> bytes{
-              std::istreambuf_iterator<char>(file),
-              std::istreambuf_iterator<char>()};
+          std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file),
+                                          std::istreambuf_iterator<char>()};
           auto replayData = osu::decodeReplay(bytes);
           fAutoplayEvents = std::move(replayData.fEvents);
           fMods = replayData.fMods;
@@ -354,7 +369,8 @@ private:
     }
     if (action == glfw::kPress || action == glfw::kRepeat) {
       if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
-        if (!fAutoplay) fKeyDown = true;
+        if (!fAutoplay)
+          fKeyDown = true;
       }
     } else if (action == glfw::kRelease) {
       if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
@@ -370,7 +386,8 @@ private:
       }
       return;
     }
-    if (fAutoplay) return;
+    if (fAutoplay)
+      return;
     if (button == glfw::kMouseButtonLeft || button == glfw::kMouseButtonRight) {
       fKeyDown = (action == glfw::kPress || action == glfw::kRepeat);
     }
@@ -421,18 +438,50 @@ private:
 #else
     while (!glfw::glfwWindowShouldClose(fWindow) &&
            !this->shouldStop(this->nowMs())) {
+      using clock = std::chrono::steady_clock;
       glfw::glfwPollEvents();
       const double now = this->nowMs();
       this->handleInput(now);
-      fEngine->advance(now);
-      this->playHitsounds(now);
-      this->render();
-      fContext->flushAndSubmit(fSurface.get());
-      glfw::glfwSwapBuffers(fWindow);
+      if (fShowProfile) {
+        auto t0 = clock::now();
+        fEngine->advance(now);
+        auto t1 = clock::now();
+        this->playHitsounds(now);
+        this->render();
+        auto t2 = clock::now();
+        fContext->flushAndSubmit(fSurface.get());
+        auto t3 = clock::now();
+        glfw::glfwSwapBuffers(fWindow);
+        auto t4 = clock::now();
+
+        auto &p = fProfile[fProfileIdx];
+        p.advUs = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
+                .count());
+        p.renderUs = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1)
+                .count());
+        p.flushUs = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2)
+                .count());
+        p.swapUs = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3)
+                .count());
+        fProfileIdx = (fProfileIdx + 1) % kProfileCount;
+        if (fProfileNum < kProfileCount)
+          ++fProfileNum;
+      } else {
+        fEngine->advance(now);
+        this->playHitsounds(now);
+        this->render();
+        fContext->flushAndSubmit(fSurface.get());
+        glfw::glfwSwapBuffers(fWindow);
+      }
     }
 
     this->printResult();
-    if (fRecord) this->saveReplay();
+    if (fRecord)
+      this->saveReplay();
     return 0;
 #endif
   }
@@ -459,7 +508,8 @@ private:
 
     if (glfw::glfwWindowShouldClose(fWindow)) {
       this->printResult();
-      if (fRecord) this->saveReplay();
+      if (fRecord)
+        this->saveReplay();
       emscripten::emscripten_cancel_main_loop();
       return;
     }
@@ -487,7 +537,8 @@ private:
     if (fState == State::kPlaying) {
       if (this->shouldStop(this->nowMs())) {
         this->printResult();
-        if (fRecord) this->saveReplay();
+        if (fRecord)
+          this->saveReplay();
         emscripten::emscripten_cancel_main_loop();
         return;
       }
@@ -819,17 +870,20 @@ private:
       if (fCursor.fX != fLastCursor.fX || fCursor.fY != fLastCursor.fY) {
         auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kMove};
         fEngine->submit(ev);
-        if (fRecord) fRecordedEvents.push_back(ev);
+        if (fRecord)
+          fRecordedEvents.push_back(ev);
         fLastCursor = fCursor;
       }
       if (fKeyDown && !fKeyWasDown) {
         auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kPress};
         fEngine->submit(ev);
-        if (fRecord) fRecordedEvents.push_back(ev);
+        if (fRecord)
+          fRecordedEvents.push_back(ev);
       } else if (!fKeyDown && fKeyWasDown) {
         auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kRelease};
         fEngine->submit(ev);
-        if (fRecord) fRecordedEvents.push_back(ev);
+        if (fRecord)
+          fRecordedEvents.push_back(ev);
       }
     }
     fKeyWasDown = fKeyDown;
@@ -840,7 +894,8 @@ private:
            fAutoplayEvents[fAutoplayIndex].fTime <= now) {
       const auto &ev = fAutoplayEvents[fAutoplayIndex];
       fEngine->submit(ev);
-      if (fRecord) fRecordedEvents.push_back(ev);
+      if (fRecord)
+        fRecordedEvents.push_back(ev);
       if (ev.fAction == osu::InputAction::kMove) {
         fCursor = ev.fPos;
         fCursorTrail.push_back({fCursor, ev.fTime});
@@ -1040,6 +1095,19 @@ private:
   }
 
   void render() {
+    using clock = std::chrono::steady_clock;
+    auto rt0 = clock::now();
+
+    const double now = this->nowMs();
+    if (fLastFrameTime > 0.0 && fLastFrameTime < now) {
+      const double ft = now - fLastFrameTime;
+      fFrameTimes[fFrameTimeIdx] = ft;
+      fFrameTimeIdx = (fFrameTimeIdx + 1) % kFpsSampleCount;
+      if (fFrameTimeCount < kFpsSampleCount)
+        ++fFrameTimeCount;
+    }
+    fLastFrameTime = now;
+
     auto *canvas = fSurface->getCanvas();
     canvas->clear(skia::kBlack);
 
@@ -1050,7 +1118,6 @@ private:
     canvas->scale(fScale, fScale);
 
     this->drawPlayfield(canvas);
-    const double now = this->nowMs();
     const double ar = fEngine->clockRate() > 0.0
                           ? fMap->fDiff.fAr * fEngine->clockRate()
                           : fMap->fDiff.fAr;
@@ -1058,11 +1125,15 @@ private:
     const double od = fMap->fDiff.fOd;
 
     this->updateCursorTrail(now);
+
+    auto rta = clock::now();
     this->drawFollowPoints(canvas, now, ar, cs);
+    auto rtb = clock::now();
 
     for (std::size_t i = 0; i < fMap->fObjects.size(); ++i) {
       this->drawObject(canvas, fMap->fObjects[i], i, now, ar, cs, od);
     }
+    auto rtc = clock::now();
 
     this->drawFadingObjects(canvas, now, ar, cs, od);
     this->drawHitBursts(canvas, now, cs);
@@ -1071,9 +1142,26 @@ private:
     this->drawCursor(canvas);
     canvas->restore();
 
+    auto rtd = clock::now();
     this->drawHud(canvas, now);
-  }
+    auto rte = clock::now();
 
+    if (fShowProfile) {
+      auto &p = fProfile[fProfileIdx];
+      p.renderFollowUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(rtb - rta)
+              .count());
+      p.renderObjectsUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(rtc - rtb)
+              .count());
+      p.renderRestUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(rtd - rtc)
+              .count());
+      p.renderHudUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(rte - rtd)
+              .count());
+    }
+  }
   void drawBackground(skia::SkCanvas *canvas) {
     if (!fBackground)
       return;
@@ -1152,12 +1240,11 @@ private:
                                     alpha);
               },
               [&](const osu::Slider &o) {
-                fSkin.drawSlider(canvas, o, it->fIndex,
-                                 fMap->fSliderPaths[it->fIndex],
-                                 fMap->sliderSpanDuration(o),
-                                 fMap->sliderTickDistance(o), now, cs, ar, od,
-                                 o.fCombo, fComboInfo.fIndices[it->fIndex],
-                                 alpha, false);
+                fSkin.drawSlider(
+                    canvas, o, it->fIndex, fMap->fSliderPaths[it->fIndex],
+                    fMap->sliderSpanDuration(o), fMap->sliderTickDistance(o),
+                    now, cs, ar, od, o.fCombo, fComboInfo.fIndices[it->fIndex],
+                    alpha, false);
               },
               [&](const osu::Spinner &) {},
           },
@@ -1374,6 +1461,53 @@ private:
     paint.setAlphaf(0.7f);
     const std::string timeText = std::format("{:.1f}s", now / 1000.0);
     canvas->drawString(timeText.c_str(), sw - 80.0f, sh - 20.0f, fFont, paint);
+
+    double avgFrameMs = 0.0;
+    if (fFrameTimeCount > 0) {
+      for (std::size_t i = 0; i < fFrameTimeCount; ++i)
+        avgFrameMs += fFrameTimes[i];
+      avgFrameMs /= static_cast<double>(fFrameTimeCount);
+    }
+    const double fps = avgFrameMs > 0.0 ? 1000.0 / avgFrameMs : 0.0;
+    const std::string fpsText = std::format("{:.0f} fps", std::round(fps));
+    canvas->drawString(fpsText.c_str(), sw - 80.0f, sh - 40.0f, fFont, paint);
+
+    if (fShowProfile) {
+      double avgAdv = 0.0, avgRender = 0.0, avgFlush = 0.0, avgSwap = 0.0;
+      double avgFollow = 0.0, avgObjs = 0.0, avgRest = 0.0, avgHud = 0.0;
+      if (fProfileNum > 0) {
+        for (std::size_t i = 0; i < fProfileNum; ++i) {
+          avgAdv += fProfile[i].advUs;
+          avgRender += fProfile[i].renderUs;
+          avgFlush += fProfile[i].flushUs;
+          avgSwap += fProfile[i].swapUs;
+          avgFollow += fProfile[i].renderFollowUs;
+          avgObjs += fProfile[i].renderObjectsUs;
+          avgRest += fProfile[i].renderRestUs;
+          avgHud += fProfile[i].renderHudUs;
+        }
+        avgAdv /= static_cast<double>(fProfileNum);
+        avgRender /= static_cast<double>(fProfileNum);
+        avgFlush /= static_cast<double>(fProfileNum);
+        avgSwap /= static_cast<double>(fProfileNum);
+        avgFollow /= static_cast<double>(fProfileNum);
+        avgObjs /= static_cast<double>(fProfileNum);
+        avgRest /= static_cast<double>(fProfileNum);
+        avgHud /= static_cast<double>(fProfileNum);
+      }
+      fFont.setSize(11.0f);
+      paint.setAlphaf(0.6f);
+      const std::string profText =
+          std::format("adv {:.0f}  rend {:.0f}  flush {:.0f}  swap {:.0f} us",
+                      avgAdv, avgRender, avgFlush, avgSwap);
+      canvas->drawString(profText.c_str(), sw - 240.0f, sh - 60.0f, fFont,
+                         paint);
+      const std::string subText =
+          std::format("follow {:.0f}  objs {:.0f}  rest {:.0f}  hud {:.0f} us",
+                      avgFollow, avgObjs, avgRest, avgHud);
+      canvas->drawString(subText.c_str(), sw - 240.0f, sh - 75.0f, fFont,
+                         paint);
+    }
   }
 
   void drawHealthBar(skia::SkCanvas *canvas, float x, float y, float w, float h,
@@ -1456,8 +1590,7 @@ private:
     std::ostringstream nameStream;
     nameStream << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S");
     auto replayBytes =
-        osu::encodeReplay(fRecordedEvents, this->beatmapMd5(), "Player",
-                          fMods);
+        osu::encodeReplay(fRecordedEvents, this->beatmapMd5(), "Player", fMods);
     std::filesystem::path outPath =
         fMap->fMeta.fVersion + "_" + nameStream.str() + ".osr";
     std::ofstream out(outPath, std::ios::binary);

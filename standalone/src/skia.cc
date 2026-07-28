@@ -101,6 +101,9 @@ using ::GrSurfaceOrigin;
 
 using ::GrBackendRenderTargets::MakeGL;
 using ::GrDirectContexts::MakeGL;
+using ::skgpu::Budgeted;
+using ::skgpu::Budgeted::kNo;
+using ::SkSurfaces::RenderTarget;
 using ::SkSurfaces::WrapBackendRenderTarget;
 
 using ::SkFontMgr_New_Custom_Data;
