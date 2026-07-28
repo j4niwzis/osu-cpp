@@ -72,9 +72,10 @@
         Module.setCursorVisible = function(visible) {
           hiddenCursor = !visible;
           canvas.style.cursor = visible ? 'default' : 'none';
-          if (!visible) canvas.requestPointerLock();
-          else document.exitPointerLock();
         };
+
+        if (pendingOsk) { writeOsk(pendingOsk); pendingOsk = null; }
+        if (pendingOsz) { writeOsz(pendingOsz); pendingOsz = null; }
       },
     };
 
@@ -85,6 +86,8 @@
 
     var skinReady = false;
     var beatmapReady = false;
+    var pendingOsz = null;
+    var pendingOsk = null;
 
     function tryStart() {
       if (!beatmapReady) return;
@@ -107,15 +110,30 @@
       Module.callMain(['--beatmap', '/beatmap.osz', '--skin', '/skin']);
     }
 
+    function writeOsk(data) {
+      Module.FS.writeFile('/skin.osk', data);
+      statusEl.textContent = 'Skin loaded.';
+      skinReady = true;
+      tryStart();
+    }
+
+    function writeOsz(data) {
+      Module.FS.writeFile('/beatmap.osz', data);
+      beatmapReady = true;
+      tryStart();
+    }
+
     function loadOsk(file) {
       statusEl.textContent = 'Loading skin: ' + file.name + '...';
       var reader = new FileReader();
       reader.onload = function(ev) {
         var data = new Uint8Array(ev.target.result);
-        FS.writeFile('/skin.osk', data);
-        statusEl.textContent = 'Skin loaded.';
-        skinReady = true;
-        tryStart();
+        if (typeof Module.FS !== 'undefined') {
+          writeOsk(data);
+        } else {
+          pendingOsk = data;
+          statusEl.textContent = 'Skin loaded, waiting for runtime...';
+        }
       };
       reader.onerror = function() { statusEl.textContent = 'Failed to read skin file.'; };
       reader.readAsArrayBuffer(file);
@@ -126,9 +144,12 @@
       var reader = new FileReader();
       reader.onload = function(ev) {
         var data = new Uint8Array(ev.target.result);
-        FS.writeFile('/beatmap.osz', data);
-        beatmapReady = true;
-        tryStart();
+        if (typeof Module.FS !== 'undefined') {
+          writeOsz(data);
+        } else {
+          pendingOsz = data;
+          statusEl.textContent = 'Beatmap loaded, waiting for runtime...';
+        }
       };
       reader.onerror = function() { statusEl.textContent = 'Failed to read beatmap file.'; };
       reader.readAsArrayBuffer(file);

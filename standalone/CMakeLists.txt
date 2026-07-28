@@ -69,7 +69,7 @@ endif()
 list(REMOVE_ITEM module_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
 
 if(EMSCRIPTEN_BUILD)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
 add_executable(${PROJECT_NAME} ${module_sources} ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 
@@ -116,12 +116,16 @@ if(EMSCRIPTEN_BUILD)
   set(WASM_PRELOAD_DATA "" CACHE PATH "Directory to preload into emscripten virtual filesystem")
 
   target_link_options(${PROJECT_NAME} PRIVATE
-    "SHELL:-sFULL_ES3=1"
     "SHELL:-sUSE_GLFW=3"
-    "SHELL:-sALLOW_MEMORY_GROWTH=1"
     "SHELL:-sMAX_WEBGL_VERSION=2"
-    "SHELL:-sNO_DISABLE_EXCEPTION_CATCHING"
-    "SHELL:-sEXPORTED_RUNTIME_METHODS=['GL','callMain']"
+    "SHELL:-sMIN_WEBGL_VERSION=2"
+    "SHELL:-sGL_ASSERTIONS=0"
+    "SHELL:-sINITIAL_MEMORY=536870912"
+    "SHELL:-sSTACK_SIZE=5MB"
+    "SHELL:-sENVIRONMENT=web"
+    "SHELL:-pthread"
+    "SHELL:-msimd128"
+    "SHELL:-sEXPORTED_RUNTIME_METHODS=['GL','callMain','FS']"
     "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html"
   )
 

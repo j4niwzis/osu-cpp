@@ -60,7 +60,9 @@ private:
   std::size_t fAutoplayIndex = 0;
   Skin fSkin;
   bool fShowProfile = false;
+  bool fNoGlow = false;
   skia::Sp<skia::SkImage> fBackground;
+  skia::Sp<skia::SkImage> fBackgroundScaled;
 
   // Window / GL / Skia
   glfw::GLFWwindow *fWindow = nullptr;
@@ -76,6 +78,8 @@ private:
   float fScale = 1.0f;
   float fOffsetX = 0.0f;
   float fOffsetY = 0.0f;
+  skia::SkIRect fDirtyBounds;
+  bool fFirstFrame = true;
 
   // Input
   osu::Vec2 fCursor = osu::kPlayfieldCenter;
@@ -103,6 +107,11 @@ private:
 
   // Font
   skia::SkFont fFont;
+  skia::SkPaint fHudPaint{[] {
+    skia::SkPaint p;
+    p.setAntiAlias(true);
+    return p;
+  }()};
 
   // Judgement pop-ups (drawn in playfield coordinates).
   struct Popup {
@@ -201,6 +210,7 @@ private:
       const auto bytes = fSet.findFile(fMap->fMeta.fBackground);
       if (!bytes.empty()) {
         fBackground = loadImage(bytes);
+        this->preScaleBackground();
       }
     }
 
@@ -559,11 +569,13 @@ private:
         const auto bytes = fSet.findFile(info.fMeta.fBackground);
         if (!bytes.empty()) {
           fBackground = loadImage(bytes);
+          this->preScaleBackground();
           return;
         }
       }
     }
     fBackground.reset();
+    fBackgroundScaled.reset();
   }
 
   void updateSelectHover() {
@@ -600,8 +612,11 @@ private:
 
   void renderDifficultySelect() {
     auto *canvas = fSurface->getCanvas();
-    canvas->clear(skia::kBlack);
-    this->drawBackground(canvas);
+    if (fBackgroundScaled) {
+      this->drawBackground(canvas);
+    } else {
+      canvas->clear(skia::kBlack);
+    }
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
@@ -818,6 +833,8 @@ private:
     fSurface = skia::WrapBackendRenderTarget(
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);
+    fFirstFrame = true;
+    this->preScaleBackground();
   }
 
   void toggleFullscreen() {
@@ -1108,16 +1125,6 @@ private:
     }
     fLastFrameTime = now;
 
-    auto *canvas = fSurface->getCanvas();
-    canvas->clear(skia::kBlack);
-
-    this->drawBackground(canvas);
-
-    canvas->save();
-    canvas->translate(fOffsetX, fOffsetY);
-    canvas->scale(fScale, fScale);
-
-    this->drawPlayfield(canvas);
     const double ar = fEngine->clockRate() > 0.0
                           ? fMap->fDiff.fAr * fEngine->clockRate()
                           : fMap->fDiff.fAr;
@@ -1125,6 +1132,34 @@ private:
     const double od = fMap->fDiff.fOd;
 
     this->updateCursorTrail(now);
+
+    auto dirty = this->computeDirtyBounds(now, ar, cs, od);
+    if (!fFirstFrame)
+      dirty.join(fDirtyBounds);
+    else
+      dirty = skia::SkIRect::MakeXYWH(0, 0, fScreenW, fScreenH);
+
+    if (dirty.isEmpty())
+      return;
+
+    fDirtyBounds = dirty;
+    fFirstFrame = false;
+
+    auto *canvas = fSurface->getCanvas();
+
+    canvas->save();
+    canvas->clipIRect(dirty);
+    if (fBackgroundScaled) {
+      this->drawBackground(canvas);
+    } else {
+      canvas->clear(skia::kBlack);
+    }
+
+    canvas->save();
+    canvas->translate(fOffsetX, fOffsetY);
+    canvas->scale(fScale, fScale);
+
+    this->drawPlayfield(canvas);
 
     auto rta = clock::now();
     this->drawFollowPoints(canvas, now, ar, cs);
@@ -1146,6 +1181,8 @@ private:
     this->drawHud(canvas, now);
     auto rte = clock::now();
 
+    canvas->restore();
+
     if (fShowProfile) {
       auto &p = fProfile[fProfileIdx];
       p.renderFollowUs = static_cast<double>(
@@ -1162,28 +1199,156 @@ private:
               .count());
     }
   }
+
+  [[nodiscard]] skia::SkIRect computeDirtyBounds(double now, double ar,
+                                                 double cs, double od) const {
+    skia::SkIRect dirty = skia::SkIRect::MakeEmpty();
+    const float r = static_cast<float>(osu::circleRadius(cs)) * 1.05f;
+
+    auto addPlayfieldPt = [&](float px, float py, float radius) {
+      float sx = px * fScale + fOffsetX;
+      float sy = py * fScale + fOffsetY;
+      float sr = radius * fScale + 2.0f;
+      dirty.join(skia::SkIRect::MakeLTRB(
+          std::max(0, static_cast<int>(sx - sr)),
+          std::max(0, static_cast<int>(sy - sr)),
+          std::min(fScreenW, static_cast<int>(sx + sr + 1.0f)),
+          std::min(fScreenH, static_cast<int>(sy + sr + 1.0f))));
+    };
+
+    for (std::size_t i = 0; i < fMap->fObjects.size(); ++i) {
+      const auto &obj = fMap->fObjects[i];
+      const double time = osu::startTime(obj);
+      const double preempt = osu::preemptTime(ar);
+      if (now < time - preempt)
+        continue;
+      if (fEngine->isJudged(i))
+        continue;
+
+      std::visit(osu::Overloaded{
+                     [&](const osu::Circle &o) {
+                       addPlayfieldPt(static_cast<float>(o.fPos.fX),
+                                      static_cast<float>(o.fPos.fY), r * 5.0f);
+                     },
+                     [&](const osu::Slider &o) {
+                       const auto &path = fMap->fSliderPaths[i];
+                       for (const auto &pt : path.points()) {
+                         addPlayfieldPt(static_cast<float>(pt.fX),
+                                        static_cast<float>(pt.fY), r);
+                       }
+                       addPlayfieldPt(static_cast<float>(o.fPos.fX),
+                                      static_cast<float>(o.fPos.fY), r * 5.0f);
+                     },
+                     [&](const osu::Spinner &) {
+                       addPlayfieldPt(
+                           static_cast<float>(osu::kPlayfieldCenter.fX),
+                           static_cast<float>(osu::kPlayfieldCenter.fY), 90.0f);
+                     },
+                 },
+                 obj);
+    }
+
+    for (const auto &fo : fFadingObjects) {
+      const auto &obj = fMap->fObjects[fo.fIndex];
+      std::visit(osu::Overloaded{
+                     [&](const osu::Circle &o) {
+                       addPlayfieldPt(static_cast<float>(o.fPos.fX),
+                                      static_cast<float>(o.fPos.fY), r * 4.0f);
+                     },
+                     [&](const osu::Slider &o) {
+                       const auto &path = fMap->fSliderPaths[fo.fIndex];
+                       for (const auto &pt : path.points()) {
+                         addPlayfieldPt(static_cast<float>(pt.fX),
+                                        static_cast<float>(pt.fY), r);
+                       }
+                       addPlayfieldPt(static_cast<float>(o.fPos.fX),
+                                      static_cast<float>(o.fPos.fY), r * 4.0f);
+                     },
+                     [&](const osu::Spinner &) {},
+                 },
+                 obj);
+    }
+
+    for (const auto &hb : fHitBursts)
+      addPlayfieldPt(static_cast<float>(hb.fPos.fX),
+                     static_cast<float>(hb.fPos.fY), r * 2.5f);
+
+    for (const auto &pp : fPopups)
+      addPlayfieldPt(static_cast<float>(pp.fPos.fX),
+                     static_cast<float>(pp.fPos.fY), 60.0f);
+
+    for (const auto &pt : fCursorTrail)
+      addPlayfieldPt(static_cast<float>(pt.fPos.fX),
+                     static_cast<float>(pt.fPos.fY), 24.0f);
+
+    addPlayfieldPt(static_cast<float>(fCursor.fX),
+                   static_cast<float>(fCursor.fY), 24.0f);
+
+    for (std::size_t i = 0; i + 1 < fMap->fObjects.size(); ++i) {
+      const double endTime = osu::startTime(fMap->fObjects[i + 1]);
+      const double preempt = osu::preemptTime(ar);
+      if (now < endTime - preempt)
+        continue;
+      if (now > endTime)
+        continue;
+      const auto [startPos, startTime] = this->objectEnd(i);
+      const osu::Vec2 endPos = this->objectPosition(i + 1);
+      addPlayfieldPt(static_cast<float>(startPos.fX),
+                     static_cast<float>(startPos.fY), 10.0f);
+      addPlayfieldPt(static_cast<float>(endPos.fX),
+                     static_cast<float>(endPos.fY), 10.0f);
+    }
+
+    dirty.join(skia::SkIRect::MakeXYWH(0, 0, fScreenW, 160));
+
+    return dirty;
+  }
   void drawBackground(skia::SkCanvas *canvas) {
+    if (!fBackgroundScaled)
+      return;
+    skia::SkPaint paint;
+    paint.setAntiAlias(false);
+    paint.setBlendMode(skia::SkBlendMode::kSrc);
+    canvas->drawImageRect(
+        fBackgroundScaled.get(),
+        skia::SkRect::MakeXYWH(0, 0, static_cast<float>(fScreenW),
+                               static_cast<float>(fScreenH)),
+        skia::SkSamplingOptions(skia::SkFilterMode::kNearest), &paint);
+  }
+
+  void preScaleBackground() {
+    fBackgroundScaled.reset();
     if (!fBackground)
       return;
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const int sw = fScreenW;
+    const int sh = fScreenH;
+    if (sw <= 0 || sh <= 0)
+      return;
     const float iw = static_cast<float>(fBackground->width());
     const float ih = static_cast<float>(fBackground->height());
     if (iw <= 0.0f || ih <= 0.0f)
       return;
 
-    const float scale = std::max(sw / iw, sh / ih);
+    const float scale =
+        std::max(static_cast<float>(sw) / iw, static_cast<float>(sh) / ih);
     const float dw = iw * scale;
     const float dh = ih * scale;
-    const float dx = (sw - dw) * 0.5f;
-    const float dy = (sh - dh) * 0.5f;
+    const float dx = (static_cast<float>(sw) - dw) * 0.5f;
+    const float dy = (static_cast<float>(sh) - dh) * 0.5f;
 
+    skia::SkBitmap bmp;
+    if (!bmp.tryAllocPixels(skia::SkImageInfo::Make(
+            sw, sh, skia::kRGBA_8888_SkColorType, skia::kPremul_SkAlphaType)))
+      return;
+    bmp.eraseColor(skia::kBlack);
+    skia::SkCanvas offscreen(bmp);
     skia::SkPaint paint;
-    paint.setAntiAlias(true);
+    paint.setAntiAlias(false);
     paint.setAlphaf(0.3f);
-    canvas->drawImageRect(
+    offscreen.drawImageRect(
         fBackground.get(), skia::SkRect::MakeXYWH(dx, dy, dw, dh),
         skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &paint);
+    fBackgroundScaled = skia::RasterFromBitmap(bmp);
   }
 
   void drawPlayfield(skia::SkCanvas *) {
@@ -1324,17 +1489,17 @@ private:
       skia::SkPaint paint;
       paint.setAntiAlias(true);
       paint.setStrokeWidth(w);
-      paint.setStrokeCap(skia::SkPaint::kRound_Cap);
+      paint.setStrokeCap(skia::SkPaint::kButt_Cap);
       paint.setAlphaf(a);
       paint.setColor(skia::kWhite);
       paint.setStyle(skia::kStrokeStyle);
-      if (hasImg)
+      if (hasImg && !fNoGlow)
         paint.setBlendMode(skia::SkBlendMode::kPlus);
       canvas->drawLine(pts[i - 1].fX, pts[i - 1].fY, pts[i].fX, pts[i].fY,
                        paint);
     }
 
-    if (hasImg) {
+    if (hasImg && !fNoGlow) {
       fSkin.drawCursorTrail(canvas, fCursorTrail.back().fPos, scale, 0.6f);
     }
   }
@@ -1421,15 +1586,14 @@ private:
         (static_cast<double>(score.fCombo) - fDisplayCombo) * lagFactor;
     fDisplayAccuracy += (score.accuracy() - fDisplayAccuracy) * lagFactor;
 
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
+    fHudPaint.setColor(skia::kWhite);
+    fHudPaint.setAlphaf(1.0f);
 
     // Combo counter (large, top-left).
     fFont.setSize(48.0f);
-    paint.setColor(skia::kWhite);
     const std::string comboText =
         std::format("{:.0f}x", std::max(0.0, fDisplayCombo));
-    canvas->drawString(comboText.c_str(), 20.0f, 60.0f, fFont, paint);
+    canvas->drawString(comboText.c_str(), 20.0f, 60.0f, fFont, fHudPaint);
 
     // Score, accuracy, grade (top-center).
     fFont.setSize(22.0f);
@@ -1437,14 +1601,14 @@ private:
         std::format("{:.0f}  {:.2f}%  {}", fDisplayScore,
                     std::clamp(fDisplayAccuracy, 0.0, 1.0) * 100.0,
                     osu::gradeString(osu::computeGrade(score)));
-    canvas->drawString(statsText.c_str(), 20.0f, 90.0f, fFont, paint);
+    canvas->drawString(statsText.c_str(), 20.0f, 90.0f, fFont, fHudPaint);
 
     // Difficulty / mods (top-right).
     fFont.setSize(16.0f);
     const std::string diffText = std::format(
         "CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f} {}", fMap->fDiff.fCs,
         fMap->fDiff.fAr, fMap->fDiff.fOd, fMap->fDiff.fHp, fEngine->mods());
-    canvas->drawString(diffText.c_str(), 20.0f, 115.0f, fFont, paint);
+    canvas->drawString(diffText.c_str(), 20.0f, 115.0f, fFont, fHudPaint);
 
     // Health bar (top).
     this->drawHealthBar(canvas, 0.0f, 0.0f, sw, 14.0f, now);
@@ -1454,13 +1618,14 @@ private:
     const std::string countsText =
         std::format("Great {}  Good {}  Meh {}  Miss {}", score.fGreat,
                     score.fGood, score.fMeh, score.fMiss);
-    canvas->drawString(countsText.c_str(), 20.0f, 140.0f, fFont, paint);
+    canvas->drawString(countsText.c_str(), 20.0f, 140.0f, fFont, fHudPaint);
 
     // Progress time.
     fFont.setSize(14.0f);
-    paint.setAlphaf(0.7f);
+    fHudPaint.setAlphaf(0.7f);
     const std::string timeText = std::format("{:.1f}s", now / 1000.0);
-    canvas->drawString(timeText.c_str(), sw - 80.0f, sh - 20.0f, fFont, paint);
+    canvas->drawString(timeText.c_str(), sw - 80.0f, sh - 20.0f, fFont,
+                       fHudPaint);
 
     double avgFrameMs = 0.0;
     if (fFrameTimeCount > 0) {
@@ -1470,7 +1635,8 @@ private:
     }
     const double fps = avgFrameMs > 0.0 ? 1000.0 / avgFrameMs : 0.0;
     const std::string fpsText = std::format("{:.0f} fps", std::round(fps));
-    canvas->drawString(fpsText.c_str(), sw - 80.0f, sh - 40.0f, fFont, paint);
+    canvas->drawString(fpsText.c_str(), sw - 80.0f, sh - 40.0f, fFont,
+                       fHudPaint);
 
     if (fShowProfile) {
       double avgAdv = 0.0, avgRender = 0.0, avgFlush = 0.0, avgSwap = 0.0;
@@ -1496,17 +1662,17 @@ private:
         avgHud /= static_cast<double>(fProfileNum);
       }
       fFont.setSize(11.0f);
-      paint.setAlphaf(0.6f);
+      fHudPaint.setAlphaf(0.6f);
       const std::string profText =
           std::format("adv {:.0f}  rend {:.0f}  flush {:.0f}  swap {:.0f} us",
                       avgAdv, avgRender, avgFlush, avgSwap);
       canvas->drawString(profText.c_str(), sw - 240.0f, sh - 60.0f, fFont,
-                         paint);
+                         fHudPaint);
       const std::string subText =
           std::format("follow {:.0f}  objs {:.0f}  rest {:.0f}  hud {:.0f} us",
                       avgFollow, avgObjs, avgRest, avgHud);
       canvas->drawString(subText.c_str(), sw - 240.0f, sh - 75.0f, fFont,
-                         paint);
+                         fHudPaint);
     }
   }
 
@@ -1520,7 +1686,7 @@ private:
 
     if (left && right && mid) {
       skia::SkPaint paint;
-      paint.setAntiAlias(true);
+      paint.setAntiAlias(false);
 
       // Background/empty portion: right sprite stretches from hpX to the end.
       const float rightW = w;

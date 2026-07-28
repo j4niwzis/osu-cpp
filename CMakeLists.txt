@@ -47,7 +47,7 @@ file(GLOB_RECURSE sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c
 # Note: for header-only libraries change all PUBLIC flags to INTERFACE and create an interface
 # target: add_library(${PROJECT_NAME} INTERFACE)
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
 add_library(${PROJECT_NAME} STATIC ${headers} ${sources})
 
@@ -59,7 +59,7 @@ target_compile_features(${PROJECT_NAME}
 target_compile_options(${PROJECT_NAME} PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/permissive->")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-  target_compile_options(${PROJECT_NAME} PRIVATE -fexceptions)
+  target_compile_options(${PROJECT_NAME} PRIVATE -fexceptions -pthread -msimd128)
 endif()
 
 

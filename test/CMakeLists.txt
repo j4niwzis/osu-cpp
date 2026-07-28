@@ -71,7 +71,6 @@ enable_testing()
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
   target_link_options(${PROJECT_NAME} PRIVATE
     "SHELL:-sEXIT_RUNTIME=1"
-    "SHELL:-sNO_DISABLE_EXCEPTION_CATCHING"
   )
   set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".js")
   add_test(NAME ${PROJECT_NAME}

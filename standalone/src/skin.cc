@@ -77,12 +77,12 @@ inline void drawImageCentered(skia::SkCanvas *canvas, skia::SkImage *image,
   drawImageCentered(canvas, image, x, y, width, height, paint);
 }
 
-inline skia::SkPaint tintedPaint(skia::SkColor tint, float alpha = 1.0f) {
+inline skia::SkPaint tintedPaint(const skia::Sp<skia::SkColorFilter> &filter,
+                                 float alpha = 1.0f) {
   skia::SkPaint paint;
   paint.setAntiAlias(true);
   paint.setAlphaf(alpha);
-  paint.setColorFilter(
-      skia::SkColorFilters::Blend(tint, skia::SkBlendMode::kSrcIn));
+  paint.setColorFilter(filter);
   return paint;
 }
 
@@ -98,7 +98,12 @@ inline constexpr double kCircleVisualScale = 1.05;
 
 export class Skin {
 public:
-  explicit Skin(std::filesystem::path root = {}) : fRoot(std::move(root)) {}
+  explicit Skin(std::filesystem::path root = {}) : fRoot(std::move(root)) {
+    fComboPaint.setAntiAlias(true);
+    fComboFallbackPaint.setColor(skia::kWhite);
+    fComboFallbackPaint.setStyle(skia::kFillStyle);
+    fComboFallbackPaint.setAntiAlias(true);
+  }
 
   [[nodiscard]] const std::filesystem::path &root() const noexcept {
     return fRoot;
@@ -188,6 +193,18 @@ public:
     }
   }
 
+  void setDisableGlow(bool v) noexcept { fDisableGlow = v; }
+
+  [[nodiscard]] const skia::Sp<skia::SkColorFilter> &
+  tintFilter(skia::SkColor tint) {
+    auto it = fTintFilters.find(tint);
+    if (it != fTintFilters.end())
+      return it->second;
+    auto [ins, _] = fTintFilters.emplace(
+        tint, skia::SkColorFilters::Blend(tint, skia::SkBlendMode::kSrcIn));
+    return ins->second;
+  }
+
   [[nodiscard]] skia::SkColor comboColor(std::size_t index) const {
     if (!fComboColors.empty()) {
       return fComboColors[index % fComboColors.size()];
@@ -217,6 +234,11 @@ public:
 
     const skia::SkColor tint = this->comboColor(comboIndex);
     const double hitSpriteScale = radius / 60.0;
+    const auto &tintFilter = this->tintFilter(tint);
+
+    const float hs = static_cast<float>(hitSpriteScale);
+    const float r2 = static_cast<float>(radius * 2.0);
+    const float hs05 = 0.5f * hs;
 
     auto circle = this->hitcircle();
     auto disc = this->disc();
@@ -224,14 +246,10 @@ public:
       skia::SkPaint paint;
       paint.setAntiAlias(true);
       paint.setAlphaf(alpha);
-      detail::drawImageCentered(canvas, circle.get(), x, y,
-                                static_cast<float>(radius * 2.0),
-                                static_cast<float>(radius * 2.0), paint);
+      detail::drawImageCentered(canvas, circle.get(), x, y, r2, r2, paint);
     } else if (disc) {
-      skia::SkPaint paint = detail::tintedPaint(tint, alpha);
-      detail::drawImageCentered(canvas, disc.get(), x, y,
-                                0.5f * static_cast<float>(hitSpriteScale),
-                                paint);
+      detail::drawImageCentered(canvas, disc.get(), x, y, hs05,
+                                detail::tintedPaint(tintFilter, alpha));
     } else {
       skia::SkPaint fill;
       fill.setColor(skia::kCyan);
@@ -246,9 +264,7 @@ public:
       skia::SkPaint paint;
       paint.setAntiAlias(true);
       paint.setAlphaf(alpha);
-      detail::drawImageCentered(canvas, overlay.get(), x, y,
-                                0.5f * static_cast<float>(hitSpriteScale),
-                                paint);
+      detail::drawImageCentered(canvas, overlay.get(), x, y, hs05, paint);
     } else if (!circle && !disc) {
       skia::SkPaint ring;
       ring.setColor(skia::kWhite);
@@ -259,13 +275,13 @@ public:
       canvas->drawCircle(x, y, static_cast<float>(radius), ring);
     }
 
-    auto glow = this->ringGlow();
-    if (glow) {
-      skia::SkPaint paint = detail::tintedPaint(tint, alpha * 0.5f);
-      paint.setBlendMode(skia::SkBlendMode::kPlus);
-      detail::drawImageCentered(canvas, glow.get(), x, y,
-                                0.46f * static_cast<float>(hitSpriteScale),
-                                paint);
+    if (!fDisableGlow) {
+      auto glow = this->ringGlow();
+      if (glow) {
+        skia::SkPaint gp = detail::tintedPaint(tintFilter, alpha * 0.5f);
+        gp.setBlendMode(skia::SkBlendMode::kPlus);
+        detail::drawImageCentered(canvas, glow.get(), x, y, 0.46f * hs, gp);
+      }
     }
 
     if (comboNumber >= 0) {
@@ -282,12 +298,12 @@ public:
       const float approachAlpha =
           static_cast<float>(approachFadeT) * alphaScale;
 
-      skia::SkPaint paint = detail::tintedPaint(tint, approachAlpha);
       auto approach = this->approachCircle();
       if (approach) {
         detail::drawImageCentered(
             canvas, approach.get(), x, y,
-            0.5f * static_cast<float>(hitSpriteScale * approachScale), paint);
+            0.5f * static_cast<float>(hitSpriteScale * approachScale),
+            detail::tintedPaint(tintFilter, approachAlpha));
       } else {
         skia::SkPaint stroke;
         stroke.setColor(skia::kWhite);
@@ -351,13 +367,36 @@ public:
     if (auto it = fPrecomputedBodies.find(bodyCacheKey);
         it != fPrecomputedBodies.end()) {
       skia::SkPaint bodyPaint;
-      bodyPaint.setAntiAlias(true);
+      bodyPaint.setAntiAlias(false);
       bodyPaint.setAlphaf(bodyAlpha);
-      canvas->drawImageRect(
-          it->second.image.get(),
-          skia::SkRect::MakeXYWH(it->second.originX, it->second.originY,
-                                 it->second.width, it->second.height),
-          skia::SkSamplingOptions(skia::SkFilterMode::kNearest), &bodyPaint);
+      const auto &body = it->second;
+      if (!body.tiles.empty()) {
+        const float xScale =
+            body.width / static_cast<float>(body.image->width());
+        const float yScale =
+            body.height / static_cast<float>(body.image->height());
+        for (const auto &tile : body.tiles) {
+          canvas->drawImageRect(
+              body.image.get(),
+              skia::SkRect::MakeXYWH(static_cast<float>(tile.fLeft),
+                                     static_cast<float>(tile.fTop),
+                                     static_cast<float>(tile.width()),
+                                     static_cast<float>(tile.height())),
+              skia::SkRect::MakeXYWH(
+                  body.originX + static_cast<float>(tile.fLeft) * xScale,
+                  body.originY + static_cast<float>(tile.fTop) * yScale,
+                  static_cast<float>(tile.width()) * xScale,
+                  static_cast<float>(tile.height()) * yScale),
+              skia::SkSamplingOptions(skia::SkFilterMode::kNearest), &bodyPaint,
+              skia::SkCanvas::kFast_SrcRectConstraint);
+        }
+      } else {
+        canvas->drawImageRect(
+            body.image.get(),
+            skia::SkRect::MakeXYWH(body.originX, body.originY, body.width,
+                                   body.height),
+            skia::SkSamplingOptions(skia::SkFilterMode::kNearest), &bodyPaint);
+      }
     } else {
       throw std::runtime_error(
           std::format("Slider precomputed body not found for index {}", index));
@@ -388,23 +427,25 @@ public:
       }
 
       if (tracking) {
-        auto follow = this->sliderFollowCircle();
-        if (follow) {
-          skia::SkPaint followPaint;
-          followPaint.setAntiAlias(true);
-          followPaint.setBlendMode(skia::SkBlendMode::kPlus);
-          detail::drawImageCentered(canvas, follow.get(), bx, by,
-                                    0.9f * static_cast<float>(radius / 60.0),
-                                    followPaint);
-        } else {
-          skia::SkPaint ringPaint;
-          ringPaint.setColor(skia::kRed);
-          ringPaint.setStyle(skia::kStrokeStyle);
-          ringPaint.setStrokeWidth(3.0f);
-          ringPaint.setAntiAlias(true);
-          ringPaint.setAlphaf(0.7f);
-          canvas->drawCircle(bx, by, static_cast<float>(radius * 2.4),
-                             ringPaint);
+        if (!fDisableGlow) {
+          auto follow = this->sliderFollowCircle();
+          if (follow) {
+            skia::SkPaint followPaint;
+            followPaint.setAntiAlias(true);
+            followPaint.setBlendMode(skia::SkBlendMode::kPlus);
+            detail::drawImageCentered(canvas, follow.get(), bx, by,
+                                      0.9f * static_cast<float>(radius / 60.0),
+                                      followPaint);
+          } else {
+            skia::SkPaint ringPaint;
+            ringPaint.setColor(skia::kRed);
+            ringPaint.setStyle(skia::kStrokeStyle);
+            ringPaint.setStrokeWidth(3.0f);
+            ringPaint.setAntiAlias(true);
+            ringPaint.setAlphaf(0.7f);
+            canvas->drawCircle(bx, by, static_cast<float>(radius * 2.4),
+                               ringPaint);
+          }
         }
       }
     }
@@ -803,9 +844,23 @@ float4 main(float2 coords) {
                               : skia::RasterFromBitmap(rasterBmp);
       if (!image)
         return;
-      fPrecomputedBodies[cacheKey] = {
-          image, static_cast<float>(minX), static_cast<float>(minY),
-          static_cast<float>(bw), static_cast<float>(bh)};
+
+      constexpr int kTileSize = 64;
+      std::vector<skia::SkIRect> tileRects;
+      for (int ty = 0; ty < imgH; ty += kTileSize) {
+        for (int tx = 0; tx < imgW; tx += kTileSize) {
+          const int texx = std::min(tx + kTileSize, imgW);
+          const int texy = std::min(ty + kTileSize, imgH);
+          tileRects.push_back(skia::SkIRect::MakeLTRB(tx, ty, texx, texy));
+        }
+      }
+
+      fPrecomputedBodies[cacheKey] = {image,
+                                      static_cast<float>(minX),
+                                      static_cast<float>(minY),
+                                      static_cast<float>(bw),
+                                      static_cast<float>(bh),
+                                      std::move(tileRects)};
     }
   }
 
@@ -872,8 +927,9 @@ float4 main(float2 coords) {
       return;
 
     const double hitSpriteScale = osu::circleRadius(cs) / 60.0;
-    skia::SkPaint paint = detail::tintedPaint(this->comboColor(comboIndex),
-                                              static_cast<float>(alpha));
+    skia::SkPaint paint =
+        detail::tintedPaint(this->tintFilter(this->comboColor(comboIndex)),
+                            static_cast<float>(alpha));
     detail::drawImageCentered(canvas, burst.get(), static_cast<float>(pos.fX),
                               static_cast<float>(pos.fY),
                               static_cast<float>(scale * hitSpriteScale),
@@ -888,7 +944,8 @@ float4 main(float2 coords) {
     skia::SkPaint paint;
     paint.setAntiAlias(true);
     paint.setAlphaf(alpha);
-    paint.setBlendMode(skia::SkBlendMode::kPlus);
+    if (!fDisableGlow)
+      paint.setBlendMode(skia::SkBlendMode::kPlus);
     const double hitSpriteScale = osu::circleRadius(cs) / 60.0;
     canvas->save();
     canvas->translate(static_cast<float>(pos.fX), static_cast<float>(pos.fY));
@@ -944,7 +1001,8 @@ float4 main(float2 coords) {
     paint.setAntiAlias(true);
     paint.setAlphaf(alpha);
     if (img) {
-      paint.setBlendMode(skia::SkBlendMode::kPlus);
+      if (!fDisableGlow)
+        paint.setBlendMode(skia::SkBlendMode::kPlus);
       detail::drawImageCentered(canvas, img.get(), x, y, 0.35f * scale, paint);
     } else {
       paint.setColor(skia::kWhite);
@@ -983,24 +1041,18 @@ float4 main(float2 coords) {
 
     float cx = x - totalWidth * 0.5f;
     const float cy = y;
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
-    paint.setAlphaf(alpha);
+    fComboPaint.setAlphaf(alpha);
     for (std::size_t i = 0; i < digits.size(); ++i) {
       auto img = this->number(digits[i] - '0');
       const float w = widths[i];
       const float h = heights[i];
       if (img) {
         detail::drawImageCentered(canvas, img.get(), cx + w * 0.5f, cy, w, h,
-                                  paint);
+                                  fComboPaint);
       } else {
-        skia::SkPaint textPaint;
-        textPaint.setColor(skia::kWhite);
-        textPaint.setStyle(skia::kFillStyle);
-        textPaint.setAntiAlias(true);
-        textPaint.setAlphaf(alpha);
+        fComboFallbackPaint.setAlphaf(alpha);
         canvas->drawRect(skia::SkRect::MakeXYWH(cx, cy - h * 0.5f, w, h),
-                         textPaint);
+                         fComboFallbackPaint);
       }
       cx += w;
     }
@@ -1011,11 +1063,16 @@ private:
   std::unordered_map<std::string, skia::Sp<skia::SkImage>> fImages;
   std::vector<skia::SkColor> fComboColors;
   std::unordered_map<skia::SkColor, skia::Sp<skia::SkImage>> fSliderTextures;
+  std::unordered_map<skia::SkColor, skia::Sp<skia::SkColorFilter>> fTintFilters;
+  bool fDisableGlow = false;
+  skia::SkPaint fComboPaint;
+  skia::SkPaint fComboFallbackPaint;
 
   struct PrecomputedBody {
     skia::Sp<skia::SkImage> image;
     float originX, originY;
     float width, height;
+    std::vector<skia::SkIRect> tiles;
   };
   std::unordered_map<std::uint64_t, PrecomputedBody> fPrecomputedBodies;
 
