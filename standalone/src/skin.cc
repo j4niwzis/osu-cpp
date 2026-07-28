@@ -328,17 +328,6 @@ public:
     const auto points = path.points();
     const skia::SkColor tint = this->comboColor(comboIndex);
 
-    skia::SkPathBuilder builder;
-    if (!points.empty()) {
-      builder.moveTo(static_cast<float>(points.front().fX),
-                     static_cast<float>(points.front().fY));
-      for (std::size_t i = 1; i < points.size(); ++i) {
-        builder.lineTo(static_cast<float>(points[i].fX),
-                       static_cast<float>(points[i].fY));
-      }
-    }
-    skia::SkPath skPath = builder.detach();
-
     // Slider body alpha follows the same rule as the head circle.
     const double preempt = osu::preemptTime(ar);
     const double objectFadeIn = osu::fadeInTime(ar);
