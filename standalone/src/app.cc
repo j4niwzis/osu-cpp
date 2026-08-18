@@ -15,6 +15,8 @@ import skin;
 import archive;
 import client.util;
 import client.audio;
+import client.input;
+import client.timing;
 #ifdef __EMSCRIPTEN__
 import emscripten;
 #endif
@@ -83,10 +85,18 @@ private:
 
   // Input
   osu::Vec2 fCursor = osu::kPlayfieldCenter;
-  bool fKeyDown = false;
-  bool fKeyWasDown = false;
   float fMouseX = 0.0f;
   float fMouseY = 0.0f;
+  std::uint32_t fHeldMask = 0; // bit per held key/button (Z/X/Space/M1/M2)
+
+  // Event queue: filled on the GLFW event-pump (main) thread, drained on the
+  // render thread. 4096 slots absorb multi-second bursts of cursor reports.
+  SpscQueue<4096> fInputQueue;
+  std::atomic<bool> fQuit{false};
+  std::atomic<int> fExitCode{0};
+  // Cursor-mode change requests marshalled to the main thread (GLFW requires
+  // glfwSetInputMode on the thread that owns the window). -1 = none.
+  std::atomic<int> fCursorModeRequest{-1};
 
   // Selection screen.
   enum class State { kSelecting, kPlaying };
@@ -100,6 +110,9 @@ private:
 
   // Timing
   double fStartMs = 0.0;
+  AnchoredClock fClock;
+  double fLastClockSyncWall = std::numeric_limits<double>::lowest();
+  static constexpr double kClockSyncIntervalMs = 250.0;
   AudioPlayer fAudio;
   std::unordered_map<std::string, SamplePlayer> fSamples;
   std::size_t fPlayedEvents = 0;
@@ -215,6 +228,8 @@ private:
     }
 
     fStartMs = glfw::glfwGetTime() * 1000.0;
+    fClock.reset(fStartMs, 0.0);
+    fLastClockSyncWall = std::numeric_limits<double>::lowest();
     fAudio.play();
   }
 
@@ -269,46 +284,65 @@ private:
 #endif
 
     glfw::glfwSetWindowUserPointer(fWindow, this);
+    // Callbacks run on the event-pump (main) thread. They do two things only:
+    // stamp the event with the wall clock and enqueue it. Window management
+    // (close, fullscreen) is handled right here because GLFW requires it on
+    // this thread; everything gameplay-related is consumed by the render
+    // thread via drainInput().
     glfw::glfwSetKeyCallback(
         fWindow, [](glfw::GLFWwindow *w, int key, int, int action, int) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          self->onKey(key, action);
+          if (action == glfw::kPress) {
+            if (key == glfw::kKeyEscape) {
+              glfw::glfwSetWindowShouldClose(w, glfw::kTrue);
+              return;
+            }
+            if (key == glfw::kKeyF11) {
+              self->toggleFullscreen();
+              return;
+            }
+          }
+          if (action == glfw::kRepeat)
+            return; // key auto-repeat is meaningless for gameplay
+          self->enqueue({App::wallMs(), EventType::kKey, key, action});
         });
     glfw::glfwSetMouseButtonCallback(
         fWindow, [](glfw::GLFWwindow *w, int button, int action, int) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          self->onMouseButton(button, action);
+          self->enqueue({App::wallMs(), EventType::kMouseButton, button, action});
         });
     glfw::glfwSetCursorPosCallback(
         fWindow, [](glfw::GLFWwindow *w, double x, double y) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          self->onCursorMove(static_cast<float>(x), static_cast<float>(y));
+          self->enqueue({App::wallMs(), EventType::kCursorMove, 0, 0,
+                         static_cast<float>(x), static_cast<float>(y)});
         });
     glfw::glfwSetScrollCallback(
         fWindow, [](glfw::GLFWwindow *w, double, double y) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          self->onScroll(static_cast<float>(y));
+          self->enqueue({App::wallMs(), EventType::kScroll, 0, 0,
+                         static_cast<float>(y)});
         });
     glfw::glfwSetFramebufferSizeCallback(
         fWindow, [](glfw::GLFWwindow *w, int width, int height) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          self->resize(width, height);
+          // Surface recreation must happen where the GL context is current:
+          // marshal to the render thread.
+          self->enqueue({App::wallMs(), EventType::kResize, width, height});
         });
 
+#ifdef __EMSCRIPTEN__
     glfw::glfwMakeContextCurrent(fWindow);
-#ifndef __EMSCRIPTEN__
-    glfw::glfwSwapInterval(1);
-#endif
 
     if (!this->initSkia()) {
       glfw::glfwDestroyWindow(fWindow);
@@ -319,45 +353,140 @@ private:
     fFont = this->loadFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
-    int selected = 0;
     if (fSet.fBeatmaps.size() > 1) {
-      selected = this->runDifficultySelect();
-#ifdef __EMSCRIPTEN__
+      (void)this->runDifficultySelect();
       emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
       return 0;
-#else
-      if (selected < 0 || selected >= static_cast<int>(fSet.fBeatmaps.size())) {
-        return 0;
-      }
-#endif
     }
 
-#ifndef __EMSCRIPTEN__
-    glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorHidden);
-#endif
-#ifdef __EMSCRIPTEN__
     EM_ASM(Module.setCursorVisible(false));
-#endif
-    this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(selected)]);
-
-#ifdef __EMSCRIPTEN__
+    this->startGameplay(fSet.fBeatmaps.front());
     emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
     return 0;
 #else
-    return this->runGameplayLoop();
+    // Snapshot the real framebuffer size on the main thread (that query is
+    // main-thread-only in GLFW); the render thread must not call it.
+    glfw::glfwGetFramebufferSize(fWindow, &fScreenW, &fScreenH);
+
+    // The GL context is owned by the render thread from here on. The main
+    // thread degrades into a pure event pump: it blocks in glfwWaitEvents,
+    // stamps and enqueues input, and services the few window operations that
+    // GLFW pins to this thread.
+    std::thread renderThread([this] { this->renderThreadMain(); });
+
+    while (!fQuit.load(std::memory_order_acquire) &&
+           !glfw::glfwWindowShouldClose(fWindow)) {
+      glfw::glfwWaitEvents();
+      const int cursorMode = fCursorModeRequest.exchange(-1);
+      if (cursorMode != -1) {
+        glfw::glfwSetInputMode(fWindow, glfw::kCursor, cursorMode);
+      }
+    }
+    fQuit.store(true, std::memory_order_release);
+    renderThread.join();
+    return fExitCode.load(std::memory_order_acquire);
 #endif
   }
 
-  void onKey(int key, int action) {
-#ifdef __EMSCRIPTEN__
-    if (action == glfw::kPress || action == glfw::kRepeat)
-      EM_ASM(console.log('key:', $0, 'action:', $1), key, action);
+#ifndef __EMSCRIPTEN__
+  void renderThreadMain() {
+    glfw::glfwMakeContextCurrent(fWindow);
+    glfw::glfwSwapInterval(1);
+
+    if (!this->initSkia()) {
+      fExitCode.store(1, std::memory_order_release);
+      this->requestQuit();
+      return;
+    }
+
+    fFont = this->loadFont(20.0f);
+    this->resize(fScreenW, fScreenH);
+
+    int selected = 0;
+    if (fSet.fBeatmaps.size() > 1) {
+      selected = this->runDifficultySelect();
+      if (selected < 0 || selected >= static_cast<int>(fSet.fBeatmaps.size())) {
+        this->requestQuit();
+        glfw::glfwMakeContextCurrent(nullptr);
+        return;
+      }
+    }
+
+    fCursorModeRequest.store(glfw::kCursorHidden, std::memory_order_release);
+    glfw::glfwPostEmptyEvent();
+    this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(selected)]);
+    fExitCode.store(this->runGameplayLoop(), std::memory_order_release);
+    this->requestQuit();
+    glfw::glfwMakeContextCurrent(nullptr);
+  }
+
+  void requestQuit() {
+    fQuit.store(true, std::memory_order_release);
+    glfw::glfwPostEmptyEvent(); // wake the pump so it can exit
+  }
 #endif
+
+  [[nodiscard]] static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
+
+  void enqueue(const Event &ev) { fInputQueue.tryPush(ev); }
+
+  // ---- Input consumption (render thread) -------------------------------
+  //
+  // Events arrive from the queue already stamped with the wall clock of the
+  // moment GLFW delivered them; eventGameTime() maps that onto the game
+  // timeline. Judgement therefore no longer depends on when the frame loop
+  // got around to polling: at any frame rate, a hit is judged at the time it
+  // physically happened.
+
+  void drainInput() {
+    Event ev;
+    while (fInputQueue.tryPop(ev)) {
+      this->applyEvent(ev);
+    }
+  }
+
+  [[nodiscard]] double eventGameTime(double wallMs) {
+#ifdef __EMSCRIPTEN__
+    return wallMs - fStartMs;
+#else
+    return fClock.sample(wallMs);
+#endif
+  }
+
+  void applyEvent(const Event &ev) {
+    switch (ev.fType) {
+    case EventType::kResize:
+      this->resize(ev.fA, ev.fB);
+      break;
+    case EventType::kCursorMove:
+      fMouseX = ev.fX;
+      fMouseY = ev.fY;
+      if (fState == State::kPlaying && !fAutoplay) {
+        fCursor = this->toPlayfield(ev.fX, ev.fY);
+        this->submitTimed({this->eventGameTime(ev.fWallMs), fCursor,
+                           osu::InputAction::kMove});
+      }
+      break;
+    case EventType::kScroll:
+      if (fState == State::kSelecting) {
+        fSelectScrollY -= ev.fX * 30.0f;
+      }
+      break;
+    case EventType::kKey:
+      this->applyKey(ev);
+      break;
+    case EventType::kMouseButton:
+      this->applyMouseButton(ev);
+      break;
+    }
+  }
+
+  void applyKey(const Event &ev) {
+    const int key = ev.fA;
+    const int action = ev.fB;
     if (fState == State::kSelecting) {
       if (action == glfw::kPress) {
-        if (key == glfw::kKeyEscape) {
-          glfw::glfwSetWindowShouldClose(fWindow, glfw::kTrue);
-        } else if (key == glfw::kKeyUp || key == glfw::kKeyLeft) {
+        if (key == glfw::kKeyUp || key == glfw::kKeyLeft) {
           fSelectedDifficulty = std::max(0, fSelectedDifficulty - 1);
         } else if (key == glfw::kKeyDown || key == glfw::kKeyRight) {
           fSelectedDifficulty =
@@ -369,51 +498,67 @@ private:
       }
       return;
     }
-
-    if (action == glfw::kPress) {
-      if (key == glfw::kKeyF11) {
-        this->toggleFullscreen();
-      } else if (key == glfw::kKeyEscape) {
-        glfw::glfwSetWindowShouldClose(fWindow, glfw::kTrue);
-      }
+    if (fAutoplay) {
+      return;
     }
-    if (action == glfw::kPress || action == glfw::kRepeat) {
-      if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
-        if (!fAutoplay)
-          fKeyDown = true;
-      }
-    } else if (action == glfw::kRelease) {
-      if (key == glfw::kKeyZ || key == glfw::kKeyX || key == glfw::kKeySpace) {
-        fKeyDown = false;
-      }
+    std::uint32_t bit = 0;
+    if (key == glfw::kKeyZ) {
+      bit = 1u << 0;
+    } else if (key == glfw::kKeyX) {
+      bit = 1u << 1;
+    } else if (key == glfw::kKeySpace) {
+      bit = 1u << 2;
+    } else {
+      return;
     }
+    this->applyButton(bit, action == glfw::kPress, ev.fWallMs);
   }
 
-  void onMouseButton(int button, int action) {
+  void applyMouseButton(const Event &ev) {
+    const int button = ev.fA;
+    const int action = ev.fB;
     if (fState == State::kSelecting) {
       if (button == glfw::kMouseButtonLeft && action == glfw::kPress) {
         fClickPending = true;
       }
       return;
     }
-    if (fAutoplay)
+    if (fAutoplay) {
       return;
-    if (button == glfw::kMouseButtonLeft || button == glfw::kMouseButtonRight) {
-      fKeyDown = (action == glfw::kPress || action == glfw::kRepeat);
+    }
+    std::uint32_t bit = 0;
+    if (button == glfw::kMouseButtonLeft) {
+      bit = 1u << 3;
+    } else if (button == glfw::kMouseButtonRight) {
+      bit = 1u << 4;
+    } else {
+      return;
+    }
+    this->applyButton(bit, action == glfw::kPress, ev.fWallMs);
+  }
+
+  // Every physical press attempts a hit (each of Z/X/M1/M2 is an independent
+  // trigger, which is what alternating taps need); a release is forwarded to
+  // the engine only when the *last* held trigger goes up, so slider tracking
+  // survives overlapped taps. The old code collapsed all triggers into one
+  // boolean, losing presses that overlapped a held key.
+  void applyButton(std::uint32_t bit, bool down, double wallMs) {
+    const double t = this->eventGameTime(wallMs);
+    if (down) {
+      fHeldMask |= bit;
+      this->submitTimed({t, fCursor, osu::InputAction::kPress});
+    } else {
+      fHeldMask &= ~bit;
+      if (fHeldMask == 0) {
+        this->submitTimed({t, fCursor, osu::InputAction::kRelease});
+      }
     }
   }
 
-  void onCursorMove(float sx, float sy) {
-    fMouseX = sx;
-    fMouseY = sy;
-    if (fState == State::kPlaying && !fAutoplay) {
-      fCursor = this->toPlayfield(sx, sy);
-    }
-  }
-
-  void onScroll(float delta) {
-    if (fState == State::kSelecting) {
-      fSelectScrollY -= delta * 30.0f;
+  void submitTimed(const osu::InputEvent &ev) {
+    fEngine->submit(ev);
+    if (fRecord) {
+      fRecordedEvents.push_back(ev);
     }
   }
 
@@ -425,15 +570,17 @@ private:
     fEmscriptenResult = 0;
     return 0;
 #else
-    while (!glfw::glfwWindowShouldClose(fWindow) && !fDifficultyConfirmed) {
-      glfw::glfwPollEvents();
+    while (!fQuit.load(std::memory_order_acquire) &&
+           !glfw::glfwWindowShouldClose(fWindow) && !fDifficultyConfirmed) {
+      this->drainInput();
       this->updateSelectHover();
       this->renderDifficultySelect();
       fContext->flushAndSubmit(fSurface.get());
       glfw::glfwSwapBuffers(fWindow);
     }
 
-    if (glfw::glfwWindowShouldClose(fWindow)) {
+    if (fQuit.load(std::memory_order_acquire) ||
+        glfw::glfwWindowShouldClose(fWindow)) {
       return -1;
     }
     return fSelectedDifficulty;
@@ -446,12 +593,16 @@ private:
 #ifdef __EMSCRIPTEN__
     return 0;
 #else
-    while (!glfw::glfwWindowShouldClose(fWindow) &&
+    while (!fQuit.load(std::memory_order_acquire) &&
+           !glfw::glfwWindowShouldClose(fWindow) &&
            !this->shouldStop(this->nowMs())) {
       using clock = std::chrono::steady_clock;
-      glfw::glfwPollEvents();
+      // Drain input first, then sample the frame clock: the engine requires
+      // non-decreasing submission times, and the frame time taken after the
+      // drain is >= every drained event time by construction.
+      this->drainInput();
       const double now = this->nowMs();
-      this->handleInput(now);
+      this->submitAutoplay(now);
       if (fShowProfile) {
         auto t0 = clock::now();
         fEngine->advance(now);
@@ -507,7 +658,8 @@ private:
     {
       double cx = 0, cy = 0;
       glfw::glfwGetCursorPos(fWindow, &cx, &cy);
-      this->onCursorMove(static_cast<float>(cx), static_cast<float>(cy));
+      this->enqueue({wallMs(), EventType::kCursorMove, 0, 0,
+                     static_cast<float>(cx), static_cast<float>(cy)});
     }
 
     int fw = 0, fh = 0;
@@ -536,6 +688,7 @@ private:
             fSet.fBeatmaps[static_cast<std::size_t>(fSelectedDifficulty)]);
         fState = State::kPlaying;
       } else {
+        this->drainInput();
         this->updateSelectHover();
         this->renderDifficultySelect();
         fContext->flushAndSubmit(fSurface.get());
@@ -552,8 +705,9 @@ private:
         emscripten::emscripten_cancel_main_loop();
         return;
       }
+      this->drainInput();
       const double now = this->nowMs();
-      this->handleInput(now);
+      this->submitAutoplay(now);
       fEngine->advance(now);
       this->playHitsounds(now);
       this->render();
@@ -808,11 +962,11 @@ private:
   }
 
   void resize(int w, int h) {
+    // Called on the render thread with framebuffer dimensions delivered by
+    // the resize event (or the pre-thread snapshot); querying GLFW here is
+    // not allowed off the main thread.
     fScreenW = w;
     fScreenH = h;
-    if (fWindow != nullptr) {
-      glfw::glfwGetFramebufferSize(fWindow, &fScreenW, &fScreenH);
-    }
     // Match webosu-2: playfield occupies 80% of the limiting screen dimension.
     constexpr float kPlayfieldSize = 0.8f;
     const float sx =
@@ -865,14 +1019,25 @@ private:
     glfw::glfwTerminate();
   }
 
-  [[nodiscard]] double nowMs() const {
+  [[nodiscard]] double nowMs() {
 #ifdef __EMSCRIPTEN__
     return glfw::glfwGetTime() * 1000.0 - fStartMs;
 #else
-    if (fAudio.playing()) {
-      return fAudio.positionSec() * 1000.0;
+    // The audio device is consulted at most every kClockSyncIntervalMs;
+    // between syncs the game clock extrapolates from the wall clock. This
+    // removes blocking OpenAL round-trips (mixer mutex, PipeWire latency
+    // probes) from the hot path: they used to cost whole milliseconds per
+    // call, several calls per frame. It also makes the timeline seamless
+    // when the music ends: extrapolation simply continues from the last
+    // anchor instead of jumping to an unrelated wall-clock epoch.
+    const double wall = wallMs();
+    if (wall - fLastClockSyncWall >= kClockSyncIntervalMs) {
+      fLastClockSyncWall = wall;
+      if (fAudio.playing()) {
+        fClock.sync(wall, fAudio.positionSec() * 1000.0);
+      }
     }
-    return glfw::glfwGetTime() * 1000.0 - fStartMs;
+    return fClock.sample(wall);
 #endif
   }
 
@@ -880,31 +1045,6 @@ private:
     return fEngine->finished() && now > fMap->lastObjectEndTime() + 1000.0;
   }
 
-  void handleInput(double now) {
-    this->submitAutoplay(now);
-
-    if (!fAutoplay) {
-      if (fCursor.fX != fLastCursor.fX || fCursor.fY != fLastCursor.fY) {
-        auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kMove};
-        fEngine->submit(ev);
-        if (fRecord)
-          fRecordedEvents.push_back(ev);
-        fLastCursor = fCursor;
-      }
-      if (fKeyDown && !fKeyWasDown) {
-        auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kPress};
-        fEngine->submit(ev);
-        if (fRecord)
-          fRecordedEvents.push_back(ev);
-      } else if (!fKeyDown && fKeyWasDown) {
-        auto ev = osu::InputEvent{now, fCursor, osu::InputAction::kRelease};
-        fEngine->submit(ev);
-        if (fRecord)
-          fRecordedEvents.push_back(ev);
-      }
-    }
-    fKeyWasDown = fKeyDown;
-  }
 
   void submitAutoplay(double now) {
     while (fAutoplayIndex < fAutoplayEvents.size() &&
@@ -1737,7 +1877,33 @@ private:
     canvas->drawRect(skia::SkRect::MakeXYWH(x, y, w, h), border);
   }
 
-  void printResult() { std::println("{}", fEngine->score()); }
+  void printResult() {
+    std::println("{}", fEngine->score());
+
+    // Timing statistics over judged hits (misses carry no delta).
+    double sum = 0.0;
+    double sumSq = 0.0;
+    std::size_t n = 0;
+    for (const auto &ev : fEngine->events()) {
+      if (std::holds_alternative<osu::judgement::Miss>(ev.fResult)) {
+        continue;
+      }
+      sum += ev.fDelta;
+      sumSq += ev.fDelta * ev.fDelta;
+      ++n;
+    }
+    if (n > 0) {
+      const double mean = sum / static_cast<double>(n);
+      const double variance =
+          std::max(0.0, sumSq / static_cast<double>(n) - mean * mean);
+      const double ur = 10.0 * std::sqrt(variance);
+      std::println("hit error: {:+.1f} ms avg, UR {:.0f}", mean, ur);
+    }
+    const auto dropped = fInputQueue.dropped();
+    if (dropped > 0) {
+      std::println("warning: {} input events dropped", dropped);
+    }
+  }
 
   [[nodiscard]] std::string beatmapMd5() const {
     if (!fMap)
@@ -1770,7 +1936,6 @@ private:
             (static_cast<double>(sy) - fOffsetY) / fScale};
   }
 
-  osu::Vec2 fLastCursor = osu::kPlayfieldCenter;
 };
 
 } // namespace client
