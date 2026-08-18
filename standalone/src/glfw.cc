@@ -29,6 +29,7 @@ using ::glfwGetWindowUserPointer;
 using ::glfwInit;
 using ::glfwMakeContextCurrent;
 using ::glfwPollEvents;
+using ::glfwPostEmptyEvent;
 using ::glfwSetCursorPosCallback;
 using ::glfwSetFramebufferSizeCallback;
 using ::glfwSetInputMode;
@@ -41,6 +42,7 @@ using ::glfwSetWindowUserPointer;
 using ::glfwSwapBuffers;
 using ::glfwSwapInterval;
 using ::glfwTerminate;
+using ::glfwWaitEvents;
 using ::glfwWindowHint;
 using ::glfwWindowShouldClose;
 
