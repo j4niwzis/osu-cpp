@@ -19,7 +19,11 @@ struct InputEvent {
 struct HitEvent {
   std::size_t fIndex;
   Judgement fResult;
-  double fDelta = 0.0; // signed: negative = early, positive = late
+  // Signed judgement delta. Only meaningful as *tap timing* for circles hit
+  // by input; sliders and spinners are finalized at their end, so their
+  // delta is the finalization offset, not a tap. For timing statistics use
+  // Engine::tapDeltas().
+  double fDelta = 0.0;
 };
 
 class Engine {
@@ -44,6 +48,12 @@ public:
   [[nodiscard]] double clockRate() const noexcept { return fDiff.fClockRate; }
   [[nodiscard]] std::span<const HitEvent> events() const noexcept {
     return fEvents;
+  }
+  // Signed tap-timing deltas (press vs object start) for every successful
+  // head hit: circles and slider heads. This is the series UR / mean hit
+  // error are defined over.
+  [[nodiscard]] std::span<const double> tapDeltas() const noexcept {
+    return fTapDeltas;
   }
   [[nodiscard]] bool finished() const noexcept {
     return fProcessedObjects == fMap.fObjects.size();
@@ -114,6 +124,7 @@ private:
   std::size_t fProcessedObjects = 0;
   ScoreState fScore;
   std::vector<HitEvent> fEvents;
+  std::vector<double> fTapDeltas;
   std::vector<SliderPath> fPaths;
   std::vector<ObjectState> fStates;
   Vec2 fCursor{kPlayfieldCenter};
@@ -193,6 +204,7 @@ private:
             if (std::abs(delta) > windowMeh(fDiff.fOd)) {
               return false;
             }
+            fTapDeltas.push_back(delta);
             this->judge(i, judgeDelta(delta, fDiff.fOd), delta);
             return true;
           },
@@ -210,6 +222,7 @@ private:
             }
             fStates[i].fHeadHit = true;
             fStates[i].fPending = judgeDelta(delta, fDiff.fOd);
+            fTapDeltas.push_back(delta);
             return true;
           },
           [&](const Spinner &) -> bool {
