@@ -117,8 +117,15 @@ private:
   std::atomic<int> fCursorModeRequest{-1};
 
   // ---- Screens ---------------------------------------------------------
-  enum class State { kSongSelect, kDownload, kPlaying, kPaused, kResults };
-  State fState = State::kSongSelect;
+  enum class State {
+    kMainMenu,
+    kSongSelect,
+    kDownload,
+    kPlaying,
+    kPaused,
+    kResults,
+  };
+  State fState = State::kMainMenu;
   bool fHasInitialSet = false;
 
   // Library / song select (lazer-style carousel on the right).
@@ -144,10 +151,16 @@ private:
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
     long fSetId = -1;
-    std::string fTitle, fArtist, fCreator;
+    std::string fTitle, fArtist, fCreator, fRankStatus;
+    float fStarsMin = 0.0f;
+    float fStarsMax = 0.0f;
+    int fDiffCount = 0;
     enum class St : std::uint8_t { kIdle, kFetching, kDone, kError };
     St fSt = St::kIdle;
     std::shared_ptr<client::http::Handle> fHandle;
+    enum class Thumb : std::uint8_t { kNone, kFetching, kReady, kFailed };
+    Thumb fThumbSt = Thumb::kNone;
+    skia::Sp<skia::SkImage> fThumb;
   };
   std::string fSearchQuery;
   bool fSearchPending = false;
@@ -176,6 +189,47 @@ private:
     std::string fGrade = "F";
   };
   ResultData fResult;
+
+  // ---- UI animation state ----
+  double fStateEnterWall = 0.0;
+  double fUiPrevWall = 0.0;
+  double fUiDt = 16.0;         // ms, clamped
+  float fScrollAnim = 0.0f;    // smoothed carousel scroll
+  float fPopAnim = 1.0f;       // selected row pop-out progress
+  int fPrevSelKey = -1;
+  bool fMenuExpanded = false;
+  float fMenuExpand = 0.0f;    // eased 0..1
+  skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
+  struct Tri {
+    float fX, fY, fSize, fSpeed, fAlpha;
+  };
+  std::vector<Tri> fTriangles;
+  std::mt19937 fUiRng{0xC0FFEEu};
+
+  [[nodiscard]] static float easeOutQuint(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    const float u = 1.0f - t;
+    return 1.0f - u * u * u * u * u;
+  }
+
+  [[nodiscard]] float screenFade() const {
+    return easeOutQuint(
+        static_cast<float>((wallMs() - fStateEnterWall) / 240.0));
+  }
+
+  void drawScreenFadeIn(skia::SkCanvas *canvas) {
+    const float fade = this->screenFade();
+    if (fade >= 1.0f) {
+      return;
+    }
+    skia::SkPaint p;
+    p.setColor(skia::colorSetARGB(
+        static_cast<std::uint8_t>((1.0f - fade) * 160.0f), 10, 8, 14));
+    canvas->drawRect(skia::SkRect::MakeXYWH(0, 0,
+                                            static_cast<float>(fScreenW),
+                                            static_cast<float>(fScreenH)),
+                     p);
+  }
 
   // Lazer-ish palette.
   static constexpr skia::SkColor kAccent = skia::colorSetARGB(255, 255, 102, 170);
@@ -439,7 +493,8 @@ private:
       FS.syncfs(true, function(err) { Module._osu_maps_synced(); });
     });
 
-    fState = State::kSongSelect;
+    fState = State::kMainMenu;
+    fStateEnterWall = wallMs();
     EM_ASM(Module.setCursorVisible(true));
     emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
     return 0;
@@ -483,7 +538,8 @@ private:
     this->resize(fScreenW, fScreenH);
 
     this->initLibrary();
-    fState = State::kSongSelect;
+    fState = State::kMainMenu;
+    fStateEnterWall = wallMs();
 
     while (!fQuit.load(std::memory_order_acquire) &&
            !glfw::glfwWindowShouldClose(fWindow)) {
@@ -590,6 +646,9 @@ private:
     }
 
     switch (fState) {
+    case State::kMainMenu:
+      this->keyMainMenu(key);
+      return;
     case State::kSongSelect:
       this->keySongSelect(key);
       return;
@@ -638,7 +697,7 @@ private:
   void keySongSelect(int key) {
     const int nSets = static_cast<int>(fLibrary.size());
     if (key == glfw::kKeyEscape) {
-      this->requestQuit();
+      this->switchState(State::kMainMenu);
       return;
     }
     if (key == glfw::kKeyD) {
@@ -682,6 +741,9 @@ private:
   void openDownloads() {
     fSwallowChar = true;
     this->switchState(State::kDownload);
+    if (fFound.empty() && !fSearchPending) {
+      this->startSearch(); // empty query => recently ranked listing
+    }
   }
 
   void keyDownload(int key) {
@@ -726,6 +788,30 @@ private:
 
   void clickAt(float x, float y) {
     switch (fState) {
+    case State::kMainMenu: {
+      const float dx = x - fLogoRect.centerX();
+      const float dy = y - fLogoRect.centerY();
+      const float r = fLogoRect.width() * 0.5f;
+      if (dx * dx + dy * dy <= r * r) {
+        fMenuExpanded = !fMenuExpanded;
+        return;
+      }
+      if (fMenuExpanded) {
+        for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
+          if (fMenuButtons[i].fRect.contains(x, y)) {
+            if (i == 0) {
+              this->switchState(State::kSongSelect);
+            } else if (i == 1) {
+              this->openDownloads();
+            } else {
+              this->requestQuit();
+            }
+            return;
+          }
+        }
+      }
+      break;
+    }
     case State::kSongSelect:
       if (fDownloadsChip.contains(x, y)) {
         this->openDownloads();
@@ -844,6 +930,7 @@ private:
 
   [[nodiscard]] static const char *stateName(State st) {
     switch (st) {
+    case State::kMainMenu: return "main-menu";
     case State::kSongSelect: return "song-select";
     case State::kDownload: return "download";
     case State::kPlaying: return "playing";
@@ -856,6 +943,8 @@ private:
   void switchState(State st) {
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
+    fStateEnterWall = wallMs();
+    fMenuExpanded = false;
   }
 
   // ---- Frame dispatch ---------------------------------------------------
@@ -863,7 +952,15 @@ private:
   void frame() {
     client::http::poll(); // completed network callbacks land here
     this->drainInput();
+    {
+      const double wallNow = wallMs();
+      fUiDt = fUiPrevWall > 0.0 ? std::min(50.0, wallNow - fUiPrevWall) : 16.0;
+      fUiPrevWall = wallNow;
+    }
     switch (fState) {
+    case State::kMainMenu:
+      this->frameMainMenu();
+      break;
     case State::kSongSelect:
       this->frameSongSelect();
       break;
@@ -1178,10 +1275,86 @@ private:
       d.fTitle = getStr(*o, "title");
       d.fArtist = getStr(*o, "artist");
       d.fCreator = getStr(*o, "creator");
+      d.fRankStatus = getStr(*o, "status");
+      if (const bjson::value *bms = o->if_contains("beatmaps")) {
+        if (const bjson::array *ba = bms->if_array()) {
+          for (const auto &bm : *ba) {
+            if (const bjson::object *bo = bm.if_object()) {
+              if (const bjson::value *sr = bo->if_contains("difficulty_rating");
+                  sr != nullptr && sr->is_number()) {
+                const auto v = static_cast<float>(sr->to_number<double>());
+                if (d.fDiffCount == 0) {
+                  d.fStarsMin = d.fStarsMax = v;
+                } else {
+                  d.fStarsMin = std::min(d.fStarsMin, v);
+                  d.fStarsMax = std::max(d.fStarsMax, v);
+                }
+                ++d.fDiffCount;
+              }
+            }
+          }
+        }
+      }
       fFound.push_back(std::move(d));
     }
     fDownloadScroll = 0.0f;
-    fDownloadStatus = std::format("{} result(s)", fFound.size());
+    fDownloadStatus =
+        fSearchQuery.empty()
+            ? std::format("recently ranked - {} maps", fFound.size())
+            : std::format("{} result(s)", fFound.size());
+  }
+
+  void requestThumb(std::size_t idx) {
+    if (idx >= fFound.size()) {
+      return;
+    }
+    auto &d = fFound[idx];
+    if (d.fThumbSt != DownloadEntry::Thumb::kNone) {
+      return;
+    }
+    int inflight = 0;
+    for (const auto &e : fFound) {
+      if (e.fThumbSt == DownloadEntry::Thumb::kFetching) {
+        ++inflight;
+      }
+    }
+    if (inflight >= 4) {
+      return; // retry on a later frame
+    }
+    d.fThumbSt = DownloadEntry::Thumb::kFetching;
+    const long id = d.fSetId;
+    auto handle = std::make_shared<client::http::Handle>();
+    client::http::get(
+        std::format("https://assets.ppy.sh/beatmaps/{}/covers/card.jpg", id),
+        std::move(handle), [this, id](client::http::Response r) {
+          for (auto &e : fFound) {
+            if (e.fSetId != id) {
+              continue;
+            }
+            if (r.fOk && r.fBody.size() > 256) {
+              std::vector<std::uint8_t> bytes(r.fBody.begin(), r.fBody.end());
+              e.fThumb = loadImage(bytes);
+              e.fThumbSt = e.fThumb ? DownloadEntry::Thumb::kReady
+                                    : DownloadEntry::Thumb::kFailed;
+            } else {
+              e.fThumbSt = DownloadEntry::Thumb::kFailed;
+            }
+            break;
+          }
+        });
+  }
+
+  [[nodiscard]] static skia::SkColor statusColorFor(std::string_view st) {
+    if (st == "ranked" || st == "approved") {
+      return skia::colorSetARGB(255, 102, 204, 255);
+    }
+    if (st == "loved") {
+      return skia::colorSetARGB(255, 255, 102, 170);
+    }
+    if (st == "qualified") {
+      return skia::colorSetARGB(255, 255, 204, 102);
+    }
+    return skia::colorSetARGB(255, 140, 140, 155);
   }
 
   void startDownload(std::size_t idx) {
@@ -1375,6 +1548,175 @@ private:
     }
   }
 
+  // ---- Main menu (lazer-style logo) -------------------------------------
+
+  void ensureTriangles() {
+    if (!fTriangles.empty()) {
+      return;
+    }
+    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
+    std::uniform_real_distribution<float> us(28.0f, 150.0f);
+    std::uniform_real_distribution<float> uv(8.0f, 30.0f);
+    std::uniform_real_distribution<float> ua(0.04f, 0.11f);
+    for (int i = 0; i < 26; ++i) {
+      fTriangles.push_back({ux(fUiRng), ux(fUiRng), us(fUiRng), uv(fUiRng),
+                            ua(fUiRng)});
+    }
+  }
+
+  void updateAndDrawTriangles(skia::SkCanvas *canvas) {
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
+    skia::SkPaint p;
+    p.setAntiAlias(true);
+    for (auto &t : fTriangles) {
+      t.fY -= t.fSpeed * static_cast<float>(fUiDt) / 1000.0f / sh;
+      if (t.fY < -0.25f) {
+        t.fY = 1.25f;
+        t.fX = ux(fUiRng);
+      }
+      const float cx = t.fX * sw;
+      const float cy = t.fY * sh;
+      const float r = t.fSize;
+      skia::SkPathBuilder b;
+      b.moveTo(cx, cy - r * 0.577f * 2.0f * 0.5f);
+      b.lineTo(cx - r * 0.5f, cy + r * 0.289f);
+      b.lineTo(cx + r * 0.5f, cy + r * 0.289f);
+      b.close();
+      p.setColor(skia::kWhite);
+      p.setAlphaf(t.fAlpha);
+      canvas->drawPath(b.detach(), p);
+    }
+  }
+
+  void frameMainMenu() {
+    auto *canvas = fSurface->getCanvas();
+    canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
+
+    this->ensureTriangles();
+    this->updateAndDrawTriangles(canvas);
+
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    const double wall = wallMs();
+
+    // Expansion easing toward the target.
+    const float target = fMenuExpanded ? 1.0f : 0.0f;
+    fMenuExpand +=
+        (target - fMenuExpand) *
+        std::min(1.0f, static_cast<float>(fUiDt) / 90.0f);
+
+    // Pulsing logo, sliding left as the buttons expand.
+    const float pulse =
+        1.0f + 0.016f * static_cast<float>(std::sin(wall / 420.0));
+    const float logoR =
+        std::min(sw, sh) * 0.17f * pulse * (1.0f - 0.10f * fMenuExpand);
+    const float cx = sw * 0.5f - fMenuExpand * sw * 0.17f;
+    const float cy = sh * 0.46f;
+
+    skia::SkPaint glow;
+    glow.setAntiAlias(true);
+    glow.setColor(kAccent);
+    glow.setAlphaf(0.22f);
+    canvas->drawCircle(cx, cy, logoR * 1.13f, glow);
+    skia::SkPaint disc;
+    disc.setAntiAlias(true);
+    disc.setColor(kAccent);
+    canvas->drawCircle(cx, cy, logoR, disc);
+    skia::SkPaint ring;
+    ring.setAntiAlias(true);
+    ring.setStyle(skia::kStrokeStyle);
+    ring.setStrokeWidth(logoR * 0.055f);
+    ring.setColor(skia::kWhite);
+    ring.setAlphaf(0.9f);
+    canvas->drawCircle(cx, cy, logoR * 0.82f, ring);
+    this->drawTextCentered(canvas, "osu!", cx, cy + logoR * 0.22f,
+                           logoR * 0.55f, skia::kWhite);
+    fLogoRect =
+        skia::SkRect::MakeXYWH(cx - logoR, cy - logoR, logoR * 2, logoR * 2);
+
+    // Buttons fan out to the right of the logo.
+    fMenuButtons.clear();
+    if (fMenuExpand > 0.02f) {
+      const char *labels[] = {"play", "downloads", "exit"};
+      const skia::SkColor accents[] = {
+          kAccent, kAccent2, skia::colorSetARGB(255, 255, 110, 110)};
+      const float bx0 = cx + logoR + 28.0f;
+      const float bw = std::min(210.0f, (sw - bx0 - 32.0f - 2 * 16.0f) / 3.0f);
+      const float bh = 58.0f;
+      const float ease = easeOutQuint(fMenuExpand);
+      for (int i = 0; i < 3; ++i) {
+        const float bx =
+            bx0 + static_cast<float>(i) * (bw + 16.0f) -
+            (1.0f - ease) * 60.0f * static_cast<float>(i + 1);
+        const skia::SkRect r =
+            skia::SkRect::MakeXYWH(bx, cy - bh * 0.5f, bw, bh);
+        fMenuButtons.push_back({r, labels[i], accents[i]});
+      }
+      canvas->save();
+      // Fade the buttons with the expansion.
+      skia::SkPaint dummy;
+      (void)dummy;
+      for (auto &b : fMenuButtons) {
+        // Cheap alpha: draw into layerless canvas with eased colors.
+        const bool hover = b.fRect.contains(fMouseX, fMouseY);
+        skia::SkPaint fill;
+        fill.setAntiAlias(true);
+        fill.setColor(hover ? kCardSel : kCardBg);
+        fill.setAlphaf(ease);
+        canvas->drawRRect(
+            skia::SkRRect::MakeRectXY(b.fRect, 12.0f, 12.0f), fill);
+        skia::SkPaint stroke;
+        stroke.setAntiAlias(true);
+        stroke.setStyle(skia::kStrokeStyle);
+        stroke.setStrokeWidth(hover ? 3.0f : 2.0f);
+        stroke.setColor(b.fAccent);
+        stroke.setAlphaf(ease);
+        canvas->drawRRect(
+            skia::SkRRect::MakeRectXY(b.fRect, 12.0f, 12.0f), stroke);
+        fFont.setSize(19.0f);
+        skia::SkPaint tp;
+        tp.setAntiAlias(true);
+        tp.setColor(hover ? b.fAccent : skia::kWhite);
+        tp.setAlphaf(ease);
+        const float tw = fFont.measureText(b.fLabel.c_str(), b.fLabel.size(),
+                                           skia::SkTextEncoding::kUTF8);
+        canvas->drawString(b.fLabel.c_str(), b.fRect.centerX() - tw * 0.5f,
+                           b.fRect.centerY() + 7.0f, fFont, tp);
+      }
+      canvas->restore();
+    }
+
+    this->drawBottomBar(canvas, fMenuExpanded
+                                    ? "play / downloads / exit    Esc close"
+                                    : "click the circle    Esc quit");
+    this->drawScreenFadeIn(canvas);
+    this->present();
+  }
+
+  void keyMainMenu(int key) {
+    if (key == glfw::kKeyEscape) {
+      if (fMenuExpanded) {
+        fMenuExpanded = false;
+      } else {
+        this->requestQuit();
+      }
+      return;
+    }
+    if (key == glfw::kKeyEnter || key == glfw::kKeySpace) {
+      if (!fMenuExpanded) {
+        fMenuExpanded = true;
+      } else {
+        this->switchState(State::kSongSelect);
+      }
+      return;
+    }
+    if (key == glfw::kKeyD) {
+      this->openDownloads();
+    }
+  }
+
   // ---- Song select ------------------------------------------------------
 
   void frameSongSelect() {
@@ -1476,25 +1818,37 @@ private:
     }
     totalH = y - topPad;
 
-    // Keep the selection on screen.
+    // Keep the selection on screen; fCarouselScroll is the *target*, the
+    // drawn position eases toward it exponentially (lazer-style smoothing).
     const float viewH = sh - topPad - bottomPad;
     const float target = std::clamp(selY - fCarouselScroll, 40.0f,
                                     viewH - diffH - 40.0f);
     fCarouselScroll = selY - target;
     fCarouselScroll =
         std::clamp(fCarouselScroll, 0.0f, std::max(0.0f, totalH - viewH));
+    fScrollAnim += (fCarouselScroll - fScrollAnim) *
+                   std::min(1.0f, static_cast<float>(fUiDt) / 90.0f);
+
+    // Selection pop-out animation restarts on any selection change.
+    const int selKey = fSelSet * 1024 + fSelDiff;
+    if (selKey != fPrevSelKey) {
+      fPrevSelKey = selKey;
+      fPopAnim = 0.0f;
+    }
+    fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 220.0f);
+    const float pop = easeOutQuint(fPopAnim);
 
     canvas->save();
     canvas->clipIRect(skia::SkIRect::MakeXYWH(
         static_cast<int>(carX) - 8, static_cast<int>(topPad) - 8,
         static_cast<int>(carW) + 16, static_cast<int>(viewH) + 16));
 
-    y = topPad - fCarouselScroll;
+    y = topPad - fScrollAnim;
     for (int si = 0; si < static_cast<int>(fLibrary.size()); ++si) {
       const auto &set = fLibrary[static_cast<std::size_t>(si)].fSet;
       const bool selected = si == fSelSet;
-      const skia::SkRect header =
-          skia::SkRect::MakeXYWH(carX, y, carW, headerH);
+      const skia::SkRect header = skia::SkRect::MakeXYWH(
+          carX - (selected ? 14.0f * pop : 0.0f), y, carW, headerH);
       if (y + headerH >= topPad && y <= sh) {
         this->fillRounded(canvas, header, 10.0f,
                           selected ? kCardSel : kCardBg);
@@ -1518,10 +1872,11 @@ private:
       }
       for (int di = 0; di < static_cast<int>(set.fBeatmaps.size()); ++di) {
         const auto &info = set.fBeatmaps[static_cast<std::size_t>(di)];
+        const bool diffSel = di == fSelDiff;
         const skia::SkRect row = skia::SkRect::MakeXYWH(
-            carX + 24.0f, y, carW - 24.0f, diffH);
+            carX + 24.0f - (diffSel ? 18.0f * pop : 0.0f), y, carW - 24.0f,
+            diffH);
         if (y + diffH >= topPad && y <= sh) {
-          const bool diffSel = di == fSelDiff;
           this->fillRounded(canvas, row, 8.0f,
                             diffSel ? kCardSel : kCardBg);
           if (diffSel) {
@@ -1529,15 +1884,15 @@ private:
           }
           // Star chip.
           const skia::SkRect chip = skia::SkRect::MakeXYWH(
-              carX + 34.0f, y + 9.0f, 58.0f, diffH - 18.0f);
+              row.fLeft + 10.0f, y + 9.0f, 58.0f, diffH - 18.0f);
           this->fillRounded(canvas, chip, 6.0f, starColor(info.fStars));
           this->drawTextCentered(canvas,
                                  std::format("{:.2f}*", info.fStars),
-                                 carX + 63.0f, y + 24.0f, 13.0f,
+                                 chip.centerX(), y + 24.0f, 13.0f,
                                  skia::colorSetARGB(255, 20, 16, 26));
-          this->drawTextClipped(canvas, info.fMeta.fVersion, carX + 104.0f,
-                                y + 25.0f, carW - 128.0f, 15.0f, skia::kWhite,
-                                0.9f);
+          this->drawTextClipped(canvas, info.fMeta.fVersion,
+                                row.fLeft + 80.0f, y + 25.0f, carW - 128.0f,
+                                15.0f, skia::kWhite, 0.9f);
           fCarouselHits.push_back({row, si, di});
         }
         y += diffH + gap;
@@ -1547,7 +1902,7 @@ private:
 
     this->drawBottomBar(canvas,
                         "Enter / click twice to play    Arrows navigate    "
-                        "D downloads    Esc quit");
+                        "D downloads    Esc menu");
 
     // Clickable downloads chip (mouse path, independent of the keyboard).
     const float chipW = 150.0f;
@@ -1561,6 +1916,7 @@ private:
     this->drawTextCentered(canvas, "downloads", fDownloadsChip.centerX(),
                            fDownloadsChip.centerY() + 5.0f, 14.0f,
                            chipHover ? kAccent2 : skia::kWhite);
+    this->drawScreenFadeIn(canvas);
     this->present();
   }
 
@@ -1593,8 +1949,16 @@ private:
     this->strokeRounded(canvas, box, 10.0f, kAccent, 2.0f);
     const bool caretOn =
         std::fmod(wallMs(), 1000.0) < 600.0;
-    this->drawTextClipped(canvas, fSearchQuery + (caretOn ? "_" : " "),
-                          40.0f, 90.0f, sw - 80.0f, 18.0f, skia::kWhite);
+    if (fSearchQuery.empty()) {
+      this->drawTextClipped(canvas,
+                            std::string(caretOn ? "_" : " ") +
+                                "  type to search, Enter to submit",
+                            40.0f, 90.0f, sw - 80.0f, 18.0f, skia::kWhite,
+                            0.45f);
+    } else {
+      this->drawTextClipped(canvas, fSearchQuery + (caretOn ? "_" : " "),
+                            40.0f, 90.0f, sw - 80.0f, 18.0f, skia::kWhite);
+    }
 
     this->drawTextClipped(canvas, fDownloadStatus, 24.0f, 130.0f, sw - 48.0f,
                           14.0f, kAccent2, 0.9f);
@@ -1603,8 +1967,8 @@ private:
     fFoundHits.clear();
     fFoundHits.resize(fFound.size(), skia::SkRect::MakeEmpty());
     const float listTop = 148.0f;
-    const float cardH = 56.0f;
-    const float gap = 8.0f;
+    const float cardH = 76.0f;
+    const float gap = 10.0f;
     const float viewH = sh - listTop - 52.0f;
     const float totalH =
         static_cast<float>(fFound.size()) * (cardH + gap);
@@ -1623,14 +1987,51 @@ private:
       if (y + cardH >= listTop && y <= sh) {
         const bool hover = card.contains(fMouseX, fMouseY);
         this->fillRounded(canvas, card, 10.0f, hover ? kCardSel : kCardBg);
+
+        // Cover art as the card background, lazer-style.
+        this->requestThumb(i);
+        if (d.fThumbSt == DownloadEntry::Thumb::kReady && d.fThumb) {
+          canvas->save();
+          canvas->clipRRect(skia::SkRRect::MakeRectXY(card, 10.0f, 10.0f),
+                            true);
+          canvas->drawImageRect(
+              d.fThumb.get(), card,
+              skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
+          skia::SkPaint dark;
+          dark.setColor(
+              skia::colorSetARGB(hover ? 120 : 150, 12, 10, 18));
+          canvas->drawRect(card, dark);
+          canvas->restore();
+        }
+
         this->drawTextClipped(canvas,
                               std::format("{} - {}", d.fArtist, d.fTitle),
-                              40.0f, y + 24.0f, sw - 260.0f, 16.0f,
+                              40.0f, y + 26.0f, sw - 320.0f, 17.0f,
                               skia::kWhite);
         this->drawTextClipped(canvas,
                               std::format("mapped by {}", d.fCreator), 40.0f,
-                              y + 44.0f, sw - 260.0f, 13.0f, skia::kWhite,
-                              0.6f);
+                              y + 47.0f, sw - 320.0f, 13.0f, skia::kWhite,
+                              0.75f);
+        if (d.fDiffCount > 0) {
+          this->drawTextClipped(
+              canvas,
+              d.fDiffCount == 1
+                  ? std::format("{:.1f}* - 1 difficulty", d.fStarsMin)
+                  : std::format("{:.1f}*..{:.1f}* - {} difficulties",
+                                d.fStarsMin, d.fStarsMax, d.fDiffCount),
+              40.0f, y + 66.0f, sw - 320.0f, 12.0f,
+              starColor(d.fStarsMax), 0.95f);
+        }
+        if (!d.fRankStatus.empty()) {
+          const float pillW = 86.0f;
+          const skia::SkRect pill = skia::SkRect::MakeXYWH(
+              sw - 44.0f - pillW, y + 10.0f, pillW, 20.0f);
+          this->fillRounded(canvas, pill, 10.0f,
+                            statusColorFor(d.fRankStatus));
+          this->drawTextCentered(canvas, d.fRankStatus, pill.centerX(),
+                                 pill.centerY() + 4.0f, 11.0f,
+                                 skia::colorSetARGB(255, 20, 16, 26));
+        }
         std::string status;
         skia::SkColor statusColor = kAccent2;
         switch (d.fSt) {
@@ -1659,7 +2060,7 @@ private:
         skia::SkPaint sp;
         sp.setAntiAlias(true);
         sp.setColor(statusColor);
-        canvas->drawString(status.c_str(), sw - 44.0f - statusW, y + 34.0f,
+        canvas->drawString(status.c_str(), sw - 44.0f - statusW, y + 52.0f,
                            fFont, sp);
         fFoundHits[i] = card;
       }
@@ -1670,6 +2071,7 @@ private:
     this->drawBottomBar(canvas,
                         "Type to search, Enter to submit    Click a card to "
                         "download    Esc back");
+    this->drawScreenFadeIn(canvas);
     this->present();
   }
 
@@ -1697,10 +2099,14 @@ private:
         skia::colorSetARGB(255, 255, 110, 110)};
     const float bw = std::min(420.0f, sw * 0.5f);
     const float bh = 60.0f;
+    const float fade = this->screenFade();
     float y = sh * 0.38f;
     for (int i = 0; i < 3; ++i) {
+      // Buttons slide in from alternating sides, lazer-style.
+      const float side = (i % 2 == 0) ? -1.0f : 1.0f;
+      const float slide = (1.0f - fade) * 90.0f * side;
       const skia::SkRect r =
-          skia::SkRect::MakeXYWH((sw - bw) * 0.5f, y, bw, bh);
+          skia::SkRect::MakeXYWH((sw - bw) * 0.5f + slide, y, bw, bh);
       fMenuButtons.push_back({r, labels[i], accents[i]});
       this->drawMenuButton(canvas, fMenuButtons.back());
       y += bh + 16.0f;
@@ -1749,8 +2155,13 @@ private:
                       skia::SkRect::MakeXYWH(px, sh * 0.18f, pw, sh * 0.52f),
                       14.0f, kPanelBg);
     float ty = sh * 0.18f + 58.0f;
-    this->drawTextClipped(canvas, std::format("{:010}", sc.fScore), px + 30.0f,
-                          ty, pw - 60.0f, 40.0f, skia::kWhite);
+    // Score counts up over the first second, classic osu results feel.
+    const float countUp = easeOutQuint(
+        static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
+    const auto shownScore =
+        static_cast<std::uint64_t>(static_cast<double>(sc.fScore) * countUp);
+    this->drawTextClipped(canvas, std::format("{:010}", shownScore),
+                          px + 30.0f, ty, pw - 60.0f, 40.0f, skia::kWhite);
     ty += 54.0f;
     this->drawTextClipped(
         canvas,
@@ -1799,6 +2210,7 @@ private:
     }
 
     this->drawBottomBar(canvas, "Enter retry    Esc back to song select");
+    this->drawScreenFadeIn(canvas);
     this->present();
   }
 
@@ -1814,16 +2226,21 @@ private:
   [[nodiscard]] skia::SkFont loadFont(float size) {
     const std::vector<std::filesystem::path> files{
         "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf", // Alpine
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
     };
 
     const std::vector<std::filesystem::path> dirs{
         "/usr/share/fonts/noto",
+        "/usr/share/fonts/ttf-dejavu", // Alpine's dejavu package path
         "/usr/share/fonts/dejavu",
         "/usr/share/fonts/truetype/dejavu",
         "/usr/share/fonts/TTF",
+        "/usr/share/fonts/liberation",
+        "/usr/share/fonts/ttf-liberation",
         "/usr/share/fonts",
     };
 
@@ -1838,8 +2255,13 @@ private:
         face = mgr->matchFamilyStyle("DejaVu Sans", skia::SkFontStyle());
       if (!face)
         face = mgr->matchFamilyStyle(nullptr, skia::SkFontStyle());
-      if (face)
+      if (face) {
+        skia::SkString family;
+        face->getFamilyName(&family);
+        std::println(std::cerr, "[ui] font: \"{}\" from {}", family.c_str(),
+                     dir.string());
         return skia::SkFont(std::move(face), size);
+      }
     }
 
     auto rootMgr = skia::SkFontMgr_New_Custom_Directory("/usr/share/fonts");
@@ -1883,6 +2305,9 @@ private:
       }
     }
 
+    std::println(std::cerr,
+                 "[ui] font: NONE FOUND - text will not render. Install "
+                 "font-noto or ttf-dejavu (apk add font-noto ttf-dejavu).");
     return skia::SkFont(nullptr, size);
   }
 
