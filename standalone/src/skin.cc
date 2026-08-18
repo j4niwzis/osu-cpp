@@ -367,6 +367,10 @@ public:
     if (auto it = fPrecomputedBodies.find(bodyCacheKey);
         it != fPrecomputedBodies.end()) {
       skia::SkPaint bodyPaint;
+      // No AA on these blits: adjacent tile rects with AA'd edges produce
+      // half-coverage seams (a dark grid at tile boundaries). Edge smoothing
+      // lives in the texture itself (SDF coverage ramp) and in linear
+      // sampling; the rect edges sit in the transparent margin anyway.
       bodyPaint.setAntiAlias(false);
       bodyPaint.setAlphaf(bodyAlpha);
       const auto &body = it->second;
@@ -387,7 +391,7 @@ public:
                   body.originY + static_cast<float>(tile.fTop) * yScale,
                   static_cast<float>(tile.width()) * xScale,
                   static_cast<float>(tile.height()) * yScale),
-              skia::SkSamplingOptions(skia::SkFilterMode::kNearest), &bodyPaint,
+              skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &bodyPaint,
               skia::SkCanvas::kFast_SrcRectConstraint);
         }
       } else {
@@ -395,7 +399,7 @@ public:
             body.image.get(),
             skia::SkRect::MakeXYWH(body.originX, body.originY, body.width,
                                    body.height),
-            skia::SkSamplingOptions(skia::SkFilterMode::kNearest), &bodyPaint);
+            skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &bodyPaint);
       }
     } else {
       throw std::runtime_error(
@@ -537,6 +541,7 @@ uniform float bboxOriginY;
 uniform float bboxSizeX;
 uniform float bboxSizeY;
 uniform float bodyRadius;
+uniform float aaPx;
 uniform float originX;
 uniform float originY;
 
@@ -566,9 +571,13 @@ float4 main(float2 coords) {
     if (all(greaterThanEqual(p, lo)) && all(lessThanEqual(p, hi)))
       minDist = min(minDist, distToSegment(p, st, en));
   }
-  float t = minDist / bodyRadius;
-  if (t >= 1.0) return float4(0, 0, 0, 0);
-  return gradientTex.eval(float2(t * 199.0, 0.5));
+  // Smooth the outer edge over ~one device pixel instead of a hard cut:
+  // coverage ramps from 1 at (radius - aaPx) to 0 at radius. The gradient
+  // texture is premultiplied, so scaling by coverage fades correctly.
+  float cov = clamp((bodyRadius - minDist) / aaPx, 0.0, 1.0);
+  if (cov <= 0.0) return float4(0, 0, 0, 0);
+  float t = min(minDist / bodyRadius, 1.0);
+  return gradientTex.eval(float2(t * 199.0, 0.5)) * cov;
 }
 )";
         auto [effect, err] =
@@ -674,6 +683,7 @@ float4 main(float2 coords) {
         skia::SkRuntimeEffectBuilder b(sBodyFx);
         b.uniform("segCount") = static_cast<float>(nTile);
         b.uniform("bodyRadius") = static_cast<float>(radius);
+        b.uniform("aaPx") = 1.0f / std::max(scale, 0.001f);
         b.uniform("bboxOriginX") = boxMinX;
         b.uniform("bboxOriginY") = boxMinY;
         b.uniform("bboxSizeX") = bwExt;
@@ -688,7 +698,10 @@ float4 main(float2 coords) {
             skia::SkSamplingOptions(skia::SkFilterMode::kNearest));
         skia::SkPaint p;
         p.setShader(b.makeShader());
-        p.setAntiAlias(true);
+        // No AA: adjacent tile rects share edges; AA'd edges blend at half
+        // coverage twice and bake a dark seam grid into the texture. The
+        // body edge is smoothed by the shader's coverage ramp instead.
+        p.setAntiAlias(false);
         p.setAlphaf(1.0f);
         oc->save();
         oc->translate(tx, ty);
@@ -754,6 +767,7 @@ float4 main(float2 coords) {
           skia::SkRuntimeEffectBuilder builder(sBodyFx);
           builder.uniform("segCount") = static_cast<float>(segNSegs);
           builder.uniform("bodyRadius") = static_cast<float>(radius);
+          builder.uniform("aaPx") = 1.0f / std::max(scale, 0.001f);
           builder.uniform("bboxOriginX") = segBoxMinX;
           builder.uniform("bboxOriginY") = segBoxMinY;
           builder.uniform("bboxSizeX") = segBwExt;
@@ -769,7 +783,7 @@ float4 main(float2 coords) {
 
           skia::SkPaint bodyPaint;
           bodyPaint.setShader(builder.makeShader());
-          bodyPaint.setAntiAlias(true);
+          bodyPaint.setAntiAlias(false);
           bodyPaint.setAlphaf(1.0f);
           oc->save();
           oc->translate(static_cast<float>(minX), static_cast<float>(minY));

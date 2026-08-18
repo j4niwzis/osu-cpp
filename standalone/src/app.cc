@@ -1599,6 +1599,15 @@ private:
     }
   }
 
+  // Cursor trail as a single feathered ribbon.
+  //
+  // The old implementation stroked each segment separately with butt caps:
+  // visible notches at joints, alpha banding between segments and double
+  // blending where semi-transparent strokes overlapped. Instead we build one
+  // triangle mesh along the smoothed polyline: an opaque spine that fades to
+  // zero alpha at both edges. The feather is the antialiasing (SkVertices is
+  // not AA'd by itself), there are no joints to mismatch, and the whole
+  // trail is one draw call.
   void drawCursorTrail(skia::SkCanvas *canvas, double now) {
     const float scale = 1.0f / fScale;
     const bool hasImg = static_cast<bool>(fSkin.cursorTrail());
@@ -1607,37 +1616,111 @@ private:
       float fX, fY;
       float fAlpha;
     };
-    std::vector<TrailPt> pts;
+    std::vector<TrailPt> raw;
+    raw.reserve(fCursorTrail.size());
     for (const auto &p : fCursorTrail) {
       const double age = now - p.fTime;
       if (age > kCursorTrailLifetime)
         continue;
       const float alpha =
           static_cast<float>((1.0 - age / kCursorTrailLifetime) * 0.6);
-      pts.push_back({static_cast<float>(p.fPos.fX),
-                     static_cast<float>(p.fPos.fY), alpha});
+      const float x = static_cast<float>(p.fPos.fX);
+      const float y = static_cast<float>(p.fPos.fY);
+      if (!raw.empty()) {
+        const float dx = x - raw.back().fX;
+        const float dy = y - raw.back().fY;
+        if (dx * dx + dy * dy < 1e-6f)
+          continue; // duplicate point => degenerate tangent
+      }
+      raw.push_back({x, y, alpha});
     }
-    if (pts.size() < 2)
+    if (raw.size() < 2)
       return;
 
-    const float baseW = hasImg ? 6.0f * scale : 12.0f * scale;
-
-    for (std::size_t i = 1; i < pts.size(); ++i) {
-      const float t = static_cast<float>(i) / static_cast<float>(pts.size());
-      const float w = baseW * (0.12f + 0.88f * t * (2.0f - t));
-      const float a = (pts[i - 1].fAlpha + pts[i].fAlpha) * 0.5f;
-      skia::SkPaint paint;
-      paint.setAntiAlias(true);
-      paint.setStrokeWidth(w);
-      paint.setStrokeCap(skia::SkPaint::kButt_Cap);
-      paint.setAlphaf(a);
-      paint.setColor(skia::kWhite);
-      paint.setStyle(skia::kStrokeStyle);
-      if (hasImg && !fNoGlow)
-        paint.setBlendMode(skia::SkBlendMode::kPlus);
-      canvas->drawLine(pts[i - 1].fX, pts[i - 1].fY, pts[i].fX, pts[i].fY,
-                       paint);
+    // One round of Chaikin corner cutting rounds off sharp turns that would
+    // otherwise fold the ribbon onto itself.
+    std::vector<TrailPt> pts;
+    pts.reserve(raw.size() * 2);
+    pts.push_back(raw.front());
+    for (std::size_t i = 0; i + 1 < raw.size(); ++i) {
+      const auto &a = raw[i];
+      const auto &b = raw[i + 1];
+      pts.push_back({a.fX * 0.75f + b.fX * 0.25f, a.fY * 0.75f + b.fY * 0.25f,
+                     a.fAlpha * 0.75f + b.fAlpha * 0.25f});
+      pts.push_back({a.fX * 0.25f + b.fX * 0.75f, a.fY * 0.25f + b.fY * 0.75f,
+                     a.fAlpha * 0.25f + b.fAlpha * 0.75f});
     }
+    pts.push_back(raw.back());
+
+    const float baseW = hasImg ? 6.0f * scale : 12.0f * scale;
+    const float feather = 1.5f * scale; // ~1.5 device px of edge fade
+    const std::size_t n = pts.size();
+
+    // Four vertices per point: outer-left (alpha 0), inner-left, inner-right
+    // (full alpha), outer-right (alpha 0). The solid core keeps the visual
+    // width of the old stroked trail; only a narrow margin feathers to zero,
+    // which is what provides the antialiasing.
+    std::vector<skia::SkPoint> pos(n * 4);
+    std::vector<skia::SkColor> col(n * 4);
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto &prev = pts[i == 0 ? 0 : i - 1];
+      const auto &next = pts[i + 1 < n ? i + 1 : n - 1];
+      float tx = next.fX - prev.fX;
+      float ty = next.fY - prev.fY;
+      const float len = std::sqrt(tx * tx + ty * ty);
+      if (len > 1e-6f) {
+        tx /= len;
+        ty /= len;
+      } else {
+        tx = 1.0f;
+        ty = 0.0f;
+      }
+      // Solid half-width tapers with the same profile as the old stroke
+      // width (which was the *total* width => halve it here).
+      const float t =
+          static_cast<float>(i + 1) / static_cast<float>(n);
+      const float w = 0.5f * baseW * (0.12f + 0.88f * t * (2.0f - t));
+      const float nxCore = -ty * w;
+      const float nyCore = tx * w;
+      const float nxOut = -ty * (w + feather);
+      const float nyOut = tx * (w + feather);
+
+      const auto a8 = static_cast<std::uint8_t>(
+          std::clamp(pts[i].fAlpha, 0.0f, 1.0f) * 255.0f + 0.5f);
+      pos[i * 4 + 0] = {pts[i].fX + nxOut, pts[i].fY + nyOut};
+      pos[i * 4 + 1] = {pts[i].fX + nxCore, pts[i].fY + nyCore};
+      pos[i * 4 + 2] = {pts[i].fX - nxCore, pts[i].fY - nyCore};
+      pos[i * 4 + 3] = {pts[i].fX - nxOut, pts[i].fY - nyOut};
+      col[i * 4 + 0] = skia::colorSetARGB(0, 255, 255, 255);
+      col[i * 4 + 1] = skia::colorSetARGB(a8, 255, 255, 255);
+      col[i * 4 + 2] = skia::colorSetARGB(a8, 255, 255, 255);
+      col[i * 4 + 3] = skia::colorSetARGB(0, 255, 255, 255);
+    }
+
+    std::vector<std::uint16_t> idx;
+    idx.reserve((n - 1) * 18);
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+      const auto base0 = static_cast<std::uint16_t>(i * 4);
+      const auto base1 = static_cast<std::uint16_t>((i + 1) * 4);
+      for (std::uint16_t band = 0; band < 3; ++band) {
+        const auto a0 = static_cast<std::uint16_t>(base0 + band);
+        const auto b0 = static_cast<std::uint16_t>(base0 + band + 1);
+        const auto a1 = static_cast<std::uint16_t>(base1 + band);
+        const auto b1 = static_cast<std::uint16_t>(base1 + band + 1);
+        idx.insert(idx.end(), {a0, b0, a1, a1, b0, b1});
+      }
+    }
+
+    auto verts = skia::SkVertices::MakeCopy(
+        skia::SkVertices::kTriangles_VertexMode, static_cast<int>(pos.size()),
+        pos.data(), nullptr, col.data(), static_cast<int>(idx.size()),
+        idx.data());
+
+    skia::SkPaint paint;
+    if (hasImg && !fNoGlow)
+      paint.setBlendMode(skia::SkBlendMode::kPlus);
+    // No shader on the paint: kDst keeps the interpolated vertex colors.
+    canvas->drawVertices(verts, skia::SkBlendMode::kDst, paint);
 
     if (hasImg && !fNoGlow) {
       fSkin.drawCursorTrail(canvas, fCursorTrail.back().fPos, scale, 0.6f);
