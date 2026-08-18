@@ -35,12 +35,22 @@ struct Completed {
   Response fResp;
 };
 
-inline std::mutex gMutex;
-inline std::vector<Completed> gCompleted;
+// Function-local statics instead of mutable inline module-scope globals:
+// the latter produce the most exotic IR this TU has, and LLVM's bitcode
+// writer under LTO is exactly the wrong audience for exotic.
+inline std::mutex &queueMutex() {
+  static std::mutex m;
+  return m;
+}
+
+inline std::vector<Completed> &completedQueue() {
+  static std::vector<Completed> q;
+  return q;
+}
 
 inline void complete(Callback cb, Response resp) {
-  const std::scoped_lock lock(gMutex);
-  gCompleted.push_back({std::move(cb), std::move(resp)});
+  const std::scoped_lock lock(queueMutex());
+  completedQueue().push_back({std::move(cb), std::move(resp)});
 }
 
 #ifdef __EMSCRIPTEN__
@@ -48,6 +58,28 @@ struct FetchCtx {
   Callback fCb;
   std::shared_ptr<Handle> fHandle;
 };
+#else
+// Worker body as a named function: keeps the thread entry point out of the
+// exported inline get() and its lambda out of the BMI.
+inline void runWorker(std::string url, std::shared_ptr<Handle> handle,
+                      Callback cb) {
+  beastnet::FetchResult r = beastnet::fetch(
+      url, [&handle](std::size_t got, std::size_t total) {
+        if (total > 0) {
+          handle->fProgress.store(static_cast<float>(got) /
+                                      static_cast<float>(total),
+                                  std::memory_order_relaxed);
+        }
+      });
+  Response resp;
+  resp.fOk = r.fOk;
+  resp.fStatus = r.fStatus;
+  resp.fBody = std::move(r.fBody);
+  resp.fError = std::move(r.fError);
+  handle->fProgress.store(1.0f);
+  handle->fDone.store(true);
+  complete(std::move(cb), std::move(resp));
+}
 #endif
 
 } // namespace detail
@@ -101,24 +133,8 @@ inline void get(const std::string &url, std::shared_ptr<Handle> handle,
   };
   emscripten::emscripten_fetch(&attr, url.c_str());
 #else
-  std::thread([url, handle = std::move(handle), cb = std::move(cb)]() mutable {
-    beastnet::FetchResult r = beastnet::fetch(
-        url, [&handle](std::size_t got, std::size_t total) {
-          if (total > 0) {
-            handle->fProgress.store(static_cast<float>(got) /
-                                        static_cast<float>(total),
-                                    std::memory_order_relaxed);
-          }
-        });
-    Response resp;
-    resp.fOk = r.fOk;
-    resp.fStatus = r.fStatus;
-    resp.fBody = std::move(r.fBody);
-    resp.fError = std::move(r.fError);
-    handle->fProgress.store(1.0f);
-    handle->fDone.store(true);
-    detail::complete(std::move(cb), std::move(resp));
-  }).detach();
+  std::thread(&detail::runWorker, url, std::move(handle), std::move(cb))
+      .detach();
 #endif
 }
 
@@ -126,8 +142,8 @@ inline void get(const std::string &url, std::shared_ptr<Handle> handle,
 inline void poll() {
   std::vector<detail::Completed> ready;
   {
-    const std::scoped_lock lock(detail::gMutex);
-    ready.swap(detail::gCompleted);
+    const std::scoped_lock lock(detail::queueMutex());
+    ready.swap(detail::completedQueue());
   }
   for (auto &c : ready) {
     c.fCb(std::move(c.fResp));

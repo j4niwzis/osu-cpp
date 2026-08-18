@@ -78,6 +78,14 @@ list(REMOVE_ITEM module_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
 if(EMSCRIPTEN_BUILD)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
+# clang 21's LLVM bitcode writer segfaults serializing this module TU under
+# -flto (import std + module interface + LTO pipeline). Opt this single file
+# out of LTO; mixed LTO/non-LTO objects link fine.
+if(NOT EMSCRIPTEN_BUILD)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/client/http.cc
+    PROPERTIES COMPILE_OPTIONS "-fno-lto")
+endif()
+
 add_executable(${PROJECT_NAME} ${module_sources} ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
