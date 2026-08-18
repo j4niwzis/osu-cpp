@@ -1963,16 +1963,16 @@ private:
   void printResult() {
     std::println("{}", fEngine->score());
 
-    // Timing statistics over judged hits (misses carry no delta).
+    // Timing statistics over actual taps (circles + slider heads). Judgement
+    // events are the wrong series for this: sliders/spinners are finalized at
+    // their end and carry the object duration as delta, which is why the
+    // first version of these stats produced impossible URs.
     double sum = 0.0;
     double sumSq = 0.0;
     std::size_t n = 0;
-    for (const auto &ev : fEngine->events()) {
-      if (std::holds_alternative<osu::judgement::Miss>(ev.fResult)) {
-        continue;
-      }
-      sum += ev.fDelta;
-      sumSq += ev.fDelta * ev.fDelta;
+    for (const double d : fEngine->tapDeltas()) {
+      sum += d;
+      sumSq += d * d;
       ++n;
     }
     if (n > 0) {
