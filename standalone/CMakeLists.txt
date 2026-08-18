@@ -66,6 +66,8 @@ file(GLOB_RECURSE module_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/
 
 if(NOT EMSCRIPTEN_BUILD)
   list(FILTER module_sources EXCLUDE REGEX "emscripten\\.cc$")
+else()
+  list(FILTER module_sources EXCLUDE REGEX "curl\\.cc$")
 endif()
 
 list(REMOVE_ITEM module_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")

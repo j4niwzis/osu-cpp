@@ -1,14 +1,11 @@
-module;
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten/fetch.h>
-#else
-#include <curl/curl.h>
-#endif
-
 export module client.http;
 
 import std;
+#ifdef __EMSCRIPTEN__
+import emscripten;
+#else
+import curl;
+#endif
 
 export namespace client::http {
 
@@ -57,8 +54,9 @@ inline std::size_t writeCb(char *ptr, std::size_t size, std::size_t nmemb,
   return n;
 }
 
-inline int progressCb(void *user, curl_off_t dltotal, curl_off_t dlnow,
-                      curl_off_t, curl_off_t) {
+inline int progressCb(void *user, curl::curl_off_t dltotal,
+                      curl::curl_off_t dlnow, curl::curl_off_t,
+                      curl::curl_off_t) {
   auto *h = static_cast<Handle *>(user);
   if (dltotal > 0) {
     h->fProgress.store(static_cast<float>(dlnow) /
@@ -70,7 +68,7 @@ inline int progressCb(void *user, curl_off_t dltotal, curl_off_t dlnow,
 
 inline void ensureCurlInit() {
   static const bool once = [] {
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl::curl_global_init(curl::kGlobalDefault);
     return true;
   }();
   (void)once;
@@ -95,13 +93,13 @@ export namespace client::http {
 inline void get(const std::string &url, std::shared_ptr<Handle> handle,
                 Callback cb) {
 #ifdef __EMSCRIPTEN__
-  emscripten_fetch_attr_t attr;
-  emscripten_fetch_attr_init(&attr);
+  emscripten::emscripten_fetch_attr_t attr;
+  emscripten::emscripten_fetch_attr_init(&attr);
   std::strcpy(attr.requestMethod, "GET");
-  attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
+  attr.attributes = emscripten::kFetchLoadToMemory;
   auto *ctx = new detail::FetchCtx{std::move(cb), std::move(handle)};
   attr.userData = ctx;
-  attr.onsuccess = [](emscripten_fetch_t *fetch) {
+  attr.onsuccess = [](emscripten::emscripten_fetch_t *fetch) {
     auto *ctx = static_cast<detail::FetchCtx *>(fetch->userData);
     Response resp;
     resp.fStatus = fetch->status;
@@ -116,9 +114,9 @@ inline void get(const std::string &url, std::shared_ptr<Handle> handle,
     ctx->fHandle->fDone.store(true);
     detail::complete(std::move(ctx->fCb), std::move(resp));
     delete ctx;
-    emscripten_fetch_close(fetch);
+    emscripten::emscripten_fetch_close(fetch);
   };
-  attr.onerror = [](emscripten_fetch_t *fetch) {
+  attr.onerror = [](emscripten::emscripten_fetch_t *fetch) {
     auto *ctx = static_cast<detail::FetchCtx *>(fetch->userData);
     Response resp;
     resp.fStatus = fetch->status;
@@ -127,54 +125,54 @@ inline void get(const std::string &url, std::shared_ptr<Handle> handle,
     ctx->fHandle->fDone.store(true);
     detail::complete(std::move(ctx->fCb), std::move(resp));
     delete ctx;
-    emscripten_fetch_close(fetch);
+    emscripten::emscripten_fetch_close(fetch);
   };
-  attr.onprogress = [](emscripten_fetch_t *fetch) {
+  attr.onprogress = [](emscripten::emscripten_fetch_t *fetch) {
     auto *ctx = static_cast<detail::FetchCtx *>(fetch->userData);
     if (fetch->totalBytes > 0) {
       ctx->fHandle->fProgress.store(static_cast<float>(fetch->dataOffset) /
                                     static_cast<float>(fetch->totalBytes));
     }
   };
-  emscripten_fetch(&attr, url.c_str());
+  emscripten::emscripten_fetch(&attr, url.c_str());
 #else
   detail::ensureCurlInit();
   std::thread([url, handle = std::move(handle), cb = std::move(cb)]() mutable {
     Response resp;
-    CURL *curl = curl_easy_init();
-    if (curl == nullptr) {
+    curl::CURL *h = curl::curl_easy_init();
+    if (h == nullptr) {
       resp.fError = "curl init failed";
       handle->fDone.store(true);
       detail::complete(std::move(cb), std::move(resp));
       return;
     }
-    char errbuf[CURL_ERROR_SIZE] = {};
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 8L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "osu-cpp/1.0");
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, detail::writeCb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp.fBody);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, detail::progressCb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, handle.get());
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 64L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);
-    const CURLcode rc = curl_easy_perform(curl);
+    char errbuf[curl::kErrorSize] = {};
+    curl::curl_easy_setopt(h, curl::kOptUrl, url.c_str());
+    curl::curl_easy_setopt(h, curl::kOptFollowLocation, 1L);
+    curl::curl_easy_setopt(h, curl::kOptMaxRedirs, 8L);
+    curl::curl_easy_setopt(h, curl::kOptUserAgent, "osu-cpp/1.0");
+    curl::curl_easy_setopt(h, curl::kOptAcceptEncoding, "");
+    curl::curl_easy_setopt(h, curl::kOptWriteFunction, &detail::writeCb);
+    curl::curl_easy_setopt(h, curl::kOptWriteData, &resp.fBody);
+    curl::curl_easy_setopt(h, curl::kOptXferInfoFunction, &detail::progressCb);
+    curl::curl_easy_setopt(h, curl::kOptXferInfoData, handle.get());
+    curl::curl_easy_setopt(h, curl::kOptNoProgress, 0L);
+    curl::curl_easy_setopt(h, curl::kOptErrorBuffer, errbuf);
+    curl::curl_easy_setopt(h, curl::kOptConnectTimeout, 20L);
+    curl::curl_easy_setopt(h, curl::kOptLowSpeedLimit, 64L);
+    curl::curl_easy_setopt(h, curl::kOptLowSpeedTime, 60L);
+    const curl::CURLcode rc = curl::curl_easy_perform(h);
     long status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl::curl_easy_getinfo(h, curl::kInfoResponseCode, &status);
     resp.fStatus = status;
-    if (rc != CURLE_OK) {
-      resp.fError = errbuf[0] != '\0' ? errbuf : curl_easy_strerror(rc);
+    if (rc != curl::kOk) {
+      resp.fError = errbuf[0] != '\0' ? errbuf : curl::curl_easy_strerror(rc);
     } else if (status >= 200 && status < 300) {
       resp.fOk = true;
     } else {
       resp.fError = "HTTP " + std::to_string(status);
     }
-    curl_easy_cleanup(curl);
+    curl::curl_easy_cleanup(h);
     handle->fProgress.store(1.0f);
     handle->fDone.store(true);
     detail::complete(std::move(cb), std::move(resp));

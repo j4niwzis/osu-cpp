@@ -9,7 +9,11 @@ export namespace client::json {
 class Value {
 public:
   using Array = std::vector<Value>;
-  using Object = std::map<std::string, Value, std::less<>>;
+  // NOT std::map: only vector/list/forward_list guarantee support for
+  // incomplete element types, and Value is incomplete right here. A flat
+  // vector of pairs is standards-clean and faster at these sizes anyway.
+  using Member = std::pair<std::string, Value>;
+  using Object = std::vector<Member>;
   using Storage =
       std::variant<std::nullptr_t, bool, double, std::string, Array, Object>;
 
@@ -32,16 +36,8 @@ public:
     return std::get_if<Object>(&fV);
   }
 
-  // Object field access; returns null value if absent or not an object.
-  [[nodiscard]] const Value &operator[](std::string_view key) const noexcept {
-    static const Value kNull{};
-    if (const auto *o = this->object()) {
-      if (const auto it = o->find(key); it != o->end()) {
-        return it->second;
-      }
-    }
-    return kNull;
-  }
+  // Object field access; returns a null value if absent or not an object.
+  [[nodiscard]] const Value &operator[](std::string_view key) const noexcept;
 
   [[nodiscard]] std::string str(std::string fallback = {}) const {
     if (const auto *s = std::get_if<std::string>(&fV)) {
@@ -56,6 +52,20 @@ public:
     return fallback;
   }
 };
+
+inline const Value kNullValue{};
+
+[[nodiscard]] inline const Value &
+Value::operator[](std::string_view key) const noexcept {
+  if (const auto *o = this->object()) {
+    for (const auto &[k, v] : *o) {
+      if (k == key) {
+        return v;
+      }
+    }
+  }
+  return kNullValue;
+}
 
 namespace detail {
 
@@ -213,7 +223,7 @@ struct Parser {
         if (!this->value(v)) {
           return false;
         }
-        obj.emplace(std::move(key), std::move(v));
+        obj.emplace_back(std::move(key), std::move(v));
         this->ws();
         if (this->eat(',')) {
           continue;
