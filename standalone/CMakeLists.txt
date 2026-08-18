@@ -44,6 +44,7 @@ if(EMSCRIPTEN_BUILD)
   pkg_check_modules(LIBLZMA REQUIRED liblzma)
 else()
   find_package(OpenGL REQUIRED)
+  find_package(Threads REQUIRED)
   pkg_check_modules(GLFW    REQUIRED glfw3)
   pkg_check_modules(OPENAL  REQUIRED openal)
   pkg_check_modules(SKIA    REQUIRED skia)
@@ -100,6 +101,7 @@ if(EMSCRIPTEN_BUILD)
 else()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
+    Threads::Threads
     OpenGL::GL
     ${GLFW_LDFLAGS} ${GLFW_LIBRARIES}
     ${OPENAL_LDFLAGS} ${OPENAL_LIBRARIES}
