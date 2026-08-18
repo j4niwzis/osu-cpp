@@ -18,7 +18,7 @@ import client.audio;
 import client.input;
 import client.timing;
 import client.http;
-import client.json;
+import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
 #endif
@@ -1101,31 +1101,50 @@ private:
       fDownloadStatus = "Search failed: " + r.fError;
       return;
     }
-    const std::string_view text(reinterpret_cast<const char *>(r.fBody.data()),
-                                r.fBody.size());
-    const auto parsed = client::json::parse(text);
+    const auto parsed = bjson::tryParse(r.fBody);
     if (!parsed) {
       fDownloadStatus = "Search failed: malformed JSON";
       return;
     }
-    const client::json::Value::Array *arr = parsed->array();
+    const bjson::array *arr = parsed->if_array();
     if (arr == nullptr) {
-      arr = (*parsed)["data"].array(); // some mirrors wrap the array
+      // Some mirrors wrap the array in an envelope object.
+      if (const bjson::object *obj = parsed->if_object()) {
+        if (const bjson::value *data = obj->if_contains("data")) {
+          arr = data->if_array();
+        }
+      }
     }
     if (arr == nullptr) {
       fDownloadStatus = "Search failed: unexpected response shape";
       return;
     }
+
+    const auto getStr = [](const bjson::object &o,
+                           std::string_view key) -> std::string {
+      if (const bjson::value *v = o.if_contains(key)) {
+        if (const bjson::string *str = v->if_string()) {
+          return std::string(str->begin(), str->end());
+        }
+      }
+      return {};
+    };
+
     fFound.clear();
     for (const auto &e : *arr) {
-      DownloadEntry d;
-      d.fSetId = static_cast<long>(e["id"].num(-1.0));
-      if (d.fSetId < 0) {
+      const bjson::object *o = e.if_object();
+      if (o == nullptr) {
         continue;
       }
-      d.fTitle = e["title"].str();
-      d.fArtist = e["artist"].str();
-      d.fCreator = e["creator"].str();
+      DownloadEntry d;
+      const bjson::value *id = o->if_contains("id");
+      if (id == nullptr || !id->is_int64()) {
+        continue;
+      }
+      d.fSetId = static_cast<long>(id->as_int64());
+      d.fTitle = getStr(*o, "title");
+      d.fArtist = getStr(*o, "artist");
+      d.fCreator = getStr(*o, "creator");
       fFound.push_back(std::move(d));
     }
     fDownloadScroll = 0.0f;
@@ -1169,7 +1188,7 @@ private:
     const auto path = fMapsDir / std::format("{}.osz", id);
     {
       std::ofstream out(path, std::ios::binary);
-      out.write(reinterpret_cast<const char *>(r.fBody.data()),
+      out.write(r.fBody.data(),
                 static_cast<std::streamsize>(r.fBody.size()));
     }
 #ifdef __EMSCRIPTEN__

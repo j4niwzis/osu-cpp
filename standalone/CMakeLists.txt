@@ -36,6 +36,8 @@ include(../cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 
+find_package(Boost REQUIRED) # header-only: asio, beast, json (bjson needed on wasm too)
+
 if(EMSCRIPTEN_BUILD)
   pkg_check_modules(SKIA   REQUIRED skia)
   pkg_check_modules(LIBZIP  REQUIRED libzip)
@@ -45,8 +47,8 @@ if(EMSCRIPTEN_BUILD)
 else()
   find_package(OpenGL REQUIRED)
   find_package(Threads REQUIRED)
+  find_package(OpenSSL REQUIRED)
   pkg_check_modules(GLFW    REQUIRED glfw3)
-  pkg_check_modules(CURL    REQUIRED libcurl)
   pkg_check_modules(OPENAL  REQUIRED openal)
   pkg_check_modules(SKIA    REQUIRED skia)
   pkg_check_modules(LIBZIP  REQUIRED libzip)
@@ -67,7 +69,8 @@ file(GLOB_RECURSE module_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/
 if(NOT EMSCRIPTEN_BUILD)
   list(FILTER module_sources EXCLUDE REGEX "emscripten\\.cc$")
 else()
-  list(FILTER module_sources EXCLUDE REGEX "curl\\.cc$")
+  # No sockets in the browser: the beast wrapper is native-only.
+  list(FILTER module_sources EXCLUDE REGEX "beast\\.cc$")
 endif()
 
 list(REMOVE_ITEM module_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
@@ -82,7 +85,7 @@ target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_source
 target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${SKIA_INCLUDE_DIRS}
-  ${CURL_INCLUDE_DIRS}
+  ${Boost_INCLUDE_DIRS}
   ${LIBZIP_INCLUDE_DIRS}
   ${SNDFILE_INCLUDE_DIRS}
   ${MPG123_INCLUDE_DIRS}
@@ -113,7 +116,8 @@ else()
     ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
     ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
     ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
-    ${CURL_LDFLAGS} ${CURL_LIBRARIES}
+    OpenSSL::SSL
+    OpenSSL::Crypto
   )
 endif()
 

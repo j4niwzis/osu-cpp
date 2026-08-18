@@ -4,7 +4,7 @@ import std;
 #ifdef __EMSCRIPTEN__
 import emscripten;
 #else
-import curl;
+import beast;
 #endif
 
 export namespace client::http {
@@ -12,7 +12,7 @@ export namespace client::http {
 struct Response {
   bool fOk = false;
   long fStatus = 0;
-  std::vector<std::uint8_t> fBody;
+  std::string fBody; // bytes; std::string avoids pointer reinterpretation
   std::string fError;
 };
 
@@ -43,44 +43,11 @@ inline void complete(Callback cb, Response resp) {
   gCompleted.push_back({std::move(cb), std::move(resp)});
 }
 
-#ifndef __EMSCRIPTEN__
-
-inline std::size_t writeCb(char *ptr, std::size_t size, std::size_t nmemb,
-                           void *user) {
-  auto *body = static_cast<std::vector<std::uint8_t> *>(user);
-  const std::size_t n = size * nmemb;
-  body->insert(body->end(), reinterpret_cast<std::uint8_t *>(ptr),
-               reinterpret_cast<std::uint8_t *>(ptr) + n);
-  return n;
-}
-
-inline int progressCb(void *user, curl::curl_off_t dltotal,
-                      curl::curl_off_t dlnow, curl::curl_off_t,
-                      curl::curl_off_t) {
-  auto *h = static_cast<Handle *>(user);
-  if (dltotal > 0) {
-    h->fProgress.store(static_cast<float>(dlnow) /
-                           static_cast<float>(dltotal),
-                       std::memory_order_relaxed);
-  }
-  return 0;
-}
-
-inline void ensureCurlInit() {
-  static const bool once = [] {
-    curl::curl_global_init(curl::kGlobalDefault);
-    return true;
-  }();
-  (void)once;
-}
-
-#else
-
+#ifdef __EMSCRIPTEN__
 struct FetchCtx {
   Callback fCb;
   std::shared_ptr<Handle> fHandle;
 };
-
 #endif
 
 } // namespace detail
@@ -104,9 +71,7 @@ inline void get(const std::string &url, std::shared_ptr<Handle> handle,
     Response resp;
     resp.fStatus = fetch->status;
     resp.fOk = fetch->status >= 200 && fetch->status < 300;
-    resp.fBody.assign(
-        reinterpret_cast<const std::uint8_t *>(fetch->data),
-        reinterpret_cast<const std::uint8_t *>(fetch->data) + fetch->numBytes);
+    resp.fBody.assign(fetch->data, static_cast<std::size_t>(fetch->numBytes));
     if (!resp.fOk) {
       resp.fError = "HTTP " + std::to_string(fetch->status);
     }
@@ -136,43 +101,20 @@ inline void get(const std::string &url, std::shared_ptr<Handle> handle,
   };
   emscripten::emscripten_fetch(&attr, url.c_str());
 #else
-  detail::ensureCurlInit();
   std::thread([url, handle = std::move(handle), cb = std::move(cb)]() mutable {
+    beastnet::FetchResult r = beastnet::fetch(
+        url, [&handle](std::size_t got, std::size_t total) {
+          if (total > 0) {
+            handle->fProgress.store(static_cast<float>(got) /
+                                        static_cast<float>(total),
+                                    std::memory_order_relaxed);
+          }
+        });
     Response resp;
-    curl::CURL *h = curl::curl_easy_init();
-    if (h == nullptr) {
-      resp.fError = "curl init failed";
-      handle->fDone.store(true);
-      detail::complete(std::move(cb), std::move(resp));
-      return;
-    }
-    char errbuf[curl::kErrorSize] = {};
-    curl::curl_easy_setopt(h, curl::kOptUrl, url.c_str());
-    curl::curl_easy_setopt(h, curl::kOptFollowLocation, 1L);
-    curl::curl_easy_setopt(h, curl::kOptMaxRedirs, 8L);
-    curl::curl_easy_setopt(h, curl::kOptUserAgent, "osu-cpp/1.0");
-    curl::curl_easy_setopt(h, curl::kOptAcceptEncoding, "");
-    curl::curl_easy_setopt(h, curl::kOptWriteFunction, &detail::writeCb);
-    curl::curl_easy_setopt(h, curl::kOptWriteData, &resp.fBody);
-    curl::curl_easy_setopt(h, curl::kOptXferInfoFunction, &detail::progressCb);
-    curl::curl_easy_setopt(h, curl::kOptXferInfoData, handle.get());
-    curl::curl_easy_setopt(h, curl::kOptNoProgress, 0L);
-    curl::curl_easy_setopt(h, curl::kOptErrorBuffer, errbuf);
-    curl::curl_easy_setopt(h, curl::kOptConnectTimeout, 20L);
-    curl::curl_easy_setopt(h, curl::kOptLowSpeedLimit, 64L);
-    curl::curl_easy_setopt(h, curl::kOptLowSpeedTime, 60L);
-    const curl::CURLcode rc = curl::curl_easy_perform(h);
-    long status = 0;
-    curl::curl_easy_getinfo(h, curl::kInfoResponseCode, &status);
-    resp.fStatus = status;
-    if (rc != curl::kOk) {
-      resp.fError = errbuf[0] != '\0' ? errbuf : curl::curl_easy_strerror(rc);
-    } else if (status >= 200 && status < 300) {
-      resp.fOk = true;
-    } else {
-      resp.fError = "HTTP " + std::to_string(status);
-    }
-    curl::curl_easy_cleanup(h);
+    resp.fOk = r.fOk;
+    resp.fStatus = r.fStatus;
+    resp.fBody = std::move(r.fBody);
+    resp.fError = std::move(r.fError);
     handle->fProgress.store(1.0f);
     handle->fDone.store(true);
     detail::complete(std::move(cb), std::move(resp));
