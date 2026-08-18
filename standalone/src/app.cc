@@ -139,6 +139,7 @@ private:
     int fDiffIdx; // -1 => set header
   };
   std::vector<CarouselHit> fCarouselHits; // rebuilt every song-select frame
+  skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -556,7 +557,15 @@ private:
       }
       break;
     case EventType::kChar:
-      if (fState == State::kDownload) {
+      if (fState == State::kSongSelect) {
+        // Fallback: open downloads on the typed character as well. Char
+        // events take a different GLFW path than key codes, which makes
+        // this immune to whatever eats the key event.
+        if (ev.fA == 'd' || ev.fA == 'D') {
+          this->openDownloads();
+          fSwallowChar = false; // this WAS the char; nothing left to eat
+        }
+      } else if (fState == State::kDownload) {
         if (fSwallowChar) {
           fSwallowChar = false;
           break;
@@ -633,8 +642,7 @@ private:
       return;
     }
     if (key == glfw::kKeyD) {
-      fState = State::kDownload;
-      fSwallowChar = true;
+      this->openDownloads();
       return;
     }
     if (nSets == 0) {
@@ -671,9 +679,14 @@ private:
     }
   }
 
+  void openDownloads() {
+    fSwallowChar = true;
+    this->switchState(State::kDownload);
+  }
+
   void keyDownload(int key) {
     if (key == glfw::kKeyEscape) {
-      fState = State::kSongSelect;
+      this->switchState(State::kSongSelect);
       return;
     }
     if (key == glfw::kKeyEnter) {
@@ -714,6 +727,10 @@ private:
   void clickAt(float x, float y) {
     switch (fState) {
     case State::kSongSelect:
+      if (fDownloadsChip.contains(x, y)) {
+        this->openDownloads();
+        return;
+      }
       for (const auto &hit : fCarouselHits) {
         if (hit.fRect.contains(x, y)) {
           if (hit.fDiffIdx < 0) {
@@ -823,6 +840,22 @@ private:
     if (fRecord) {
       fRecordedEvents.push_back(ev);
     }
+  }
+
+  [[nodiscard]] static const char *stateName(State st) {
+    switch (st) {
+    case State::kSongSelect: return "song-select";
+    case State::kDownload: return "download";
+    case State::kPlaying: return "playing";
+    case State::kPaused: return "paused";
+    case State::kResults: return "results";
+    }
+    return "?";
+  }
+
+  void switchState(State st) {
+    std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
+    fState = st;
   }
 
   // ---- Frame dispatch ---------------------------------------------------
@@ -935,7 +968,7 @@ private:
     fSet = entry.fSet; // active copy: gameplay reads audio/bg from here
     this->resetGameplayState();
     this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(diffIdx)]);
-    fState = State::kPlaying;
+    this->switchState(State::kPlaying);
     fFirstFrame = true;
     this->setCursorVisible(false);
   }
@@ -945,7 +978,7 @@ private:
   void pauseGame() {
     fPausedNow = this->nowMs();
     fAudio.pause();
-    fState = State::kPaused;
+    this->switchState(State::kPaused);
     this->setCursorVisible(true);
   }
 
@@ -955,14 +988,14 @@ private:
     fClock.reset(wallMs(), fPausedNow);
     fLastClockSyncWall = wallMs();
     fAudio.resume();
-    fState = State::kPlaying;
+    this->switchState(State::kPlaying);
     fFirstFrame = true;
     this->setCursorVisible(false);
   }
 
   void quitToSelect() {
     fAudio.stop();
-    fState = State::kSongSelect;
+    this->switchState(State::kSongSelect);
     fFirstFrame = true;
     fBackgroundForSet = -1; // gameplay replaced the cached background
     this->setCursorVisible(true);
@@ -974,7 +1007,7 @@ private:
     if (fRecord) {
       this->saveReplay();
     }
-    fState = State::kResults;
+    this->switchState(State::kResults);
     fFirstFrame = true;
     this->setCursorVisible(true);
   }
@@ -1515,6 +1548,19 @@ private:
     this->drawBottomBar(canvas,
                         "Enter / click twice to play    Arrows navigate    "
                         "D downloads    Esc quit");
+
+    // Clickable downloads chip (mouse path, independent of the keyboard).
+    const float chipW = 150.0f;
+    fDownloadsChip =
+        skia::SkRect::MakeXYWH(sw - chipW - 16.0f, sh - 38.0f, chipW, 32.0f);
+    const bool chipHover = fDownloadsChip.contains(fMouseX, fMouseY);
+    this->fillRounded(canvas, fDownloadsChip, 8.0f,
+                      chipHover ? kCardSel : kCardBg);
+    this->strokeRounded(canvas, fDownloadsChip, 8.0f, kAccent2,
+                        chipHover ? 2.0f : 1.0f);
+    this->drawTextCentered(canvas, "downloads", fDownloadsChip.centerX(),
+                           fDownloadsChip.centerY() + 5.0f, 14.0f,
+                           chipHover ? kAccent2 : skia::kWhite);
     this->present();
   }
 
