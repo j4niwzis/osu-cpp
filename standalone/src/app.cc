@@ -557,10 +557,6 @@ private:
       }
       break;
     case EventType::kChar:
-      if (fState != State::kPlaying) {
-        std::println(std::cerr, "[in] char cp={} state={}", ev.fA,
-                     stateName(fState));
-      }
       if (fState == State::kSongSelect) {
         // Fallback: open downloads on the typed character as well. Char
         // events take a different GLFW path than key codes, which makes
@@ -589,10 +585,6 @@ private:
   void applyKey(const Event &ev) {
     const int key = ev.fA;
     const int action = ev.fB;
-    if (fState != State::kPlaying) {
-      std::println(std::cerr, "[in] key={} action={} state={}", key, action,
-                   stateName(fState));
-    }
     if (action != glfw::kPress && fState != State::kPlaying) {
       return; // menus only care about presses
     }
@@ -712,12 +704,6 @@ private:
 
     if (fState == State::kSongSelect || fState == State::kDownload ||
         fState == State::kPaused || fState == State::kResults) {
-      std::println(std::cerr,
-                   "[in] mouse btn={} action={} at=({:.0f},{:.0f}) "
-                   "chip=({:.0f},{:.0f} {:.0f}x{:.0f}) state={}",
-                   button, action, fMouseX, fMouseY, fDownloadsChip.x(),
-                   fDownloadsChip.y(), fDownloadsChip.width(),
-                   fDownloadsChip.height(), stateName(fState));
       if (button == glfw::kMouseButtonLeft && action == glfw::kPress) {
         this->clickAt(fMouseX, fMouseY);
       }
