@@ -167,16 +167,17 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (beatmapPath.empty() || !std::filesystem::exists(beatmapPath)) {
-#ifdef __EMSCRIPTEN__
-    std::cout << "osu! client (WebAssembly)\n"
-              << "Upload a .osz beatmap file to begin.\n";
-    return 0;
-#else
-    std::cerr << "Error: beatmap path not provided or does not exist\n";
+  // A beatmap argument is now optional: without one the client opens song
+  // select over the local library (maps/ next to the executable, or /maps in
+  // the browser). Headless mode still needs a concrete map.
+  if (!beatmapPath.empty() && !std::filesystem::exists(beatmapPath)) {
+    std::cerr << "Error: beatmap path does not exist\n";
     printUsage(argc > 0 ? argv[0] : "osu_client");
     return 1;
-#endif
+  }
+  if (beatmapPath.empty() && headless) {
+    std::cerr << "Error: --headless requires a beatmap\n";
+    return 1;
   }
 
   if (skinPath.empty()) {
@@ -200,7 +201,10 @@ int main(int argc, char **argv) {
   }
 
   try {
-    osu::BeatmapSet set = client::loadBeatmapSet(beatmapPath);
+    std::optional<osu::BeatmapSet> set;
+    if (!beatmapPath.empty()) {
+      set = client::loadBeatmapSet(beatmapPath);
+    }
     client::App app(std::move(set), mods, headless, autoplay, replayPath,
                     record, skinPath, profile);
     return app.run();

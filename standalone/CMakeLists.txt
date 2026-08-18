@@ -46,6 +46,7 @@ else()
   find_package(OpenGL REQUIRED)
   find_package(Threads REQUIRED)
   pkg_check_modules(GLFW    REQUIRED glfw3)
+  pkg_check_modules(CURL    REQUIRED libcurl)
   pkg_check_modules(OPENAL  REQUIRED openal)
   pkg_check_modules(SKIA    REQUIRED skia)
   pkg_check_modules(LIBZIP  REQUIRED libzip)
@@ -79,6 +80,7 @@ target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_source
 target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${SKIA_INCLUDE_DIRS}
+  ${CURL_INCLUDE_DIRS}
   ${LIBZIP_INCLUDE_DIRS}
   ${SNDFILE_INCLUDE_DIRS}
   ${MPG123_INCLUDE_DIRS}
@@ -109,6 +111,7 @@ else()
     ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
     ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
     ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
+    ${CURL_LDFLAGS} ${CURL_LIBRARIES}
   )
 endif()
 
@@ -128,6 +131,8 @@ if(EMSCRIPTEN_BUILD)
     "SHELL:-pthread"
     "SHELL:-msimd128"
     "SHELL:-sEXPORTED_RUNTIME_METHODS=['GL','callMain','FS']"
+    "SHELL:-sFETCH"
+    "SHELL:-lidbfs.js"
     "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html"
   )
 

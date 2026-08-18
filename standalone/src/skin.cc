@@ -321,6 +321,7 @@ public:
                               const osu::ComboInfo &comboInfo, float scale,
                               skia::GrDirectContext *grContext) {
     fPrecomputedBodies.clear();
+    fBodySegCache.clear();
     for (std::size_t i = 0; i < map.fObjects.size(); ++i) {
       if (auto *s = std::get_if<osu::Slider>(&map.fObjects[i])) {
         precomputeSliderBody(*s, i, map.fSliderPaths[i],
@@ -595,15 +596,9 @@ float4 main(float2 coords) {
       if (!sBodyFx)
         return;
 
-      struct CachedSeg {
-        skia::Sp<skia::SkImage> image;
-        int nSegs;
-        float boxMinX, boxMinY;
-        float bwExt, bhExt;
-      };
       const auto cacheKey = static_cast<std::uint64_t>(index) << 32 |
                             static_cast<std::uint64_t>(cs * 100.0);
-      static std::unordered_map<std::uint64_t, CachedSeg> sBodySegCache;
+      auto &sBodySegCache = fBodySegCache;
       auto *cached = [&]() -> CachedSeg * {
         auto it = sBodySegCache.find(cacheKey);
         if (it != sBodySegCache.end())
@@ -1089,6 +1084,17 @@ private:
     std::vector<skia::SkIRect> tiles;
   };
   std::unordered_map<std::uint64_t, PrecomputedBody> fPrecomputedBodies;
+  // Per-map cache of encoded segment textures; keyed by object index, so
+  // it MUST be cleared when a different map is precomputed (same index ->
+  // different slider). Used to be a function-local static: harmless with
+  // one map per process, wrong the moment song select exists.
+  struct CachedSeg {
+    skia::Sp<skia::SkImage> image;
+    int nSegs;
+    float boxMinX, boxMinY;
+    float bwExt, bhExt;
+  };
+  std::unordered_map<std::uint64_t, CachedSeg> fBodySegCache;
 
   [[nodiscard]] skia::Sp<skia::SkImage> sliderTexture(skia::SkColor tint) {
     if (auto it = fSliderTextures.find(tint); it != fSliderTextures.end()) {

@@ -68,6 +68,10 @@ public:
     if (!audioContext().ok())
       return false;
 
+    // Loading over an existing track (retry / new map) must release the old
+    // buffer and source, or every restart leaks an OpenAL buffer.
+    this->shutdown();
+
     int rate = 44100;
     int channels = 2;
     std::vector<std::int16_t> samples;
@@ -85,6 +89,27 @@ public:
 
   void play() {
     if (fSource != 0)
+      audio::alSourcePlay(fSource);
+  }
+
+  // Pause only if actually playing; resume only if actually paused.
+  // alSourcePlay on a *stopped* source would restart it from zero, which is
+  // exactly wrong when the map outlived its music.
+  void pause() {
+    if (fSource == 0)
+      return;
+    audio::ALint state = audio::kInitial;
+    audio::alGetSourcei(fSource, audio::kSourceState, &state);
+    if (state == audio::kPlaying)
+      audio::alSourcePause(fSource);
+  }
+
+  void resume() {
+    if (fSource == 0)
+      return;
+    audio::ALint state = audio::kInitial;
+    audio::alGetSourcei(fSource, audio::kSourceState, &state);
+    if (state == audio::kPaused)
       audio::alSourcePlay(fSource);
   }
 

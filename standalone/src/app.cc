@@ -17,8 +17,20 @@ import client.util;
 import client.audio;
 import client.input;
 import client.timing;
+import client.http;
+import client.json;
 #ifdef __EMSCRIPTEN__
 import emscripten;
+#endif
+
+#ifdef __EMSCRIPTEN__
+namespace client::detail {
+inline std::atomic<bool> gMapsSynced{false};
+} // namespace client::detail
+
+extern "C" EMSCRIPTEN_KEEPALIVE void osu_maps_synced() {
+  client::detail::gMapsSynced.store(true, std::memory_order_release);
+}
 #endif
 
 namespace client {
@@ -31,12 +43,18 @@ using audio_client::SamplePlayer;
 
 export class App {
 public:
-  App(osu::BeatmapSet set, osu::ModSet mods, bool headless, bool autoplay,
-      std::filesystem::path replayPath = {}, bool record = false,
-      std::filesystem::path skinPath = {}, bool profile = false)
-      : fSet(std::move(set)), fMods(mods), fHeadless(headless),
-        fAutoplay(autoplay), fReplayPath(std::move(replayPath)),
-        fRecord(record), fSkin(std::move(skinPath)), fShowProfile(profile) {}
+  App(std::optional<osu::BeatmapSet> set, osu::ModSet mods, bool headless,
+      bool autoplay, std::filesystem::path replayPath = {},
+      bool record = false, std::filesystem::path skinPath = {},
+      bool profile = false)
+      : fMods(mods), fHeadless(headless), fAutoplay(autoplay),
+        fReplayPath(std::move(replayPath)), fRecord(record),
+        fSkin(std::move(skinPath)), fShowProfile(profile) {
+    if (set) {
+      fSet = std::move(*set);
+      fHasInitialSet = true;
+    }
+  }
 
   ~App() { this->shutdown(); }
 
@@ -98,15 +116,72 @@ private:
   // glfwSetInputMode on the thread that owns the window). -1 = none.
   std::atomic<int> fCursorModeRequest{-1};
 
-  // Selection screen.
-  enum class State { kSelecting, kPlaying };
-  State fState = State::kSelecting;
-  int fSelectedDifficulty = 0;
-  bool fDifficultyConfirmed = false;
-  int fEmscriptenResult = 0;
-  int fHoveredDifficulty = -1;
-  float fSelectScrollY = 0.0f;
-  bool fClickPending = false;
+  // ---- Screens ---------------------------------------------------------
+  enum class State { kSongSelect, kDownload, kPlaying, kPaused, kResults };
+  State fState = State::kSongSelect;
+  bool fHasInitialSet = false;
+
+  // Library / song select (lazer-style carousel on the right).
+  struct LibraryEntry {
+    std::filesystem::path fPath; // empty for the set passed on the CLI
+    osu::BeatmapSet fSet;
+  };
+  std::vector<LibraryEntry> fLibrary;
+  bool fLibraryLoaded = false;
+  int fSelSet = 0;
+  int fSelDiff = 0;
+  float fCarouselScroll = 0.0f;
+  int fBackgroundForSet = -1;
+  std::filesystem::path fMapsDir;
+  struct CarouselHit {
+    skia::SkRect fRect;
+    int fSetIdx;
+    int fDiffIdx; // -1 => set header
+  };
+  std::vector<CarouselHit> fCarouselHits; // rebuilt every song-select frame
+
+  // Download screen (mirror search + .osz fetch).
+  struct DownloadEntry {
+    long fSetId = -1;
+    std::string fTitle, fArtist, fCreator;
+    enum class St : std::uint8_t { kIdle, kFetching, kDone, kError };
+    St fSt = St::kIdle;
+    std::shared_ptr<client::http::Handle> fHandle;
+  };
+  std::string fSearchQuery;
+  bool fSearchPending = false;
+  bool fSwallowChar = false; // the 'D' that opened the screen also arrives
+                             // as a char event; it must not enter the query
+  std::vector<DownloadEntry> fFound;
+  float fDownloadScroll = 0.0f;
+  std::string fDownloadStatus = "Type a query and press Enter";
+  std::vector<skia::SkRect> fFoundHits; // rebuilt every download frame
+
+  // Pause / results overlays.
+  struct MenuButton {
+    skia::SkRect fRect;
+    std::string fLabel;
+    skia::SkColor fAccent;
+  };
+  std::vector<MenuButton> fMenuButtons; // rebuilt every pause/results frame
+  double fPausedNow = 0.0;              // frozen game time while paused
+  int fPlayingSet = -1;
+  int fPlayingDiff = -1;
+
+  struct ResultData {
+    osu::ScoreState fScore{};
+    double fMean = 0.0;
+    double fUr = 0.0;
+    std::string fGrade = "F";
+  };
+  ResultData fResult;
+
+  // Lazer-ish palette.
+  static constexpr skia::SkColor kAccent = skia::colorSetARGB(255, 255, 102, 170);
+  static constexpr skia::SkColor kAccent2 = skia::colorSetARGB(255, 102, 204, 255);
+  static constexpr skia::SkColor kCardBg = skia::colorSetARGB(255, 42, 36, 48);
+  static constexpr skia::SkColor kCardSel = skia::colorSetARGB(255, 64, 48, 70);
+  static constexpr skia::SkColor kPanelBg = skia::colorSetARGB(215, 22, 18, 28);
 
   // Timing
   double fStartMs = 0.0;
@@ -234,7 +309,7 @@ private:
   }
 
   [[nodiscard]] int runHeadless() {
-    if (fSet.fBeatmaps.empty()) {
+    if (!fHasInitialSet || fSet.fBeatmaps.empty()) {
       return 1;
     }
     this->startGameplay(fSet.fBeatmaps.front());
@@ -294,15 +369,9 @@ private:
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          if (action == glfw::kPress) {
-            if (key == glfw::kKeyEscape) {
-              glfw::glfwSetWindowShouldClose(w, glfw::kTrue);
-              return;
-            }
-            if (key == glfw::kKeyF11) {
-              self->toggleFullscreen();
-              return;
-            }
+          if (action == glfw::kPress && key == glfw::kKeyF11) {
+            self->toggleFullscreen();
+            return;
           }
           if (action == glfw::kRepeat)
             return; // key auto-repeat is meaningless for gameplay
@@ -331,6 +400,14 @@ private:
           self->enqueue({App::wallMs(), EventType::kScroll, 0, 0,
                          static_cast<float>(y)});
         });
+    glfw::glfwSetCharCallback(
+        fWindow, [](glfw::GLFWwindow *w, unsigned int codepoint) {
+          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+          if (self == nullptr)
+            return;
+          self->enqueue({App::wallMs(), EventType::kChar,
+                         static_cast<std::int32_t>(codepoint), 0});
+        });
     glfw::glfwSetFramebufferSizeCallback(
         fWindow, [](glfw::GLFWwindow *w, int width, int height) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
@@ -353,14 +430,16 @@ private:
     fFont = this->loadFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
-    if (fSet.fBeatmaps.size() > 1) {
-      (void)this->runDifficultySelect();
-      emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
-      return 0;
-    }
+    // Persistent library at /maps (IDBFS). The initial syncfs is async; the
+    // library is scanned once the flag flips (see frameSongSelect).
+    EM_ASM({
+      try { FS.mkdir('/maps'); } catch (e) {}
+      FS.mount(IDBFS, {}, '/maps');
+      FS.syncfs(true, function(err) { Module._osu_maps_synced(); });
+    });
 
-    EM_ASM(Module.setCursorVisible(false));
-    this->startGameplay(fSet.fBeatmaps.front());
+    fState = State::kSongSelect;
+    EM_ASM(Module.setCursorVisible(true));
     emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
     return 0;
 #else
@@ -402,29 +481,31 @@ private:
     fFont = this->loadFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
-    int selected = 0;
-    if (fSet.fBeatmaps.size() > 1) {
-      selected = this->runDifficultySelect();
-      if (selected < 0 || selected >= static_cast<int>(fSet.fBeatmaps.size())) {
-        this->requestQuit();
-        glfw::glfwMakeContextCurrent(nullptr);
-        return;
-      }
+    this->initLibrary();
+    fState = State::kSongSelect;
+
+    while (!fQuit.load(std::memory_order_acquire) &&
+           !glfw::glfwWindowShouldClose(fWindow)) {
+      this->frame();
     }
 
-    fCursorModeRequest.store(glfw::kCursorHidden, std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
-    this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(selected)]);
-    fExitCode.store(this->runGameplayLoop(), std::memory_order_release);
+    // A play interrupted by closing the window still reports to the console.
+    if (fState == State::kPlaying || fState == State::kPaused) {
+      this->printResult();
+      if (fRecord)
+        this->saveReplay();
+    }
+    fExitCode.store(0, std::memory_order_release);
     this->requestQuit();
     glfw::glfwMakeContextCurrent(nullptr);
   }
 
+#endif
+
   void requestQuit() {
     fQuit.store(true, std::memory_order_release);
-    glfw::glfwPostEmptyEvent(); // wake the pump so it can exit
+    glfw::glfwPostEmptyEvent(); // wakes the native pump; harmless on wasm
   }
-#endif
 
   [[nodiscard]] static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
 
@@ -468,8 +549,19 @@ private:
       }
       break;
     case EventType::kScroll:
-      if (fState == State::kSelecting) {
-        fSelectScrollY -= ev.fX * 30.0f;
+      if (fState == State::kSongSelect) {
+        fCarouselScroll -= ev.fX * 60.0f;
+      } else if (fState == State::kDownload) {
+        fDownloadScroll -= ev.fX * 60.0f;
+      }
+      break;
+    case EventType::kChar:
+      if (fState == State::kDownload) {
+        if (fSwallowChar) {
+          fSwallowChar = false;
+          break;
+        }
+        this->appendUtf8(fSearchQuery, static_cast<std::uint32_t>(ev.fA));
       }
       break;
     case EventType::kKey:
@@ -484,17 +576,37 @@ private:
   void applyKey(const Event &ev) {
     const int key = ev.fA;
     const int action = ev.fB;
-    if (fState == State::kSelecting) {
+    if (action != glfw::kPress && fState != State::kPlaying) {
+      return; // menus only care about presses
+    }
+
+    switch (fState) {
+    case State::kSongSelect:
+      this->keySongSelect(key);
+      return;
+    case State::kDownload:
+      this->keyDownload(key);
+      return;
+    case State::kPaused:
+      if (key == glfw::kKeyEscape) {
+        this->resumeGame();
+      }
+      return;
+    case State::kResults:
+      if (key == glfw::kKeyEscape) {
+        this->quitToSelect();
+      } else if (key == glfw::kKeyEnter) {
+        this->retry();
+      }
+      return;
+    case State::kPlaying:
+      break;
+    }
+
+    // Playing.
+    if (key == glfw::kKeyEscape) {
       if (action == glfw::kPress) {
-        if (key == glfw::kKeyUp || key == glfw::kKeyLeft) {
-          fSelectedDifficulty = std::max(0, fSelectedDifficulty - 1);
-        } else if (key == glfw::kKeyDown || key == glfw::kKeyRight) {
-          fSelectedDifficulty =
-              std::min(static_cast<int>(fSet.fBeatmaps.size()) - 1,
-                       fSelectedDifficulty + 1);
-        } else if (key == glfw::kKeyEnter || key == glfw::kKeySpace) {
-          fDifficultyConfirmed = true;
-        }
+        this->pauseGame();
       }
       return;
     }
@@ -514,15 +626,77 @@ private:
     this->applyButton(bit, action == glfw::kPress, ev.fWallMs);
   }
 
+  void keySongSelect(int key) {
+    const int nSets = static_cast<int>(fLibrary.size());
+    if (key == glfw::kKeyEscape) {
+      this->requestQuit();
+      return;
+    }
+    if (key == glfw::kKeyD) {
+      fState = State::kDownload;
+      fSwallowChar = true;
+      return;
+    }
+    if (nSets == 0) {
+      return;
+    }
+    const int nDiffs =
+        static_cast<int>(fLibrary[static_cast<std::size_t>(fSelSet)]
+                             .fSet.fBeatmaps.size());
+    if (key == glfw::kKeyUp) {
+      if (fSelDiff > 0) {
+        --fSelDiff;
+      } else if (fSelSet > 0) {
+        --fSelSet;
+        fSelDiff = static_cast<int>(
+                       fLibrary[static_cast<std::size_t>(fSelSet)]
+                           .fSet.fBeatmaps.size()) -
+                   1;
+      }
+    } else if (key == glfw::kKeyDown) {
+      if (fSelDiff + 1 < nDiffs) {
+        ++fSelDiff;
+      } else if (fSelSet + 1 < nSets) {
+        ++fSelSet;
+        fSelDiff = 0;
+      }
+    } else if (key == glfw::kKeyLeft) {
+      fSelSet = std::max(0, fSelSet - 1);
+      fSelDiff = 0;
+    } else if (key == glfw::kKeyRight) {
+      fSelSet = std::min(nSets - 1, fSelSet + 1);
+      fSelDiff = 0;
+    } else if (key == glfw::kKeyEnter) {
+      this->startPlay(fSelSet, fSelDiff);
+    }
+  }
+
+  void keyDownload(int key) {
+    if (key == glfw::kKeyEscape) {
+      fState = State::kSongSelect;
+      return;
+    }
+    if (key == glfw::kKeyEnter) {
+      this->startSearch();
+      return;
+    }
+    if (key == glfw::kKeyBackspace) {
+      this->popUtf8(fSearchQuery);
+    }
+  }
+
   void applyMouseButton(const Event &ev) {
     const int button = ev.fA;
     const int action = ev.fB;
-    if (fState == State::kSelecting) {
+
+    if (fState == State::kSongSelect || fState == State::kDownload ||
+        fState == State::kPaused || fState == State::kResults) {
       if (button == glfw::kMouseButtonLeft && action == glfw::kPress) {
-        fClickPending = true;
+        this->clickAt(fMouseX, fMouseY);
       }
       return;
     }
+
     if (fAutoplay) {
       return;
     }
@@ -535,6 +709,95 @@ private:
       return;
     }
     this->applyButton(bit, action == glfw::kPress, ev.fWallMs);
+  }
+
+  void clickAt(float x, float y) {
+    switch (fState) {
+    case State::kSongSelect:
+      for (const auto &hit : fCarouselHits) {
+        if (hit.fRect.contains(x, y)) {
+          if (hit.fDiffIdx < 0) {
+            fSelSet = hit.fSetIdx;
+            fSelDiff = 0;
+          } else if (fSelSet == hit.fSetIdx && fSelDiff == hit.fDiffIdx) {
+            this->startPlay(hit.fSetIdx, hit.fDiffIdx); // second click plays
+          } else {
+            fSelSet = hit.fSetIdx;
+            fSelDiff = hit.fDiffIdx;
+          }
+          return;
+        }
+      }
+      break;
+    case State::kDownload:
+      for (std::size_t i = 0; i < fFoundHits.size(); ++i) {
+        if (fFoundHits[i].contains(x, y)) {
+          this->startDownload(i);
+          return;
+        }
+      }
+      break;
+    case State::kPaused:
+    case State::kResults:
+      for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
+        if (fMenuButtons[i].fRect.contains(x, y)) {
+          this->menuButtonPressed(i);
+          return;
+        }
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
+  void menuButtonPressed(std::size_t idx) {
+    if (fState == State::kPaused) {
+      if (idx == 0) {
+        this->resumeGame();
+      } else if (idx == 1) {
+        this->retry();
+      } else {
+        this->quitToSelect();
+      }
+    } else if (fState == State::kResults) {
+      if (idx == 0) {
+        this->retry();
+      } else {
+        this->quitToSelect();
+      }
+    }
+  }
+
+  static void appendUtf8(std::string &out, std::uint32_t cp) {
+    if (cp < 0x20) {
+      return; // control chars
+    }
+    if (cp < 0x80) {
+      out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+      out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+  }
+
+  static void popUtf8(std::string &out) {
+    while (!out.empty()) {
+      const auto c = static_cast<unsigned char>(out.back());
+      out.pop_back();
+      if ((c & 0xC0) != 0x80) {
+        break; // removed the lead byte
+      }
+    }
   }
 
   // Every physical press attempts a hit (each of Z/X/M1/M2 is an independent
@@ -562,89 +825,365 @@ private:
     }
   }
 
-  [[nodiscard]] int runDifficultySelect() {
-    fState = State::kSelecting;
-    this->loadSelectBackground();
+  // ---- Frame dispatch ---------------------------------------------------
 
-#ifdef __EMSCRIPTEN__
-    fEmscriptenResult = 0;
-    return 0;
-#else
-    while (!fQuit.load(std::memory_order_acquire) &&
-           !glfw::glfwWindowShouldClose(fWindow) && !fDifficultyConfirmed) {
-      this->drainInput();
-      this->updateSelectHover();
-      this->renderDifficultySelect();
+  void frame() {
+    client::http::poll(); // completed network callbacks land here
+    this->drainInput();
+    switch (fState) {
+    case State::kSongSelect:
+      this->frameSongSelect();
+      break;
+    case State::kDownload:
+      this->frameDownload();
+      break;
+    case State::kPlaying:
+      this->framePlaying();
+      break;
+    case State::kPaused:
+      this->framePaused();
+      break;
+    case State::kResults:
+      this->frameResults();
+      break;
+    }
+  }
+
+  void present() {
+    fContext->flushAndSubmit(fSurface.get());
+    glfw::glfwSwapBuffers(fWindow);
+  }
+
+  void framePlaying() {
+    using clock = std::chrono::steady_clock;
+    const double now = this->nowMs();
+    if (this->shouldStop(now)) {
+      this->finishPlay();
+      this->frameResults();
+      return;
+    }
+    this->submitAutoplay(now);
+    if (fShowProfile) {
+      auto t0 = clock::now();
+      fEngine->advance(now);
+      auto t1 = clock::now();
+      this->playHitsounds(now);
+      this->render(now);
+      auto t2 = clock::now();
       fContext->flushAndSubmit(fSurface.get());
+      auto t3 = clock::now();
       glfw::glfwSwapBuffers(fWindow);
-    }
+      auto t4 = clock::now();
 
-    if (fQuit.load(std::memory_order_acquire) ||
-        glfw::glfwWindowShouldClose(fWindow)) {
-      return -1;
+      auto &p = fProfile[fProfileIdx];
+      p.advUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
+              .count());
+      p.renderUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1)
+              .count());
+      p.flushUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2)
+              .count());
+      p.swapUs = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3)
+              .count());
+      fProfileIdx = (fProfileIdx + 1) % kProfileCount;
+      if (fProfileNum < kProfileCount)
+        ++fProfileNum;
+    } else {
+      fEngine->advance(now);
+      this->playHitsounds(now);
+      this->render(now);
+      this->present();
     }
-    return fSelectedDifficulty;
+  }
+
+  // ---- Play lifecycle ---------------------------------------------------
+
+  void resetGameplayState() {
+    fPlayedEvents = 0;
+    fCombo = 0;
+    fPopups.clear();
+    fHitBursts.clear();
+    fCursorTrail.clear();
+    fFadingObjects.clear();
+    fAutoplayIndex = 0;
+    fRecordedEvents.clear();
+    fHeldMask = 0;
+    fDisplayHealth = 1.0;
+    fDisplayScore = 0.0;
+    fDisplayCombo = 0.0;
+    fDisplayAccuracy = 1.0;
+    fLastHudTime = 0.0;
+    fFrameTimeIdx = 0;
+    fFrameTimeCount = 0;
+    fLastFrameTime = 0.0;
+  }
+
+  void startPlay(int setIdx, int diffIdx) {
+    if (setIdx < 0 || setIdx >= static_cast<int>(fLibrary.size())) {
+      return;
+    }
+    auto &entry = fLibrary[static_cast<std::size_t>(setIdx)];
+    if (diffIdx < 0 ||
+        diffIdx >= static_cast<int>(entry.fSet.fBeatmaps.size())) {
+      return;
+    }
+    fPlayingSet = setIdx;
+    fPlayingDiff = diffIdx;
+    fSet = entry.fSet; // active copy: gameplay reads audio/bg from here
+    this->resetGameplayState();
+    this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(diffIdx)]);
+    fState = State::kPlaying;
+    fFirstFrame = true;
+    this->setCursorVisible(false);
+  }
+
+  void retry() { this->startPlay(fPlayingSet, fPlayingDiff); }
+
+  void pauseGame() {
+    fPausedNow = this->nowMs();
+    fAudio.pause();
+    fState = State::kPaused;
+    this->setCursorVisible(true);
+  }
+
+  void resumeGame() {
+    // Re-anchor the clock at the frozen instant: wall time spent in the
+    // pause menu never existed as far as the game timeline is concerned.
+    fClock.reset(wallMs(), fPausedNow);
+    fLastClockSyncWall = wallMs();
+    fAudio.resume();
+    fState = State::kPlaying;
+    fFirstFrame = true;
+    this->setCursorVisible(false);
+  }
+
+  void quitToSelect() {
+    fAudio.stop();
+    fState = State::kSongSelect;
+    fFirstFrame = true;
+    fBackgroundForSet = -1; // gameplay replaced the cached background
+    this->setCursorVisible(true);
+  }
+
+  void finishPlay() {
+    this->captureResult();
+    this->printResult();
+    if (fRecord) {
+      this->saveReplay();
+    }
+    fState = State::kResults;
+    fFirstFrame = true;
+    this->setCursorVisible(true);
+  }
+
+  void captureResult() {
+    fResult.fScore = fEngine->score();
+    double sum = 0.0;
+    double sumSq = 0.0;
+    std::size_t n = 0;
+    for (const double d : fEngine->tapDeltas()) {
+      sum += d;
+      sumSq += d * d;
+      ++n;
+    }
+    if (n > 0) {
+      const double mean = sum / static_cast<double>(n);
+      fResult.fMean = mean;
+      fResult.fUr = 10.0 * std::sqrt(std::max(
+                               0.0, sumSq / static_cast<double>(n) -
+                                        mean * mean));
+    } else {
+      fResult.fMean = 0.0;
+      fResult.fUr = 0.0;
+    }
+    fResult.fGrade = osu::gradeString(osu::computeGrade(fResult.fScore));
+  }
+
+  void setCursorVisible(bool visible) {
+#ifdef __EMSCRIPTEN__
+    if (visible) {
+      EM_ASM(Module.setCursorVisible(true));
+    } else {
+      EM_ASM(Module.setCursorVisible(false));
+    }
+    glfw::glfwSetInputMode(fWindow, glfw::kCursor,
+                           visible ? glfw::kCursorNormal
+                                   : glfw::kCursorHidden);
+#else
+    fCursorModeRequest.store(visible ? glfw::kCursorNormal
+                                     : glfw::kCursorHidden,
+                             std::memory_order_release);
+    glfw::glfwPostEmptyEvent();
 #endif
   }
 
-  [[nodiscard]] int runGameplayLoop() {
-    fState = State::kPlaying;
+  // ---- Library ----------------------------------------------------------
 
+  void initLibrary() {
 #ifdef __EMSCRIPTEN__
-    return 0;
+    fMapsDir = "/maps";
 #else
-    while (!fQuit.load(std::memory_order_acquire) &&
-           !glfw::glfwWindowShouldClose(fWindow) &&
-           !this->shouldStop(this->nowMs())) {
-      using clock = std::chrono::steady_clock;
-      // Drain input first, then sample the frame clock: the engine requires
-      // non-decreasing submission times, and the frame time taken after the
-      // drain is >= every drained event time by construction.
-      this->drainInput();
-      const double now = this->nowMs();
-      this->submitAutoplay(now);
-      if (fShowProfile) {
-        auto t0 = clock::now();
-        fEngine->advance(now);
-        auto t1 = clock::now();
-        this->playHitsounds(now);
-        this->render();
-        auto t2 = clock::now();
-        fContext->flushAndSubmit(fSurface.get());
-        auto t3 = clock::now();
-        glfw::glfwSwapBuffers(fWindow);
-        auto t4 = clock::now();
+    if (const char *home = std::getenv("HOME"); home != nullptr) {
+      fMapsDir = std::filesystem::path(home) / ".local" / "share" /
+                 "osu_client" / "maps";
+    } else {
+      fMapsDir = "maps";
+    }
+#endif
+    std::error_code ec;
+    std::filesystem::create_directories(fMapsDir, ec);
 
-        auto &p = fProfile[fProfileIdx];
-        p.advUs = static_cast<double>(
-            std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
-                .count());
-        p.renderUs = static_cast<double>(
-            std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1)
-                .count());
-        p.flushUs = static_cast<double>(
-            std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2)
-                .count());
-        p.swapUs = static_cast<double>(
-            std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3)
-                .count());
-        fProfileIdx = (fProfileIdx + 1) % kProfileCount;
-        if (fProfileNum < kProfileCount)
-          ++fProfileNum;
-      } else {
-        fEngine->advance(now);
-        this->playHitsounds(now);
-        this->render();
-        fContext->flushAndSubmit(fSurface.get());
-        glfw::glfwSwapBuffers(fWindow);
+    if (fHasInitialSet) {
+      fLibrary.push_back({{}, fSet});
+    }
+    std::error_code iterEc;
+    for (const auto &e :
+         std::filesystem::directory_iterator(fMapsDir, iterEc)) {
+      if (!e.is_regular_file()) {
+        continue;
+      }
+      const auto path = e.path();
+      if (path.extension() != ".osz") {
+        continue;
+      }
+      this->addOszToLibrary(path, false);
+    }
+    std::ranges::sort(fLibrary, {}, [](const LibraryEntry &l) {
+      return l.fSet.fBeatmaps.empty() ? std::string{}
+                                      : l.fSet.fBeatmaps.front().fMeta.fTitle;
+    });
+    fSelSet = 0;
+    fSelDiff = 0;
+    fLibraryLoaded = true;
+  }
+
+  bool addOszToLibrary(const std::filesystem::path &path, bool select) {
+    try {
+      LibraryEntry entry{path, loadBeatmapSet(path)};
+      fLibrary.push_back(std::move(entry));
+      if (select) {
+        fSelSet = static_cast<int>(fLibrary.size()) - 1;
+        fSelDiff = 0;
+      }
+      return true;
+    } catch (const std::exception &e) {
+      std::println("failed to load {}: {}", path.string(), e.what());
+      return false;
+    }
+  }
+
+  // ---- Download screen logic -------------------------------------------
+
+  static constexpr const char *kMirror = "https://catboy.best";
+
+  void startSearch() {
+    if (fSearchPending) {
+      return;
+    }
+    fSearchPending = true;
+    fDownloadStatus = "Searching...";
+    auto handle = std::make_shared<client::http::Handle>();
+    const std::string url = std::string(kMirror) +
+                            "/api/v2/search?mode=0&limit=50&query=" +
+                            client::http::urlEncode(fSearchQuery);
+    client::http::get(url, std::move(handle),
+                      [this](client::http::Response r) {
+                        this->onSearchDone(std::move(r));
+                      });
+  }
+
+  void onSearchDone(client::http::Response r) {
+    fSearchPending = false;
+    if (!r.fOk) {
+      fDownloadStatus = "Search failed: " + r.fError;
+      return;
+    }
+    const std::string_view text(reinterpret_cast<const char *>(r.fBody.data()),
+                                r.fBody.size());
+    const auto parsed = client::json::parse(text);
+    if (!parsed) {
+      fDownloadStatus = "Search failed: malformed JSON";
+      return;
+    }
+    const client::json::Value::Array *arr = parsed->array();
+    if (arr == nullptr) {
+      arr = (*parsed)["data"].array(); // some mirrors wrap the array
+    }
+    if (arr == nullptr) {
+      fDownloadStatus = "Search failed: unexpected response shape";
+      return;
+    }
+    fFound.clear();
+    for (const auto &e : *arr) {
+      DownloadEntry d;
+      d.fSetId = static_cast<long>(e["id"].num(-1.0));
+      if (d.fSetId < 0) {
+        continue;
+      }
+      d.fTitle = e["title"].str();
+      d.fArtist = e["artist"].str();
+      d.fCreator = e["creator"].str();
+      fFound.push_back(std::move(d));
+    }
+    fDownloadScroll = 0.0f;
+    fDownloadStatus = std::format("{} result(s)", fFound.size());
+  }
+
+  void startDownload(std::size_t idx) {
+    if (idx >= fFound.size()) {
+      return;
+    }
+    auto &d = fFound[idx];
+    if (d.fSt == DownloadEntry::St::kFetching ||
+        d.fSt == DownloadEntry::St::kDone) {
+      return;
+    }
+    d.fSt = DownloadEntry::St::kFetching;
+    d.fHandle = std::make_shared<client::http::Handle>();
+    const long id = d.fSetId;
+    client::http::get(std::format("{}/d/{}", kMirror, id), d.fHandle,
+                      [this, id](client::http::Response r) {
+                        this->onDownloadDone(id, std::move(r));
+                      });
+  }
+
+  void onDownloadDone(long id, client::http::Response r) {
+    DownloadEntry *d = nullptr;
+    for (auto &e : fFound) {
+      if (e.fSetId == id) {
+        d = &e;
+        break;
       }
     }
-
-    this->printResult();
-    if (fRecord)
-      this->saveReplay();
-    return 0;
+    if (!r.fOk || r.fBody.size() < 1024) {
+      if (d != nullptr) {
+        d->fSt = DownloadEntry::St::kError;
+      }
+      fDownloadStatus =
+          "Download failed: " + (r.fError.empty() ? "empty file" : r.fError);
+      return;
+    }
+    const auto path = fMapsDir / std::format("{}.osz", id);
+    {
+      std::ofstream out(path, std::ios::binary);
+      out.write(reinterpret_cast<const char *>(r.fBody.data()),
+                static_cast<std::streamsize>(r.fBody.size()));
+    }
+#ifdef __EMSCRIPTEN__
+    EM_ASM(FS.syncfs(false, function(err) {}));
 #endif
+    if (this->addOszToLibrary(path, true)) {
+      if (d != nullptr) {
+        d->fSt = DownloadEntry::St::kDone;
+      }
+      fDownloadStatus = "Added to library: " +
+                        (d != nullptr ? d->fTitle : std::to_string(id));
+    } else if (d != nullptr) {
+      d->fSt = DownloadEntry::St::kError;
+    }
   }
 
 #ifdef __EMSCRIPTEN__
@@ -668,59 +1207,28 @@ private:
       this->resize(fw, fh);
     }
 
-    if (glfw::glfwWindowShouldClose(fWindow)) {
-      this->printResult();
-      if (fRecord)
-        this->saveReplay();
+    if (fQuit.load(std::memory_order_acquire) ||
+        glfw::glfwWindowShouldClose(fWindow)) {
+      if (fEngine &&
+          (fState == State::kPlaying || fState == State::kPaused)) {
+        this->printResult();
+        if (fRecord)
+          this->saveReplay();
+      }
       emscripten::emscripten_cancel_main_loop();
       return;
     }
 
-    if (fState == State::kSelecting) {
-      if (fDifficultyConfirmed) {
-        if (fSelectedDifficulty < 0 ||
-            fSelectedDifficulty >= static_cast<int>(fSet.fBeatmaps.size())) {
-          emscripten::emscripten_cancel_main_loop();
-          return;
-        }
-        EM_ASM(Module.setCursorVisible(false));
-        this->startGameplay(
-            fSet.fBeatmaps[static_cast<std::size_t>(fSelectedDifficulty)]);
-        fState = State::kPlaying;
-      } else {
-        this->drainInput();
-        this->updateSelectHover();
-        this->renderDifficultySelect();
-        fContext->flushAndSubmit(fSurface.get());
-        glfw::glfwSwapBuffers(fWindow);
-        return;
-      }
-    }
-
-    if (fState == State::kPlaying) {
-      if (this->shouldStop(this->nowMs())) {
-        this->printResult();
-        if (fRecord)
-          this->saveReplay();
-        emscripten::emscripten_cancel_main_loop();
-        return;
-      }
-      this->drainInput();
-      const double now = this->nowMs();
-      this->submitAutoplay(now);
-      fEngine->advance(now);
-      this->playHitsounds(now);
-      this->render();
-      fContext->flushAndSubmit(fSurface.get());
-      glfw::glfwSwapBuffers(fWindow);
-    }
+    this->frame();
   }
 #endif
 
-  void loadSelectBackground() {
-    for (const auto &info : fSet.fBeatmaps) {
+  // ---- Shared UI helpers ------------------------------------------------
+
+  void loadSelectBackground(const osu::BeatmapSet &set) {
+    for (const auto &info : set.fBeatmaps) {
       if (!info.fMeta.fBackground.empty()) {
-        const auto bytes = fSet.findFile(info.fMeta.fBackground);
+        const auto bytes = set.findFile(info.fMeta.fBackground);
         if (!bytes.empty()) {
           fBackground = loadImage(bytes);
           this->preScaleBackground();
@@ -732,149 +1240,501 @@ private:
     fBackgroundScaled.reset();
   }
 
-  void updateSelectHover() {
-    fHoveredDifficulty = -1;
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    const float cardW = std::min(600.0f, sw * 0.8f);
-    const float cardH = 70.0f;
-    const float gap = 12.0f;
-    const float startY = sh * 0.35f;
-    const float listH = sh * 0.55f;
-    const float x = (sw - cardW) * 0.5f;
-
-    if (fMouseX < x || fMouseX > x + cardW || fMouseY < startY ||
-        fMouseY > startY + listH) {
-      fClickPending = false;
-      return;
-    }
-
-    for (std::size_t i = 0; i < fSet.fBeatmaps.size(); ++i) {
-      const float y =
-          startY + static_cast<float>(i) * (cardH + gap) - fSelectScrollY;
-      if (fMouseY >= y && fMouseY <= y + cardH) {
-        fHoveredDifficulty = static_cast<int>(i);
-        if (fClickPending) {
-          fSelectedDifficulty = static_cast<int>(i);
-          fDifficultyConfirmed = true;
-        }
-        break;
-      }
-    }
-    fClickPending = false;
+  void fillRounded(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                   float radius, skia::SkColor color) {
+    skia::SkPaint p;
+    p.setAntiAlias(true);
+    p.setColor(color);
+    canvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
   }
 
-  void renderDifficultySelect() {
-    auto *canvas = fSurface->getCanvas();
+  void strokeRounded(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                     float radius, skia::SkColor color, float width) {
+    skia::SkPaint p;
+    p.setAntiAlias(true);
+    p.setColor(color);
+    p.setStyle(skia::kStrokeStyle);
+    p.setStrokeWidth(width);
+    canvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
+  }
+
+  void drawTextClipped(skia::SkCanvas *canvas, const std::string &text,
+                       float x, float y, float maxW, float size,
+                       skia::SkColor color, float alpha = 1.0f) {
+    fFont.setSize(size);
+    skia::SkPaint p;
+    p.setAntiAlias(true);
+    p.setColor(color);
+    p.setAlphaf(alpha);
+    canvas->save();
+    canvas->clipIRect(skia::SkIRect::MakeXYWH(
+        static_cast<int>(x), static_cast<int>(y - size * 1.2f),
+        static_cast<int>(maxW), static_cast<int>(size * 1.8f)));
+    canvas->drawString(text.c_str(), x, y, fFont, p);
+    canvas->restore();
+  }
+
+  void drawTextCentered(skia::SkCanvas *canvas, const std::string &text,
+                        float cx, float y, float size, skia::SkColor color,
+                        float alpha = 1.0f) {
+    fFont.setSize(size);
+    skia::SkPaint p;
+    p.setAntiAlias(true);
+    p.setColor(color);
+    p.setAlphaf(alpha);
+    const float w =
+        fFont.measureText(text.c_str(), text.size(), skia::SkTextEncoding::kUTF8);
+    canvas->drawString(text.c_str(), cx - w * 0.5f, y, fFont, p);
+  }
+
+  [[nodiscard]] static skia::SkColor starColor(double stars) {
+    if (stars < 2.0)
+      return skia::colorSetARGB(255, 102, 204, 102);
+    if (stars < 2.7)
+      return skia::colorSetARGB(255, 102, 204, 255);
+    if (stars < 4.0)
+      return skia::colorSetARGB(255, 255, 204, 102);
+    if (stars < 5.3)
+      return skia::colorSetARGB(255, 255, 102, 170);
+    if (stars < 6.5)
+      return skia::colorSetARGB(255, 170, 102, 255);
+    return skia::colorSetARGB(255, 90, 90, 110);
+  }
+
+  [[nodiscard]] static std::string setTitle(const osu::BeatmapSet &set) {
+    if (set.fBeatmaps.empty())
+      return "(empty set)";
+    const auto &m = set.fBeatmaps.front().fMeta;
+    return m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode;
+  }
+
+  [[nodiscard]] static std::string setArtist(const osu::BeatmapSet &set) {
+    if (set.fBeatmaps.empty())
+      return {};
+    const auto &m = set.fBeatmaps.front().fMeta;
+    return m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode;
+  }
+
+  void drawScreenBackground(skia::SkCanvas *canvas) {
     if (fBackgroundScaled) {
       this->drawBackground(canvas);
     } else {
-      canvas->clear(skia::kBlack);
+      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
+  }
+
+  // ---- Song select ------------------------------------------------------
+
+  void frameSongSelect() {
+#ifdef __EMSCRIPTEN__
+    if (!fLibraryLoaded) {
+      if (detail::gMapsSynced.load(std::memory_order_acquire)) {
+        this->initLibrary();
+      } else {
+        auto *canvas = fSurface->getCanvas();
+        canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
+        this->drawTextCentered(canvas, "Syncing local storage...",
+                               static_cast<float>(fScreenW) * 0.5f,
+                               static_cast<float>(fScreenH) * 0.5f, 24.0f,
+                               skia::kWhite, 0.8f);
+        this->present();
+        return;
+      }
+    }
+#endif
+    auto *canvas = fSurface->getCanvas();
+
+    // Background follows the selected set.
+    if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
+      fBackgroundForSet = fSelSet;
+      this->loadSelectBackground(
+          fLibrary[static_cast<std::size_t>(fSelSet)].fSet);
+    }
+    this->drawScreenBackground(canvas);
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
 
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
+    fCarouselHits.clear();
 
-    // Title.
-    const auto &first = fSet.fBeatmaps.front();
-    const std::string title =
-        (first.fMeta.fArtistUnicode.empty() ? first.fMeta.fArtist
-                                            : first.fMeta.fArtistUnicode) +
-        " - " +
-        (first.fMeta.fTitleUnicode.empty() ? first.fMeta.fTitle
-                                           : first.fMeta.fTitleUnicode);
-    fFont.setSize(42.0f);
-    paint.setColor(skia::kWhite);
-    const float titleWidth = fFont.measureText(title.c_str(), title.size(),
-                                               skia::SkTextEncoding::kUTF8);
-    canvas->drawString(title.c_str(), (sw - titleWidth) * 0.5f, sh * 0.18f,
-                       fFont, paint);
+    if (fLibrary.empty()) {
+      this->drawTextCentered(canvas, "No beatmaps in the library",
+                             sw * 0.5f, sh * 0.45f, 28.0f, skia::kWhite, 0.9f);
+      this->drawTextCentered(canvas,
+                             "Press D to open the beatmap listing and "
+                             "download some",
+                             sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
+      this->drawBottomBar(canvas, "D downloads    Esc quit    F11 fullscreen");
+      this->present();
+      return;
+    }
 
-    // Mapper.
-    fFont.setSize(20.0f);
-    paint.setAlphaf(0.7f);
-    const std::string mapper = "mapped by " + first.fMeta.fCreator;
-    const float mapperWidth = fFont.measureText(mapper.c_str(), mapper.size(),
-                                                skia::SkTextEncoding::kUTF8);
-    canvas->drawString(mapper.c_str(), (sw - mapperWidth) * 0.5f,
-                       sh * 0.18f + 32.0f, fFont, paint);
+    // ---- Left: selected map info panel.
+    const auto &selSet = fLibrary[static_cast<std::size_t>(fSelSet)].fSet;
+    const auto &selInfo =
+        selSet.fBeatmaps[static_cast<std::size_t>(fSelDiff)];
+    const float infoW = sw * 0.46f;
+    this->fillRounded(canvas,
+                      skia::SkRect::MakeXYWH(20.0f, 24.0f, infoW, 190.0f),
+                      12.0f, kPanelBg);
+    this->drawTextClipped(canvas, setTitle(selSet), 40.0f, 74.0f, infoW - 40.0f,
+                          34.0f, skia::kWhite);
+    this->drawTextClipped(canvas, setArtist(selSet), 40.0f, 106.0f,
+                          infoW - 40.0f, 20.0f, skia::kWhite, 0.8f);
+    this->drawTextClipped(canvas,
+                          std::format("mapped by {}", selInfo.fMeta.fCreator),
+                          40.0f, 132.0f, infoW - 40.0f, 16.0f, kAccent2, 0.9f);
+    this->drawTextClipped(
+        canvas,
+        std::format("[{}]  {:.2f}*  CS{:.1f} AR{:.1f} OD{:.1f} HP{:.1f}",
+                    selInfo.fMeta.fVersion, selInfo.fStars, selInfo.fDiff.fCs,
+                    selInfo.fDiff.fAr, selInfo.fDiff.fOd, selInfo.fDiff.fHp),
+        40.0f, 164.0f, infoW - 40.0f, 16.0f, starColor(selInfo.fStars));
+    this->drawTextClipped(
+        canvas,
+        std::format("{} objects   {:.0f}:{:02.0f}", selInfo.fObjectCount,
+                    selInfo.fLengthMs / 60000.0,
+                    std::fmod(selInfo.fLengthMs / 1000.0, 60.0)),
+        40.0f, 190.0f, infoW - 40.0f, 15.0f, skia::kWhite, 0.7f);
 
-    // Difficulty cards.
-    const float cardW = std::min(600.0f, sw * 0.8f);
-    const float cardH = 70.0f;
-    const float gap = 12.0f;
-    const float startY = sh * 0.35f;
-    const float x = (sw - cardW) * 0.5f;
-    const float listH = sh * 0.55f;
-    const float contentH =
-        static_cast<float>(fSet.fBeatmaps.size()) * (cardH + gap) - gap;
-    fSelectScrollY =
-        std::clamp(fSelectScrollY, 0.0f, std::max(0.0f, contentH - listH));
+    // ---- Right: carousel.
+    const float carW = std::min(600.0f, sw * 0.46f);
+    const float carX = sw - carW - 20.0f;
+    const float headerH = 62.0f;
+    const float diffH = 40.0f;
+    const float gap = 6.0f;
+    const float topPad = 24.0f;
+    const float bottomPad = 64.0f;
+
+    // Layout pass: y positions with the selected set expanded.
+    float y = topPad;
+    float selY = topPad;
+    float totalH = 0.0f;
+    for (int si = 0; si < static_cast<int>(fLibrary.size()); ++si) {
+      if (si == fSelSet) {
+        selY = y + headerH +
+               static_cast<float>(fSelDiff) * (diffH + gap);
+      }
+      y += headerH + gap;
+      if (si == fSelSet) {
+        y += static_cast<float>(
+                 fLibrary[static_cast<std::size_t>(si)].fSet.fBeatmaps.size()) *
+             (diffH + gap);
+      }
+    }
+    totalH = y - topPad;
+
+    // Keep the selection on screen.
+    const float viewH = sh - topPad - bottomPad;
+    const float target = std::clamp(selY - fCarouselScroll, 40.0f,
+                                    viewH - diffH - 40.0f);
+    fCarouselScroll = selY - target;
+    fCarouselScroll =
+        std::clamp(fCarouselScroll, 0.0f, std::max(0.0f, totalH - viewH));
 
     canvas->save();
-    canvas->clipRect(skia::SkRect::MakeXYWH(x, startY, cardW, listH));
-    canvas->translate(0.0f, -fSelectScrollY);
+    canvas->clipIRect(skia::SkIRect::MakeXYWH(
+        static_cast<int>(carX) - 8, static_cast<int>(topPad) - 8,
+        static_cast<int>(carW) + 16, static_cast<int>(viewH) + 16));
 
-    for (std::size_t i = 0; i < fSet.fBeatmaps.size(); ++i) {
-      const auto &info = fSet.fBeatmaps[i];
-      const float y = startY + static_cast<float>(i) * (cardH + gap);
-      if (y + cardH < startY + fSelectScrollY ||
-          y > startY + fSelectScrollY + listH) {
+    y = topPad - fCarouselScroll;
+    for (int si = 0; si < static_cast<int>(fLibrary.size()); ++si) {
+      const auto &set = fLibrary[static_cast<std::size_t>(si)].fSet;
+      const bool selected = si == fSelSet;
+      const skia::SkRect header =
+          skia::SkRect::MakeXYWH(carX, y, carW, headerH);
+      if (y + headerH >= topPad && y <= sh) {
+        this->fillRounded(canvas, header, 10.0f,
+                          selected ? kCardSel : kCardBg);
+        if (selected) {
+          this->strokeRounded(canvas, header, 10.0f, kAccent, 2.0f);
+        }
+        this->drawTextClipped(canvas, setTitle(set), carX + 16.0f, y + 26.0f,
+                              carW - 32.0f, 18.0f, skia::kWhite);
+        this->drawTextClipped(
+            canvas,
+            std::format("{}  //  {} difficult{}", setArtist(set),
+                        set.fBeatmaps.size(),
+                        set.fBeatmaps.size() == 1 ? "y" : "ies"),
+            carX + 16.0f, y + 48.0f, carW - 32.0f, 14.0f, skia::kWhite, 0.65f);
+        fCarouselHits.push_back({header, si, -1});
+      }
+      y += headerH + gap;
+
+      if (!selected) {
         continue;
       }
-      const bool hovered = (fHoveredDifficulty == static_cast<int>(i));
-      const bool selected = (fSelectedDifficulty == static_cast<int>(i));
-
-      skia::SkPaint card;
-      card.setAntiAlias(true);
-      if (selected) {
-        card.setColor(skia::colorSetARGB(255, 80, 140, 200));
-      } else if (hovered) {
-        card.setColor(skia::colorSetARGB(255, 60, 60, 70));
-      } else {
-        card.setColor(skia::colorSetARGB(255, 35, 35, 40));
+      for (int di = 0; di < static_cast<int>(set.fBeatmaps.size()); ++di) {
+        const auto &info = set.fBeatmaps[static_cast<std::size_t>(di)];
+        const skia::SkRect row = skia::SkRect::MakeXYWH(
+            carX + 24.0f, y, carW - 24.0f, diffH);
+        if (y + diffH >= topPad && y <= sh) {
+          const bool diffSel = di == fSelDiff;
+          this->fillRounded(canvas, row, 8.0f,
+                            diffSel ? kCardSel : kCardBg);
+          if (diffSel) {
+            this->strokeRounded(canvas, row, 8.0f, kAccent2, 2.0f);
+          }
+          // Star chip.
+          const skia::SkRect chip = skia::SkRect::MakeXYWH(
+              carX + 34.0f, y + 9.0f, 58.0f, diffH - 18.0f);
+          this->fillRounded(canvas, chip, 6.0f, starColor(info.fStars));
+          this->drawTextCentered(canvas,
+                                 std::format("{:.2f}*", info.fStars),
+                                 carX + 63.0f, y + 24.0f, 13.0f,
+                                 skia::colorSetARGB(255, 20, 16, 26));
+          this->drawTextClipped(canvas, info.fMeta.fVersion, carX + 104.0f,
+                                y + 25.0f, carW - 128.0f, 15.0f, skia::kWhite,
+                                0.9f);
+          fCarouselHits.push_back({row, si, di});
+        }
+        y += diffH + gap;
       }
-      canvas->drawRect(skia::SkRect::MakeXYWH(x, y, cardW, cardH), card);
-
-      skia::SkPaint border;
-      border.setAntiAlias(true);
-      border.setStyle(skia::kStrokeStyle);
-      border.setStrokeWidth(selected ? 3.0f : 1.0f);
-      border.setColor(selected ? skia::colorSetARGB(255, 120, 180, 255)
-                               : skia::colorSetARGB(255, 80, 80, 90));
-      canvas->drawRect(skia::SkRect::MakeXYWH(x, y, cardW, cardH), border);
-
-      fFont.setSize(24.0f);
-      paint.setColor(skia::kWhite);
-      paint.setAlphaf(1.0f);
-      canvas->drawString(info.fMeta.fVersion.c_str(), x + 20.0f,
-                         y + cardH * 0.55f, fFont, paint);
-
-      fFont.setSize(15.0f);
-      paint.setAlphaf(0.75f);
-      const std::string stats = std::format(
-          "{:.2f}*  CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f}  {} objects  "
-          "{:.1f}s",
-          info.fStars, info.fDiff.fCs, info.fDiff.fAr, info.fDiff.fOd,
-          info.fDiff.fHp, info.fObjectCount, info.fLengthMs / 1000.0);
-      canvas->drawString(stats.c_str(), x + 20.0f, y + cardH * 0.82f, fFont,
-                         paint);
     }
     canvas->restore();
 
-    // Instructions.
-    fFont.setSize(16.0f);
-    paint.setColor(skia::kWhite);
-    paint.setAlphaf(0.6f);
-    const std::string hint =
-        "Click / Enter to play    Arrow keys to navigate    Esc to quit";
-    const float hintWidth = fFont.measureText(hint.c_str(), hint.size(),
-                                              skia::SkTextEncoding::kUTF8);
-    canvas->drawString(hint.c_str(), (sw - hintWidth) * 0.5f, sh - 30.0f, fFont,
-                       paint);
+    this->drawBottomBar(canvas,
+                        "Enter / click twice to play    Arrows navigate    "
+                        "D downloads    Esc quit");
+    this->present();
+  }
+
+  void drawBottomBar(skia::SkCanvas *canvas, const std::string &hint) {
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    this->fillRounded(canvas,
+                      skia::SkRect::MakeXYWH(0.0f, sh - 44.0f, sw, 44.0f),
+                      0.0f, kPanelBg);
+    this->drawTextCentered(canvas, hint, sw * 0.5f, sh - 16.0f, 15.0f,
+                           skia::kWhite, 0.75f);
+  }
+
+  // ---- Download screen --------------------------------------------------
+
+  void frameDownload() {
+    auto *canvas = fSurface->getCanvas();
+    this->drawScreenBackground(canvas);
+
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+
+    this->drawTextClipped(canvas, "beatmap listing", 24.0f, 44.0f, sw - 48.0f,
+                          26.0f, skia::kWhite);
+
+    // Search box.
+    const skia::SkRect box =
+        skia::SkRect::MakeXYWH(24.0f, 62.0f, sw - 48.0f, 44.0f);
+    this->fillRounded(canvas, box, 10.0f, kCardBg);
+    this->strokeRounded(canvas, box, 10.0f, kAccent, 2.0f);
+    const bool caretOn =
+        std::fmod(wallMs(), 1000.0) < 600.0;
+    this->drawTextClipped(canvas, fSearchQuery + (caretOn ? "_" : " "),
+                          40.0f, 90.0f, sw - 80.0f, 18.0f, skia::kWhite);
+
+    this->drawTextClipped(canvas, fDownloadStatus, 24.0f, 130.0f, sw - 48.0f,
+                          14.0f, kAccent2, 0.9f);
+
+    // Result cards.
+    fFoundHits.clear();
+    fFoundHits.resize(fFound.size(), skia::SkRect::MakeEmpty());
+    const float listTop = 148.0f;
+    const float cardH = 56.0f;
+    const float gap = 8.0f;
+    const float viewH = sh - listTop - 52.0f;
+    const float totalH =
+        static_cast<float>(fFound.size()) * (cardH + gap);
+    fDownloadScroll =
+        std::clamp(fDownloadScroll, 0.0f, std::max(0.0f, totalH - viewH));
+
+    canvas->save();
+    canvas->clipIRect(skia::SkIRect::MakeXYWH(
+        0, static_cast<int>(listTop) - 4, static_cast<int>(sw),
+        static_cast<int>(viewH) + 8));
+    float y = listTop - fDownloadScroll;
+    for (std::size_t i = 0; i < fFound.size(); ++i) {
+      const auto &d = fFound[i];
+      const skia::SkRect card =
+          skia::SkRect::MakeXYWH(24.0f, y, sw - 48.0f, cardH);
+      if (y + cardH >= listTop && y <= sh) {
+        const bool hover = card.contains(fMouseX, fMouseY);
+        this->fillRounded(canvas, card, 10.0f, hover ? kCardSel : kCardBg);
+        this->drawTextClipped(canvas,
+                              std::format("{} - {}", d.fArtist, d.fTitle),
+                              40.0f, y + 24.0f, sw - 260.0f, 16.0f,
+                              skia::kWhite);
+        this->drawTextClipped(canvas,
+                              std::format("mapped by {}", d.fCreator), 40.0f,
+                              y + 44.0f, sw - 260.0f, 13.0f, skia::kWhite,
+                              0.6f);
+        std::string status;
+        skia::SkColor statusColor = kAccent2;
+        switch (d.fSt) {
+        case DownloadEntry::St::kIdle:
+          status = "download";
+          break;
+        case DownloadEntry::St::kFetching: {
+          const float p =
+              d.fHandle ? d.fHandle->fProgress.load(std::memory_order_relaxed)
+                        : 0.0f;
+          status = std::format("{:.0f}%", static_cast<double>(p) * 100.0);
+          break;
+        }
+        case DownloadEntry::St::kDone:
+          status = "in library";
+          statusColor = skia::colorSetARGB(255, 120, 220, 120);
+          break;
+        case DownloadEntry::St::kError:
+          status = "failed - retry?";
+          statusColor = skia::colorSetARGB(255, 255, 120, 120);
+          break;
+        }
+        fFont.setSize(15.0f);
+        const float statusW = fFont.measureText(status.c_str(), status.size(),
+                                                skia::SkTextEncoding::kUTF8);
+        skia::SkPaint sp;
+        sp.setAntiAlias(true);
+        sp.setColor(statusColor);
+        canvas->drawString(status.c_str(), sw - 44.0f - statusW, y + 34.0f,
+                           fFont, sp);
+        fFoundHits[i] = card;
+      }
+      y += cardH + gap;
+    }
+    canvas->restore();
+
+    this->drawBottomBar(canvas,
+                        "Type to search, Enter to submit    Click a card to "
+                        "download    Esc back");
+    this->present();
+  }
+
+  // ---- Pause ------------------------------------------------------------
+
+  void framePaused() {
+    fFirstFrame = true; // static scene: always repaint fully
+    this->render(fPausedNow);
+    auto *canvas = fSurface->getCanvas();
+
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    skia::SkPaint dim;
+    dim.setColor(skia::colorSetARGB(170, 8, 6, 12));
+    canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
+
+    this->drawTextCentered(canvas, "paused", sw * 0.5f, sh * 0.26f, 42.0f,
+                           skia::kWhite);
+
+    fMenuButtons.clear();
+    const char *labels[] = {"continue", "retry", "quit"};
+    const skia::SkColor accents[] = {
+        skia::colorSetARGB(255, 120, 220, 120),
+        skia::colorSetARGB(255, 255, 204, 102),
+        skia::colorSetARGB(255, 255, 110, 110)};
+    const float bw = std::min(420.0f, sw * 0.5f);
+    const float bh = 60.0f;
+    float y = sh * 0.38f;
+    for (int i = 0; i < 3; ++i) {
+      const skia::SkRect r =
+          skia::SkRect::MakeXYWH((sw - bw) * 0.5f, y, bw, bh);
+      fMenuButtons.push_back({r, labels[i], accents[i]});
+      this->drawMenuButton(canvas, fMenuButtons.back());
+      y += bh + 16.0f;
+    }
+    this->present();
+  }
+
+  void drawMenuButton(skia::SkCanvas *canvas, const MenuButton &b) {
+    const bool hover = b.fRect.contains(fMouseX, fMouseY);
+    this->fillRounded(canvas, b.fRect, 12.0f, hover ? kCardSel : kCardBg);
+    this->strokeRounded(canvas, b.fRect, 12.0f, b.fAccent, hover ? 3.0f : 2.0f);
+    this->drawTextCentered(canvas, b.fLabel,
+                           b.fRect.centerX(), b.fRect.centerY() + 7.0f, 20.0f,
+                           hover ? b.fAccent : skia::kWhite);
+  }
+
+  // ---- Results ----------------------------------------------------------
+
+  void frameResults() {
+    fFirstFrame = true;
+    auto *canvas = fSurface->getCanvas();
+    this->drawScreenBackground(canvas);
+
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    const auto &sc = fResult.fScore;
+
+    this->drawTextCentered(canvas, "results", sw * 0.5f, 52.0f, 30.0f,
+                           skia::kWhite, 0.9f);
+
+    // Grade badge.
+    const float gx = sw * 0.72f;
+    const float gy = sh * 0.40f;
+    skia::SkPaint gp;
+    gp.setAntiAlias(true);
+    gp.setColor(kAccent);
+    gp.setAlphaf(0.18f);
+    canvas->drawCircle(gx, gy, 110.0f, gp);
+    this->drawTextCentered(canvas, fResult.fGrade, gx, gy + 30.0f, 96.0f,
+                           kAccent);
+
+    // Score panel.
+    const float px = sw * 0.08f;
+    const float pw = sw * 0.5f;
+    this->fillRounded(canvas,
+                      skia::SkRect::MakeXYWH(px, sh * 0.18f, pw, sh * 0.52f),
+                      14.0f, kPanelBg);
+    float ty = sh * 0.18f + 58.0f;
+    this->drawTextClipped(canvas, std::format("{:010}", sc.fScore), px + 30.0f,
+                          ty, pw - 60.0f, 40.0f, skia::kWhite);
+    ty += 54.0f;
+    this->drawTextClipped(
+        canvas,
+        std::format("accuracy {:.2f}%   combo {}x", sc.accuracy() * 100.0,
+                    sc.fMaxCombo),
+        px + 30.0f, ty, pw - 60.0f, 20.0f, kAccent2);
+    ty += 42.0f;
+    struct Row {
+      const char *fLabel;
+      int fCount;
+      skia::SkColor fColor;
+    };
+    const Row rows[] = {
+        {"great", sc.fGreat, skia::colorSetARGB(255, 102, 204, 255)},
+        {"good", sc.fGood, skia::colorSetARGB(255, 120, 220, 120)},
+        {"meh", sc.fMeh, skia::colorSetARGB(255, 255, 204, 102)},
+        {"miss", sc.fMiss, skia::colorSetARGB(255, 255, 110, 110)},
+    };
+    for (const auto &row : rows) {
+      this->drawTextClipped(canvas, row.fLabel, px + 30.0f, ty, 120.0f, 18.0f,
+                            row.fColor);
+      this->drawTextClipped(canvas, std::format("{}", row.fCount), px + 150.0f,
+                            ty, 120.0f, 18.0f, skia::kWhite);
+      ty += 30.0f;
+    }
+    ty += 12.0f;
+    this->drawTextClipped(
+        canvas,
+        std::format("hit error {:+.1f} ms   UR {:.0f}", fResult.fMean,
+                    fResult.fUr),
+        px + 30.0f, ty, pw - 60.0f, 16.0f, skia::kWhite, 0.8f);
+
+    // Buttons.
+    fMenuButtons.clear();
+    const float bw = std::min(360.0f, sw * 0.4f);
+    const float bh = 56.0f;
+    const skia::SkRect r1 =
+        skia::SkRect::MakeXYWH(px, sh * 0.76f, bw, bh);
+    const skia::SkRect r2 =
+        skia::SkRect::MakeXYWH(px + bw + 20.0f, sh * 0.76f, bw, bh);
+    fMenuButtons.push_back(
+        {r1, "retry", skia::colorSetARGB(255, 255, 204, 102)});
+    fMenuButtons.push_back({r2, "back to song select", kAccent2});
+    for (const auto &b : fMenuButtons) {
+      this->drawMenuButton(canvas, b);
+    }
+
+    this->drawBottomBar(canvas, "Enter retry    Esc back to song select");
+    this->present();
   }
 
   bool initSkia() {
@@ -1251,11 +2111,10 @@ private:
     }
   }
 
-  void render() {
+  void render(double now) {
     using clock = std::chrono::steady_clock;
     auto rt0 = clock::now();
 
-    const double now = this->nowMs();
     if (fLastFrameTime > 0.0 && fLastFrameTime < now) {
       const double ft = now - fLastFrameTime;
       fFrameTimes[fFrameTimeIdx] = ft;

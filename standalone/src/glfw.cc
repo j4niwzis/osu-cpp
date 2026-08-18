@@ -7,6 +7,7 @@ export module glfw;
 
 export namespace glfw {
 
+using ::GLFWcharfun;
 using ::GLFWcursorposfun;
 using ::GLFWframebuffersizefun;
 using ::GLFWkeyfun;
@@ -30,6 +31,7 @@ using ::glfwInit;
 using ::glfwMakeContextCurrent;
 using ::glfwPollEvents;
 using ::glfwPostEmptyEvent;
+using ::glfwSetCharCallback;
 using ::glfwSetCursorPosCallback;
 using ::glfwSetFramebufferSizeCallback;
 using ::glfwSetInputMode;
@@ -67,6 +69,8 @@ inline constexpr int kKeyEnter = GLFW_KEY_ENTER;
 inline constexpr int kKeyZ = GLFW_KEY_Z;
 inline constexpr int kKeyX = GLFW_KEY_X;
 inline constexpr int kKeyF11 = GLFW_KEY_F11;
+inline constexpr int kKeyBackspace = GLFW_KEY_BACKSPACE;
+inline constexpr int kKeyD = GLFW_KEY_D;
 inline constexpr int kKeyLeftShift = GLFW_KEY_LEFT_SHIFT;
 inline constexpr int kKeyUp = GLFW_KEY_UP;
 inline constexpr int kKeyDown = GLFW_KEY_DOWN;

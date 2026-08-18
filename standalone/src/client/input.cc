@@ -13,6 +13,7 @@ enum class EventType : std::uint8_t {
   kCursorMove,
   kScroll,
   kResize,
+  kChar,
 };
 
 struct Event {
