@@ -54,6 +54,28 @@ inline AudioContext &audioContext() {
   return ctx;
 }
 
+// Decoded PCM handed between the loader thread and the UI thread: decoding
+// is pure computation and must not sit in a frame, while the OpenAL upload
+// has to happen where the context is current.
+struct DecodedAudio {
+  std::vector<std::int16_t> fSamples;
+  int fRate = 0;
+  int fChannels = 0;
+};
+
+[[nodiscard]] inline DecodedAudio decodeAudio(std::span<const std::uint8_t> data,
+                                              std::string_view ext) {
+  DecodedAudio out;
+  out.fRate = 44100;
+  out.fChannels = 2;
+  if (ext == ".mp3") {
+    out.fSamples = audio::decode_mp3_memory(data, out.fRate, out.fChannels);
+  } else {
+    out.fSamples = audio::decode_sndfile_memory(data, out.fRate, out.fChannels);
+  }
+  return out;
+}
+
 class AudioPlayer {
 public:
   ~AudioPlayer() { this->shutdown(); }
@@ -85,6 +107,15 @@ public:
       return false;
 
     return this->upload(samples, rate, channels);
+  }
+
+  // Upload PCM decoded elsewhere (see decodeAudio).
+  bool adopt(DecodedAudio pcm) {
+    if (!audioContext().ok() || pcm.fSamples.empty()) {
+      return false;
+    }
+    this->shutdown();
+    return this->upload(pcm.fSamples, pcm.fRate, pcm.fChannels);
   }
 
   void play() {

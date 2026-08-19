@@ -127,6 +127,21 @@ public:
   [[nodiscard]] skia::Sp<skia::SkImage> hitcircle() {
     return image("hitcircle");
   }
+
+  // Judgement sprites. osu! skins name them hit300 / hit100 / hit50 / hit0,
+  // which is what stable and web-osu2 draw instead of words.
+  [[nodiscard]] skia::Sp<skia::SkImage> judgement(int value) {
+    switch (value) {
+    case 300:
+      return image("hit300");
+    case 100:
+      return image("hit100");
+    case 50:
+      return image("hit50");
+    default:
+      return image("hit0");
+    }
+  }
   [[nodiscard]] skia::Sp<skia::SkImage> disc() { return image("disc"); }
   [[nodiscard]] skia::Sp<skia::SkImage> hitcircleOverlay() {
     return image("hitcircleoverlay");

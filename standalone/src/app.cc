@@ -22,6 +22,10 @@ import client.spectrum;
 import client.mapcache;
 import client.filter;
 import client.loader;
+import client.ui;
+import client.settings;
+import client.mods;
+import client.video;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -302,6 +306,80 @@ private:
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
 
+  // ---- Settings overlay -------------------------------------------------
+  // SettingsPanel: a 170px sidebar plus a 400px content column sliding in
+  // from the left over 600 ms. The sidebar does not swap pages -- it scrolls
+  // the single continuous column of sections, and highlights whichever
+  // section the scroll is currently in.
+  client::Settings fSettings;
+  bool fSettingsOpen = false;
+  float fSettingsSlide = 0.0f;
+  double fSettingsEnterWall = 0.0;
+  float fSettingsScroll = 0.0f;      // pixels
+  float fSettingsScrollAnim = 0.0f;  // eased
+  float fSettingsContentHeight = 0.0f;
+  int fDraggingSetting = -1;
+  struct SettingRow {
+    skia::SkRect fRect;
+    int fIndex;
+  };
+  std::vector<SettingRow> fSettingRows;
+  std::vector<SettingRow> fRestoreHits;
+  std::vector<skia::SkRect> fSidebarHits;
+  std::vector<float> fSectionOffsets;   // scroll offset of each section header
+  std::array<float, 4> fSidebarGrow{};
+  float fAppliedDim = 0.7f;
+
+  // ---- Mod select (ModSelectOverlay) ------------------------------------
+  bool fModsOpen = false;
+  float fModsSlide = 0.0f;
+  std::vector<skia::SkRect> fModHits;
+
+  // ---- Video export -----------------------------------------------------
+  bool fExportOpen = false;
+  int fExportPreset = 1; // 1080p
+  std::vector<skia::SkRect> fExportHits;
+  std::string fExportStatus;
+
+  // ---- Main menu button system (port of lazer's ButtonSystem) ----------
+  //
+  // lazer models the menu as a small state machine (Initial -> TopLevel ->
+  // a submenu), with every button owning an expand/contract animation and
+  // the logo sliding aside to make room. Same structure here.
+  enum class MenuState : std::uint8_t { kInitial, kTopLevel, kPlay };
+  enum class MenuAction : std::uint8_t {
+    kOpenPlay,
+    kBrowse,
+    kImport,
+    kExit,
+    kSolo,
+    kRandom,
+    kBack,
+    kSettings,
+  };
+  struct MenuBtn {
+    std::string fLabel;
+    std::string fGlyph;      // drawn as a text glyph; no icon font here
+    skia::SkColor fColor{};
+    MenuAction fAction{};
+    MenuState fVisible{};    // menu state this button belongs to
+    bool fLeftSide = false;  // back button sits left of the logo, as in lazer
+    float fExpand = 0.0f;    // 0 contracted .. 1 expanded
+    float fHover = 0.0f;     // eased hover weight
+    float fFlash = 0.0f;     // click flash, decays
+    skia::SkRect fRect = skia::SkRect::MakeEmpty();
+  };
+  std::vector<MenuBtn> fMenuBtns;
+  MenuState fMenuState = MenuState::kInitial;
+  float fLogoX = 0.0f;
+  float fLogoY = 0.0f;
+  float fLogoScale = 1.0f;
+  bool fLogoPlaced = false;
+  float fLogoHover = 0.0f;
+  float fLogoPunch = 0.0f; // click/beat impact, decays
+  skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
+  client::Spectrum fSpectrum;
+
   // ---- Settings overlay (SettingsPanel: 70px sidebar + 400px panel,
   // sliding in from the left over 600 ms, sections with a 30px header).
   bool fSettingsOpen = false;
@@ -318,15 +396,11 @@ private:
   std::vector<skia::SkRect> fSidebarHits;
   std::array<float, 3> fSidebarGrow{}; // selection indicator animation
 
-  // The settings themselves.
-  float fMasterVolume = 1.0f;
-  float fMusicVolume = 0.8f;
-  float fEffectVolume = 1.0f;
-  float fAudioOffsetMs = 0.0f;
-  float fBackgroundDim = 0.7f;
-  float fCursorSize = 1.0f;
-  bool fShowFps = false;
-  bool fSnakeSliders = true;
+  float fSettings.value("offset") = 0.0f;
+  float fSettings.value("dim") = 0.7f;
+  float fSettings.value("cursorsize") = 1.0f;
+  bool fSettings.flag("fps") = false;
+  bool fSettings.flag("snaking") = true;
   float fAppliedDim = 0.7f; // dim the scaled background was rendered with
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
@@ -499,7 +573,7 @@ private:
     fStartMs = glfw::glfwGetTime() * 1000.0;
     fClock.reset(fStartMs, 0.0);
     fLastClockSyncWall = std::numeric_limits<double>::lowest();
-    fAudio.setVolume(fMasterVolume * fMusicVolume);
+    fAudio.setVolume(fSettings.value("master") * fSettings.value("music"));
     fAudio.play();
   }
 
@@ -774,12 +848,16 @@ private:
         this->dragDiffRange(ev.fX);
       }
       if (fState == State::kPlaying && !fAutoplay) {
-        fCursor = this->toPlayfield(ev.fX, ev.fY);
+        fCursor = this->applySensitivity(this->toPlayfield(ev.fX, ev.fY));
         this->submitTimed({this->eventGameTime(ev.fWallMs), fCursor,
                            osu::InputAction::kMove});
       }
       break;
     case EventType::kScroll:
+      if (fSettingsOpen) {
+        this->scrollSettings(ev.fX);
+        break;
+      }
       if (fState == State::kSongSelect) {
         // Free scrolling, like lazer's carousel: the wheel moves the view,
         // the selection stays put until the user picks something else.
@@ -830,9 +908,19 @@ private:
       this->toggleSettings();
       return;
     }
-    if (fSettingsOpen && action == glfw::kPress && key == glfw::kKeyEscape) {
-      fSettingsOpen = false;
-      return;
+    if (action == glfw::kPress && key == glfw::kKeyEscape) {
+      if (fExportOpen) {
+        fExportOpen = false;
+        return;
+      }
+      if (fSettingsOpen) {
+        this->closeSettings();
+        return;
+      }
+      if (fModsOpen) {
+        fModsOpen = false;
+        return;
+      }
     }
     if (action != glfw::kPress && fState != State::kPlaying) {
       return; // menus only care about presses
@@ -913,6 +1001,10 @@ private:
     // printable key belongs to the query, never to a shortcut. Actions live
     // on function keys and the footer buttons.
     if (key == glfw::kKeyF1) {
+      this->toggleMods(); // lazer: F1 is mod select
+      return;
+    }
+    if (key == glfw::kKeyF4) {
       this->openDownloads();
       return;
     }
@@ -1014,7 +1106,13 @@ private:
   }
 
   void clickAt(float x, float y) {
+    if (fExportOpen && this->exportClick(x, y)) {
+      return;
+    }
     if (this->settingsClick(x, y, true)) {
+      return;
+    }
+    if (fModsOpen && this->modClick(x, y)) {
       return;
     }
     switch (fState) {
@@ -1105,8 +1203,11 @@ private:
     } else if (fState == State::kResults) {
       if (idx == 0) {
         this->retry();
-      } else {
+      } else if (idx == 1) {
         this->quitToSelect();
+      } else {
+        fExportOpen = true;
+        fExportStatus.clear();
       }
     }
   }
@@ -1232,9 +1333,16 @@ private:
   }
 
   void present() {
-    // The settings overlay floats above whatever screen is drawn.
+    // Overlays float above whatever screen is drawn.
+    auto *canvas = fSurface->getCanvas();
+    if (fModsOpen || fModsSlide > 0.002f) {
+      this->drawModSelect(canvas);
+    }
     if (fSettingsOpen || fSettingsSlide > 0.002f) {
-      this->drawSettings(fSurface->getCanvas());
+      this->drawSettings(canvas);
+    }
+    if (fExportOpen) {
+      this->drawExportDialog(canvas);
     }
     fContext->flushAndSubmit(fSurface.get());
     glfw::glfwSwapBuffers(fWindow);
@@ -1249,7 +1357,7 @@ private:
       return;
     }
     this->submitAutoplay(now);
-    if (fShowProfile) {
+    if (fShowProfile || fSettings.flag("fps")) {
       auto t0 = clock::now();
       fEngine->advance(now);
       auto t1 = clock::now();
@@ -1322,6 +1430,10 @@ private:
     fMenuMusicForSet = -1;  // gameplay reloads the track from scratch
     fAudio.setLooping(false);
     this->resetGameplayState();
+    // Overlays must not survive into gameplay.
+    this->closeSettings();
+    fModsOpen = false;
+    fExportOpen = false;
     this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(diffIdx)]);
     this->switchState(State::kPlaying);
     fFirstFrame = true;
@@ -1360,7 +1472,9 @@ private:
   void finishPlay() {
     this->captureResult();
     this->printResult();
-    if (fRecord) {
+    // Replays are kept by default (the setting can turn it off), so a good
+    // run is never lost because the flag was not passed.
+    if (fRecord || fSettings.flag("savereplay")) {
       this->saveReplay();
     }
     this->switchState(State::kResults);
@@ -1427,7 +1541,8 @@ private:
     fThumbDir = fMapsDir / "thumbnails";
     std::filesystem::create_directories(fThumbDir, ec);
     fMapCache.load(fMapsDir / "metadata-cache.json");
-    this->loadSettings();
+    fSettings.load(fMapsDir.parent_path() / "settings.json");
+    fAppliedDim = fSettings.value("dim");
 
     if (fHasInitialSet) {
       LibraryEntry entry;
@@ -1545,18 +1660,30 @@ private:
       fAudio.stop();
       return;
     }
-    fAudio.load(bytes, detail::fileExtension(audioName));
-    fAudio.setLooping(true);
-    // Gain is a property of the OpenAL source, and load() makes a new one;
-    // without this the volume silently resets to full on every map change.
-    fAudio.setVolume(fMasterVolume * fMusicVolume);
-    fAudio.play();
-    // The analysis clock is anchored to the *old* track until re-anchored;
-    // without this the visualiser reads samples at a stale offset (or past
-    // the end) after switching songs and simply stops moving.
-    fMenuClock.reset(wallMs(), 0.0);
-    fMenuClockSyncWall = std::numeric_limits<double>::lowest();
-    fSpectrum.reset();
+    // Decoding an MP3 takes hundreds of milliseconds -- the remaining stall
+    // when changing selection. Decode on the worker, upload to OpenAL here.
+    const std::string ext = detail::fileExtension(audioName);
+    std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
+    auto pcm = std::make_shared<audio_client::DecodedAudio>();
+    const int forSet = fSelSet;
+    fLoader.submit(
+        static_cast<std::uint64_t>(fSelSet) | (3ull << 32),
+        [copy = std::move(copy), ext, pcm] {
+          *pcm = audio_client::decodeAudio(copy, ext);
+        },
+        [this, forSet, pcm] {
+          if (forSet != fSelSet || pcm->fSamples.empty()) {
+            return; // selection moved on while decoding
+          }
+          fAudio.adopt(std::move(*pcm));
+          fAudio.setLooping(true);
+          fAudio.setVolume(fSettings.value("master") * fSettings.value("music"));
+          fAudio.play();
+          // The analysis clock is anchored to the *old* track until reset.
+          fMenuClock.reset(wallMs(), 0.0);
+          fMenuClockSyncWall = std::numeric_limits<double>::lowest();
+          fSpectrum.reset();
+        });
   }
 
   void stopMenuMusic() {
@@ -2347,6 +2474,40 @@ private:
 
   // ---- Shared UI helpers ------------------------------------------------
 
+  // Decode the background off-thread; the UI keeps the previous artwork
+  // until the new one is ready instead of stalling on a JPEG decode.
+  void requestBackground(int setIndex,
+                         const std::shared_ptr<osu::BeatmapSet> &set) {
+    std::vector<std::uint8_t> bytes;
+    for (const auto &info : set->fBeatmaps) {
+      if (info.fMeta.fBackground.empty()) {
+        continue;
+      }
+      const auto span = set->findFile(info.fMeta.fBackground);
+      if (!span.empty()) {
+        bytes.assign(span.begin(), span.end());
+        break;
+      }
+    }
+    if (bytes.empty()) {
+      fBackground.reset();
+      fBackgroundScaled.reset();
+      return;
+    }
+    auto image = std::make_shared<skia::Sp<skia::SkImage>>();
+    fLoader.submit(static_cast<std::uint64_t>(setIndex) | (4ull << 32),
+                   [bytes = std::move(bytes), image] {
+                     *image = loadImage(bytes);
+                   },
+                   [this, setIndex, image] {
+                     if (setIndex != fSelSet || !*image) {
+                       return;
+                     }
+                     fBackground = *image;
+                     this->preScaleBackground();
+                   });
+  }
+
   void loadSelectBackground(const osu::BeatmapSet &set) {
     for (const auto &info : set.fBeatmaps) {
       if (!info.fMeta.fBackground.empty()) {
@@ -2674,7 +2835,7 @@ private:
       // request and the artwork never appears.
       if (auto set = this->setFor(fSelSet)) {
         fBackgroundForSet = fSelSet;
-        this->loadSelectBackground(*set);
+        this->requestBackground(fSelSet, set);
       }
     }
     const float dimTarget =
@@ -3108,56 +3269,25 @@ private:
   // ---- Song select ------------------------------------------------------
 
   // ---- Settings overlay ---------------------------------------------------
-  //
-  // SettingsPanel: a 170px sidebar (SettingsSidebar.EXPANDED_WIDTH) plus a
-  // 400px content column (PANEL_WIDTH), both sliding in from the left over
-  // TRANSITION_LENGTH = 600 ms with Easing.OutQuint, the whole overlay fading
-  // over half that. Sidebar entries are 46px tall (SidebarIconButton) with a
-  // white pill selection indicator that grows from 4px to 18px on
-  // OutElasticHalf. Items sit under section headers with CONTENT_MARGINS = 20
-  // and ITEM_SPACING = 14, and each carries the pink "modified" bar that
-  // SettingsItem shows when a value differs from its default -- clicking it
-  // restores the default.
 
-  enum class SettingKind : std::uint8_t { kSlider, kToggle };
-  struct SettingDef {
-    int fSection;
-    const char *fLabel;
-    SettingKind fKind;
-    float *fValue;
-    bool *fFlag;
-    float fMin, fMax;
-    float fDefaultValue;
-    bool fDefaultFlag;
-    const char *fSuffix;
-  };
-
-  [[nodiscard]] std::vector<SettingDef> settingDefs() {
-    return {
-        {0, "Master volume", SettingKind::kSlider, &fMasterVolume, nullptr,
-         0.0f, 1.0f, 1.0f, false, "%"},
-        {0, "Music volume", SettingKind::kSlider, &fMusicVolume, nullptr, 0.0f,
-         1.0f, 0.8f, false, "%"},
-        {0, "Effect volume", SettingKind::kSlider, &fEffectVolume, nullptr,
-         0.0f, 1.0f, 1.0f, false, "%"},
-        {0, "Audio offset", SettingKind::kSlider, &fAudioOffsetMs, nullptr,
-         -200.0f, 200.0f, 0.0f, false, " ms"},
-        {1, "Background dim", SettingKind::kSlider, &fBackgroundDim, nullptr,
-         0.0f, 1.0f, 0.7f, false, "%"},
-        {1, "Show FPS counter", SettingKind::kToggle, nullptr, &fShowFps, 0.0f,
-         1.0f, 0.0f, false, ""},
-        {2, "Cursor size", SettingKind::kSlider, &fCursorSize, nullptr, 0.5f,
-         2.0f, 1.0f, false, "x"},
-        {2, "Snaking sliders", SettingKind::kToggle, nullptr, &fSnakeSliders,
-         0.0f, 1.0f, 0.0f, true, ""},
-    };
+  void toggleSettings() {
+    fSettingsOpen = !fSettingsOpen;
+    fSettingsEnterWall = wallMs();
+    if (!fSettingsOpen) {
+      fSettings.save();
+      this->applySettings();
+    }
   }
 
-  static constexpr std::array<const char *, 3> kSettingSections = {
-      "Audio", "Graphics", "Gameplay"};
-  static constexpr std::array<const char *, 3> kSettingIcons = {"♪", "▣", "◎"};
+  void closeSettings() {
+    if (fSettingsOpen) {
+      fSettingsOpen = false;
+      fSettingsEnterWall = wallMs();
+      fSettings.save();
+      this->applySettings();
+    }
+  }
 
-  // SettingsPanel geometry.
   static constexpr float kSidebarWidth = 170.0f;  // EXPANDED_WIDTH
   static constexpr float kPanelWidth = 400.0f;    // PANEL_WIDTH
   static constexpr float kContentMargins = 20.0f; // CONTENT_MARGINS
@@ -3165,29 +3295,10 @@ private:
   static constexpr float kSidebarItemHeight = 46.0f;
   static constexpr float kTransitionMs = 600.0f;  // TRANSITION_LENGTH
 
-  void toggleSettings() {
-    fSettingsOpen = !fSettingsOpen;
-    if (fSettingsOpen) {
-      fSettingsEnterWall = wallMs();
-    }
-  }
-
-  [[nodiscard]] static float easeOutElasticHalf(float t) {
-    t = std::clamp(t, 0.0f, 1.0f);
-    // osu!framework's OutElasticHalf: one overshoot, no oscillation tail.
-    constexpr float p = 0.5f;
-    return std::pow(2.0f, -10.0f * t) *
-               std::sin((t - p / 4.0f) * (2.0f * std::numbers::pi_v<float>) /
-                        p) +
-           1.0f;
-  }
-
   void drawSettings(skia::SkCanvas *canvas) {
-    // Position eases over 600 ms; the fade takes half that, per SettingsPanel.
-    const float progress = static_cast<float>(
-        (wallMs() - fSettingsEnterWall) / kTransitionMs);
-    const float target = fSettingsOpen ? 1.0f : 0.0f;
-    const float eased = easeOutQuint(std::clamp(progress, 0.0f, 1.0f));
+    const float progress =
+        static_cast<float>((wallMs() - fSettingsEnterWall) / kTransitionMs);
+    const float eased = client::ui::outQuint(std::clamp(progress, 0.0f, 1.0f));
     fSettingsSlide = fSettingsOpen ? eased : 1.0f - eased;
     if (!fSettingsOpen && fSettingsSlide <= 0.001f) {
       fSettingRows.clear();
@@ -3196,6 +3307,7 @@ private:
       return;
     }
 
+    const client::ui::Painter p(canvas, fFont);
     const float sh = static_cast<float>(fScreenH);
     const float sw = static_cast<float>(fScreenW);
     const float full = kSidebarWidth + kPanelWidth;
@@ -3205,156 +3317,139 @@ private:
     fSettingRows.clear();
     fSidebarHits.clear();
     fRestoreHits.clear();
+    fSectionOffsets.assign(client::Settings::kSections.size(), 0.0f);
 
-    // Dim behind the panel, as the overlay's scrim does.
-    skia::SkPaint scrim;
-    scrim.setColor(skia::colorSetARGB(
-        static_cast<std::uint8_t>(fade * 110.0f), 0, 0, 0));
-    canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), scrim);
+    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
+               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 110.0f), 0,
+                                  0, 0));
+    p.fillRect(skia::SkRect::MakeXYWH(x0, 0.0f, kSidebarWidth, sh),
+               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 252.0f), 23,
+                                  19, 30));
 
-    // ---- Sidebar (Background5-ish, its own slide).
-    skia::SkPaint bar;
-    bar.setColor(skia::colorSetARGB(static_cast<std::uint8_t>(fade * 252.0f),
-                                    23, 19, 30));
-    canvas->drawRect(skia::SkRect::MakeXYWH(x0, 0.0f, kSidebarWidth, sh), bar);
+    // ---- Content column, one continuous scroll of every section.
+    const float px = x0 + kSidebarWidth;
+    p.fillRect(skia::SkRect::MakeXYWH(px, 0.0f, kPanelWidth, sh),
+               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 250.0f), 31,
+                                  25, 40));
 
-    float sy = 70.0f;
-    for (std::size_t i = 0; i < kSettingSections.size(); ++i) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(x0, sy, kSidebarWidth,
-                                                    kSidebarItemHeight);
-      fSidebarHits.push_back(r);
-      const bool active = static_cast<int>(i) == fSettingsSection;
-      const bool hover = r.contains(fMouseX, fMouseY);
+    p.textClipped("settings", px + kContentMargins, 56.0f,
+                  kPanelWidth - kContentMargins * 2, 30.0f, skia::kWhite, fade);
+    p.textClipped("change the way osu! behaves", px + kContentMargins, 78.0f,
+                  kPanelWidth - kContentMargins * 2, 13.0f, skia::kWhite,
+                  fade * 0.6f);
 
-      // Selection indicator: a white pill on the left edge, 4px tall when
-      // inactive, springing to 18px when selected.
-      float &grow = fSidebarGrow[i];
-      grow = this->approach(grow, active ? 1.0f : 0.0f, 90.0f);
-      const float indicatorH = 4.0f + 14.0f * easeOutElasticHalf(grow);
-      if (grow > 0.01f) {
-        const skia::SkRect ind = skia::SkRect::MakeXYWH(
-            r.fLeft + 6.0f, r.centerY() - indicatorH * 0.5f, 4.0f, indicatorH);
-        this->fillRounded(canvas, ind, 2.0f, skia::kWhite);
+    constexpr float kTop = 110.0f;
+    fSettingsScrollAnim = client::ui::approach(fSettingsScrollAnim,
+                                               fSettingsScroll, 110.0f, fUiDt);
+
+    canvas->save();
+    canvas->clipIRect(skia::SkIRect::MakeXYWH(static_cast<int>(px),
+                                              static_cast<int>(kTop),
+                                              static_cast<int>(kPanelWidth),
+                                              static_cast<int>(sh - kTop)));
+    const auto &defs = fSettings.defs();
+    float y = kTop + 24.0f - fSettingsScrollAnim;
+    int lastSection = -1;
+    int currentSection = 0;
+    for (std::size_t i = 0; i < defs.size(); ++i) {
+      const auto &d = defs[i];
+      if (d.fSection != lastSection) {
+        lastSection = d.fSection;
+        fSectionOffsets[static_cast<std::size_t>(d.fSection)] =
+            y - kTop - 24.0f + fSettingsScrollAnim;
+        p.textClipped(client::Settings::kSections[static_cast<std::size_t>(
+                          d.fSection)],
+                      px + kContentMargins, y, kPanelWidth - kContentMargins * 2,
+                      22.0f, client::ui::kAccent, fade);
+        y += 34.0f;
+      }
+      if (y - kTop + fSettingsScrollAnim <= sh) {
+        // The section the top of the viewport currently sits in drives the
+        // sidebar highlight, as lazer's SectionsContainer does.
+        if (y < kTop + 80.0f) {
+          currentSection = d.fSection;
+        }
       }
 
-      // Icon then label, greyed when inactive (Gray(0.6) / Light3).
+      const skia::SkRect row =
+          skia::SkRect::MakeXYWH(px + kContentMargins, y - 16.0f,
+                                 kPanelWidth - kContentMargins * 2, 44.0f);
+      fSettingRows.push_back({row, static_cast<int>(i)});
+
+      if (fSettings.isModified(i)) {
+        p.fillRounded(skia::SkRect::MakeXYWH(row.fLeft - 12.0f, row.fTop + 4.0f,
+                                             4.0f, row.height() - 8.0f),
+                      2.0f, client::ui::kAccent);
+        fRestoreHits.push_back(
+            {skia::SkRect::MakeXYWH(row.fLeft - 18.0f, row.fTop, 16.0f,
+                                    row.height()),
+             static_cast<int>(i)});
+      }
+
+      p.textClipped(d.fLabel, row.fLeft, y, row.width() * 0.62f, 14.0f,
+                    skia::kWhite, fade * 0.95f);
+
+      if (d.fKind == client::SettingKind::kSlider) {
+        const float t = (fSettings.value(d.fKey) - d.fMin) / (d.fMax - d.fMin);
+        const skia::SkRect track =
+            skia::SkRect::MakeXYWH(row.fLeft, y + 14.0f, row.width(), 6.0f);
+        p.fillRounded(track, 3.0f, skia::colorSetARGB(255, 58, 48, 70));
+        p.fillRounded(skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
+                                             track.width() * t, track.height()),
+                      3.0f, client::ui::kAccent);
+        p.circle(track.fLeft + track.width() * t, track.centerY(), 7.0f,
+                 skia::kWhite, fade);
+        p.textClipped(fSettings.displayValue(i), row.fRight - 76.0f, y, 76.0f,
+                      13.0f, skia::kWhite, fade * 0.75f);
+        y += 44.0f + kItemSpacing;
+      } else {
+        const bool on = fSettings.flag(d.fKey);
+        const skia::SkRect box =
+            skia::SkRect::MakeXYWH(row.fRight - 46.0f, y - 12.0f, 40.0f, 22.0f);
+        p.fillRounded(box, 11.0f,
+                      on ? client::ui::kAccent
+                         : skia::colorSetARGB(255, 58, 48, 70));
+        p.circle(on ? box.fRight - 11.0f : box.fLeft + 11.0f, box.centerY(),
+                 8.0f, skia::kWhite, fade);
+        y += 30.0f + kItemSpacing;
+      }
+    }
+    fSettingsContentHeight = y - kTop + fSettingsScrollAnim;
+    canvas->restore();
+
+    // ---- Sidebar entries, drawn after so the highlight reflects the scroll.
+    float sy = 70.0f;
+    for (std::size_t i = 0; i < client::Settings::kSections.size(); ++i) {
+      const skia::SkRect r =
+          skia::SkRect::MakeXYWH(x0, sy, kSidebarWidth, kSidebarItemHeight);
+      fSidebarHits.push_back(r);
+      const bool active = static_cast<int>(i) == currentSection;
+      const bool hover = r.contains(fMouseX, fMouseY);
+
+      float &grow = fSidebarGrow[i];
+      grow = client::ui::approach(grow, active ? 1.0f : 0.0f, 90.0f, fUiDt);
+      const float indicatorH = 4.0f + 14.0f * client::ui::outElasticHalf(grow);
+      if (grow > 0.01f) {
+        p.fillRounded(skia::SkRect::MakeXYWH(r.fLeft + 6.0f,
+                                             r.centerY() - indicatorH * 0.5f,
+                                             4.0f, indicatorH),
+                      2.0f, skia::kWhite);
+      }
       const skia::SkColor tint =
           active ? skia::kWhite
                  : (hover ? skia::colorSetARGB(255, 200, 195, 210)
                           : skia::colorSetARGB(255, 153, 153, 153));
-      this->drawTextClipped(canvas, kSettingIcons[i], r.fLeft + 26.0f,
-                            r.centerY() + 7.0f, 24.0f, 18.0f, tint, fade);
-      this->drawTextClipped(canvas, kSettingSections[i], r.fLeft + 56.0f,
-                            r.centerY() + 6.0f, kSidebarWidth - 66.0f, 15.0f,
-                            tint, fade);
+      p.textClipped(client::Settings::kSectionIcons[i], r.fLeft + 26.0f,
+                    r.centerY() + 7.0f, 24.0f, 18.0f, tint, fade);
+      p.textClipped(client::Settings::kSections[i], r.fLeft + 56.0f,
+                    r.centerY() + 6.0f, kSidebarWidth - 66.0f, 15.0f, tint,
+                    fade);
       sy += kSidebarItemHeight + 5.0f;
     }
 
-    // ---- Content column.
-    const float px = x0 + kSidebarWidth;
-    skia::SkPaint panel;
-    panel.setColor(skia::colorSetARGB(static_cast<std::uint8_t>(fade * 250.0f),
-                                      31, 25, 40));
-    canvas->drawRect(
-        skia::SkRect::MakeXYWH(px, 0.0f, kPanelWidth, sh), panel);
-
-    this->drawTextClipped(canvas, "settings", px + kContentMargins, 56.0f,
-                          kPanelWidth - kContentMargins * 2, 30.0f,
-                          skia::kWhite, fade);
-    this->drawTextClipped(canvas, "change the way osu! behaves",
-                          px + kContentMargins, 78.0f,
-                          kPanelWidth - kContentMargins * 2, 13.0f,
-                          skia::kWhite, fade * 0.6f);
-
-    const auto defs = this->settingDefs();
-    float y = 128.0f;
-    bool headerDrawn = false;
-    for (std::size_t i = 0; i < defs.size(); ++i) {
-      const auto &d = defs[i];
-      if (d.fSection != fSettingsSection) {
-        continue;
-      }
-      if (!headerDrawn) {
-        headerDrawn = true;
-        this->drawTextClipped(
-            canvas,
-            kSettingSections[static_cast<std::size_t>(d.fSection)],
-            px + kContentMargins, y, kPanelWidth - kContentMargins * 2, 22.0f,
-            kAccent, fade);
-        y += 34.0f;
-      }
-
-      const skia::SkRect row = skia::SkRect::MakeXYWH(
-          px + kContentMargins, y - 16.0f,
-          kPanelWidth - kContentMargins * 2, 44.0f);
-      fSettingRows.push_back({row, static_cast<int>(i)});
-
-      // Modified indicator: SettingsItem shows a coloured bar at the left of
-      // an item whose value differs from the default; clicking it restores.
-      const bool modified =
-          d.fKind == SettingKind::kSlider
-              ? std::abs(*d.fValue - d.fDefaultValue) > 1e-4f
-              : *d.fFlag != d.fDefaultFlag;
-      if (modified) {
-        const skia::SkRect ind = skia::SkRect::MakeXYWH(
-            row.fLeft - 12.0f, row.fTop + 4.0f, 4.0f, row.height() - 8.0f);
-        this->fillRounded(canvas, ind, 2.0f, kAccent);
-        fRestoreHits.push_back({skia::SkRect::MakeXYWH(row.fLeft - 18.0f,
-                                                       row.fTop, 16.0f,
-                                                       row.height()),
-                                static_cast<int>(i)});
-      }
-
-      this->drawTextClipped(canvas, d.fLabel, row.fLeft, y, row.width() * 0.6f,
-                            14.0f, skia::kWhite, fade * 0.95f);
-
-      if (d.fKind == SettingKind::kSlider) {
-        const float t = (*d.fValue - d.fMin) / (d.fMax - d.fMin);
-        const skia::SkRect track = skia::SkRect::MakeXYWH(
-            row.fLeft, y + 14.0f, row.width(), 6.0f);
-        this->fillRounded(canvas, track, 3.0f,
-                          skia::colorSetARGB(
-                              static_cast<std::uint8_t>(fade * 255.0f), 58, 48,
-                              70));
-        this->fillRounded(canvas,
-                          skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
-                                                 track.width() * t,
-                                                 track.height()),
-                          3.0f, kAccent);
-        skia::SkPaint knob;
-        knob.setAntiAlias(true);
-        knob.setColor(skia::kWhite);
-        knob.setAlphaf(fade);
-        canvas->drawCircle(track.fLeft + track.width() * t, track.centerY(),
-                           7.0f, knob);
-        const std::string text =
-            std::string(d.fSuffix) == "%"
-                ? std::format("{:.0f}%", *d.fValue * 100.0f)
-                : std::format("{:.0f}{}", *d.fValue, d.fSuffix);
-        this->drawTextClipped(canvas, text, row.fRight - 70.0f, y, 70.0f, 13.0f,
-                              skia::kWhite, fade * 0.75f);
-        y += 44.0f + kItemSpacing;
-      } else {
-        const skia::SkRect box = skia::SkRect::MakeXYWH(
-            row.fRight - 46.0f, y - 12.0f, 40.0f, 22.0f);
-        this->fillRounded(canvas, box, 11.0f,
-                          *d.fFlag ? kAccent
-                                   : skia::colorSetARGB(
-                                         static_cast<std::uint8_t>(fade * 255.0f),
-                                         58, 48, 70));
-        skia::SkPaint knob;
-        knob.setAntiAlias(true);
-        knob.setColor(skia::kWhite);
-        knob.setAlphaf(fade);
-        canvas->drawCircle(*d.fFlag ? box.fRight - 11.0f : box.fLeft + 11.0f,
-                           box.centerY(), 8.0f, knob);
-        y += 30.0f + kItemSpacing;
-      }
-    }
-
-    this->drawTextClipped(canvas, "Ctrl+O to close", px + kContentMargins,
-                          sh - 24.0f, kPanelWidth - kContentMargins * 2, 12.0f,
-                          skia::kWhite, fade * 0.5f);
+    p.textClipped("Ctrl+O to close", px + kContentMargins, sh - 24.0f,
+                  kPanelWidth - kContentMargins * 2, 12.0f, skia::kWhite,
+                  fade * 0.5f);
   }
 
   bool settingsClick(float x, float y, bool pressed) {
@@ -3364,27 +3459,24 @@ private:
     if (!pressed) {
       if (fDraggingSetting >= 0) {
         fDraggingSetting = -1;
-        this->applySettings(); // commit the expensive parts once
+        fSettings.save();
+        this->applySettings();
       }
       return true;
     }
-    const auto defs = this->settingDefs();
     for (const auto &hit : fRestoreHits) {
-      if (!hit.fRect.contains(x, y)) {
-        continue;
+      if (hit.fRect.contains(x, y)) {
+        fSettings.restoreDefault(static_cast<std::size_t>(hit.fIndex));
+        this->applySettings();
+        return true;
       }
-      const auto &d = defs[static_cast<std::size_t>(hit.fIndex)];
-      if (d.fKind == SettingKind::kSlider) {
-        *d.fValue = d.fDefaultValue;
-      } else {
-        *d.fFlag = d.fDefaultFlag;
-      }
-      this->applySettings();
-      return true;
     }
+    // Sidebar scrolls the column to that section instead of switching pages.
     for (std::size_t i = 0; i < fSidebarHits.size(); ++i) {
       if (fSidebarHits[i].contains(x, y)) {
-        fSettingsSection = static_cast<int>(i);
+        if (i < fSectionOffsets.size()) {
+          fSettingsScroll = fSectionOffsets[i];
+        }
         return true;
       }
     }
@@ -3392,10 +3484,11 @@ private:
       if (!row.fRect.contains(x, y)) {
         continue;
       }
-      const auto &d = defs[static_cast<std::size_t>(row.fIndex)];
-      if (d.fKind == SettingKind::kToggle) {
-        *d.fFlag = !*d.fFlag;
+      const auto idx = static_cast<std::size_t>(row.fIndex);
+      if (fSettings.defs()[idx].fKind == client::SettingKind::kToggle) {
+        fSettings.toggle(idx);
         this->applySettings();
+        fSettings.save();
       } else {
         fDraggingSetting = row.fIndex;
         this->dragSetting(x);
@@ -3409,102 +3502,335 @@ private:
     if (fDraggingSetting < 0) {
       return;
     }
-    const auto defs = this->settingDefs();
-    const auto &d = defs[static_cast<std::size_t>(fDraggingSetting)];
-    if (d.fKind != SettingKind::kSlider) {
-      return;
-    }
     for (const auto &row : fSettingRows) {
       if (row.fIndex != fDraggingSetting) {
         continue;
       }
-      const float t =
-          std::clamp((x - row.fRect.fLeft) / row.fRect.width(), 0.0f, 1.0f);
-      *d.fValue = d.fMin + (d.fMax - d.fMin) * t;
-      // Only the cheap part while dragging; the background re-render happens
-      // once, on release.
+      fSettings.setFromFraction(
+          static_cast<std::size_t>(row.fIndex),
+          (x - row.fRect.fLeft) / row.fRect.width());
       this->applyAudioSettings();
       return;
     }
   }
 
-  [[nodiscard]] std::filesystem::path settingsPath() const {
-    return fMapsDir.parent_path() / "settings.json";
+  void scrollSettings(float delta) {
+    fSettingsScroll = std::clamp(fSettingsScroll - delta * 60.0f, 0.0f,
+                                 std::max(0.0f, fSettingsContentHeight -
+                                                    static_cast<float>(fScreenH) *
+                                                        0.6f));
   }
 
-  void loadSettings() {
-    std::ifstream in(this->settingsPath());
-    if (!in) {
-      return;
-    }
-    const std::string text((std::istreambuf_iterator<char>(in)),
-                           std::istreambuf_iterator<char>());
-    const auto parsed = bjson::tryParse(text);
-    if (!parsed) {
-      return;
-    }
-    const bjson::object *o = parsed->if_object();
-    if (o == nullptr) {
-      return;
-    }
-    const auto num = [o](std::string_view key, float fallback) {
-      if (const bjson::value *v = o->if_contains(key); v && v->is_number()) {
-        return static_cast<float>(v->to_number<double>());
-      }
-      return fallback;
-    };
-    const auto flag = [o](std::string_view key, bool fallback) {
-      if (const bjson::value *v = o->if_contains(key); v && v->is_bool()) {
-        return v->as_bool();
-      }
-      return fallback;
-    };
-    fMasterVolume = num("master", fMasterVolume);
-    fMusicVolume = num("music", fMusicVolume);
-    fEffectVolume = num("effect", fEffectVolume);
-    fAudioOffsetMs = num("offset", fAudioOffsetMs);
-    fBackgroundDim = num("dim", fBackgroundDim);
-    fCursorSize = num("cursor", fCursorSize);
-    fShowFps = flag("fps", fShowFps);
-    fSnakeSliders = flag("snaking", fSnakeSliders);
-    fAppliedDim = fBackgroundDim;
-  }
-
-  void saveSettings() {
-    bjson::object o;
-    o["master"] = fMasterVolume;
-    o["music"] = fMusicVolume;
-    o["effect"] = fEffectVolume;
-    o["offset"] = fAudioOffsetMs;
-    o["dim"] = fBackgroundDim;
-    o["cursor"] = fCursorSize;
-    o["fps"] = fShowFps;
-    o["snaking"] = fSnakeSliders;
-    std::ofstream out(this->settingsPath(), std::ios::trunc);
-    if (out) {
-      out << bjson::serialize(bjson::value(std::move(o)));
-    }
-    this->syncMapsDir();
-  }
-
-  // Cheap: just gain values on existing sources. Safe to call every frame.
   void applyAudioSettings() {
-    fAudio.setVolume(fMasterVolume * fMusicVolume);
+    const float master = fSettings.value("master");
+    fAudio.setVolume(master * fSettings.value("music"));
     for (auto &[name, player] : fSamples) {
-      player.setVolume(fMasterVolume * fEffectVolume);
+      player.setVolume(master * fSettings.value("effect"));
     }
   }
 
-  // Expensive: re-renders a screen-sized bitmap because the background is
-  // pre-dimmed into it. Dragging a slider fires a cursor event per frame, so
-  // this must never run from the drag path -- that was the UI freeze.
   void applySettings() {
     this->applyAudioSettings();
-    if (std::abs(fBackgroundDim - fAppliedDim) > 1e-4f) {
-      fAppliedDim = fBackgroundDim;
+    const float dim = fSettings.value("dim");
+    if (std::abs(dim - fAppliedDim) > 1e-4f) {
+      fAppliedDim = dim;
       this->preScaleBackground();
     }
-    this->saveSettings();
+#ifndef __EMSCRIPTEN__
+    glfw::glfwSwapInterval(fSettings.flag("vsync") ? 1 : 0);
+#endif
+  }
+
+  // ---- Mod select (ModSelectOverlay) ------------------------------------
+  //
+  // lazer lays mods out in columns by category, each a rounded panel with the
+  // acronym, name and description, toggled by click or by its key. Only the
+  // mods this engine implements are offered.
+  [[nodiscard]] std::vector<client::ModEntry> modEntries() const {
+    return {
+        {"EZ", "Easy", "Larger circles, more forgiving HP drain.",
+         osu::mod::kEasy, 0, glfw::kKeyQ, 0.5},
+        {"HT", "Half Time", "Less zoom... more time to react.",
+         osu::mod::kHalfTime, 0, glfw::kKeyW, 0.3},
+        {"HR", "Hard Rock", "Everything just got a bit harder...",
+         osu::mod::kHardRock, 1, glfw::kKeyA, 1.06},
+        {"DT", "Double Time", "Zoooooooooom...", osu::mod::kDoubleTime, 1,
+         glfw::kKeyD, 1.12},
+    };
+  }
+
+  void toggleMods() {
+    fModsOpen = !fModsOpen;
+    fSettingsEnterWall = wallMs();
+  }
+
+  void drawModSelect(skia::SkCanvas *canvas) {
+    fModsSlide = client::ui::approach(fModsSlide, fModsOpen ? 1.0f : 0.0f,
+                                      120.0f, fUiDt);
+    fModHits.clear();
+    if (fModsSlide < 0.002f) {
+      return;
+    }
+    const client::ui::Painter p(canvas, fFont);
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    const float slide = client::ui::outQuint(fModsSlide);
+
+    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
+               skia::colorSetARGB(static_cast<std::uint8_t>(slide * 190.0f), 8,
+                                  6, 12));
+
+    const auto entries = this->modEntries();
+    const float colW = std::min(340.0f, sw * 0.34f);
+    const float panelH = 96.0f;
+    const float gap = 12.0f;
+    const float top = sh * 0.28f + (1.0f - slide) * 60.0f;
+
+    for (int col = 0; col < static_cast<int>(client::kModColumns.size());
+         ++col) {
+      const float cx = sw * 0.5f +
+                       (static_cast<float>(col) - 0.5f) * (colW + 40.0f) -
+                       colW * 0.5f + colW * 0.5f;
+      const float x = cx - colW * 0.5f;
+      p.textCentered(client::kModColumns[static_cast<std::size_t>(col)], cx,
+                     top - 18.0f, 16.0f, client::ui::kAccent2, slide);
+      float y = top;
+      for (const auto &m : entries) {
+        if (m.fColumn != col) {
+          continue;
+        }
+        const skia::SkRect r = skia::SkRect::MakeXYWH(x, y, colW, panelH);
+        fModHits.push_back(r);
+        const bool active = (fMods & m.fFlag) != osu::mod::kNone;
+        const bool hover = r.contains(fMouseX, fMouseY);
+        p.fillRounded(r, 12.0f,
+                      active ? client::ui::kAccent
+                      : hover ? client::ui::kCardSel
+                              : client::ui::kCardBg);
+        p.textClipped(m.fAcronym, r.fLeft + 18.0f, r.fTop + 34.0f, 70.0f, 24.0f,
+                      active ? skia::colorSetARGB(255, 24, 18, 30)
+                             : skia::kWhite,
+                      slide);
+        p.textClipped(m.fName, r.fLeft + 84.0f, r.fTop + 32.0f,
+                      colW - 100.0f, 16.0f,
+                      active ? skia::colorSetARGB(255, 24, 18, 30)
+                             : skia::kWhite,
+                      slide);
+        p.textClipped(m.fDescription, r.fLeft + 84.0f, r.fTop + 56.0f,
+                      colW - 100.0f, 12.0f,
+                      active ? skia::colorSetARGB(220, 30, 22, 36)
+                             : skia::kWhite,
+                      slide * 0.7f);
+        p.textClipped(std::format("{:.2f}x", m.fMultiplier), r.fLeft + 84.0f,
+                      r.fBottom - 12.0f, 80.0f, 11.0f,
+                      active ? skia::colorSetARGB(220, 30, 22, 36)
+                             : client::ui::kAccent2,
+                      slide * 0.9f);
+        y += panelH + gap;
+      }
+    }
+
+    p.textCentered("click a mod to toggle    Esc to close", sw * 0.5f,
+                   sh - 40.0f, 14.0f, skia::kWhite, slide * 0.7f);
+  }
+
+  bool modClick(float x, float y) {
+    if (fModsSlide < 0.5f) {
+      return false;
+    }
+    const auto entries = this->modEntries();
+    std::size_t i = 0;
+    for (const auto &m : entries) {
+      if (i < fModHits.size() && fModHits[i].contains(x, y)) {
+        fMods = (fMods & m.fFlag) != osu::mod::kNone ? (fMods & ~m.fFlag)
+                                                     : (fMods | m.fFlag);
+        // Speed mods are mutually exclusive, as in lazer.
+        if (m.fFlag == osu::mod::kDoubleTime &&
+            (fMods & osu::mod::kDoubleTime) != osu::mod::kNone) {
+          fMods = fMods & ~osu::mod::kHalfTime;
+        }
+        if (m.fFlag == osu::mod::kHalfTime &&
+            (fMods & osu::mod::kHalfTime) != osu::mod::kNone) {
+          fMods = fMods & ~osu::mod::kDoubleTime;
+        }
+        if (m.fFlag == osu::mod::kHardRock &&
+            (fMods & osu::mod::kHardRock) != osu::mod::kNone) {
+          fMods = fMods & ~osu::mod::kEasy;
+        }
+        if (m.fFlag == osu::mod::kEasy &&
+            (fMods & osu::mod::kEasy) != osu::mod::kNone) {
+          fMods = fMods & ~osu::mod::kHardRock;
+        }
+        return true;
+      }
+      ++i;
+    }
+    return true; // the overlay swallows clicks while open
+  }
+
+  // ---- Replay video export ----------------------------------------------
+
+  void drawExportDialog(skia::SkCanvas *canvas) {
+    fExportHits.clear();
+    if (!fExportOpen) {
+      return;
+    }
+    const client::ui::Painter p(canvas, fFont);
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
+               skia::colorSetARGB(200, 8, 6, 12));
+
+    const float w = std::min(520.0f, sw * 0.6f);
+    const float h = 300.0f;
+    const skia::SkRect box =
+        skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
+    p.fillRounded(box, 14.0f, client::ui::kBackground5);
+    p.strokeRounded(box, 14.0f, client::ui::kAccent, 2.0f);
+    p.textCentered("export replay as video", box.centerX(), box.fTop + 46.0f,
+                   24.0f, skia::kWhite);
+    p.textCentered("resolution", box.centerX(), box.fTop + 82.0f, 14.0f,
+                   skia::kWhite, 0.6f);
+
+    const float bw = (w - 80.0f) / 4.0f;
+    for (std::size_t i = 0; i < client::kVideoPresets.size(); ++i) {
+      const skia::SkRect r = skia::SkRect::MakeXYWH(
+          box.fLeft + 40.0f + static_cast<float>(i) * bw, box.fTop + 100.0f,
+          bw - 8.0f, 40.0f);
+      fExportHits.push_back(r);
+      const bool active = static_cast<int>(i) == fExportPreset;
+      p.fillRounded(r, 8.0f,
+                    active ? client::ui::kAccent : client::ui::kCardBg);
+      p.textCentered(client::kVideoPresets[i].fLabel, r.centerX(),
+                     r.centerY() + 5.0f, 14.0f,
+                     active ? skia::colorSetARGB(255, 24, 18, 30)
+                            : skia::kWhite);
+    }
+
+    const skia::SkRect go = skia::SkRect::MakeXYWH(
+        box.centerX() - 110.0f, box.fBottom - 92.0f, 220.0f, 44.0f);
+    fExportHits.push_back(go);
+    const bool hover = go.contains(fMouseX, fMouseY);
+    p.fillRounded(go, 10.0f,
+                  hover ? client::ui::kCardSel : client::ui::kCardBg);
+    p.strokeRounded(go, 10.0f, client::ui::kAccent2, 2.0f);
+    p.textCentered("render", go.centerX(), go.centerY() + 6.0f, 17.0f,
+                   skia::kWhite);
+
+    p.textCentered(fExportStatus.empty()
+                       ? "requires ffmpeg in PATH    Esc to cancel"
+                       : fExportStatus,
+                   box.centerX(), box.fBottom - 24.0f, 13.0f, skia::kWhite,
+                   0.75f);
+  }
+
+  bool exportClick(float x, float y) {
+    if (!fExportOpen) {
+      return false;
+    }
+    for (std::size_t i = 0; i < fExportHits.size(); ++i) {
+      if (!fExportHits[i].contains(x, y)) {
+        continue;
+      }
+      if (i < client::kVideoPresets.size()) {
+        fExportPreset = static_cast<int>(i);
+      } else {
+        this->exportReplayVideo();
+      }
+      return true;
+    }
+    return true;
+  }
+
+  // Renders the just-played replay offscreen at the chosen resolution and
+  // muxes it with the beatmap audio. The gameplay path is reused verbatim by
+  // driving the engine from the recorded events, so what is exported is what
+  // was played.
+  void exportReplayVideo() {
+    if (!fMap || fRecordedEvents.empty()) {
+      fExportStatus = "nothing to export";
+      return;
+    }
+    const auto preset =
+        client::kVideoPresets[static_cast<std::size_t>(fExportPreset)];
+    client::VideoOptions opts;
+    opts.fWidth = preset.fWidth;
+    opts.fHeight = preset.fHeight;
+    opts.fFps = 60;
+    opts.fOutput = fMapsDir.parent_path() /
+                   std::format("replay-{}.mp4", fBeatmapFilename);
+    client::VideoExporter exporter;
+    if (!exporter.begin(opts)) {
+      fExportStatus = exporter.error();
+      return;
+    }
+
+    // Offscreen surface at the export resolution.
+    auto surface = skia::RenderTarget(
+        fContext.get(), skia::kNo,
+        skia::SkImageInfo::Make(opts.fWidth, opts.fHeight,
+                                skia::kRGBA_8888_SkColorType,
+                                skia::kPremul_SkAlphaType));
+    if (!surface) {
+      fExportStatus = "cannot create the offscreen surface";
+      return;
+    }
+
+    const int savedW = fScreenW;
+    const int savedH = fScreenH;
+    auto savedSurface = fSurface;
+    fSurface = surface;
+    fScreenW = opts.fWidth;
+    fScreenH = opts.fHeight;
+    this->layoutForScreen();
+
+    osu::Engine engine(*fMap, fMods);
+    const double end = fMap->lastObjectEndTime() + 1500.0;
+    const double step = 1000.0 / static_cast<double>(opts.fFps);
+    std::size_t evt = 0;
+    fExportStatus = "rendering...";
+
+    for (double t = 0.0; t <= end; t += step) {
+      while (evt < fRecordedEvents.size() &&
+             fRecordedEvents[evt].fTime <= t) {
+        engine.submit(fRecordedEvents[evt]);
+        if (fRecordedEvents[evt].fAction == osu::InputAction::kMove) {
+          fCursor = fRecordedEvents[evt].fPos;
+        }
+        ++evt;
+      }
+      engine.advance(t);
+      fEngine.emplace(engine); // the renderer reads from fEngine
+      this->render(t);
+      fContext->flushAndSubmit(fSurface.get());
+      exporter.addFrame(fSurface->makeImageSnapshot());
+    }
+
+    fSurface = savedSurface;
+    fScreenW = savedW;
+    fScreenH = savedH;
+    this->layoutForScreen();
+
+    // Audio for the mux, written out beside the frames.
+    std::filesystem::path audioPath;
+    if (!fMap->fMeta.fAudioFilename.empty()) {
+      const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
+      if (!bytes.empty()) {
+        std::error_code ec;
+        audioPath = std::filesystem::temp_directory_path(ec) /
+                    fMap->fMeta.fAudioFilename;
+        std::ofstream out(audioPath, std::ios::binary);
+        out.write(reinterpret_cast<const char *>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+      }
+    }
+    opts.fAudio = audioPath;
+
+    if (exporter.finish()) {
+      fExportStatus = std::format("saved {}", opts.fOutput.filename().string());
+    } else {
+      fExportStatus = exporter.error();
+    }
   }
 
   // ---- Song select (port of lazer's carousel geometry) ------------------
@@ -3548,7 +3874,7 @@ private:
       // request and the artwork never appears.
       if (auto set = this->setFor(fSelSet)) {
         fBackgroundForSet = fSelSet;
-        this->loadSelectBackground(*set);
+        this->requestBackground(fSelSet, set);
       }
     }
     this->drawScreenBackground(canvas);
@@ -4547,10 +4873,10 @@ private:
       skia::SkColor fColor;
     };
     const Row rows[] = {
-        {"great", sc.fGreat, skia::colorSetARGB(255, 102, 204, 255)},
-        {"good", sc.fGood, skia::colorSetARGB(255, 120, 220, 120)},
-        {"meh", sc.fMeh, skia::colorSetARGB(255, 255, 204, 102)},
-        {"miss", sc.fMiss, skia::colorSetARGB(255, 255, 110, 110)},
+        {"300", sc.fGreat, client::ui::kGreat},
+        {"100", sc.fGood, client::ui::kGood},
+        {"50", sc.fMeh, client::ui::kMeh},
+        {"miss", sc.fMiss, client::ui::kMiss},
     };
     for (const auto &row : rows) {
       this->drawTextClipped(canvas, row.fLabel, px + 30.0f, ty, 120.0f, 18.0f,
@@ -4577,6 +4903,10 @@ private:
     fMenuButtons.push_back(
         {r1, "retry", skia::colorSetARGB(255, 255, 204, 102)});
     fMenuButtons.push_back({r2, "back to song select", kAccent2});
+    const skia::SkRect r3 =
+        skia::SkRect::MakeXYWH(px, sh * 0.76f + bh + 12.0f, bw, bh);
+    fMenuButtons.push_back(
+        {r3, "export video", skia::colorSetARGB(255, 102, 204, 255)});
     for (const auto &b : fMenuButtons) {
       this->drawMenuButton(canvas, b);
     }
@@ -4683,12 +5013,9 @@ private:
     return skia::SkFont(nullptr, size);
   }
 
-  void resize(int w, int h) {
-    // Called on the render thread with framebuffer dimensions delivered by
-    // the resize event (or the pre-thread snapshot); querying GLFW here is
-    // not allowed off the main thread.
-    fScreenW = w;
-    fScreenH = h;
+  // Playfield placement for the current screen size. Split out so the video
+  // exporter can re-derive it for its offscreen resolution.
+  void layoutForScreen() {
     // Match webosu-2: playfield occupies 80% of the limiting screen dimension.
     constexpr float kPlayfieldSize = 0.8f;
     const float sx =
@@ -4700,6 +5027,15 @@ private:
         (fScreenW - static_cast<float>(osu::kPlayfieldWidth) * fScale) * 0.5f;
     fOffsetY =
         (fScreenH - static_cast<float>(osu::kPlayfieldHeight) * fScale) * 0.5f;
+  }
+
+  void resize(int w, int h) {
+    // Called on the render thread with framebuffer dimensions delivered by
+    // the resize event (or the pre-thread snapshot); querying GLFW here is
+    // not allowed off the main thread.
+    fScreenW = w;
+    fScreenH = h;
+    this->layoutForScreen();
 
     skia::GrGLFramebufferInfo info;
     info.fFBOID = 0;
@@ -4852,7 +5188,7 @@ private:
         auto &player = fSamples[key];
         if (!player.loaded()) {
           player.load(bytes, std::string(ext));
-          player.setVolume(fMasterVolume * fEffectVolume);
+          player.setVolume(fSettings.value("master") * fSettings.value("effect"));
         }
         player.play();
         return;
@@ -4865,7 +5201,7 @@ private:
     auto &player = fSamples[path.string()];
     if (!player.loaded()) {
       player.load(path);
-      player.setVolume(fMasterVolume * fEffectVolume);
+      player.setVolume(fSettings.value("master") * fSettings.value("effect"));
     }
     player.play();
   }
@@ -5048,7 +5384,7 @@ private:
 
     canvas->restore();
 
-    if (fShowProfile) {
+    if (fShowProfile || fSettings.flag("fps")) {
       auto &p = fProfile[fProfileIdx];
       p.renderFollowUs = static_cast<double>(
           std::chrono::duration_cast<std::chrono::microseconds>(rtb - rta)
@@ -5209,7 +5545,7 @@ private:
     skia::SkCanvas offscreen(bmp);
     skia::SkPaint paint;
     paint.setAntiAlias(false);
-    paint.setAlphaf(1.0f - fBackgroundDim);
+    paint.setAlphaf(1.0f - fSettings.value("dim"));
     offscreen.drawImageRect(
         fBackground.get(), skia::SkRect::MakeXYWH(dx, dy, dw, dh),
         skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &paint);
@@ -5452,8 +5788,20 @@ private:
     }
   }
 
+  // Cursor sensitivity scales movement about the playfield centre, which is
+  // what osu! does when the setting is not 1x.
+  [[nodiscard]] osu::Vec2 applySensitivity(osu::Vec2 raw) const {
+    const double s = fSettings.value("sensitivity");
+    if (std::abs(s - 1.0) < 1e-3) {
+      return raw;
+    }
+    const auto c = osu::kPlayfieldCenter;
+    return {c.fX + (raw.fX - c.fX) * s, c.fY + (raw.fY - c.fY) * s};
+  }
+
   void drawCursor(skia::SkCanvas *canvas) {
-    fSkin.drawCursor(canvas, fCursor, 1.0f / fScale);
+    fSkin.drawCursor(canvas, fCursor,
+                     fSettings.value("cursorsize") / fScale);
   }
 
   void drawPopups(skia::SkCanvas *canvas, double now, double cs) {
@@ -5481,10 +5829,25 @@ private:
         alpha = age < 100.0 ? age / 100.0 : 1.0 - (age - 100.0) / 400.0;
       }
 
-      const auto [text, color] = popupInfo(it->fResult);
+      const int value = judgementValue(it->fResult);
       const float x = static_cast<float>(it->fPos.fX);
       const float y =
           static_cast<float>(it->fPos.fY) - 40.0f * hitSpriteScale + yOffset;
+
+      // Skins provide hit300/hit100/hit50/hit0 sprites; that is what stable
+      // and web-osu2 show. Fall back to text only when the skin has none.
+      if (auto sprite = fSkin.judgement(value)) {
+        skia::SkPaint paint;
+        paint.setAntiAlias(true);
+        paint.setAlphaf(static_cast<float>(alpha));
+        detail::drawImageCentered(canvas, sprite.get(), x, y,
+                                  0.5f * static_cast<float>(hitSpriteScale),
+                                  paint);
+        ++it;
+        continue;
+      }
+
+      const auto [text, color] = popupInfo(it->fResult);
       const float fontSize = static_cast<float>(20.0 * hitSpriteScale);
       fFont.setSize(fontSize);
 
@@ -5508,6 +5871,16 @@ private:
       canvas->drawString(text, drawX, y, fFont, paint);
       ++it;
     }
+  }
+
+  [[nodiscard]] static int judgementValue(const osu::Judgement &j) {
+    return std::visit(osu::Overloaded{
+                          [](osu::judgement::Great) { return 300; },
+                          [](osu::judgement::Good) { return 100; },
+                          [](osu::judgement::Meh) { return 50; },
+                          [](osu::judgement::Miss) { return 0; },
+                      },
+                      j);
   }
 
   [[nodiscard]] static std::pair<const char *, skia::SkColor>
@@ -5586,7 +5959,7 @@ private:
     canvas->drawString(fpsText.c_str(), sw - 80.0f, sh - 40.0f, fFont,
                        fHudPaint);
 
-    if (fShowProfile) {
+    if (fShowProfile || fSettings.flag("fps")) {
       double avgAdv = 0.0, avgRender = 0.0, avgFlush = 0.0, avgSwap = 0.0;
       double avgFollow = 0.0, avgObjs = 0.0, avgRest = 0.0, avgHud = 0.0;
       if (fProfileNum > 0) {
