@@ -3187,7 +3187,7 @@ private:
     const float progress = static_cast<float>(
         (wallMs() - fSettingsEnterWall) / kTransitionMs);
     const float target = fSettingsOpen ? 1.0f : 0.0f;
-    const float eased = easeOutQuintT(std::clamp(progress, 0.0f, 1.0f));
+    const float eased = easeOutQuint(std::clamp(progress, 0.0f, 1.0f));
     fSettingsSlide = fSettingsOpen ? eased : 1.0f - eased;
     if (!fSettingsOpen && fSettingsSlide <= 0.001f) {
       fSettingRows.clear();
@@ -3620,7 +3620,7 @@ private:
                                  std::max(0.0f, total - halfHeight * 0.5f));
     fScrollAnim = this->approach(fScrollAnim, fCarouselScroll, 120.0f);
     fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 400.0f);
-    const float pop = easeOutQuintT(fPopAnim);
+    const float pop = easeOutQuint(fPopAnim);
 
     canvas->save();
     canvas->clipIRect(skia::SkIRect::MakeXYWH(
