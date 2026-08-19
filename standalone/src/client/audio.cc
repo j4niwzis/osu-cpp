@@ -92,6 +92,11 @@ public:
       audio::alSourcePlay(fSource);
   }
 
+  void setVolume(float gain) {
+    if (fSource != 0)
+      audio::alSourcef(fSource, audio::kGain, gain);
+  }
+
   void setLooping(bool loop) {
     if (fSource != 0)
       audio::alSourcei(fSource, audio::kLooping, loop ? 1 : 0);
@@ -231,6 +236,12 @@ public:
   }
 
   [[nodiscard]] bool loaded() const noexcept { return fBuffer != 0; }
+
+  void setVolume(float gain) {
+    for (audio::ALuint source : fSources) {
+      audio::alSourcef(source, audio::kGain, gain);
+    }
+  }
 
   void play() {
     if (fBuffer == 0 || fSources.empty() || !audioContext().ok())

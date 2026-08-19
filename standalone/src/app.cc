@@ -21,6 +21,7 @@ import client.http;
 import client.spectrum;
 import client.mapcache;
 import client.filter;
+import client.loader;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -147,6 +148,7 @@ private:
   std::deque<int> fLoadedOrder;          // LRU of entries holding a full set
   static constexpr std::size_t kMaxLoadedSets = 4;
   client::MapCache fMapCache;
+  client::Loader fLoader;
 
   // Filtering / sorting (lazer's FilterControl).
   std::string fFilterText;
@@ -262,6 +264,34 @@ private:
   float fLogoPunch = 0.0f; // click/beat impact, decays
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
+
+  // ---- Settings overlay (SettingsPanel: 70px sidebar + 400px panel,
+  // sliding in from the left over 600 ms, sections with a 30px header).
+  static constexpr float kSettingsSidebar = 70.0f;
+  static constexpr float kSettingsPanelWidth = 400.0f;
+  static constexpr float kSettingsMargins = 20.0f;
+  bool fSettingsOpen = false;
+  bool fCtrlHeld = false;
+  float fSettingsSlide = 0.0f; // 0 hidden .. 1 fully out
+  int fSettingsSection = 0;
+  float fSettingsScroll = 0.0f;
+  int fDraggingSetting = -1;
+  struct SettingRow {
+    skia::SkRect fRect;
+    int fIndex;
+  };
+  std::vector<SettingRow> fSettingRows;
+  std::vector<skia::SkRect> fSidebarHits;
+
+  // The settings themselves.
+  float fMasterVolume = 1.0f;
+  float fMusicVolume = 0.8f;
+  float fEffectVolume = 1.0f;
+  float fAudioOffsetMs = 0.0f;
+  float fBackgroundDim = 0.7f;
+  float fCursorSize = 1.0f;
+  bool fShowFps = false;
+  bool fSnakeSliders = true;
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
   double fLastMenuPosMs = 0.0;
@@ -272,6 +302,7 @@ private:
     float fShade = 0.5f;
   };
   std::vector<Tri> fTriangles;
+  std::vector<Tri> fLogoTris; // TrianglesV2 masked inside the logo
   float fTriangleScale = 2.4f;    // TrianglesV2 uses much larger shapes
   float fSpawnRatio = 1.0f;       // TrianglesV2.SpawnRatio
   float fTriangleVelocity = 1.0f; // TrianglesV2.Velocity
@@ -698,6 +729,9 @@ private:
     case EventType::kCursorMove:
       fMouseX = ev.fX;
       fMouseY = ev.fY;
+      if (fDraggingSetting >= 0) {
+        this->dragSetting(ev.fX);
+      }
       if (fState == State::kPlaying && !fAutoplay) {
         fCursor = this->toPlayfield(ev.fX, ev.fY);
         this->submitTimed({this->eventGameTime(ev.fWallMs), fCursor,
@@ -744,6 +778,18 @@ private:
   void applyKey(const Event &ev) {
     const int key = ev.fA;
     const int action = ev.fB;
+    if (key == glfw::kKeyLeftControl || key == glfw::kKeyRightControl) {
+      fCtrlHeld = action != glfw::kRelease;
+      return;
+    }
+    if (action == glfw::kPress && key == glfw::kKeyO && fCtrlHeld) {
+      this->toggleSettings();
+      return;
+    }
+    if (fSettingsOpen && action == glfw::kPress && key == glfw::kKeyEscape) {
+      fSettingsOpen = false;
+      return;
+    }
     if (action != glfw::kPress && fState != State::kPlaying) {
       return; // menus only care about presses
     }
@@ -898,8 +944,12 @@ private:
     if (fState == State::kMainMenu || fState == State::kSongSelect ||
         fState == State::kDownload || fState == State::kPaused ||
         fState == State::kResults) {
-      if (button == glfw::kMouseButtonLeft && action == glfw::kPress) {
-        this->clickAt(fMouseX, fMouseY);
+      if (button == glfw::kMouseButtonLeft) {
+        if (action == glfw::kPress) {
+          this->clickAt(fMouseX, fMouseY);
+        } else {
+          this->settingsClick(fMouseX, fMouseY, false);
+        }
       }
       return;
     }
@@ -919,6 +969,9 @@ private:
   }
 
   void clickAt(float x, float y) {
+    if (this->settingsClick(x, y, true)) {
+      return;
+    }
     switch (fState) {
     case State::kMainMenu: {
       this->ensureMenuButtons();
@@ -1099,7 +1152,8 @@ private:
   // ---- Frame dispatch ---------------------------------------------------
 
   void frame() {
-    client::http::poll(); // completed network callbacks land here
+    client::http::poll();  // completed network callbacks land here
+    fLoader.poll();        // finished background loads land here
     this->drainDroppedFiles();
     this->drainInput();
     {
@@ -1130,6 +1184,10 @@ private:
   }
 
   void present() {
+    // The settings overlay floats above whatever screen is drawn.
+    if (fSettingsOpen || fSettingsSlide > 0.002f) {
+      this->drawSettings(fSurface->getCanvas());
+    }
     fContext->flushAndSubmit(fSurface.get());
     glfw::glfwSwapBuffers(fWindow);
   }
@@ -1205,7 +1263,7 @@ private:
     if (setIdx < 0 || setIdx >= static_cast<int>(fLibrary.size())) {
       return;
     }
-    auto set = this->setFor(setIdx);
+    auto set = this->setForBlocking(setIdx);
     if (!set || diffIdx < 0 ||
         diffIdx >= static_cast<int>(set->fBeatmaps.size())) {
       return;
@@ -1461,7 +1519,10 @@ private:
     }
   }
 
-  // Full set for an entry, loading (and evicting) as needed.
+  // Full set for an entry if it is already resident. Never blocks: a miss
+  // queues a background load and returns null, and the caller retries on a
+  // later frame. Unzipping an archive and decoding its audio takes hundreds
+  // of milliseconds, which is a visible freeze when done inline.
   [[nodiscard]] std::shared_ptr<osu::BeatmapSet> setFor(int index) {
     if (index < 0 || index >= static_cast<int>(fLibrary.size())) {
       return nullptr;
@@ -1471,16 +1532,62 @@ private:
       return entry.fLoaded;
     }
     if (entry.fPath.empty()) {
-      return nullptr; // CLI set is always resident; nothing to reload from
+      return nullptr;
+    }
+    this->requestSet(index);
+    return nullptr;
+  }
+
+  // Blocking load, for the one case that genuinely cannot proceed without
+  // the data: starting gameplay.
+  [[nodiscard]] std::shared_ptr<osu::BeatmapSet> setForBlocking(int index) {
+    if (index < 0 || index >= static_cast<int>(fLibrary.size())) {
+      return nullptr;
+    }
+    auto &entry = fLibrary[static_cast<std::size_t>(index)];
+    if (entry.fLoaded) {
+      return entry.fLoaded;
+    }
+    if (entry.fPath.empty()) {
+      return nullptr;
     }
     try {
       entry.fLoaded =
           std::make_shared<osu::BeatmapSet>(loadBeatmapSet(entry.fPath));
+      this->touchLoaded(index);
     } catch (const std::exception &e) {
       std::println(std::cerr, "[library] load failed {}: {}",
                    entry.fPath.filename().string(), e.what());
       return nullptr;
     }
+    return entry.fLoaded;
+  }
+
+  void requestSet(int index) {
+    const auto path = fLibrary[static_cast<std::size_t>(index)].fPath;
+    if (path.empty()) {
+      return;
+    }
+    auto result = std::make_shared<std::shared_ptr<osu::BeatmapSet>>();
+    fLoader.submit(
+        static_cast<std::uint64_t>(index) | (1ull << 32),
+        [path, result] {
+          *result = std::make_shared<osu::BeatmapSet>(loadBeatmapSet(path));
+        },
+        [this, index, path, result] {
+          if (index >= static_cast<int>(fLibrary.size()) ||
+              fLibrary[static_cast<std::size_t>(index)].fPath != path) {
+            return; // library was re-sorted underneath us
+          }
+          if (!*result) {
+            return;
+          }
+          fLibrary[static_cast<std::size_t>(index)].fLoaded = *result;
+          this->touchLoaded(index);
+        });
+  }
+
+  void touchLoaded(int index) {
     fLoadedOrder.push_back(index);
     while (fLoadedOrder.size() > kMaxLoadedSets) {
       const int evict = fLoadedOrder.front();
@@ -1491,7 +1598,6 @@ private:
         fLibrary[static_cast<std::size_t>(evict)].fLoaded.reset();
       }
     }
-    return entry.fLoaded;
   }
 
   [[nodiscard]] const std::vector<osu::BeatmapInfo> &infosFor(int index) const {
@@ -2532,6 +2638,11 @@ private:
                            skia::kWhite, contentAlpha * 0.95f);
   }
 
+  // OsuLogo: a circular container filled with a vertical pink gradient
+  // (#ff66ab -> #cc5289) with TrianglesV2 masked inside it, the logo mark on
+  // top, a ripple of the same shape that scales out and fades on each beat,
+  // and a white impact ring that only appears when the logo is struck. There
+  // is no permanent halo -- the earlier glow ring was invented.
   void drawLogo(skia::SkCanvas *canvas, float logoBase) {
     const float wall = static_cast<float>(wallMs());
     const bool hovered =
@@ -2541,37 +2652,123 @@ private:
     fLogoHover = this->approach(fLogoHover, hovered ? 1.0f : 0.0f, 110.0f);
     fLogoPunch = this->approach(fLogoPunch, 0.0f, 180.0f);
 
-    // Idle breathing + audio-driven pulse (lazer beat-syncs here; we have no
-    // timing points loaded in the menu, so bass energy stands in for the beat).
-    const float breathe = 1.0f + 0.012f * std::sin(wall / 430.0f);
-    const float pulse = 1.0f + 0.11f * fSpectrum.bass();
-    const float r = logoBase * fLogoScale * breathe * pulse *
+    // Amplitude-driven beat: lazer drives these from timing points, which the
+    // menu has not loaded, so bass energy stands in.
+    const float amp = fSpectrum.bass();
+    const float beat = 1.0f - 0.02f * amp;
+    const float r = logoBase * fLogoScale * beat *
                     (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
     fLogoRect = skia::SkRect::MakeXYWH(fLogoX - r, fLogoY - r, r * 2, r * 2);
 
     this->drawVisualiser(canvas, r);
 
-    skia::SkPaint glow;
-    glow.setAntiAlias(true);
-    glow.setColor(kAccent);
-    glow.setAlphaf(0.20f + 0.12f * fLogoHover);
-    canvas->drawCircle(fLogoX, fLogoY, r * 1.14f, glow);
+    // Ripple: same circle, scaled slightly out, alpha 0.15 * amplitude.
+    if (amp > 0.01f) {
+      skia::SkPaint ripple;
+      ripple.setAntiAlias(true);
+      ripple.setColor(skia::colorSetARGB(255, 0xff, 0x66, 0xab));
+      ripple.setAlphaf(0.15f * std::min(1.0f, amp * 2.0f));
+      canvas->drawCircle(fLogoX, fLogoY, r * (1.0f + 0.04f * amp), ripple);
+    }
 
-    skia::SkPaint disc;
-    disc.setAntiAlias(true);
-    disc.setColor(kAccent);
-    canvas->drawCircle(fLogoX, fLogoY, r, disc);
+    // Body: vertical gradient disc, clipped triangles, then the mark.
+    canvas->save();
+    skia::SkPathBuilder disc;
+    disc.addCircle(fLogoX, fLogoY, r);
+    canvas->clipPath(disc.detach(), true);
+    this->drawVerticalGradient(canvas, fLogoRect,
+                               skia::colorSetARGB(255, 0xff, 0x66, 0xab),
+                               skia::colorSetARGB(255, 0xcc, 0x52, 0x89));
+    this->drawLogoTriangles(canvas, fLogoRect);
+    canvas->restore();
 
-    skia::SkPaint ring;
-    ring.setAntiAlias(true);
-    ring.setStyle(skia::kStrokeStyle);
-    ring.setStrokeWidth(r * 0.055f);
-    ring.setColor(skia::kWhite);
-    ring.setAlphaf(0.9f);
-    canvas->drawCircle(fLogoX, fLogoY, r * 0.82f, ring);
+    // Impact ring: white border, only while punching.
+    if (fLogoPunch > 0.01f) {
+      skia::SkPaint ring;
+      ring.setAntiAlias(true);
+      ring.setStyle(skia::kStrokeStyle);
+      ring.setStrokeWidth(r * 0.08f);
+      ring.setColor(skia::kWhite);
+      ring.setAlphaf(fLogoPunch * 0.8f);
+      canvas->drawCircle(fLogoX, fLogoY, r * (1.0f + 0.12f * (1.0f - fLogoPunch)),
+                         ring);
+    }
 
     this->drawTextCentered(canvas, "osu!", fLogoX, fLogoY + r * 0.22f,
                            r * 0.55f, skia::kWhite);
+  }
+
+  // Cheap vertical two-stop gradient without pulling in a shader: a stack of
+  // horizontal bands. The logo is small enough that 24 steps are seamless.
+  void drawVerticalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                            skia::SkColor top, skia::SkColor bottom) {
+    constexpr int kSteps = 24;
+    skia::SkPaint p;
+    p.setAntiAlias(false);
+    for (int i = 0; i < kSteps; ++i) {
+      const float t = static_cast<float>(i) / static_cast<float>(kSteps - 1);
+      const auto lerp = [t](std::uint32_t a, std::uint32_t b) {
+        return static_cast<std::uint8_t>(
+            static_cast<float>(a) + (static_cast<float>(b) - static_cast<float>(a)) * t);
+      };
+      p.setColor(skia::colorSetARGB(
+          255, lerp((top >> 16) & 0xFF, (bottom >> 16) & 0xFF),
+          lerp((top >> 8) & 0xFF, (bottom >> 8) & 0xFF),
+          lerp(top & 0xFF, bottom & 0xFF)));
+      const float y0 =
+          rect.fTop + rect.height() * static_cast<float>(i) / kSteps;
+      canvas->drawRect(
+          skia::SkRect::MakeLTRB(rect.fLeft, y0, rect.fRight,
+                                 y0 + rect.height() / kSteps + 1.0f),
+          p);
+    }
+  }
+
+  // TrianglesV2 inside the logo: Thickness 0.009, ScaleAdjust 3,
+  // SpawnRatio 1.4, gradient #ff66ab -> #b6346f.
+  void drawLogoTriangles(skia::SkCanvas *canvas, const skia::SkRect &rect) {
+    const float w = rect.width();
+    const float h = rect.height();
+    if (fLogoTris.empty()) {
+      std::uniform_real_distribution<float> u(0.0f, 1.0f);
+      const int aim = std::max(1, static_cast<int>(w * 0.02f * 1.4f));
+      for (int i = 0; i < aim; ++i) {
+        fLogoTris.push_back({u(fUiRng), u(fUiRng),
+                             this->randomTriangleScale() * 3.0f, u(fUiRng)});
+      }
+      std::ranges::sort(fLogoTris, {}, &Tri::fScale);
+    }
+    const float moved = static_cast<float>(fUiDt) / 1000.0f *
+                        kTriangleBaseVelocity / std::max(1.0f, h);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    skia::SkPaint p;
+    p.setAntiAlias(true);
+    p.setStyle(skia::kStrokeStyle);
+    for (auto &t : fLogoTris) {
+      t.fY -= moved;
+      const float tw = kTriangleSize * t.fScale * 0.35f;
+      const float th = tw * kTriangleRatio;
+      if (t.fY * h + th < 0.0f) {
+        t.fY = 1.0f + th / h;
+        t.fX = u(fUiRng);
+        t.fScale = this->randomTriangleScale() * 3.0f;
+      }
+      const float cx = rect.fLeft + t.fX * w;
+      const float cy = rect.fTop + t.fY * h;
+      skia::SkPathBuilder b;
+      b.moveTo(cx, cy - th * 0.5f);
+      b.lineTo(cx - tw * 0.5f, cy + th * 0.5f);
+      b.lineTo(cx + tw * 0.5f, cy + th * 0.5f);
+      b.close();
+      p.setStrokeWidth(std::max(1.0f, tw * 0.009f * 4.0f));
+      const float shade = t.fY; // gradient from #ff66ab down to #b6346f
+      p.setColor(skia::colorSetARGB(
+          255, static_cast<std::uint8_t>(0xff + (0xb6 - 0xff) * shade),
+          static_cast<std::uint8_t>(0x66 + (0x34 - 0x66) * shade),
+          static_cast<std::uint8_t>(0xab + (0x6f - 0xab) * shade)));
+      p.setAlphaf(0.85f);
+      canvas->drawPath(b.detach(), p);
+    }
   }
 
   // LogoVisualisation.VisualisationDrawNode, transcribed. Each bar is a quad
@@ -2708,6 +2905,236 @@ private:
   }
 
   // ---- Song select ------------------------------------------------------
+
+  // ---- Settings overlay (SettingsPanel) ---------------------------------
+  //
+  // lazer's settings are a left-docked panel: a narrow icon sidebar plus a
+  // 400px content column of sections, each a header followed by controls,
+  // sliding in from the left. Ctrl+O toggles it, as in lazer.
+
+  enum class SettingKind : std::uint8_t { kSlider, kToggle };
+  struct SettingDef {
+    int fSection;
+    const char *fLabel;
+    SettingKind fKind;
+    float *fValue;   // slider target
+    bool *fFlag;     // toggle target
+    float fMin, fMax;
+    const char *fSuffix;
+  };
+
+  [[nodiscard]] std::vector<SettingDef> settingDefs() {
+    return {
+        {0, "Master volume", SettingKind::kSlider, &fMasterVolume, nullptr,
+         0.0f, 1.0f, "%"},
+        {0, "Music volume", SettingKind::kSlider, &fMusicVolume, nullptr, 0.0f,
+         1.0f, "%"},
+        {0, "Effect volume", SettingKind::kSlider, &fEffectVolume, nullptr,
+         0.0f, 1.0f, "%"},
+        {0, "Audio offset", SettingKind::kSlider, &fAudioOffsetMs, nullptr,
+         -200.0f, 200.0f, " ms"},
+        {1, "Background dim", SettingKind::kSlider, &fBackgroundDim, nullptr,
+         0.0f, 1.0f, "%"},
+        {1, "Show FPS counter", SettingKind::kToggle, nullptr, &fShowFps, 0.0f,
+         1.0f, ""},
+        {2, "Cursor size", SettingKind::kSlider, &fCursorSize, nullptr, 0.5f,
+         2.0f, "x"},
+        {2, "Snaking sliders", SettingKind::kToggle, nullptr, &fSnakeSliders,
+         0.0f, 1.0f, ""},
+    };
+  }
+
+  static constexpr std::array<const char *, 3> kSettingSections = {
+      "Audio", "Graphics", "Gameplay"};
+
+  void toggleSettings() {
+    fSettingsOpen = !fSettingsOpen;
+    std::println(std::cerr, "[ui] settings {}",
+                 fSettingsOpen ? "opened" : "closed");
+  }
+
+  void drawSettings(skia::SkCanvas *canvas) {
+    fSettingsSlide =
+        this->approach(fSettingsSlide, fSettingsOpen ? 1.0f : 0.0f, 180.0f);
+    fSettingRows.clear();
+    fSidebarHits.clear();
+    if (fSettingsSlide < 0.002f) {
+      return;
+    }
+
+    const float sh = static_cast<float>(fScreenH);
+    const float full = kSettingsSidebar + kSettingsPanelWidth;
+    const float x0 = -full * (1.0f - easeOutQuintT(fSettingsSlide));
+
+    // Sidebar.
+    skia::SkPaint bar;
+    bar.setColor(skia::colorSetARGB(245, 20, 16, 26));
+    canvas->drawRect(
+        skia::SkRect::MakeXYWH(x0, 0.0f, kSettingsSidebar, sh), bar);
+    for (std::size_t i = 0; i < kSettingSections.size(); ++i) {
+      const skia::SkRect r = skia::SkRect::MakeXYWH(
+          x0, 90.0f + static_cast<float>(i) * 74.0f, kSettingsSidebar, 66.0f);
+      fSidebarHits.push_back(r);
+      const bool active = static_cast<int>(i) == fSettingsSection;
+      if (active) {
+        skia::SkPaint sel;
+        sel.setColor(kAccent);
+        canvas->drawRect(
+            skia::SkRect::MakeXYWH(r.fLeft, r.fTop, 4.0f, r.height()), sel);
+      }
+      this->drawTextCentered(canvas, kSettingSections[i], r.centerX(),
+                             r.centerY() + 5.0f, 12.0f,
+                             active ? kAccent : skia::kWhite,
+                             active ? 1.0f : 0.7f);
+    }
+
+    // Content panel.
+    const float px = x0 + kSettingsSidebar;
+    skia::SkPaint panel;
+    panel.setColor(skia::colorSetARGB(245, 28, 22, 36));
+    canvas->drawRect(
+        skia::SkRect::MakeXYWH(px, 0.0f, kSettingsPanelWidth, sh), panel);
+
+    this->drawTextClipped(canvas, "settings", px + kSettingsMargins, 56.0f,
+                          kSettingsPanelWidth - kSettingsMargins * 2, 28.0f,
+                          skia::kWhite);
+    this->drawTextClipped(canvas, "change the way osu! behaves",
+                          px + kSettingsMargins, 78.0f,
+                          kSettingsPanelWidth - kSettingsMargins * 2, 13.0f,
+                          skia::kWhite, 0.6f);
+
+    const auto defs = this->settingDefs();
+    float y = 120.0f;
+    int lastSection = -1;
+    for (std::size_t i = 0; i < defs.size(); ++i) {
+      const auto &d = defs[i];
+      if (d.fSection != fSettingsSection) {
+        continue;
+      }
+      if (d.fSection != lastSection) {
+        lastSection = d.fSection;
+        this->drawTextClipped(canvas, kSettingSections[static_cast<std::size_t>(
+                                          d.fSection)],
+                              px + kSettingsMargins, y,
+                              kSettingsPanelWidth - kSettingsMargins * 2, 20.0f,
+                              kAccent);
+        y += 28.0f;
+      }
+
+      const skia::SkRect row = skia::SkRect::MakeXYWH(
+          px + kSettingsMargins, y - 14.0f,
+          kSettingsPanelWidth - kSettingsMargins * 2, 46.0f);
+      fSettingRows.push_back({row, static_cast<int>(i)});
+
+      this->drawTextClipped(canvas, d.fLabel, row.fLeft, y, row.width() * 0.62f,
+                            14.0f, skia::kWhite, 0.9f);
+
+      if (d.fKind == SettingKind::kSlider) {
+        const float t = (*d.fValue - d.fMin) / (d.fMax - d.fMin);
+        const skia::SkRect track = skia::SkRect::MakeXYWH(
+            row.fLeft, y + 12.0f, row.width(), 6.0f);
+        this->fillRounded(canvas, track, 3.0f,
+                          skia::colorSetARGB(255, 58, 48, 70));
+        this->fillRounded(canvas,
+                          skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
+                                                 track.width() * t,
+                                                 track.height()),
+                          3.0f, kAccent);
+        skia::SkPaint knob;
+        knob.setAntiAlias(true);
+        knob.setColor(skia::kWhite);
+        canvas->drawCircle(track.fLeft + track.width() * t, track.centerY(),
+                           7.0f, knob);
+        const std::string text =
+            std::string(d.fSuffix) == "%"
+                ? std::format("{:.0f}%", *d.fValue * 100.0f)
+                : std::format("{:.0f}{}", *d.fValue, d.fSuffix);
+        this->drawTextClipped(canvas, text, row.fRight - 70.0f, y,
+                              70.0f, 13.0f, skia::kWhite, 0.75f);
+      } else {
+        const skia::SkRect box = skia::SkRect::MakeXYWH(
+            row.fRight - 46.0f, y - 10.0f, 40.0f, 22.0f);
+        this->fillRounded(canvas, box, 11.0f,
+                          *d.fFlag ? kAccent
+                                   : skia::colorSetARGB(255, 58, 48, 70));
+        skia::SkPaint knob;
+        knob.setAntiAlias(true);
+        knob.setColor(skia::kWhite);
+        canvas->drawCircle(*d.fFlag ? box.fRight - 11.0f : box.fLeft + 11.0f,
+                           box.centerY(), 8.0f, knob);
+      }
+      y += 52.0f;
+    }
+
+    this->drawTextClipped(canvas, "Ctrl+O to close", px + kSettingsMargins,
+                          sh - 24.0f,
+                          kSettingsPanelWidth - kSettingsMargins * 2, 12.0f,
+                          skia::kWhite, 0.5f);
+  }
+
+  // Returns true when the click was consumed by the overlay.
+  bool settingsClick(float x, float y, bool pressed) {
+    if (fSettingsSlide < 0.5f) {
+      return false;
+    }
+    if (!pressed) {
+      fDraggingSetting = -1;
+      return true;
+    }
+    for (std::size_t i = 0; i < fSidebarHits.size(); ++i) {
+      if (fSidebarHits[i].contains(x, y)) {
+        fSettingsSection = static_cast<int>(i);
+        return true;
+      }
+    }
+    const auto defs = this->settingDefs();
+    for (const auto &row : fSettingRows) {
+      if (!row.fRect.contains(x, y)) {
+        continue;
+      }
+      const auto &d = defs[static_cast<std::size_t>(row.fIndex)];
+      if (d.fKind == SettingKind::kToggle) {
+        *d.fFlag = !*d.fFlag;
+      } else {
+        fDraggingSetting = row.fIndex;
+        this->dragSetting(x);
+      }
+      return true;
+    }
+    // Clicks anywhere else on the panel are swallowed, not passed through.
+    return x < kSettingsSidebar + kSettingsPanelWidth;
+  }
+
+  void dragSetting(float x) {
+    if (fDraggingSetting < 0) {
+      return;
+    }
+    const auto defs = this->settingDefs();
+    const auto &d = defs[static_cast<std::size_t>(fDraggingSetting)];
+    if (d.fKind != SettingKind::kSlider) {
+      return;
+    }
+    for (const auto &row : fSettingRows) {
+      if (row.fIndex != fDraggingSetting) {
+        continue;
+      }
+      const float t =
+          std::clamp((x - row.fRect.fLeft) / row.fRect.width(), 0.0f, 1.0f);
+      *d.fValue = d.fMin + (d.fMax - d.fMin) * t;
+      this->applySettings();
+      return;
+    }
+  }
+
+  void applySettings() {
+    fAudio.setVolume(fMasterVolume * fMusicVolume);
+    for (auto &[name, player] : fSamples) {
+      player.setVolume(fMasterVolume * fEffectVolume);
+    }
+    // The gameplay background is pre-dimmed into a scaled bitmap, so a dim
+    // change has to re-render it.
+    this->preScaleBackground();
+  }
 
   // ---- Song select (port of lazer's carousel geometry) ------------------
   //
@@ -3029,7 +3456,8 @@ private:
     }
   }
 
-  // Cover art for a set panel, decoded once and cached with the entry.
+  // Cover art for a set panel: decoded on the loader thread and cached with
+  // the entry, so every visible panel gets one without stalling a frame.
   [[nodiscard]] skia::Sp<skia::SkImage> panelArt(int setIndex) {
     if (setIndex < 0 || setIndex >= static_cast<int>(fLibrary.size())) {
       return nullptr;
@@ -3038,29 +3466,53 @@ private:
     if (entry.fPanelArt || entry.fPanelArtTried) {
       return entry.fPanelArt;
     }
-    // Only decode art for the set the user is actually looking at, plus its
-    // neighbours; decoding every panel's background while scrolling would
-    // stall the frame.
-    if (std::abs(setIndex - fSelSet) > 2) {
-      return nullptr;
+    const auto path = entry.fPath;
+    if (path.empty()) {
+      // The command-line set is already resident; decode it directly.
+      entry.fPanelArtTried = true;
+      if (auto set = entry.fLoaded) {
+        entry.fPanelArt = this->decodeSetArt(*set);
+      }
+      return entry.fPanelArt;
     }
-    entry.fPanelArtTried = true;
-    auto set = this->setFor(setIndex);
-    if (!set) {
-      return nullptr;
-    }
-    for (const auto &info : set->fBeatmaps) {
+
+    // The archive is read on the worker; only the finished raster image
+    // crosses back. Reading the whole set just for a thumbnail is wasteful
+    // but keeps this to one code path, and the LRU keeps it bounded.
+    auto image = std::make_shared<skia::Sp<skia::SkImage>>();
+    fLoader.submit(
+        static_cast<std::uint64_t>(setIndex) | (2ull << 32),
+        [path, image, this] {
+          const auto set = loadBeatmapSet(path);
+          *image = this->decodeSetArt(set);
+        },
+        [this, setIndex, path, image] {
+          if (setIndex >= static_cast<int>(fLibrary.size()) ||
+              fLibrary[static_cast<std::size_t>(setIndex)].fPath != path) {
+            return;
+          }
+          auto &e = fLibrary[static_cast<std::size_t>(setIndex)];
+          e.fPanelArt = *image;
+          e.fPanelArtTried = true;
+        });
+    return nullptr;
+  }
+
+  [[nodiscard]] static skia::Sp<skia::SkImage>
+  decodeSetArt(const osu::BeatmapSet &set) {
+    for (const auto &info : set.fBeatmaps) {
       if (info.fMeta.fBackground.empty()) {
         continue;
       }
-      const auto bytes = set->findFile(info.fMeta.fBackground);
+      const auto bytes = set.findFile(info.fMeta.fBackground);
       if (bytes.empty()) {
         continue;
       }
-      entry.fPanelArt = loadImage(bytes);
-      break;
+      if (auto img = loadImage(bytes)) {
+        return img;
+      }
     }
-    return entry.fPanelArt;
+    return nullptr;
   }
 
   void drawDiffPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
@@ -3132,6 +3584,31 @@ private:
                     info.fLengthMs / 60000.0,
                     std::fmod(info.fLengthMs / 1000.0, 60.0)),
         pad, top + 152.0f, w - pad * 2, 14.0f, skia::kWhite, 0.7f);
+
+    // Difficulty spread: one star-coloured circle per difficulty, the
+    // selected one ringed (BeatmapTitleWedge's difficulty display).
+    float dotX = pad + 6.0f;
+    const float dotY = top + h + 22.0f;
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+      const auto &d = infos[i];
+      const bool isSelected = static_cast<int>(i) == fSelDiff;
+      skia::SkPaint dot;
+      dot.setAntiAlias(true);
+      dot.setColor(starColor(d.fStars));
+      canvas->drawCircle(dotX, dotY, isSelected ? 9.0f : 6.0f, dot);
+      if (isSelected) {
+        skia::SkPaint ring;
+        ring.setAntiAlias(true);
+        ring.setStyle(skia::kStrokeStyle);
+        ring.setStrokeWidth(2.0f);
+        ring.setColor(skia::kWhite);
+        canvas->drawCircle(dotX, dotY, 12.0f, ring);
+      }
+      dotX += isSelected ? 30.0f : 22.0f;
+      if (dotX > w - pad) {
+        break;
+      }
+    }
   }
 
   // lazer's song select footer: a row of pill buttons along the bottom.
@@ -4084,7 +4561,7 @@ private:
     skia::SkCanvas offscreen(bmp);
     skia::SkPaint paint;
     paint.setAntiAlias(false);
-    paint.setAlphaf(0.3f);
+    paint.setAlphaf(1.0f - fBackgroundDim);
     offscreen.drawImageRect(
         fBackground.get(), skia::SkRect::MakeXYWH(dx, dy, dw, dh),
         skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &paint);
