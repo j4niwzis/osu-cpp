@@ -1,9 +1,6 @@
 module;
 
 #define SK_GL 1
-
-#include <cstdint>
-#include <vector>
 #include <GL/gl.h>
 
 #include <skia/codec/SkCodec.h>
@@ -92,6 +89,11 @@ using ::SkTileMode;
 using ::SkTypeface;
 using ::SkVertices;
 
+namespace png {
+using ::SkPngEncoder::Encode;
+using Options = ::SkPngEncoder::Options;
+} // namespace png
+
 using ::SkImages::RasterFromBitmap;
 
 using ::GrBackendRenderTarget;
@@ -120,24 +122,6 @@ inline constexpr SkColor colorSetARGB(uint8_t a, uint8_t r, uint8_t g,
 }
 
 inline constexpr GrGLenum kGlRgba8 = GL_RGBA8;
-
-// Thumbnail cache support: encode a raster image to PNG bytes. Kept in the
-// wrapper so the encoder headers stay out of the module-importing side.
-[[nodiscard]] inline std::vector<std::uint8_t> encodePng(SkImage *image) {
-  if (image == nullptr) {
-    return {};
-  }
-  SkDynamicMemoryWStream stream;
-  if (!SkPngEncoder::Encode(&stream, image, SkPngEncoder::Options{})) {
-    return {};
-  }
-  auto data = stream.detachAsData();
-  if (!data || data->isEmpty()) {
-    return {};
-  }
-  const auto *bytes = static_cast<const std::uint8_t *>(data->data());
-  return std::vector<std::uint8_t>(bytes, bytes + data->size());
-}
 
 using ::kBottomLeft_GrSurfaceOrigin;
 using ::kN32_SkColorType;

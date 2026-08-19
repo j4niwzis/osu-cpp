@@ -3904,11 +3904,13 @@ private:
           // Downscale once and keep the small copy; panels are ~680px wide.
           *image = this->makeThumbnail(full);
           if (*image) {
-            const auto png = skia::encodePng((*image).get());
-            if (!png.empty()) {
+            // Raster image, so no GPU context is needed for the encode.
+            auto png = skia::png::Encode(nullptr, (*image).get(),
+                                         skia::png::Options{});
+            if (png && !png->isEmpty()) {
               std::ofstream out(thumb, std::ios::binary);
-              out.write(reinterpret_cast<const char *>(png.data()),
-                        static_cast<std::streamsize>(png.size()));
+              out.write(static_cast<const char *>(png->data()),
+                        static_cast<std::streamsize>(png->size()));
             }
           }
         },
