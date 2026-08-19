@@ -150,10 +150,45 @@ private:
   client::MapCache fMapCache;
   client::Loader fLoader;
 
-  // Filtering / sorting (lazer's FilterControl).
+  // Filtering / sorting -- lazer's FilterControl: a sheared panel hanging
+  // from the top of song select holding the search box, a difficulty range
+  // slider, and Sort / Group dropdowns.
   std::string fFilterText;
-  enum class SortMode : std::uint8_t { kTitle, kArtist, kStars, kLength };
+  // Subset of Select/Filter/SortMode.cs that is meaningful without an online
+  // database (no DateRanked / LastPlayed / RankAchieved here).
+  enum class SortMode : std::uint8_t {
+    kArtist,
+    kAuthor,
+    kDifficulty,
+    kLength,
+    kTitle,
+  };
+  static constexpr std::array<const char *, 5> kSortNames = {
+      "Artist", "Author", "Difficulty", "Length", "Title"};
+  enum class GroupMode : std::uint8_t {
+    kNone,
+    kArtist,
+    kAuthor,
+    kDifficulty,
+    kLength,
+    kTitle,
+  };
+  static constexpr std::array<const char *, 6> kGroupNames = {
+      "No grouping", "Artist", "Author", "Difficulty", "Length", "Title"};
   SortMode fSortMode = SortMode::kTitle;
+  GroupMode fGroupMode = GroupMode::kNone;
+  float fDiffRangeMin = 0.0f;   // DifficultyRangeSlider, in stars
+  float fDiffRangeMax = 10.0f;
+  static constexpr float kDiffRangeCap = 10.0f; // ">10" like lazer's upper end
+  int fDraggingRange = -1;      // 0 = lower handle, 1 = upper
+  bool fSortOpen = false;       // dropdown expansion
+  bool fGroupOpen = false;
+  skia::SkRect fSearchBoxRect = skia::SkRect::MakeEmpty();
+  skia::SkRect fSortRect = skia::SkRect::MakeEmpty();
+  skia::SkRect fGroupRect = skia::SkRect::MakeEmpty();
+  skia::SkRect fRangeRect = skia::SkRect::MakeEmpty();
+  std::vector<skia::SkRect> fSortItemRects;
+  std::vector<skia::SkRect> fGroupItemRects;
   std::vector<int> fVisible;   // indices into fLibrary passing the filter
   bool fFilterDirty = true;
   bool fLibraryLoaded = false;
@@ -175,7 +210,6 @@ private:
   skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
   skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // footer button
   skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
-  skia::SkRect fSortChip = skia::SkRect::MakeEmpty();      // footer button
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -732,6 +766,9 @@ private:
       if (fDraggingSetting >= 0) {
         this->dragSetting(ev.fX);
       }
+      if (fDraggingRange >= 0) {
+        this->dragDiffRange(ev.fX);
+      }
       if (fState == State::kPlaying && !fAutoplay) {
         fCursor = this->toPlayfield(ev.fX, ev.fY);
         this->submitTimed({this->eventGameTime(ev.fWallMs), fCursor,
@@ -949,6 +986,7 @@ private:
           this->clickAt(fMouseX, fMouseY);
         } else {
           this->settingsClick(fMouseX, fMouseY, false);
+          this->filterClick(fMouseX, fMouseY, false);
         }
       }
       return;
@@ -992,6 +1030,9 @@ private:
       break;
     }
     case State::kSongSelect:
+      if (this->filterClick(x, y, true)) {
+        return;
+      }
       if (fDownloadsChip.contains(x, y)) {
         this->openDownloads();
         return;
@@ -1002,10 +1043,6 @@ private:
       }
       if (fRandomChip.contains(x, y)) {
         this->selectRandom();
-        return;
-      }
-      if (fSortChip.contains(x, y)) {
-        this->cycleSortMode();
         return;
       }
       for (const auto &hit : fCarouselHits) {
@@ -1619,6 +1656,12 @@ private:
       return e.fInfos.empty() ? nullptr : &e.fInfos.front();
     };
     switch (fSortMode) {
+    case SortMode::kAuthor:
+      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+        const auto *i = key(e);
+        return i ? toLowerAscii(i->fMeta.fCreator) : std::string{};
+      });
+      break;
     case SortMode::kTitle:
       std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
@@ -1631,7 +1674,7 @@ private:
         return i ? toLowerAscii(i->fMeta.fArtist) : std::string{};
       });
       break;
-    case SortMode::kStars:
+    case SortMode::kDifficulty:
       std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
         return i ? i->fStars : 0.0;
@@ -1703,6 +1746,11 @@ private:
   [[nodiscard]] bool matchesCriteria(const client::Criteria &c,
                                      const osu::Metadata &setMeta,
                                      const osu::BeatmapInfo &info) const {
+    // DifficultyRangeSlider is an additional constraint on top of the query.
+    if (info.fStars < fDiffRangeMin ||
+        (fDiffRangeMax < kDiffRangeCap && info.fStars > fDiffRangeMax)) {
+      return false;
+    }
     if (!c.fStars.matches(info.fStars) || !c.fAr.matches(info.fDiff.fAr) ||
         !c.fCs.matches(info.fDiff.fCs) || !c.fOd.matches(info.fDiff.fOd) ||
         !c.fHp.matches(info.fDiff.fHp) ||
@@ -3201,7 +3249,7 @@ private:
           filtered ? "Backspace to edit, Esc to clear"
                    : "Drag a .osz onto the window, or press F1 to browse",
           sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
-      this->drawFilterBox(canvas);
+      this->drawFilterControl(canvas);
       this->drawSelectFooter(canvas);
       this->present();
       return;
@@ -3296,57 +3344,270 @@ private:
     }
     canvas->restore();
 
-    this->drawFilterBox(canvas);
+    this->drawFilterControl(canvas);
     this->drawSelectFooter(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
   }
 
-  // lazer's FilterControl: search field top-right with the match count and
-  // the active sort mode.
-  void drawFilterBox(skia::SkCanvas *canvas) {
+  // ---- FilterControl -----------------------------------------------------
+  //
+  // lazer hangs a sheared panel from the top of song select (its background
+  // is a WedgeBackground mirrored on X, reaching ~141px down) containing, top
+  // to bottom: the search box, a difficulty range slider next to a "show
+  // converts" toggle, and the Sort / Group / Collections dropdown row. The
+  // controls themselves are drawn upright -- lazer shears the panel and
+  // un-shears the children.
+  static constexpr float kFilterShear = 0.15f;   // OsuGame.SHEAR
+  static constexpr float kFilterHeight = 141.0f; // HEIGHT_FROM_SCREEN_TOP
+
+  void drawFilterControl(skia::SkCanvas *canvas) {
     const float sw = static_cast<float>(fScreenW);
-    const float w = std::min(420.0f, sw * 0.32f);
-    const skia::SkRect box = skia::SkRect::MakeXYWH(sw - w - 20.0f, 16.0f, w, 42.0f);
-    this->fillRounded(canvas, box, 8.0f, kPanelBg);
-    this->strokeRounded(canvas, box, 8.0f,
-                        fFilterText.empty() ? kCardSel : kAccent, 2.0f);
+    const float panelW = std::min(760.0f, sw * 0.56f);
+    const float left = sw - panelW;
+    const float h = kFilterHeight;
+    const float shear = kFilterShear * h;
+
+    // Sheared background wedge, anchored top-right and mirrored, as lazer's
+    // WedgeBackground with Scale(-1, 1).
+    skia::SkPathBuilder wedge;
+    wedge.moveTo(left + shear, 0.0f);
+    wedge.lineTo(sw, 0.0f);
+    wedge.lineTo(sw, h);
+    wedge.lineTo(left, h);
+    wedge.close();
+    skia::SkPaint bg;
+    bg.setAntiAlias(true);
+    bg.setColor(skia::colorSetARGB(232, 24, 19, 32));
+    canvas->drawPath(wedge.detach(), bg);
+
+    const float pad = 16.0f;
+    const float contentL = left + shear + pad;
+    const float contentR = sw - 40.0f; // lazer keeps a 40px right margin
+
+    // ---- Search box.
+    fSearchBoxRect =
+        skia::SkRect::MakeLTRB(contentL, 12.0f, contentR, 44.0f);
+    this->fillRounded(canvas, fSearchBoxRect, 6.0f,
+                      skia::colorSetARGB(255, 40, 32, 52));
+    this->strokeRounded(canvas, fSearchBoxRect, 6.0f,
+                        fFilterText.empty() ? skia::colorSetARGB(255, 70, 58, 88)
+                                            : kAccent,
+                        2.0f);
     const bool caret = std::fmod(wallMs(), 1000.0) < 600.0;
     if (fFilterText.empty()) {
-      this->drawTextClipped(canvas, "type to search", box.fLeft + 14.0f,
-                            box.centerY() + 6.0f, w - 28.0f, 16.0f,
-                            skia::kWhite, 0.45f);
+      this->drawTextClipped(canvas, "type to search", fSearchBoxRect.fLeft + 12.0f,
+                            fSearchBoxRect.centerY() + 5.0f,
+                            fSearchBoxRect.width() - 100.0f, 15.0f,
+                            skia::kWhite, 0.42f);
     } else {
       this->drawTextClipped(canvas, fFilterText + (caret ? "|" : " "),
-                            box.fLeft + 14.0f, box.centerY() + 6.0f, w - 28.0f,
-                            16.0f, skia::kWhite);
+                            fSearchBoxRect.fLeft + 12.0f,
+                            fSearchBoxRect.centerY() + 5.0f,
+                            fSearchBoxRect.width() - 100.0f, 15.0f,
+                            skia::kWhite);
     }
-    this->drawTextClipped(
-        canvas,
-        std::format("{} of {} sets   sort: {}", fVisible.size(),
-                    fLibrary.size(), sortModeName()),
-        box.fLeft, box.fBottom + 18.0f, w, 13.0f, skia::kWhite, 0.6f);
-    // Query syntax hint, as lazer shows in its filter tooltip.
-    this->drawTextClipped(canvas, "stars>5  ar<9  length<3:00  creator=peppy",
-                          box.fLeft, box.fBottom + 36.0f, w, 12.0f, kAccent2,
-                          0.55f);
+    const std::string count =
+        std::format("{} sets", fVisible.size());
+    this->drawTextClipped(canvas, count, fSearchBoxRect.fRight - 84.0f,
+                          fSearchBoxRect.centerY() + 5.0f, 80.0f, 13.0f,
+                          skia::kWhite, 0.55f);
+
+    // ---- Difficulty range slider (two handles, min range 0.1 as in lazer).
+    const float rangeW = (contentR - contentL) * 0.62f;
+    fRangeRect = skia::SkRect::MakeXYWH(contentL, 58.0f, rangeW, 26.0f);
+    this->drawDifficultyRange(canvas, fRangeRect);
+
+    // ---- Sort / Group dropdowns.
+    const float ddY = 96.0f;
+    const float ddW = std::min(180.0f, (contentR - contentL - 10.0f) * 0.5f);
+    fSortRect = skia::SkRect::MakeXYWH(contentL, ddY, ddW, 30.0f);
+    fGroupRect = skia::SkRect::MakeXYWH(contentL + ddW + 10.0f, ddY, ddW, 30.0f);
+    this->drawDropdown(canvas, fSortRect, "Sort",
+                       kSortNames[static_cast<std::size_t>(fSortMode)],
+                       fSortOpen);
+    this->drawDropdown(canvas, fGroupRect, "Group",
+                       kGroupNames[static_cast<std::size_t>(fGroupMode)],
+                       fGroupOpen);
+
+    // Expanded lists draw last so they sit above the carousel.
+    fSortItemRects.clear();
+    fGroupItemRects.clear();
+    if (fSortOpen) {
+      this->drawDropdownItems(canvas, fSortRect,
+                              std::span<const char *const>(kSortNames),
+                              static_cast<int>(fSortMode), fSortItemRects);
+    }
+    if (fGroupOpen) {
+      this->drawDropdownItems(canvas, fGroupRect,
+                              std::span<const char *const>(kGroupNames),
+                              static_cast<int>(fGroupMode), fGroupItemRects);
+    }
   }
 
-  [[nodiscard]] const char *sortModeName() const {
-    switch (fSortMode) {
-    case SortMode::kTitle: return "title";
-    case SortMode::kArtist: return "artist";
-    case SortMode::kStars: return "difficulty";
-    case SortMode::kLength: return "length";
+  void drawDifficultyRange(skia::SkCanvas *canvas, const skia::SkRect &r) {
+    this->drawTextClipped(canvas, "Difficulty", r.fLeft, r.fTop + 2.0f, 90.0f,
+                          12.0f, skia::kWhite, 0.6f);
+    const skia::SkRect track =
+        skia::SkRect::MakeXYWH(r.fLeft, r.fTop + 14.0f, r.width(), 6.0f);
+    this->fillRounded(canvas, track, 3.0f, skia::colorSetARGB(255, 52, 44, 66));
+    const float t0 = fDiffRangeMin / kDiffRangeCap;
+    const float t1 = fDiffRangeMax / kDiffRangeCap;
+    this->fillRounded(
+        canvas,
+        skia::SkRect::MakeLTRB(track.fLeft + track.width() * t0, track.fTop,
+                               track.fLeft + track.width() * t1, track.fBottom),
+        3.0f, kAccent);
+    skia::SkPaint knob;
+    knob.setAntiAlias(true);
+    knob.setColor(skia::kWhite);
+    canvas->drawCircle(track.fLeft + track.width() * t0, track.centerY(), 7.0f,
+                       knob);
+    canvas->drawCircle(track.fLeft + track.width() * t1, track.centerY(), 7.0f,
+                       knob);
+    const std::string label =
+        fDiffRangeMax >= kDiffRangeCap
+            ? std::format("{:.1f} - ∞", fDiffRangeMin)
+            : std::format("{:.1f} - {:.1f}", fDiffRangeMin, fDiffRangeMax);
+    this->drawTextClipped(canvas, label, r.fRight - 96.0f, r.fTop + 2.0f, 96.0f,
+                          12.0f, kAccent2, 0.9f);
+  }
+
+  void drawDropdown(skia::SkCanvas *canvas, const skia::SkRect &r,
+                    const char *label, const char *value, bool open) {
+    const bool hover = r.contains(fMouseX, fMouseY);
+    this->fillRounded(canvas, r, 6.0f,
+                      hover || open ? skia::colorSetARGB(255, 56, 46, 72)
+                                    : skia::colorSetARGB(255, 40, 32, 52));
+    this->strokeRounded(canvas, r, 6.0f,
+                        open ? kAccent : skia::colorSetARGB(255, 70, 58, 88),
+                        open ? 2.0f : 1.0f);
+    this->drawTextClipped(canvas, label, r.fLeft + 10.0f, r.centerY() + 4.0f,
+                          52.0f, 12.0f, skia::kWhite, 0.5f);
+    this->drawTextClipped(canvas, value, r.fLeft + 62.0f, r.centerY() + 4.0f,
+                          r.width() - 84.0f, 13.0f, skia::kWhite, 0.95f);
+    // Chevron.
+    skia::SkPaint tri;
+    tri.setAntiAlias(true);
+    tri.setColor(skia::kWhite);
+    tri.setAlphaf(0.7f);
+    skia::SkPathBuilder c;
+    const float cx = r.fRight - 14.0f;
+    const float cy = r.centerY();
+    if (open) {
+      c.moveTo(cx - 5.0f, cy + 2.5f);
+      c.lineTo(cx + 5.0f, cy + 2.5f);
+      c.lineTo(cx, cy - 3.5f);
+    } else {
+      c.moveTo(cx - 5.0f, cy - 2.5f);
+      c.lineTo(cx + 5.0f, cy - 2.5f);
+      c.lineTo(cx, cy + 3.5f);
     }
-    return "?";
+    c.close();
+    canvas->drawPath(c.detach(), tri);
+  }
+
+  void drawDropdownItems(skia::SkCanvas *canvas, const skia::SkRect &anchor,
+                         std::span<const char *const> items, int current,
+                         std::vector<skia::SkRect> &out) {
+    const float itemH = 26.0f;
+    const skia::SkRect box = skia::SkRect::MakeXYWH(
+        anchor.fLeft, anchor.fBottom + 4.0f, anchor.width(),
+        itemH * static_cast<float>(items.size()) + 8.0f);
+    this->fillRounded(canvas, box, 6.0f, skia::colorSetARGB(248, 30, 24, 40));
+    this->strokeRounded(canvas, box, 6.0f, kAccent, 1.5f);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      const skia::SkRect row = skia::SkRect::MakeXYWH(
+          box.fLeft + 4.0f, box.fTop + 4.0f + static_cast<float>(i) * itemH,
+          box.width() - 8.0f, itemH);
+      out.push_back(row);
+      const bool hover = row.contains(fMouseX, fMouseY);
+      const bool active = static_cast<int>(i) == current;
+      if (hover || active) {
+        this->fillRounded(canvas, row, 4.0f,
+                          active ? kAccent : skia::colorSetARGB(255, 52, 42, 66));
+      }
+      this->drawTextClipped(canvas, items[i], row.fLeft + 10.0f,
+                            row.centerY() + 4.0f, row.width() - 20.0f, 13.0f,
+                            active ? skia::colorSetARGB(255, 20, 16, 26)
+                                   : skia::kWhite,
+                            0.95f);
+    }
+  }
+
+  // Returns true when the filter control consumed the click.
+  bool filterClick(float x, float y, bool pressed) {
+    if (!pressed) {
+      fDraggingRange = -1;
+      return false;
+    }
+    for (std::size_t i = 0; i < fSortItemRects.size(); ++i) {
+      if (fSortItemRects[i].contains(x, y)) {
+        fSortMode = static_cast<SortMode>(i);
+        fSortOpen = false;
+        this->sortLibrary();
+        this->rebuildVisible();
+        return true;
+      }
+    }
+    for (std::size_t i = 0; i < fGroupItemRects.size(); ++i) {
+      if (fGroupItemRects[i].contains(x, y)) {
+        fGroupMode = static_cast<GroupMode>(i);
+        fGroupOpen = false;
+        this->sortLibrary(); // grouping reuses the sort order for now
+        this->rebuildVisible();
+        return true;
+      }
+    }
+    if (fSortRect.contains(x, y)) {
+      fSortOpen = !fSortOpen;
+      fGroupOpen = false;
+      return true;
+    }
+    if (fGroupRect.contains(x, y)) {
+      fGroupOpen = !fGroupOpen;
+      fSortOpen = false;
+      return true;
+    }
+    if (fRangeRect.contains(x, y)) {
+      const skia::SkRect track = skia::SkRect::MakeXYWH(
+          fRangeRect.fLeft, fRangeRect.fTop + 14.0f, fRangeRect.width(), 6.0f);
+      const float t =
+          std::clamp((x - track.fLeft) / track.width(), 0.0f, 1.0f) *
+          kDiffRangeCap;
+      fDraggingRange =
+          std::abs(t - fDiffRangeMin) <= std::abs(t - fDiffRangeMax) ? 0 : 1;
+      this->dragDiffRange(x);
+      return true;
+    }
+    if (fSortOpen || fGroupOpen) {
+      fSortOpen = fGroupOpen = false;
+      return true;
+    }
+    return fSearchBoxRect.contains(x, y);
   }
 
   void cycleSortMode() {
-    fSortMode = static_cast<SortMode>(
-        (static_cast<int>(fSortMode) + 1) % 4);
+    fSortMode = static_cast<SortMode>((static_cast<int>(fSortMode) + 1) %
+                                      static_cast<int>(kSortNames.size()));
     this->sortLibrary();
     this->rebuildVisible();
+  }
+
+  void dragDiffRange(float x) {
+    if (fDraggingRange < 0) {
+      return;
+    }
+    const float t =
+        std::clamp((x - fRangeRect.fLeft) / fRangeRect.width(), 0.0f, 1.0f) *
+        kDiffRangeCap;
+    constexpr float kMinRange = 0.1f; // DifficultyRangeSlider.MinRange
+    if (fDraggingRange == 0) {
+      fDiffRangeMin = std::min(t, fDiffRangeMax - kMinRange);
+    } else {
+      fDiffRangeMax = std::max(t, fDiffRangeMin + kMinRange);
+    }
+    fFilterDirty = true;
   }
 
   // Set panels carry the beatmap's cover art behind the text, as lazer's
@@ -3626,7 +3887,6 @@ private:
     };
     const FooterBtn btns[] = {
         {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
-        {"sort", skia::colorSetARGB(255, 238, 170, 0), &fSortChip},
         {"import", kAccent, &fImportChip},
         {"browse", skia::colorSetARGB(255, 165, 204, 0), &fDownloadsChip},
     };
@@ -3643,8 +3903,7 @@ private:
     }
     this->drawTextCentered(
         canvas,
-        "Enter play   F1 browse   F2 random   F3 sort   F5 import   "
-        "type to search",
+        "Enter play   F1 browse   F2 random   F5 import   Ctrl+O settings",
         sw * 0.72f, sh - 24.0f, 14.0f, skia::kWhite, 0.7f);
   }
 
