@@ -304,20 +304,19 @@ private:
 
   // ---- Settings overlay (SettingsPanel: 70px sidebar + 400px panel,
   // sliding in from the left over 600 ms, sections with a 30px header).
-  static constexpr float kSettingsSidebar = 70.0f;
-  static constexpr float kSettingsPanelWidth = 400.0f;
-  static constexpr float kSettingsMargins = 20.0f;
   bool fSettingsOpen = false;
-  float fSettingsSlide = 0.0f; // 0 hidden .. 1 fully out
+  float fSettingsSlide = 0.0f;    // 0 hidden .. 1 fully out
+  double fSettingsEnterWall = 0.0;
   int fSettingsSection = 0;
-  float fSettingsScroll = 0.0f;
   int fDraggingSetting = -1;
   struct SettingRow {
     skia::SkRect fRect;
     int fIndex;
   };
   std::vector<SettingRow> fSettingRows;
+  std::vector<SettingRow> fRestoreHits; // "restore default" hit areas
   std::vector<skia::SkRect> fSidebarHits;
+  std::array<float, 3> fSidebarGrow{}; // selection indicator animation
 
   // The settings themselves.
   float fMasterVolume = 1.0f;
@@ -1524,9 +1523,12 @@ private:
       }
       return;
     }
-    fMenuMusicForSet = fSelSet;
     auto set = this->setFor(fSelSet);
-    if (!set || set->fBeatmaps.empty()) {
+    if (!set) {
+      return; // still loading; try again next frame
+    }
+    fMenuMusicForSet = fSelSet;
+    if (set->fBeatmaps.empty()) {
       fAudio.stop();
       return;
     }
@@ -2951,7 +2953,10 @@ private:
       b.lineTo(cx + tw * 0.5f, cy + th * 0.5f);
       b.close();
       p.setStrokeWidth(std::max(1.0f, tw * 0.009f * 4.0f));
-      const float shade = t.fY; // gradient from #ff66ab down to #b6346f
+      // Gradient #ff66ab -> #b6346f across the logo. Clamp: fY runs outside
+      // [0,1] while a particle is above the top edge or waiting to respawn,
+      // and the unclamped lerp wrapped the colour bytes (hence blue tips).
+      const float shade = std::clamp(t.fY, 0.0f, 1.0f);
       p.setColor(skia::colorSetARGB(
           255, static_cast<std::uint8_t>(0xff + (0xb6 - 0xff) * shade),
           static_cast<std::uint8_t>(0x66 + (0x34 - 0x66) * shade),
@@ -3096,135 +3101,215 @@ private:
 
   // ---- Song select ------------------------------------------------------
 
-  // ---- Settings overlay (SettingsPanel) ---------------------------------
+  // ---- Settings overlay ---------------------------------------------------
   //
-  // lazer's settings are a left-docked panel: a narrow icon sidebar plus a
-  // 400px content column of sections, each a header followed by controls,
-  // sliding in from the left. Ctrl+O toggles it, as in lazer.
+  // SettingsPanel: a 170px sidebar (SettingsSidebar.EXPANDED_WIDTH) plus a
+  // 400px content column (PANEL_WIDTH), both sliding in from the left over
+  // TRANSITION_LENGTH = 600 ms with Easing.OutQuint, the whole overlay fading
+  // over half that. Sidebar entries are 46px tall (SidebarIconButton) with a
+  // white pill selection indicator that grows from 4px to 18px on
+  // OutElasticHalf. Items sit under section headers with CONTENT_MARGINS = 20
+  // and ITEM_SPACING = 14, and each carries the pink "modified" bar that
+  // SettingsItem shows when a value differs from its default -- clicking it
+  // restores the default.
 
   enum class SettingKind : std::uint8_t { kSlider, kToggle };
   struct SettingDef {
     int fSection;
     const char *fLabel;
     SettingKind fKind;
-    float *fValue;   // slider target
-    bool *fFlag;     // toggle target
+    float *fValue;
+    bool *fFlag;
     float fMin, fMax;
+    float fDefaultValue;
+    bool fDefaultFlag;
     const char *fSuffix;
   };
 
   [[nodiscard]] std::vector<SettingDef> settingDefs() {
     return {
         {0, "Master volume", SettingKind::kSlider, &fMasterVolume, nullptr,
-         0.0f, 1.0f, "%"},
+         0.0f, 1.0f, 1.0f, false, "%"},
         {0, "Music volume", SettingKind::kSlider, &fMusicVolume, nullptr, 0.0f,
-         1.0f, "%"},
+         1.0f, 0.8f, false, "%"},
         {0, "Effect volume", SettingKind::kSlider, &fEffectVolume, nullptr,
-         0.0f, 1.0f, "%"},
+         0.0f, 1.0f, 1.0f, false, "%"},
         {0, "Audio offset", SettingKind::kSlider, &fAudioOffsetMs, nullptr,
-         -200.0f, 200.0f, " ms"},
+         -200.0f, 200.0f, 0.0f, false, " ms"},
         {1, "Background dim", SettingKind::kSlider, &fBackgroundDim, nullptr,
-         0.0f, 1.0f, "%"},
+         0.0f, 1.0f, 0.7f, false, "%"},
         {1, "Show FPS counter", SettingKind::kToggle, nullptr, &fShowFps, 0.0f,
-         1.0f, ""},
+         1.0f, 0.0f, false, ""},
         {2, "Cursor size", SettingKind::kSlider, &fCursorSize, nullptr, 0.5f,
-         2.0f, "x"},
+         2.0f, 1.0f, false, "x"},
         {2, "Snaking sliders", SettingKind::kToggle, nullptr, &fSnakeSliders,
-         0.0f, 1.0f, ""},
+         0.0f, 1.0f, 0.0f, true, ""},
     };
   }
 
   static constexpr std::array<const char *, 3> kSettingSections = {
       "Audio", "Graphics", "Gameplay"};
+  static constexpr std::array<const char *, 3> kSettingIcons = {"♪", "▣", "◎"};
+
+  // SettingsPanel geometry.
+  static constexpr float kSidebarWidth = 170.0f;  // EXPANDED_WIDTH
+  static constexpr float kPanelWidth = 400.0f;    // PANEL_WIDTH
+  static constexpr float kContentMargins = 20.0f; // CONTENT_MARGINS
+  static constexpr float kItemSpacing = 14.0f;    // ITEM_SPACING
+  static constexpr float kSidebarItemHeight = 46.0f;
+  static constexpr float kTransitionMs = 600.0f;  // TRANSITION_LENGTH
 
   void toggleSettings() {
     fSettingsOpen = !fSettingsOpen;
-    std::println(std::cerr, "[ui] settings {}",
-                 fSettingsOpen ? "opened" : "closed");
+    if (fSettingsOpen) {
+      fSettingsEnterWall = wallMs();
+    }
+  }
+
+  [[nodiscard]] static float easeOutElasticHalf(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    // osu!framework's OutElasticHalf: one overshoot, no oscillation tail.
+    constexpr float p = 0.5f;
+    return std::pow(2.0f, -10.0f * t) *
+               std::sin((t - p / 4.0f) * (2.0f * std::numbers::pi_v<float>) /
+                        p) +
+           1.0f;
   }
 
   void drawSettings(skia::SkCanvas *canvas) {
-    fSettingsSlide =
-        this->approach(fSettingsSlide, fSettingsOpen ? 1.0f : 0.0f, 180.0f);
-    fSettingRows.clear();
-    fSidebarHits.clear();
-    if (fSettingsSlide < 0.002f) {
+    // Position eases over 600 ms; the fade takes half that, per SettingsPanel.
+    const float progress = static_cast<float>(
+        (wallMs() - fSettingsEnterWall) / kTransitionMs);
+    const float target = fSettingsOpen ? 1.0f : 0.0f;
+    const float eased = easeOutQuintT(std::clamp(progress, 0.0f, 1.0f));
+    fSettingsSlide = fSettingsOpen ? eased : 1.0f - eased;
+    if (!fSettingsOpen && fSettingsSlide <= 0.001f) {
+      fSettingRows.clear();
+      fSidebarHits.clear();
+      fRestoreHits.clear();
       return;
     }
 
     const float sh = static_cast<float>(fScreenH);
-    const float full = kSettingsSidebar + kSettingsPanelWidth;
-    const float x0 = -full * (1.0f - easeOutQuintT(fSettingsSlide));
+    const float sw = static_cast<float>(fScreenW);
+    const float full = kSidebarWidth + kPanelWidth;
+    const float x0 = -full * (1.0f - fSettingsSlide);
+    const float fade = std::min(1.0f, fSettingsSlide * 2.0f);
 
-    // Sidebar.
+    fSettingRows.clear();
+    fSidebarHits.clear();
+    fRestoreHits.clear();
+
+    // Dim behind the panel, as the overlay's scrim does.
+    skia::SkPaint scrim;
+    scrim.setColor(skia::colorSetARGB(
+        static_cast<std::uint8_t>(fade * 110.0f), 0, 0, 0));
+    canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), scrim);
+
+    // ---- Sidebar (Background5-ish, its own slide).
     skia::SkPaint bar;
-    bar.setColor(skia::colorSetARGB(245, 20, 16, 26));
-    canvas->drawRect(
-        skia::SkRect::MakeXYWH(x0, 0.0f, kSettingsSidebar, sh), bar);
+    bar.setColor(skia::colorSetARGB(static_cast<std::uint8_t>(fade * 252.0f),
+                                    23, 19, 30));
+    canvas->drawRect(skia::SkRect::MakeXYWH(x0, 0.0f, kSidebarWidth, sh), bar);
+
+    float sy = 70.0f;
     for (std::size_t i = 0; i < kSettingSections.size(); ++i) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(
-          x0, 90.0f + static_cast<float>(i) * 74.0f, kSettingsSidebar, 66.0f);
+      const skia::SkRect r = skia::SkRect::MakeXYWH(x0, sy, kSidebarWidth,
+                                                    kSidebarItemHeight);
       fSidebarHits.push_back(r);
       const bool active = static_cast<int>(i) == fSettingsSection;
-      if (active) {
-        skia::SkPaint sel;
-        sel.setColor(kAccent);
-        canvas->drawRect(
-            skia::SkRect::MakeXYWH(r.fLeft, r.fTop, 4.0f, r.height()), sel);
+      const bool hover = r.contains(fMouseX, fMouseY);
+
+      // Selection indicator: a white pill on the left edge, 4px tall when
+      // inactive, springing to 18px when selected.
+      float &grow = fSidebarGrow[i];
+      grow = this->approach(grow, active ? 1.0f : 0.0f, 90.0f);
+      const float indicatorH = 4.0f + 14.0f * easeOutElasticHalf(grow);
+      if (grow > 0.01f) {
+        const skia::SkRect ind = skia::SkRect::MakeXYWH(
+            r.fLeft + 6.0f, r.centerY() - indicatorH * 0.5f, 4.0f, indicatorH);
+        this->fillRounded(canvas, ind, 2.0f, skia::kWhite);
       }
-      this->drawTextCentered(canvas, kSettingSections[i], r.centerX(),
-                             r.centerY() + 5.0f, 12.0f,
-                             active ? kAccent : skia::kWhite,
-                             active ? 1.0f : 0.7f);
+
+      // Icon then label, greyed when inactive (Gray(0.6) / Light3).
+      const skia::SkColor tint =
+          active ? skia::kWhite
+                 : (hover ? skia::colorSetARGB(255, 200, 195, 210)
+                          : skia::colorSetARGB(255, 153, 153, 153));
+      this->drawTextClipped(canvas, kSettingIcons[i], r.fLeft + 26.0f,
+                            r.centerY() + 7.0f, 24.0f, 18.0f, tint, fade);
+      this->drawTextClipped(canvas, kSettingSections[i], r.fLeft + 56.0f,
+                            r.centerY() + 6.0f, kSidebarWidth - 66.0f, 15.0f,
+                            tint, fade);
+      sy += kSidebarItemHeight + 5.0f;
     }
 
-    // Content panel.
-    const float px = x0 + kSettingsSidebar;
+    // ---- Content column.
+    const float px = x0 + kSidebarWidth;
     skia::SkPaint panel;
-    panel.setColor(skia::colorSetARGB(245, 28, 22, 36));
+    panel.setColor(skia::colorSetARGB(static_cast<std::uint8_t>(fade * 250.0f),
+                                      31, 25, 40));
     canvas->drawRect(
-        skia::SkRect::MakeXYWH(px, 0.0f, kSettingsPanelWidth, sh), panel);
+        skia::SkRect::MakeXYWH(px, 0.0f, kPanelWidth, sh), panel);
 
-    this->drawTextClipped(canvas, "settings", px + kSettingsMargins, 56.0f,
-                          kSettingsPanelWidth - kSettingsMargins * 2, 28.0f,
-                          skia::kWhite);
+    this->drawTextClipped(canvas, "settings", px + kContentMargins, 56.0f,
+                          kPanelWidth - kContentMargins * 2, 30.0f,
+                          skia::kWhite, fade);
     this->drawTextClipped(canvas, "change the way osu! behaves",
-                          px + kSettingsMargins, 78.0f,
-                          kSettingsPanelWidth - kSettingsMargins * 2, 13.0f,
-                          skia::kWhite, 0.6f);
+                          px + kContentMargins, 78.0f,
+                          kPanelWidth - kContentMargins * 2, 13.0f,
+                          skia::kWhite, fade * 0.6f);
 
     const auto defs = this->settingDefs();
-    float y = 120.0f;
-    int lastSection = -1;
+    float y = 128.0f;
+    bool headerDrawn = false;
     for (std::size_t i = 0; i < defs.size(); ++i) {
       const auto &d = defs[i];
       if (d.fSection != fSettingsSection) {
         continue;
       }
-      if (d.fSection != lastSection) {
-        lastSection = d.fSection;
-        this->drawTextClipped(canvas, kSettingSections[static_cast<std::size_t>(
-                                          d.fSection)],
-                              px + kSettingsMargins, y,
-                              kSettingsPanelWidth - kSettingsMargins * 2, 20.0f,
-                              kAccent);
-        y += 28.0f;
+      if (!headerDrawn) {
+        headerDrawn = true;
+        this->drawTextClipped(
+            canvas,
+            kSettingSections[static_cast<std::size_t>(d.fSection)],
+            px + kContentMargins, y, kPanelWidth - kContentMargins * 2, 22.0f,
+            kAccent, fade);
+        y += 34.0f;
       }
 
       const skia::SkRect row = skia::SkRect::MakeXYWH(
-          px + kSettingsMargins, y - 14.0f,
-          kSettingsPanelWidth - kSettingsMargins * 2, 46.0f);
+          px + kContentMargins, y - 16.0f,
+          kPanelWidth - kContentMargins * 2, 44.0f);
       fSettingRows.push_back({row, static_cast<int>(i)});
 
-      this->drawTextClipped(canvas, d.fLabel, row.fLeft, y, row.width() * 0.62f,
-                            14.0f, skia::kWhite, 0.9f);
+      // Modified indicator: SettingsItem shows a coloured bar at the left of
+      // an item whose value differs from the default; clicking it restores.
+      const bool modified =
+          d.fKind == SettingKind::kSlider
+              ? std::abs(*d.fValue - d.fDefaultValue) > 1e-4f
+              : *d.fFlag != d.fDefaultFlag;
+      if (modified) {
+        const skia::SkRect ind = skia::SkRect::MakeXYWH(
+            row.fLeft - 12.0f, row.fTop + 4.0f, 4.0f, row.height() - 8.0f);
+        this->fillRounded(canvas, ind, 2.0f, kAccent);
+        fRestoreHits.push_back({skia::SkRect::MakeXYWH(row.fLeft - 18.0f,
+                                                       row.fTop, 16.0f,
+                                                       row.height()),
+                                static_cast<int>(i)});
+      }
+
+      this->drawTextClipped(canvas, d.fLabel, row.fLeft, y, row.width() * 0.6f,
+                            14.0f, skia::kWhite, fade * 0.95f);
 
       if (d.fKind == SettingKind::kSlider) {
         const float t = (*d.fValue - d.fMin) / (d.fMax - d.fMin);
         const skia::SkRect track = skia::SkRect::MakeXYWH(
-            row.fLeft, y + 12.0f, row.width(), 6.0f);
+            row.fLeft, y + 14.0f, row.width(), 6.0f);
         this->fillRounded(canvas, track, 3.0f,
-                          skia::colorSetARGB(255, 58, 48, 70));
+                          skia::colorSetARGB(
+                              static_cast<std::uint8_t>(fade * 255.0f), 58, 48,
+                              70));
         this->fillRounded(canvas,
                           skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
                                                  track.width() * t,
@@ -3233,36 +3318,39 @@ private:
         skia::SkPaint knob;
         knob.setAntiAlias(true);
         knob.setColor(skia::kWhite);
+        knob.setAlphaf(fade);
         canvas->drawCircle(track.fLeft + track.width() * t, track.centerY(),
                            7.0f, knob);
         const std::string text =
             std::string(d.fSuffix) == "%"
                 ? std::format("{:.0f}%", *d.fValue * 100.0f)
                 : std::format("{:.0f}{}", *d.fValue, d.fSuffix);
-        this->drawTextClipped(canvas, text, row.fRight - 70.0f, y,
-                              70.0f, 13.0f, skia::kWhite, 0.75f);
+        this->drawTextClipped(canvas, text, row.fRight - 70.0f, y, 70.0f, 13.0f,
+                              skia::kWhite, fade * 0.75f);
+        y += 44.0f + kItemSpacing;
       } else {
         const skia::SkRect box = skia::SkRect::MakeXYWH(
-            row.fRight - 46.0f, y - 10.0f, 40.0f, 22.0f);
+            row.fRight - 46.0f, y - 12.0f, 40.0f, 22.0f);
         this->fillRounded(canvas, box, 11.0f,
                           *d.fFlag ? kAccent
-                                   : skia::colorSetARGB(255, 58, 48, 70));
+                                   : skia::colorSetARGB(
+                                         static_cast<std::uint8_t>(fade * 255.0f),
+                                         58, 48, 70));
         skia::SkPaint knob;
         knob.setAntiAlias(true);
         knob.setColor(skia::kWhite);
+        knob.setAlphaf(fade);
         canvas->drawCircle(*d.fFlag ? box.fRight - 11.0f : box.fLeft + 11.0f,
                            box.centerY(), 8.0f, knob);
+        y += 30.0f + kItemSpacing;
       }
-      y += 52.0f;
     }
 
-    this->drawTextClipped(canvas, "Ctrl+O to close", px + kSettingsMargins,
-                          sh - 24.0f,
-                          kSettingsPanelWidth - kSettingsMargins * 2, 12.0f,
-                          skia::kWhite, 0.5f);
+    this->drawTextClipped(canvas, "Ctrl+O to close", px + kContentMargins,
+                          sh - 24.0f, kPanelWidth - kContentMargins * 2, 12.0f,
+                          skia::kWhite, fade * 0.5f);
   }
 
-  // Returns true when the click was consumed by the overlay.
   bool settingsClick(float x, float y, bool pressed) {
     if (fSettingsSlide < 0.5f) {
       return false;
@@ -3271,13 +3359,26 @@ private:
       fDraggingSetting = -1;
       return true;
     }
+    const auto defs = this->settingDefs();
+    for (const auto &hit : fRestoreHits) {
+      if (!hit.fRect.contains(x, y)) {
+        continue;
+      }
+      const auto &d = defs[static_cast<std::size_t>(hit.fIndex)];
+      if (d.fKind == SettingKind::kSlider) {
+        *d.fValue = d.fDefaultValue;
+      } else {
+        *d.fFlag = d.fDefaultFlag;
+      }
+      this->applySettings();
+      return true;
+    }
     for (std::size_t i = 0; i < fSidebarHits.size(); ++i) {
       if (fSidebarHits[i].contains(x, y)) {
         fSettingsSection = static_cast<int>(i);
         return true;
       }
     }
-    const auto defs = this->settingDefs();
     for (const auto &row : fSettingRows) {
       if (!row.fRect.contains(x, y)) {
         continue;
@@ -3285,14 +3386,14 @@ private:
       const auto &d = defs[static_cast<std::size_t>(row.fIndex)];
       if (d.fKind == SettingKind::kToggle) {
         *d.fFlag = !*d.fFlag;
+        this->applySettings();
       } else {
         fDraggingSetting = row.fIndex;
         this->dragSetting(x);
       }
       return true;
     }
-    // Clicks anywhere else on the panel are swallowed, not passed through.
-    return x < kSettingsSidebar + kSettingsPanelWidth;
+    return x < kSidebarWidth + kPanelWidth;
   }
 
   void dragSetting(float x) {
@@ -3333,19 +3434,12 @@ private:
   // Panel.CORNER_RADIUS = 10, active_x_offset = 25 (doubled for unselected
   // difficulty panels, quadrupled for unselected sets, plus another 25 when
   // not keyboard-selected), transitions 400 ms OutQuint. The horizontal curve
-  // is Carousel.offsetX: (3 - sqrt(9 - dist^2)) * halfHeight, which is what
-  // makes the list bow outward from the vertical centre.
+  // is Carousel.offsetX: (3 - sqrt(9 - dist^2)) * halfHeight.
   [[nodiscard]] static float carouselOffsetX(float dist, float halfHeight) {
     constexpr float kCircleRadius = 3.0f;
     const float discriminant =
         std::max(0.0f, kCircleRadius * kCircleRadius - dist * dist);
     return (kCircleRadius - std::sqrt(discriminant)) * halfHeight;
-  }
-
-  [[nodiscard]] static float easeOutQuintT(float t) {
-    t = std::clamp(t, 0.0f, 1.0f);
-    const float u = 1.0f - t;
-    return 1.0f - u * u * u * u * u;
   }
 
   void frameSongSelect() {
@@ -3418,6 +3512,9 @@ private:
     const float panelW = std::min(680.0f * uiScale, sw * 0.52f);
     const float carLeft = sw - panelW - 20.0f * uiScale;
     const float halfHeight = sh * 0.5f;
+    // The filter control occupies the top of the screen; the carousel starts
+    // below it, as lazer's does.
+    const float carTop = kFilterHeight + 8.0f;
 
     float total = 0.0f;
     float selCentre = 0.0f;
@@ -3446,12 +3543,15 @@ private:
     const float pop = easeOutQuintT(fPopAnim);
 
     canvas->save();
-    float y = -fScrollAnim;
+    canvas->clipIRect(skia::SkIRect::MakeXYWH(
+        0, static_cast<int>(carTop), fScreenW,
+        std::max(0, fScreenH - static_cast<int>(carTop) - 62)));
+    float y = carTop - fScrollAnim;
     for (const int si : fVisible) {
       const auto &infos = this->infosFor(si);
       const bool expanded = si == fSelSet;
 
-      if (y + setH >= -setH && y <= sh) {
+      if (y + setH >= carTop - setH && y <= sh) {
         const float dist = std::abs(1.0f - (y + setH * 0.5f) / halfHeight);
         float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
         if (!expanded) {
@@ -3470,7 +3570,7 @@ private:
       }
       for (int di = 0; di < static_cast<int>(infos.size()); ++di) {
         const bool selected = di == fSelDiff;
-        if (y + diffH >= -diffH && y <= sh) {
+        if (y + diffH >= carTop - diffH && y <= sh) {
           const float dist = std::abs(1.0f - (y + diffH * 0.5f) / halfHeight);
           float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
           if (!selected) {
