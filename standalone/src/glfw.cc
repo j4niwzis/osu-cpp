@@ -71,6 +71,7 @@ inline constexpr int kKeyX = GLFW_KEY_X;
 inline constexpr int kKeyF11 = GLFW_KEY_F11;
 inline constexpr int kKeyBackspace = GLFW_KEY_BACKSPACE;
 inline constexpr int kKeyD = GLFW_KEY_D;
+inline constexpr int kKeyI = GLFW_KEY_I;
 inline constexpr int kKeyLeftShift = GLFW_KEY_LEFT_SHIFT;
 inline constexpr int kKeyUp = GLFW_KEY_UP;
 inline constexpr int kKeyDown = GLFW_KEY_DOWN;

@@ -139,6 +139,7 @@ private:
   int fSelDiff = 0;
   float fCarouselScroll = 0.0f;
   int fBackgroundForSet = -1;
+  int fMenuMusicForSet = -1; // set whose audio is looping under the menus
   std::filesystem::path fMapsDir;
   struct CarouselHit {
     skia::SkRect fRect;
@@ -147,6 +148,7 @@ private:
   };
   std::vector<CarouselHit> fCarouselHits; // rebuilt every song-select frame
   skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
+  skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // bottom-bar button
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -495,6 +497,11 @@ private:
 
     fState = State::kMainMenu;
     fStateEnterWall = wallMs();
+    // A CLI-provided .osz reaches the wasm build too (preloaded); jump to it.
+    if (fHasInitialSet) {
+      this->selectInitialSet();
+      fState = State::kSongSelect;
+    }
     EM_ASM(Module.setCursorVisible(true));
     emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
     return 0;
@@ -538,8 +545,16 @@ private:
     this->resize(fScreenW, fScreenH);
 
     this->initLibrary();
-    fState = State::kMainMenu;
-    fStateEnterWall = wallMs();
+    // Launched with a beatmap on the command line => skip the main menu and
+    // drop straight into song select on the imported set (it sorts to a known
+    // index, so just point the selection at it).
+    if (fHasInitialSet) {
+      this->selectInitialSet();
+      this->switchState(State::kSongSelect);
+    } else {
+      fState = State::kMainMenu;
+      fStateEnterWall = wallMs();
+    }
 
     while (!fQuit.load(std::memory_order_acquire) &&
            !glfw::glfwWindowShouldClose(fWindow)) {
@@ -704,6 +719,10 @@ private:
       this->openDownloads();
       return;
     }
+    if (key == glfw::kKeyI) {
+      this->importOsz();
+      return;
+    }
     if (nSets == 0) {
       return;
     }
@@ -817,6 +836,10 @@ private:
         this->openDownloads();
         return;
       }
+      if (fImportChip.contains(x, y)) {
+        this->importOsz();
+        return;
+      }
       for (const auto &hit : fCarouselHits) {
         if (hit.fRect.contains(x, y)) {
           if (hit.fDiffIdx < 0) {
@@ -922,6 +945,13 @@ private:
   }
 
   void submitTimed(const osu::InputEvent &ev) {
+    // Guard: input events can be drained in a frame where the engine isn't
+    // live yet (a queued press arriving during a state transition, before
+    // startGameplay populated fEngine). Dereferencing the empty optional was
+    // the SIGILL in applyButton.
+    if (!fEngine) {
+      return;
+    }
     fEngine->submit(ev);
     if (fRecord) {
       fRecordedEvents.push_back(ev);
@@ -1063,6 +1093,8 @@ private:
     fPlayingSet = setIdx;
     fPlayingDiff = diffIdx;
     fSet = entry.fSet; // active copy: gameplay reads audio/bg from here
+    fMenuMusicForSet = -1;  // gameplay reloads the track from scratch
+    fAudio.setLooping(false);
     this->resetGameplayState();
     this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(diffIdx)]);
     this->switchState(State::kPlaying);
@@ -1092,6 +1124,7 @@ private:
 
   void quitToSelect() {
     fAudio.stop();
+    fMenuMusicForSet = -1;  // let updateMenuMusic restart the loop
     this->switchState(State::kSongSelect);
     fFirstFrame = true;
     fBackgroundForSet = -1; // gameplay replaced the cached background
@@ -1189,6 +1222,132 @@ private:
     fSelDiff = 0;
     fLibraryLoaded = true;
   }
+
+  // Point the selection at the set that was passed on the command line (the
+  // one LibraryEntry with an empty path), used when booting straight into
+  // song select on a direct .osz launch.
+  // Loop the selected set's audio quietly under the menus, lazer-style. Only
+  // reloads when the selection changes; stops when gameplay takes over.
+  void updateMenuMusic() {
+    if (fLibrary.empty()) {
+      return;
+    }
+    if (fMenuMusicForSet == fSelSet) {
+      if (!fAudio.playing()) {
+        fAudio.play(); // track ended and looping missed the wrap; nudge it
+      }
+      return;
+    }
+    fMenuMusicForSet = fSelSet;
+    const auto &set = fLibrary[static_cast<std::size_t>(fSelSet)].fSet;
+    if (set.fBeatmaps.empty()) {
+      return;
+    }
+    const auto &audioName = set.fBeatmaps.front().fMeta.fAudioFilename;
+    if (audioName.empty()) {
+      fAudio.stop();
+      return;
+    }
+    const auto bytes = set.findFile(audioName);
+    if (bytes.empty()) {
+      fAudio.stop();
+      return;
+    }
+    fAudio.load(bytes, detail::fileExtension(audioName));
+    fAudio.setLooping(true);
+    fAudio.play();
+  }
+
+  void stopMenuMusic() {
+    fMenuMusicForSet = -1;
+    fAudio.setLooping(false);
+    fAudio.stop();
+  }
+
+  void selectInitialSet() {
+    for (std::size_t i = 0; i < fLibrary.size(); ++i) {
+      if (fLibrary[i].fPath.empty()) {
+        fSelSet = static_cast<int>(i);
+        fSelDiff = 0;
+        return;
+      }
+    }
+  }
+
+  // ---- Import an external .osz into the library -------------------------
+  //
+  // No portable file dialog exists in this stack, so: on desktop we shell out
+  // to whatever GTK/KDE picker is installed (zenity/kdialog/matedialog/qarma);
+  // in the browser the JS side handles the <input type=file> and drops the
+  // bytes at /import.osz, then calls back. Either way the chosen archive is
+  // copied into the maps dir and added to the library.
+  void importOsz() {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ if (Module.osuPickBeatmap) Module.osuPickBeatmap(); });
+#else
+    std::filesystem::path chosen = this->runFilePicker();
+    if (chosen.empty() || !std::filesystem::exists(chosen)) {
+      return;
+    }
+    std::error_code ec;
+    const auto dest = fMapsDir / chosen.filename();
+    std::filesystem::copy_file(
+        chosen, dest, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      std::println(std::cerr, "[import] copy failed: {}", ec.message());
+      return;
+    }
+    if (this->addOszToLibrary(dest, true)) {
+      std::println(std::cerr, "[import] added {}", dest.filename().string());
+    }
+#endif
+  }
+
+#ifndef __EMSCRIPTEN__
+  // Shell out to a native file dialog via std::system (no POSIX popen: that
+  // needs <stdio.h>, which mixes badly with `import std` on this toolchain).
+  // The picker writes the chosen path to a temp file; we read it back.
+  [[nodiscard]] std::filesystem::path runFilePicker() {
+    std::error_code ec;
+    const auto tmp = std::filesystem::temp_directory_path(ec) /
+                     "osu_client_import.txt";
+    const std::string tmpStr = tmp.string();
+    const std::string commands[] = {
+        "zenity --file-selection "
+        "--file-filter='osu! beatmap | *.osz *.zip' --title='Import beatmap'",
+        "kdialog --getopenfilename . '*.osz *.zip|osu! beatmap'",
+        "matedialog --file-selection",
+        "qarma --file-selection",
+    };
+    for (const auto &pick : commands) {
+      std::filesystem::remove(tmp, ec);
+      const std::string cmd = pick + " > '" + tmpStr + "' 2>/dev/null";
+      const int rc = std::system(cmd.c_str());
+      if (rc != 0) {
+        continue; // dialog missing or user cancelled
+      }
+      std::ifstream in(tmp);
+      if (!in) {
+        continue;
+      }
+      std::string path;
+      std::getline(in, path);
+      std::filesystem::remove(tmp, ec);
+      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
+        path.pop_back();
+      }
+      if (!path.empty()) {
+        return std::filesystem::path(path);
+      }
+      return {};
+    }
+    std::println(std::cerr,
+                 "[import] no file dialog found (install zenity or kdialog); "
+                 "drop .osz files into {} instead",
+                 fMapsDir.string());
+    return {};
+  }
+#endif
 
   bool addOszToLibrary(const std::filesystem::path &path, bool select) {
     try {
@@ -1591,8 +1750,25 @@ private:
   }
 
   void frameMainMenu() {
+    this->updateMenuMusic();
     auto *canvas = fSurface->getCanvas();
-    canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
+
+    // Art backdrop from the selected set (dimmed); triangles drift over it.
+    if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
+      fBackgroundForSet = fSelSet;
+      this->loadSelectBackground(
+          fLibrary[static_cast<std::size_t>(fSelSet)].fSet);
+    }
+    if (fBackgroundScaled) {
+      this->drawBackground(canvas);
+      skia::SkPaint dim;
+      dim.setColor(skia::colorSetARGB(180, 12, 9, 18));
+      canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, static_cast<float>(fScreenW),
+                                              static_cast<float>(fScreenH)),
+                       dim);
+    } else {
+      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
+    }
 
     this->ensureTriangles();
     this->updateAndDrawTriangles(canvas);
@@ -1736,6 +1912,7 @@ private:
       }
     }
 #endif
+    this->updateMenuMusic();
     auto *canvas = fSurface->getCanvas();
 
     // Background follows the selected set.
@@ -1901,21 +2078,28 @@ private:
     canvas->restore();
 
     this->drawBottomBar(canvas,
-                        "Enter / click twice to play    Arrows navigate    "
-                        "D downloads    Esc menu");
+                        "Enter play    Arrows navigate    D downloads    "
+                        "I import    Esc menu");
 
-    // Clickable downloads chip (mouse path, independent of the keyboard).
+    // Clickable chips in the bottom bar (mouse path, keyboard-independent).
     const float chipW = 150.0f;
     fDownloadsChip =
         skia::SkRect::MakeXYWH(sw - chipW - 16.0f, sh - 38.0f, chipW, 32.0f);
-    const bool chipHover = fDownloadsChip.contains(fMouseX, fMouseY);
-    this->fillRounded(canvas, fDownloadsChip, 8.0f,
-                      chipHover ? kCardSel : kCardBg);
+    fImportChip = skia::SkRect::MakeXYWH(sw - 2 * chipW - 28.0f, sh - 38.0f,
+                                         chipW, 32.0f);
+    const bool dlHover = fDownloadsChip.contains(fMouseX, fMouseY);
+    this->fillRounded(canvas, fDownloadsChip, 8.0f, dlHover ? kCardSel : kCardBg);
     this->strokeRounded(canvas, fDownloadsChip, 8.0f, kAccent2,
-                        chipHover ? 2.0f : 1.0f);
+                        dlHover ? 2.0f : 1.0f);
     this->drawTextCentered(canvas, "downloads", fDownloadsChip.centerX(),
                            fDownloadsChip.centerY() + 5.0f, 14.0f,
-                           chipHover ? kAccent2 : skia::kWhite);
+                           dlHover ? kAccent2 : skia::kWhite);
+    const bool imHover = fImportChip.contains(fMouseX, fMouseY);
+    this->fillRounded(canvas, fImportChip, 8.0f, imHover ? kCardSel : kCardBg);
+    this->strokeRounded(canvas, fImportChip, 8.0f, kAccent, imHover ? 2.0f : 1.0f);
+    this->drawTextCentered(canvas, "import .osz", fImportChip.centerX(),
+                           fImportChip.centerY() + 5.0f, 14.0f,
+                           imHover ? kAccent : skia::kWhite);
     this->drawScreenFadeIn(canvas);
     this->present();
   }

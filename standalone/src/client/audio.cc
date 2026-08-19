@@ -92,6 +92,11 @@ public:
       audio::alSourcePlay(fSource);
   }
 
+  void setLooping(bool loop) {
+    if (fSource != 0)
+      audio::alSourcei(fSource, audio::kLooping, loop ? 1 : 0);
+  }
+
   // Pause only if actually playing; resume only if actually paused.
   // alSourcePlay on a *stopped* source would restart it from zero, which is
   // exactly wrong when the map outlived its music.
