@@ -327,6 +327,7 @@ private:
   float fCursorSize = 1.0f;
   bool fShowFps = false;
   bool fSnakeSliders = true;
+  float fAppliedDim = 0.7f; // dim the scaled background was rendered with
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
   double fLastMenuPosMs = 0.0;
@@ -498,6 +499,7 @@ private:
     fStartMs = glfw::glfwGetTime() * 1000.0;
     fClock.reset(fStartMs, 0.0);
     fLastClockSyncWall = std::numeric_limits<double>::lowest();
+    fAudio.setVolume(fMasterVolume * fMusicVolume);
     fAudio.play();
   }
 
@@ -1425,6 +1427,7 @@ private:
     fThumbDir = fMapsDir / "thumbnails";
     std::filesystem::create_directories(fThumbDir, ec);
     fMapCache.load(fMapsDir / "metadata-cache.json");
+    this->loadSettings();
 
     if (fHasInitialSet) {
       LibraryEntry entry;
@@ -1544,6 +1547,9 @@ private:
     }
     fAudio.load(bytes, detail::fileExtension(audioName));
     fAudio.setLooping(true);
+    // Gain is a property of the OpenAL source, and load() makes a new one;
+    // without this the volume silently resets to full on every map change.
+    fAudio.setVolume(fMasterVolume * fMusicVolume);
     fAudio.play();
     // The analysis clock is anchored to the *old* track until re-anchored;
     // without this the visualiser reads samples at a stale offset (or past
@@ -3356,7 +3362,10 @@ private:
       return false;
     }
     if (!pressed) {
-      fDraggingSetting = -1;
+      if (fDraggingSetting >= 0) {
+        fDraggingSetting = -1;
+        this->applySettings(); // commit the expensive parts once
+      }
       return true;
     }
     const auto defs = this->settingDefs();
@@ -3412,19 +3421,90 @@ private:
       const float t =
           std::clamp((x - row.fRect.fLeft) / row.fRect.width(), 0.0f, 1.0f);
       *d.fValue = d.fMin + (d.fMax - d.fMin) * t;
-      this->applySettings();
+      // Only the cheap part while dragging; the background re-render happens
+      // once, on release.
+      this->applyAudioSettings();
       return;
     }
   }
 
-  void applySettings() {
+  [[nodiscard]] std::filesystem::path settingsPath() const {
+    return fMapsDir.parent_path() / "settings.json";
+  }
+
+  void loadSettings() {
+    std::ifstream in(this->settingsPath());
+    if (!in) {
+      return;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    const auto parsed = bjson::tryParse(text);
+    if (!parsed) {
+      return;
+    }
+    const bjson::object *o = parsed->if_object();
+    if (o == nullptr) {
+      return;
+    }
+    const auto num = [o](std::string_view key, float fallback) {
+      if (const bjson::value *v = o->if_contains(key); v && v->is_number()) {
+        return static_cast<float>(v->to_number<double>());
+      }
+      return fallback;
+    };
+    const auto flag = [o](std::string_view key, bool fallback) {
+      if (const bjson::value *v = o->if_contains(key); v && v->is_bool()) {
+        return v->as_bool();
+      }
+      return fallback;
+    };
+    fMasterVolume = num("master", fMasterVolume);
+    fMusicVolume = num("music", fMusicVolume);
+    fEffectVolume = num("effect", fEffectVolume);
+    fAudioOffsetMs = num("offset", fAudioOffsetMs);
+    fBackgroundDim = num("dim", fBackgroundDim);
+    fCursorSize = num("cursor", fCursorSize);
+    fShowFps = flag("fps", fShowFps);
+    fSnakeSliders = flag("snaking", fSnakeSliders);
+    fAppliedDim = fBackgroundDim;
+  }
+
+  void saveSettings() {
+    bjson::object o;
+    o["master"] = fMasterVolume;
+    o["music"] = fMusicVolume;
+    o["effect"] = fEffectVolume;
+    o["offset"] = fAudioOffsetMs;
+    o["dim"] = fBackgroundDim;
+    o["cursor"] = fCursorSize;
+    o["fps"] = fShowFps;
+    o["snaking"] = fSnakeSliders;
+    std::ofstream out(this->settingsPath(), std::ios::trunc);
+    if (out) {
+      out << bjson::serialize(bjson::value(std::move(o)));
+    }
+    this->syncMapsDir();
+  }
+
+  // Cheap: just gain values on existing sources. Safe to call every frame.
+  void applyAudioSettings() {
     fAudio.setVolume(fMasterVolume * fMusicVolume);
     for (auto &[name, player] : fSamples) {
       player.setVolume(fMasterVolume * fEffectVolume);
     }
-    // The gameplay background is pre-dimmed into a scaled bitmap, so a dim
-    // change has to re-render it.
-    this->preScaleBackground();
+  }
+
+  // Expensive: re-renders a screen-sized bitmap because the background is
+  // pre-dimmed into it. Dragging a slider fires a cursor event per frame, so
+  // this must never run from the drag path -- that was the UI freeze.
+  void applySettings() {
+    this->applyAudioSettings();
+    if (std::abs(fBackgroundDim - fAppliedDim) > 1e-4f) {
+      fAppliedDim = fBackgroundDim;
+      this->preScaleBackground();
+    }
+    this->saveSettings();
   }
 
   // ---- Song select (port of lazer's carousel geometry) ------------------
@@ -4770,8 +4850,10 @@ private:
       const auto bytes = fSet.findFile(key);
       if (!bytes.empty()) {
         auto &player = fSamples[key];
-        if (!player.loaded())
+        if (!player.loaded()) {
           player.load(bytes, std::string(ext));
+          player.setVolume(fMasterVolume * fEffectVolume);
+        }
         player.play();
         return;
       }
@@ -4781,8 +4863,10 @@ private:
     if (path.empty())
       return;
     auto &player = fSamples[path.string()];
-    if (!player.loaded())
+    if (!player.loaded()) {
       player.load(path);
+      player.setVolume(fMasterVolume * fEffectVolume);
+    }
     player.play();
   }
 
