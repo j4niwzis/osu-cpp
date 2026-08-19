@@ -139,6 +139,7 @@ private:
   int fSelSet = 0;
   int fSelDiff = 0;
   float fCarouselScroll = 0.0f;
+  bool fUserScrolled = false;
   int fBackgroundForSet = -1;
   int fMenuMusicForSet = -1; // set whose audio is looping under the menus
   std::filesystem::path fMapsDir;
@@ -148,6 +149,8 @@ private:
     int fDiffIdx; // -1 => set header
   };
   std::vector<CarouselHit> fCarouselHits; // rebuilt every song-select frame
+  std::mutex fDropMutex;                  // guards fDropped
+  std::vector<std::string> fDropped;      // files dropped onto the window
   skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
   skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // footer button
   skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
@@ -241,6 +244,7 @@ private:
   client::Spectrum fSpectrum;
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
+  double fLastMenuPosMs = 0.0;
   struct Tri {
     float fX = 0.0f;     // 0..1 of width
     float fY = 0.0f;     // 0..1 of height
@@ -248,10 +252,10 @@ private:
     float fShade = 0.5f;
   };
   std::vector<Tri> fTriangles;
-  float fTriangleScale = 1.0f;    // Triangles.TriangleScale
-  float fSpawnRatio = 1.0f;       // Triangles.SpawnRatio
-  float fTriangleVelocity = 1.0f; // Triangles.Velocity
-  float fTriangleAlpha = 0.55f;
+  float fTriangleScale = 2.4f;    // TrianglesV2 uses much larger shapes
+  float fSpawnRatio = 1.0f;       // TrianglesV2.SpawnRatio
+  float fTriangleVelocity = 1.0f; // TrianglesV2.Velocity
+  float fMenuDim = 1.0f; // MainMenu.cs: Gray(1) idle, Gray(0.8) with buttons
   std::mt19937 fUiRng{0xC0FFEEu};
 
   [[nodiscard]] static float easeOutQuint(float t) {
@@ -503,6 +507,20 @@ private:
           self->enqueue({App::wallMs(), EventType::kScroll, 0, 0,
                          static_cast<float>(y)});
         });
+    glfw::glfwSetDropCallback(
+        fWindow, [](glfw::GLFWwindow *w, int count, const char **paths) {
+          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+          if (self == nullptr) {
+            return;
+          }
+          // Paths are only valid for the duration of the callback, and this
+          // runs on the event-pump thread: copy them out for the render
+          // thread to import.
+          const std::scoped_lock lock(self->fDropMutex);
+          for (int i = 0; i < count; ++i) {
+            self->fDropped.emplace_back(paths[i]);
+          }
+        });
     glfw::glfwSetCharCallback(
         fWindow, [](glfw::GLFWwindow *w, unsigned int codepoint) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
@@ -668,7 +686,10 @@ private:
       break;
     case EventType::kScroll:
       if (fState == State::kSongSelect) {
-        fCarouselScroll -= ev.fX * 60.0f;
+        // Free scrolling, like lazer's carousel: the wheel moves the view,
+        // the selection stays put until the user picks something else.
+        fCarouselScroll -= ev.fX * 90.0f;
+        fUserScrolled = true;
       } else if (fState == State::kDownload) {
         fDownloadScroll -= ev.fX * 60.0f;
       }
@@ -1034,6 +1055,7 @@ private:
 
   void frame() {
     client::http::poll(); // completed network callbacks land here
+    this->drainDroppedFiles();
     this->drainInput();
     {
       const double wallNow = wallMs();
@@ -1309,12 +1331,19 @@ private:
     fAudio.load(bytes, detail::fileExtension(audioName));
     fAudio.setLooping(true);
     fAudio.play();
+    // The analysis clock is anchored to the *old* track until re-anchored;
+    // without this the visualiser reads samples at a stale offset (or past
+    // the end) after switching songs and simply stops moving.
+    fMenuClock.reset(wallMs(), 0.0);
+    fMenuClockSyncWall = std::numeric_limits<double>::lowest();
+    fSpectrum.reset();
   }
 
   void stopMenuMusic() {
     fMenuMusicForSet = -1;
     fAudio.setLooping(false);
     fAudio.stop();
+    fSpectrum.reset();
   }
 
   void selectInitialSet() {
@@ -1334,25 +1363,60 @@ private:
   // in the browser the JS side handles the <input type=file> and drops the
   // bytes at /import.osz, then calls back. Either way the chosen archive is
   // copied into the maps dir and added to the library.
+  // Files dropped onto the window (the reliable import path: no dialog
+  // binary required, works on any desktop).
+  void drainDroppedFiles() {
+    std::vector<std::string> paths;
+    {
+      const std::scoped_lock lock(fDropMutex);
+      if (fDropped.empty()) {
+        return;
+      }
+      paths.swap(fDropped);
+    }
+    for (const auto &p : paths) {
+      this->importFrom(std::filesystem::path(p));
+    }
+  }
+
+  bool importFrom(const std::filesystem::path &src) {
+    std::error_code ec;
+    if (!std::filesystem::exists(src, ec)) {
+      std::println(std::cerr, "[import] no such file: {}", src.string());
+      return false;
+    }
+    const auto ext = detail::lowerExtension(src);
+    if (ext != ".osz" && ext != ".zip") {
+      std::println(std::cerr, "[import] not a beatmap archive: {}",
+                   src.string());
+      return false;
+    }
+    const auto dest = fMapsDir / src.filename();
+    std::filesystem::copy_file(
+        src, dest, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      std::println(std::cerr, "[import] copy failed: {}", ec.message());
+      return false;
+    }
+    if (!this->addOszToLibrary(dest, true)) {
+      return false;
+    }
+    std::println(std::cerr, "[import] added {}", dest.filename().string());
+    if (fState == State::kMainMenu) {
+      this->switchState(State::kSongSelect);
+    }
+    return true;
+  }
+
   void importOsz() {
 #ifdef __EMSCRIPTEN__
     EM_ASM({ if (Module.osuPickBeatmap) Module.osuPickBeatmap(); });
 #else
-    std::filesystem::path chosen = this->runFilePicker();
-    if (chosen.empty() || !std::filesystem::exists(chosen)) {
-      return;
+    const std::filesystem::path chosen = this->runFilePicker();
+    if (chosen.empty()) {
+      return; // cancelled, or no dialog available (already reported)
     }
-    std::error_code ec;
-    const auto dest = fMapsDir / chosen.filename();
-    std::filesystem::copy_file(
-        chosen, dest, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-      std::println(std::cerr, "[import] copy failed: {}", ec.message());
-      return;
-    }
-    if (this->addOszToLibrary(dest, true)) {
-      std::println(std::cerr, "[import] added {}", dest.filename().string());
-    }
+    this->importFrom(chosen);
 #endif
   }
 
@@ -1373,11 +1437,19 @@ private:
         "qarma --file-selection",
     };
     for (const auto &pick : commands) {
+      // Is the binary even installed? `command -v` keeps a missing dialog
+      // from looking like a user cancellation.
+      const std::string bin = pick.substr(0, pick.find(' '));
+      if (std::system(("command -v " + bin + " > /dev/null 2>&1").c_str()) !=
+          0) {
+        continue;
+      }
       std::filesystem::remove(tmp, ec);
       const std::string cmd = pick + " > '" + tmpStr + "' 2>/dev/null";
       const int rc = std::system(cmd.c_str());
       if (rc != 0) {
-        continue; // dialog missing or user cancelled
+        std::println(std::cerr, "[import] {} exited {} (cancelled?)", bin, rc);
+        return {};
       }
       std::ifstream in(tmp);
       if (!in) {
@@ -1395,8 +1467,9 @@ private:
       return {};
     }
     std::println(std::cerr,
-                 "[import] no file dialog found (install zenity or kdialog); "
-                 "drop .osz files into {} instead",
+                 "[import] no file dialog installed (tried zenity, kdialog, "
+                 "matedialog, qarma). Drag a .osz onto the window instead, or "
+                 "copy it into {}",
                  fMapsDir.string());
     return {};
   }
@@ -1900,14 +1973,14 @@ private:
   static constexpr int kMaxTriangles = 1000;
 
   [[nodiscard]] float randomTriangleScale() {
-    // Box-Muller, as in Triangles.CreateTriangle.
+    // Box-Muller, as in TrianglesV2.createTriangle: normal(0.5, 0.16^2).
     std::uniform_real_distribution<float> u(1e-6f, 1.0f);
     const float u1 = u(fUiRng);
     const float u2 = u(fUiRng);
     const float randStdNormal =
         std::sqrt(-2.0f * std::log(u1)) *
         std::sin(2.0f * std::numbers::pi_v<float> * u2);
-    return std::max(fTriangleScale * (0.5f + 0.16f * randStdNormal), 0.1f);
+    return std::max(0.5f + 0.16f * randStdNormal, 0.1f);
   }
 
   void ensureTriangles() {
@@ -1916,28 +1989,22 @@ private:
     if (sw <= 0.0f || sh <= 0.0f) {
       return;
     }
-    // AimCount = min(max, DrawWidth * DrawHeight * 0.002 / scale^2 * spawnRatio)
-    const int aim = std::min(
-        kMaxTriangles,
-        static_cast<int>(sw * sh * 0.002f /
-                         (fTriangleScale * fTriangleScale) * fSpawnRatio));
+    // TrianglesV2: AimCount = clamp(DrawWidth * 0.02 * SpawnRatio, 1, max).
+    // Far sparser than the old Triangles -- a couple of dozen large shapes,
+    // not a swarm.
+    const int aim = std::clamp(static_cast<int>(sw * 0.02f * fSpawnRatio), 1,
+                               kMaxTriangles);
     if (static_cast<int>(fTriangles.size()) == aim) {
       return;
     }
     std::uniform_real_distribution<float> ux(0.0f, 1.0f);
     while (static_cast<int>(fTriangles.size()) < aim) {
-      Tri t;
-      t.fScale = this->randomTriangleScale();
-      t.fX = ux(fUiRng);
-      t.fY = ux(fUiRng); // initial fill: random Y over the whole screen
-      // Larger triangles are nearer, so they are brighter and move faster.
-      t.fShade = ux(fUiRng);
-      fTriangles.push_back(t);
+      fTriangles.push_back({ux(fUiRng), ux(fUiRng), this->randomTriangleScale(),
+                            ux(fUiRng)});
     }
     while (static_cast<int>(fTriangles.size()) > aim) {
       fTriangles.pop_back();
     }
-    // Draw order: lazer sorts by scale so big ones sit in front.
     std::ranges::sort(fTriangles, {}, &Tri::fScale);
   }
 
@@ -1945,20 +2012,21 @@ private:
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     const float elapsedSeconds = static_cast<float>(fUiDt) / 1000.0f;
-    // movedDistance = -elapsed * velocity * base_velocity / (height * scale)
-    const float moved = elapsedSeconds * fTriangleVelocity *
-                        kTriangleBaseVelocity / (sh * fTriangleScale);
+    // TrianglesV2: movedDistance = -elapsed * Velocity * base_velocity / height
+    const float moved =
+        elapsedSeconds * fTriangleVelocity * kTriangleBaseVelocity / sh;
 
     std::uniform_real_distribution<float> ux(0.0f, 1.0f);
     skia::SkPaint paint;
     paint.setAntiAlias(true);
+    paint.setStyle(skia::kStrokeStyle);
 
     for (auto &t : fTriangles) {
-      t.fY -= moved * t.fScale; // parallax: bigger triangles move faster
-      const float triHeight = kTriangleSize * t.fScale * kTriangleRatio;
-      if (t.fY * sh + triHeight < 0.0f) {
-        // Fully above the top edge: respawn below with fresh properties.
-        t.fY = 1.0f + triHeight / sh;
+      t.fY -= moved;
+      const float w = kTriangleSize * t.fScale * fTriangleScale;
+      const float h = w * kTriangleRatio;
+      if (t.fY * sh + h < 0.0f) {
+        t.fY = 1.0f + h / sh;
         t.fX = ux(fUiRng);
         t.fScale = this->randomTriangleScale();
         t.fShade = ux(fUiRng);
@@ -1966,23 +2034,155 @@ private:
 
       const float cx = t.fX * sw;
       const float cy = t.fY * sh;
-      const float w = kTriangleSize * t.fScale;
-      const float h = w * kTriangleRatio;
       skia::SkPathBuilder b;
-      b.moveTo(cx, cy - h * 0.5f);          // apex up
+      b.moveTo(cx, cy - h * 0.5f);
       b.lineTo(cx - w * 0.5f, cy + h * 0.5f);
       b.lineTo(cx + w * 0.5f, cy + h * 0.5f);
       b.close();
-      // Colour: a subtle two-tone shading like lazer's gradient triangles.
-      const float shade = 0.55f + 0.45f * t.fShade;
-      paint.setColor(skia::colorSetARGB(
-          255, static_cast<std::uint8_t>(38 * shade),
-          static_cast<std::uint8_t>(30 * shade),
-          static_cast<std::uint8_t>(50 * shade)));
-      paint.setAlphaf(fTriangleAlpha);
+      // Thickness = 0.02 of the triangle's own size, per TrianglesV2.
+      paint.setStrokeWidth(std::max(1.0f, w * 0.02f * 2.0f));
+      paint.setColor(skia::kWhite);
+      paint.setAlphaf(0.06f + 0.10f * t.fShade);
       canvas->drawPath(b.detach(), paint);
     }
   }
+
+  // ---- Main menu button system (port of lazer's ButtonSystem) -----------
+
+  void ensureMenuButtons() {
+    if (!fMenuBtns.empty()) {
+      return;
+    }
+    // Colours lifted from lazer's ButtonSystem so the palette reads familiar.
+    fMenuBtns.push_back({"play", "▶", skia::colorSetARGB(255, 102, 68, 204),
+                         MenuAction::kOpenPlay, MenuState::kTopLevel});
+    fMenuBtns.push_back({"browse", "↓", skia::colorSetARGB(255, 165, 204, 0),
+                         MenuAction::kBrowse, MenuState::kTopLevel});
+    fMenuBtns.push_back({"import", "+", skia::colorSetARGB(255, 238, 170, 0),
+                         MenuAction::kImport, MenuState::kTopLevel});
+    fMenuBtns.push_back({"exit", "×", skia::colorSetARGB(255, 238, 51, 153),
+                         MenuAction::kExit, MenuState::kTopLevel});
+
+    fMenuBtns.push_back({"solo", "●", skia::colorSetARGB(255, 102, 68, 204),
+                         MenuAction::kSolo, MenuState::kPlay});
+    fMenuBtns.push_back({"random", "↻", skia::colorSetARGB(255, 94, 63, 186),
+                         MenuAction::kRandom, MenuState::kPlay});
+
+    MenuBtn back{"back", "←", skia::colorSetARGB(255, 51, 58, 94),
+                 MenuAction::kBack, MenuState::kPlay};
+    back.fLeftSide = true;
+    fMenuBtns.push_back(std::move(back));
+  }
+
+  [[nodiscard]] static const char *menuStateName(MenuState st) {
+    switch (st) {
+    case MenuState::kInitial: return "initial";
+    case MenuState::kTopLevel: return "top-level";
+    case MenuState::kPlay: return "play";
+    }
+    return "?";
+  }
+
+  void setMenuState(MenuState st) {
+    if (fMenuState == st) {
+      return;
+    }
+    std::println(std::cerr, "[menu] {} -> {}", menuStateName(fMenuState),
+                 menuStateName(st));
+    fMenuState = st;
+  }
+
+  // Frame-rate independent easing toward a target (tau in milliseconds).
+  [[nodiscard]] float approach(float current, float target, float tauMs) const {
+    const float a = 1.0f - std::exp(-static_cast<float>(fUiDt) / tauMs);
+    return current + (target - current) * a;
+  }
+
+  void menuTrigger(MenuBtn &b) {
+    b.fFlash = 1.0f;
+    switch (b.fAction) {
+    case MenuAction::kOpenPlay:
+      this->setMenuState(MenuState::kPlay);
+      break;
+    case MenuAction::kBrowse:
+      this->openDownloads();
+      break;
+    case MenuAction::kImport:
+      this->importOsz();
+      break;
+    case MenuAction::kExit:
+      this->requestQuit();
+      break;
+    case MenuAction::kSolo:
+      this->switchState(State::kSongSelect);
+      break;
+    case MenuAction::kRandom:
+      this->playRandom();
+      break;
+    case MenuAction::kBack:
+      this->setMenuState(MenuState::kTopLevel);
+      break;
+    }
+  }
+
+  // F2 in song select: move the selection (lazer's FooterButtonRandom).
+  void selectRandom() {
+    if (fLibrary.empty()) {
+      return;
+    }
+    std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
+    fSelSet = static_cast<int>(pick(fUiRng));
+    fSelDiff = 0;
+  }
+
+  // "random" in the menu's play submenu: pick a map and start it.
+  void playRandom() {
+    if (fLibrary.empty()) {
+      this->switchState(State::kSongSelect);
+      return;
+    }
+    std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
+    const auto si = pick(fUiRng);
+    const auto &set = fLibrary[si].fSet;
+    if (set.fBeatmaps.empty()) {
+      return;
+    }
+    std::uniform_int_distribution<std::size_t> pickDiff(
+        0, set.fBeatmaps.size() - 1);
+    fSelSet = static_cast<int>(si);
+    fSelDiff = static_cast<int>(pickDiff(fUiRng));
+    this->startPlay(fSelSet, fSelDiff);
+  }
+
+  // The logo is the menu's primary control: clicking advances a level, and at
+  // a populated level it triggers that level's first button (onOsuLogo).
+  void triggerLogo() {
+    fLogoPunch = 1.0f;
+    switch (fMenuState) {
+    case MenuState::kInitial:
+      this->setMenuState(MenuState::kTopLevel);
+      break;
+    case MenuState::kTopLevel:
+    case MenuState::kPlay:
+      for (auto &b : fMenuBtns) {
+        if (b.fVisible == fMenuState && !b.fLeftSide) {
+          this->menuTrigger(b);
+          break;
+        }
+      }
+      break;
+    }
+  }
+
+  // Port of osu.Game/Graphics/Backgrounds/Triangles.cs. Constants are the
+  // originals: 100px base size, 0.866 equilateral ratio, 50px/s base velocity,
+  // scale drawn from a normal distribution (mean 0.5, sigma 0.16, floor 0.1),
+  // count derived from the drawing area. Particles drift upward and respawn
+  // below once they leave the top edge.
+  static constexpr float kTriangleSize = 100.0f;
+  static constexpr float kTriangleRatio = 0.866f;
+  static constexpr float kTriangleBaseVelocity = 50.0f;
+  static constexpr int kMaxTriangles = 1000;
 
   void frameMainMenu() {
     this->ensureMenuButtons();
@@ -1993,22 +2193,33 @@ private:
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
 
-    // Art backdrop from the selected set (dimmed); triangles drift over it.
+    // lazer's main menu shows the beatmap background at full brightness --
+    // MainMenu.cs fades it to Gray(1) at the logo-only state and Gray(0.8)
+    // once the buttons are out. There is no triangle overlay over artwork;
+    // triangles are only the fallback background when no art exists at all.
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
       fBackgroundForSet = fSelSet;
       this->loadSelectBackground(
           fLibrary[static_cast<std::size_t>(fSelSet)].fSet);
     }
+    const float dimTarget =
+        fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
+    fMenuDim = this->approach(fMenuDim, dimTarget, 220.0f);
+
     if (fBackgroundScaled) {
       this->drawBackground(canvas);
-      skia::SkPaint dim;
-      dim.setColor(skia::colorSetARGB(180, 12, 9, 18));
-      canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
+      if (fMenuDim < 0.999f) {
+        skia::SkPaint dim;
+        dim.setColor(skia::colorSetARGB(
+            static_cast<std::uint8_t>((1.0f - fMenuDim) * 255.0f), 0, 0, 0));
+        canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
+      }
     } else {
-      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
+      // Fallback background: TrianglesV2-style sparse outlined triangles.
+      canvas->clear(skia::colorSetARGB(255, 32, 24, 44));
+      this->ensureTriangles();
+      this->updateAndDrawTriangles(canvas);
     }
-    this->ensureTriangles();
-    this->updateAndDrawTriangles(canvas);
 
     // ---- Layout: logo plus the visible button row, centred as a group.
     const float uiScale = std::clamp(sh / 900.0f, 0.75f, 1.6f);
@@ -2258,7 +2469,15 @@ private:
     // is what used to cost whole milliseconds per call.
     if (wall - fMenuClockSyncWall >= kClockSyncIntervalMs) {
       fMenuClockSyncWall = wall;
-      fMenuClock.sync(wall, fAudio.positionSec() * 1000.0);
+      const double devicePos = fAudio.positionSec() * 1000.0;
+      // A looping track jumps back to zero; the anchored clock is monotonic
+      // by design, so detect the wrap and re-anchor instead of syncing.
+      if (devicePos + 500.0 < fLastMenuPosMs) {
+        fMenuClock.reset(wall, devicePos);
+      } else {
+        fMenuClock.sync(wall, devicePos);
+      }
+      fLastMenuPosMs = devicePos;
     }
     const double posMs = fMenuClock.sample(wall);
     fSpectrum.update(fAudio.monoSamples(), fAudio.sampleRate(),
@@ -2411,17 +2630,19 @@ private:
       }
     }
 
-    // The selection sits at the vertical centre; the scroll eases toward it
-    // like lazer's scroll container rather than snapping.
-    fCarouselScroll = selCentre - halfHeight;
-    fScrollAnim = this->approach(fScrollAnim, fCarouselScroll, 120.0f);
-
-    // Selection-change animation, used for the x-offset transition.
+    // Selection changes re-centre the view; the wheel scrolls freely in
+    // between (lazer keeps the selection put while you browse).
     const int selKey = fSelSet * 1024 + fSelDiff;
     if (selKey != fPrevSelKey) {
       fPrevSelKey = selKey;
       fPopAnim = 0.0f;
+      fCarouselScroll = selCentre - halfHeight;
+      fUserScrolled = false;
     }
+    fCarouselScroll =
+        std::clamp(fCarouselScroll, -halfHeight * 0.5f,
+                   std::max(0.0f, total - halfHeight * 0.5f));
+    fScrollAnim = this->approach(fScrollAnim, fCarouselScroll, 120.0f);
     fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 400.0f);
     const float pop = easeOutQuintT(fPopAnim);
 
@@ -2605,7 +2826,8 @@ private:
       x += 158.0f;
     }
     this->drawTextCentered(
-        canvas, "Enter play    Arrows navigate    F2 random    Esc menu",
+        canvas,
+        "Enter play    Wheel scroll    F2 random    drag .osz to import",
         sw * 0.72f, sh - 24.0f, 14.0f, skia::kWhite, 0.7f);
   }
 

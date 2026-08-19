@@ -8,6 +8,7 @@ export module glfw;
 export namespace glfw {
 
 using ::GLFWcharfun;
+using ::GLFWdropfun;
 using ::GLFWcursorposfun;
 using ::GLFWframebuffersizefun;
 using ::GLFWkeyfun;
@@ -32,6 +33,7 @@ using ::glfwMakeContextCurrent;
 using ::glfwPollEvents;
 using ::glfwPostEmptyEvent;
 using ::glfwSetCharCallback;
+using ::glfwSetDropCallback;
 using ::glfwSetCursorPosCallback;
 using ::glfwSetFramebufferSizeCallback;
 using ::glfwSetInputMode;
