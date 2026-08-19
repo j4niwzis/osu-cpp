@@ -149,7 +149,8 @@ private:
   };
   std::vector<CarouselHit> fCarouselHits; // rebuilt every song-select frame
   skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
-  skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // bottom-bar button
+  skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // footer button
+  skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -241,9 +242,16 @@ private:
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
   struct Tri {
-    float fX, fY, fSize, fSpeed, fAlpha;
+    float fX = 0.0f;     // 0..1 of width
+    float fY = 0.0f;     // 0..1 of height
+    float fScale = 1.0f; // multiplies triangle_size
+    float fShade = 0.5f;
   };
   std::vector<Tri> fTriangles;
+  float fTriangleScale = 1.0f;    // Triangles.TriangleScale
+  float fSpawnRatio = 1.0f;       // Triangles.SpawnRatio
+  float fTriangleVelocity = 1.0f; // Triangles.Velocity
+  float fTriangleAlpha = 0.55f;
   std::mt19937 fUiRng{0xC0FFEEu};
 
   [[nodiscard]] static float easeOutQuint(float t) {
@@ -761,6 +769,10 @@ private:
       this->importOsz();
       return;
     }
+    if (key == glfw::kKeyF2) {
+      this->selectRandom();
+      return;
+    }
     if (nSets == 0) {
       return;
     }
@@ -871,6 +883,10 @@ private:
       }
       if (fImportChip.contains(x, y)) {
         this->importOsz();
+        return;
+      }
+      if (fRandomChip.contains(x, y)) {
+        this->selectRandom();
         return;
       }
       for (const auto &hit : fCarouselHits) {
@@ -1746,47 +1762,7 @@ private:
 
   // ---- Main menu (lazer-style logo) -------------------------------------
 
-  void ensureTriangles() {
-    if (!fTriangles.empty()) {
-      return;
-    }
-    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
-    std::uniform_real_distribution<float> us(28.0f, 150.0f);
-    std::uniform_real_distribution<float> uv(8.0f, 30.0f);
-    std::uniform_real_distribution<float> ua(0.04f, 0.11f);
-    for (int i = 0; i < 26; ++i) {
-      fTriangles.push_back({ux(fUiRng), ux(fUiRng), us(fUiRng), uv(fUiRng),
-                            ua(fUiRng)});
-    }
-  }
-
-  void updateAndDrawTriangles(skia::SkCanvas *canvas) {
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    for (auto &t : fTriangles) {
-      t.fY -= t.fSpeed * static_cast<float>(fUiDt) / 1000.0f / sh;
-      if (t.fY < -0.25f) {
-        t.fY = 1.25f;
-        t.fX = ux(fUiRng);
-      }
-      const float cx = t.fX * sw;
-      const float cy = t.fY * sh;
-      const float r = t.fSize;
-      skia::SkPathBuilder b;
-      b.moveTo(cx, cy - r * 0.577f * 2.0f * 0.5f);
-      b.lineTo(cx - r * 0.5f, cy + r * 0.289f);
-      b.lineTo(cx + r * 0.5f, cy + r * 0.289f);
-      b.close();
-      p.setColor(skia::kWhite);
-      p.setAlphaf(t.fAlpha);
-      canvas->drawPath(b.detach(), p);
-    }
-  }
-
-  // ---- Main menu (port of lazer's ButtonSystem) -------------------------
+  // ---- Main menu button system (port of lazer's ButtonSystem) -----------
 
   void ensureMenuButtons() {
     if (!fMenuBtns.empty()) {
@@ -1813,15 +1789,6 @@ private:
     fMenuBtns.push_back(std::move(back));
   }
 
-  void setMenuState(MenuState st) {
-    if (fMenuState == st) {
-      return;
-    }
-    std::println(std::cerr, "[menu] {} -> {}", menuStateName(fMenuState),
-                 menuStateName(st));
-    fMenuState = st;
-  }
-
   [[nodiscard]] static const char *menuStateName(MenuState st) {
     switch (st) {
     case MenuState::kInitial: return "initial";
@@ -1829,6 +1796,15 @@ private:
     case MenuState::kPlay: return "play";
     }
     return "?";
+  }
+
+  void setMenuState(MenuState st) {
+    if (fMenuState == st) {
+      return;
+    }
+    std::println(std::cerr, "[menu] {} -> {}", menuStateName(fMenuState),
+                 menuStateName(st));
+    fMenuState = st;
   }
 
   // Frame-rate independent easing toward a target (tau in milliseconds).
@@ -1864,6 +1840,17 @@ private:
     }
   }
 
+  // F2 in song select: move the selection (lazer's FooterButtonRandom).
+  void selectRandom() {
+    if (fLibrary.empty()) {
+      return;
+    }
+    std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
+    fSelSet = static_cast<int>(pick(fUiRng));
+    fSelDiff = 0;
+  }
+
+  // "random" in the menu's play submenu: pick a map and start it.
   void playRandom() {
     if (fLibrary.empty()) {
       this->switchState(State::kSongSelect);
@@ -1882,8 +1869,8 @@ private:
     this->startPlay(fSelSet, fSelDiff);
   }
 
-  // The logo is the menu's primary control: click it to advance a level, as
-  // in lazer (Initial -> TopLevel, then it triggers the first button).
+  // The logo is the menu's primary control: clicking advances a level, and at
+  // a populated level it triggers that level's first button (onOsuLogo).
   void triggerLogo() {
     fLogoPunch = 1.0f;
     switch (fMenuState) {
@@ -1899,6 +1886,101 @@ private:
         }
       }
       break;
+    }
+  }
+
+  // Port of osu.Game/Graphics/Backgrounds/Triangles.cs. Constants are the
+  // originals: 100px base size, 0.866 equilateral ratio, 50px/s base velocity,
+  // scale drawn from a normal distribution (mean 0.5, sigma 0.16, floor 0.1),
+  // count derived from the drawing area. Particles drift upward and respawn
+  // below once they leave the top edge.
+  static constexpr float kTriangleSize = 100.0f;
+  static constexpr float kTriangleRatio = 0.866f;
+  static constexpr float kTriangleBaseVelocity = 50.0f;
+  static constexpr int kMaxTriangles = 1000;
+
+  [[nodiscard]] float randomTriangleScale() {
+    // Box-Muller, as in Triangles.CreateTriangle.
+    std::uniform_real_distribution<float> u(1e-6f, 1.0f);
+    const float u1 = u(fUiRng);
+    const float u2 = u(fUiRng);
+    const float randStdNormal =
+        std::sqrt(-2.0f * std::log(u1)) *
+        std::sin(2.0f * std::numbers::pi_v<float> * u2);
+    return std::max(fTriangleScale * (0.5f + 0.16f * randStdNormal), 0.1f);
+  }
+
+  void ensureTriangles() {
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    if (sw <= 0.0f || sh <= 0.0f) {
+      return;
+    }
+    // AimCount = min(max, DrawWidth * DrawHeight * 0.002 / scale^2 * spawnRatio)
+    const int aim = std::min(
+        kMaxTriangles,
+        static_cast<int>(sw * sh * 0.002f /
+                         (fTriangleScale * fTriangleScale) * fSpawnRatio));
+    if (static_cast<int>(fTriangles.size()) == aim) {
+      return;
+    }
+    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
+    while (static_cast<int>(fTriangles.size()) < aim) {
+      Tri t;
+      t.fScale = this->randomTriangleScale();
+      t.fX = ux(fUiRng);
+      t.fY = ux(fUiRng); // initial fill: random Y over the whole screen
+      // Larger triangles are nearer, so they are brighter and move faster.
+      t.fShade = ux(fUiRng);
+      fTriangles.push_back(t);
+    }
+    while (static_cast<int>(fTriangles.size()) > aim) {
+      fTriangles.pop_back();
+    }
+    // Draw order: lazer sorts by scale so big ones sit in front.
+    std::ranges::sort(fTriangles, {}, &Tri::fScale);
+  }
+
+  void updateAndDrawTriangles(skia::SkCanvas *canvas) {
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    const float elapsedSeconds = static_cast<float>(fUiDt) / 1000.0f;
+    // movedDistance = -elapsed * velocity * base_velocity / (height * scale)
+    const float moved = elapsedSeconds * fTriangleVelocity *
+                        kTriangleBaseVelocity / (sh * fTriangleScale);
+
+    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+
+    for (auto &t : fTriangles) {
+      t.fY -= moved * t.fScale; // parallax: bigger triangles move faster
+      const float triHeight = kTriangleSize * t.fScale * kTriangleRatio;
+      if (t.fY * sh + triHeight < 0.0f) {
+        // Fully above the top edge: respawn below with fresh properties.
+        t.fY = 1.0f + triHeight / sh;
+        t.fX = ux(fUiRng);
+        t.fScale = this->randomTriangleScale();
+        t.fShade = ux(fUiRng);
+      }
+
+      const float cx = t.fX * sw;
+      const float cy = t.fY * sh;
+      const float w = kTriangleSize * t.fScale;
+      const float h = w * kTriangleRatio;
+      skia::SkPathBuilder b;
+      b.moveTo(cx, cy - h * 0.5f);          // apex up
+      b.lineTo(cx - w * 0.5f, cy + h * 0.5f);
+      b.lineTo(cx + w * 0.5f, cy + h * 0.5f);
+      b.close();
+      // Colour: a subtle two-tone shading like lazer's gradient triangles.
+      const float shade = 0.55f + 0.45f * t.fShade;
+      paint.setColor(skia::colorSetARGB(
+          255, static_cast<std::uint8_t>(38 * shade),
+          static_cast<std::uint8_t>(30 * shade),
+          static_cast<std::uint8_t>(50 * shade)));
+      paint.setAlphaf(fTriangleAlpha);
+      canvas->drawPath(b.detach(), paint);
     }
   }
 
@@ -2106,51 +2188,60 @@ private:
                            r * 0.55f, skia::kWhite);
   }
 
-  // lazer's LogoVisualisation: bars radiate from the logo edge, the whole ring
-  // repeated a few times around the circumference, additive and translucent.
-  void drawVisualiser(skia::SkCanvas *canvas, float radius) {
+  // LogoVisualisation.VisualisationDrawNode, transcribed. Each bar is a quad
+  // sitting on the logo's circumference, `bar_length * amplitude` long, with
+  // width equal to the chord subtended by one bar; the whole ring is drawn
+  // `visualiser_rounds` times, rotated, additively at 20% white.
+  void drawVisualiser(skia::SkCanvas *canvas, float logoRadius) {
     const auto bars = fSpectrum.bars();
     if (bars.empty()) {
       return;
     }
-    constexpr int kRounds = 5;
-    const float barLen = radius * 1.9f;
+    constexpr int kRounds = 5;          // visualiser_rounds
+    constexpr float kAmplitudeDeadZone = 1.0f / 600.0f;
     const auto count = static_cast<int>(bars.size());
-    const float barW =
-        2.0f * std::numbers::pi_v<float> * radius / static_cast<float>(count) *
-        1.15f;
+    // lazer works in a box of `size` = logo diameter, with bar_length = 600
+    // against a default logo of ~480px; keep the same proportion here.
+    const float barLength = logoRadius * 2.0f * (600.0f / 480.0f);
+    // barSize.X = size * sqrt(2 * (1 - cos(360/bars))) / 2  -- the chord.
+    const float chord =
+        logoRadius * 2.0f *
+        std::sqrt(2.0f * (1.0f - std::cos(2.0f * std::numbers::pi_v<float> /
+                                          static_cast<float>(count)))) /
+        2.0f;
 
     skia::SkPaint paint;
     paint.setAntiAlias(true);
     paint.setColor(skia::kWhite);
-    paint.setAlphaf(0.20f);
+    paint.setAlphaf(0.2f); // transparent_white
     paint.setBlendMode(skia::SkBlendMode::kPlus);
 
     for (int round = 0; round < kRounds; ++round) {
-      const float roundOffset = static_cast<float>(round) * 2.0f *
-                                std::numbers::pi_v<float> /
-                                static_cast<float>(kRounds);
       for (int i = 0; i < count; ++i) {
         const float amp = bars[static_cast<std::size_t>(i)];
-        if (amp < 0.004f) {
+        if (amp < kAmplitudeDeadZone) {
           continue;
         }
-        const float ang = roundOffset + 2.0f * std::numbers::pi_v<float> *
-                                            static_cast<float>(i) /
-                                            static_cast<float>(count);
-        const float cosA = std::cos(ang);
-        const float sinA = std::sin(ang);
-        const float len = barLen * amp;
-        // Quad from the logo edge outward, oriented along the radius.
-        const float bx = fLogoX + cosA * radius;
-        const float by = fLogoY + sinA * radius;
-        const float nx = -sinA * barW * 0.5f;
-        const float ny = cosA * barW * 0.5f;
+        const float rotation =
+            2.0f * std::numbers::pi_v<float> *
+            (static_cast<float>(i) / static_cast<float>(count) +
+             static_cast<float>(round) / static_cast<float>(kRounds));
+        const float cosA = std::cos(rotation);
+        const float sinA = std::sin(rotation);
+
+        const float bx = fLogoX + cosA * logoRadius;
+        const float by = fLogoY + sinA * logoRadius;
+        // bottomOffset is perpendicular; amplitudeOffset is radial.
+        const float ox = -sinA * chord * 0.5f;
+        const float oy = cosA * chord * 0.5f;
+        const float ax = cosA * barLength * amp;
+        const float ay = sinA * barLength * amp;
+
         skia::SkPathBuilder bar;
-        bar.moveTo(bx + nx, by + ny);
-        bar.lineTo(bx + nx + cosA * len, by + ny + sinA * len);
-        bar.lineTo(bx - nx + cosA * len, by - ny + sinA * len);
-        bar.lineTo(bx - nx, by - ny);
+        bar.moveTo(bx - ox, by - oy);
+        bar.lineTo(bx - ox + ax, by - oy + ay);
+        bar.lineTo(bx + ox + ax, by + oy + ay);
+        bar.lineTo(bx + ox, by + oy);
         bar.close();
         canvas->drawPath(bar.detach(), paint);
       }
@@ -2224,6 +2315,28 @@ private:
 
   // ---- Song select ------------------------------------------------------
 
+  // ---- Song select (port of lazer's carousel geometry) ------------------
+  //
+  // Numbers from osu.Game/Screens/Select: CarouselItem.DEFAULT_HEIGHT = 45 for
+  // difficulty panels, PanelBeatmapSet.HEIGHT = 45 * 1.6 for set panels,
+  // Panel.CORNER_RADIUS = 10, active_x_offset = 25 (doubled for unselected
+  // difficulty panels, quadrupled for unselected sets, plus another 25 when
+  // not keyboard-selected), transitions 400 ms OutQuint. The horizontal curve
+  // is Carousel.offsetX: (3 - sqrt(9 - dist^2)) * halfHeight, which is what
+  // makes the list bow outward from the vertical centre.
+  [[nodiscard]] static float carouselOffsetX(float dist, float halfHeight) {
+    constexpr float kCircleRadius = 3.0f;
+    const float discriminant =
+        std::max(0.0f, kCircleRadius * kCircleRadius - dist * dist);
+    return (kCircleRadius - std::sqrt(discriminant)) * halfHeight;
+  }
+
+  [[nodiscard]] static float easeOutQuintT(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    const float u = 1.0f - t;
+    return 1.0f - u * u * u * u * u;
+  }
+
   void frameSongSelect() {
 #ifdef __EMSCRIPTEN__
     if (!fLibraryLoaded) {
@@ -2244,7 +2357,6 @@ private:
     this->updateMenuMusic();
     auto *canvas = fSurface->getCanvas();
 
-    // Background follows the selected set.
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
       fBackgroundForSet = fSelSet;
       this->loadSelectBackground(
@@ -2254,183 +2366,247 @@ private:
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
-
     fCarouselHits.clear();
 
     if (fLibrary.empty()) {
-      this->drawTextCentered(canvas, "No beatmaps in the library",
-                             sw * 0.5f, sh * 0.45f, 28.0f, skia::kWhite, 0.9f);
+      this->drawTextCentered(canvas, "No beatmaps in the library", sw * 0.5f,
+                             sh * 0.45f, 28.0f, skia::kWhite, 0.9f);
       this->drawTextCentered(canvas,
-                             "Press D to open the beatmap listing and "
-                             "download some",
+                             "Press D to browse and download, I to import",
                              sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
-      this->drawBottomBar(canvas, "D downloads    Esc quit    F11 fullscreen");
+      this->drawSelectFooter(canvas);
       this->present();
       return;
     }
 
-    // ---- Left: selected map info panel.
+    // ---- Left: the info wedge (lazer's BeatmapTitleWedge area).
     const auto &selSet = fLibrary[static_cast<std::size_t>(fSelSet)].fSet;
-    const auto &selInfo =
-        selSet.fBeatmaps[static_cast<std::size_t>(fSelDiff)];
-    const float infoW = sw * 0.46f;
-    this->fillRounded(canvas,
-                      skia::SkRect::MakeXYWH(20.0f, 24.0f, infoW, 190.0f),
-                      12.0f, kPanelBg);
-    this->drawTextClipped(canvas, setTitle(selSet), 40.0f, 74.0f, infoW - 40.0f,
-                          34.0f, skia::kWhite);
-    this->drawTextClipped(canvas, setArtist(selSet), 40.0f, 106.0f,
-                          infoW - 40.0f, 20.0f, skia::kWhite, 0.8f);
-    this->drawTextClipped(canvas,
-                          std::format("mapped by {}", selInfo.fMeta.fCreator),
-                          40.0f, 132.0f, infoW - 40.0f, 16.0f, kAccent2, 0.9f);
-    this->drawTextClipped(
-        canvas,
-        std::format("[{}]  {:.2f}*  CS{:.1f} AR{:.1f} OD{:.1f} HP{:.1f}",
-                    selInfo.fMeta.fVersion, selInfo.fStars, selInfo.fDiff.fCs,
-                    selInfo.fDiff.fAr, selInfo.fDiff.fOd, selInfo.fDiff.fHp),
-        40.0f, 164.0f, infoW - 40.0f, 16.0f, starColor(selInfo.fStars));
-    this->drawTextClipped(
-        canvas,
-        std::format("{} objects   {:.0f}:{:02.0f}", selInfo.fObjectCount,
-                    selInfo.fLengthMs / 60000.0,
-                    std::fmod(selInfo.fLengthMs / 1000.0, 60.0)),
-        40.0f, 190.0f, infoW - 40.0f, 15.0f, skia::kWhite, 0.7f);
+    const auto &selInfo = selSet.fBeatmaps[static_cast<std::size_t>(fSelDiff)];
+    this->drawInfoWedge(canvas, selSet, selInfo);
 
-    // ---- Right: carousel.
-    const float carW = std::min(600.0f, sw * 0.46f);
-    const float carX = sw - carW - 20.0f;
-    const float headerH = 62.0f;
-    const float diffH = 40.0f;
-    const float gap = 6.0f;
-    const float topPad = 24.0f;
-    const float bottomPad = 64.0f;
+    // ---- Right: the carousel.
+    const float uiScale = std::clamp(sh / 900.0f, 0.8f, 1.6f);
+    const float setH = 45.0f * 1.6f * uiScale;  // PanelBeatmapSet.HEIGHT
+    const float diffH = 45.0f * uiScale;        // CarouselItem.DEFAULT_HEIGHT
+    const float gap = 5.0f * uiScale;
+    const float corner = 10.0f * uiScale;       // Panel.CORNER_RADIUS
+    const float activeX = 25.0f * uiScale;      // active_x_offset
+    const float panelW = std::min(680.0f * uiScale, sw * 0.52f);
+    const float carLeft = sw - panelW - 20.0f * uiScale;
+    const float halfHeight = sh * 0.5f;
 
-    // Layout pass: y positions with the selected set expanded.
-    float y = topPad;
-    float selY = topPad;
-    float totalH = 0.0f;
+    // Vertical layout: total height and the selected row's centre.
+    float total = 0.0f;
+    float selCentre = 0.0f;
     for (int si = 0; si < static_cast<int>(fLibrary.size()); ++si) {
       if (si == fSelSet) {
-        selY = y + headerH +
-               static_cast<float>(fSelDiff) * (diffH + gap);
+        selCentre = total + setH +
+                    (static_cast<float>(fSelDiff) + 0.5f) * (diffH + gap);
       }
-      y += headerH + gap;
+      total += setH + gap;
       if (si == fSelSet) {
-        y += static_cast<float>(
-                 fLibrary[static_cast<std::size_t>(si)].fSet.fBeatmaps.size()) *
-             (diffH + gap);
+        total += static_cast<float>(
+                     fLibrary[static_cast<std::size_t>(si)].fSet.fBeatmaps.size()) *
+                 (diffH + gap);
       }
     }
-    totalH = y - topPad;
 
-    // Keep the selection on screen; fCarouselScroll is the *target*, the
-    // drawn position eases toward it exponentially (lazer-style smoothing).
-    const float viewH = sh - topPad - bottomPad;
-    const float target = std::clamp(selY - fCarouselScroll, 40.0f,
-                                    viewH - diffH - 40.0f);
-    fCarouselScroll = selY - target;
-    fCarouselScroll =
-        std::clamp(fCarouselScroll, 0.0f, std::max(0.0f, totalH - viewH));
-    fScrollAnim += (fCarouselScroll - fScrollAnim) *
-                   std::min(1.0f, static_cast<float>(fUiDt) / 90.0f);
+    // The selection sits at the vertical centre; the scroll eases toward it
+    // like lazer's scroll container rather than snapping.
+    fCarouselScroll = selCentre - halfHeight;
+    fScrollAnim = this->approach(fScrollAnim, fCarouselScroll, 120.0f);
 
-    // Selection pop-out animation restarts on any selection change.
+    // Selection-change animation, used for the x-offset transition.
     const int selKey = fSelSet * 1024 + fSelDiff;
     if (selKey != fPrevSelKey) {
       fPrevSelKey = selKey;
       fPopAnim = 0.0f;
     }
-    fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 220.0f);
-    const float pop = easeOutQuint(fPopAnim);
+    fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 400.0f);
+    const float pop = easeOutQuintT(fPopAnim);
 
     canvas->save();
-    canvas->clipIRect(skia::SkIRect::MakeXYWH(
-        static_cast<int>(carX) - 8, static_cast<int>(topPad) - 8,
-        static_cast<int>(carW) + 16, static_cast<int>(viewH) + 16));
-
-    y = topPad - fScrollAnim;
+    float y = -fScrollAnim;
     for (int si = 0; si < static_cast<int>(fLibrary.size()); ++si) {
       const auto &set = fLibrary[static_cast<std::size_t>(si)].fSet;
-      const bool selected = si == fSelSet;
-      const skia::SkRect header = skia::SkRect::MakeXYWH(
-          carX - (selected ? 14.0f * pop : 0.0f), y, carW, headerH);
-      if (y + headerH >= topPad && y <= sh) {
-        this->fillRounded(canvas, header, 10.0f,
-                          selected ? kCardSel : kCardBg);
-        if (selected) {
-          this->strokeRounded(canvas, header, 10.0f, kAccent, 2.0f);
-        }
-        this->drawTextClipped(canvas, setTitle(set), carX + 16.0f, y + 26.0f,
-                              carW - 32.0f, 18.0f, skia::kWhite);
-        this->drawTextClipped(
-            canvas,
-            std::format("{}  //  {} difficult{}", setArtist(set),
-                        set.fBeatmaps.size(),
-                        set.fBeatmaps.size() == 1 ? "y" : "ies"),
-            carX + 16.0f, y + 48.0f, carW - 32.0f, 14.0f, skia::kWhite, 0.65f);
-        fCarouselHits.push_back({header, si, -1});
-      }
-      y += headerH + gap;
+      const bool expanded = si == fSelSet;
 
-      if (!selected) {
+      if (y + setH >= -setH && y <= sh) {
+        // Carousel curve: distance of this panel's centre from the middle.
+        const float dist = std::abs(1.0f - (y + setH * 0.5f) / halfHeight);
+        float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
+        if (!expanded) {
+          x += activeX * 4.0f; // unselected set panels sit further right
+        }
+        x += activeX * (1.0f - (expanded ? pop : 0.0f));
+
+        const skia::SkRect rect =
+            skia::SkRect::MakeXYWH(x, y, panelW, setH);
+        this->drawSetPanel(canvas, rect, set, expanded, corner);
+        fCarouselHits.push_back({rect, si, -1});
+      }
+      y += setH + gap;
+
+      if (!expanded) {
         continue;
       }
       for (int di = 0; di < static_cast<int>(set.fBeatmaps.size()); ++di) {
         const auto &info = set.fBeatmaps[static_cast<std::size_t>(di)];
-        const bool diffSel = di == fSelDiff;
-        const skia::SkRect row = skia::SkRect::MakeXYWH(
-            carX + 24.0f - (diffSel ? 18.0f * pop : 0.0f), y, carW - 24.0f,
-            diffH);
-        if (y + diffH >= topPad && y <= sh) {
-          this->fillRounded(canvas, row, 8.0f,
-                            diffSel ? kCardSel : kCardBg);
-          if (diffSel) {
-            this->strokeRounded(canvas, row, 8.0f, kAccent2, 2.0f);
+        const bool selected = di == fSelDiff;
+        if (y + diffH >= -diffH && y <= sh) {
+          const float dist = std::abs(1.0f - (y + diffH * 0.5f) / halfHeight);
+          float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
+          if (!selected) {
+            x += activeX * 2.0f; // unselected difficulty panels
           }
-          // Star chip.
-          const skia::SkRect chip = skia::SkRect::MakeXYWH(
-              row.fLeft + 10.0f, y + 9.0f, 58.0f, diffH - 18.0f);
-          this->fillRounded(canvas, chip, 6.0f, starColor(info.fStars));
-          this->drawTextCentered(canvas,
-                                 std::format("{:.2f}*", info.fStars),
-                                 chip.centerX(), y + 24.0f, 13.0f,
-                                 skia::colorSetARGB(255, 20, 16, 26));
-          this->drawTextClipped(canvas, info.fMeta.fVersion,
-                                row.fLeft + 80.0f, y + 25.0f, carW - 128.0f,
-                                15.0f, skia::kWhite, 0.9f);
-          fCarouselHits.push_back({row, si, di});
+          x += activeX * (1.0f - (selected ? pop : 0.0f));
+
+          const skia::SkRect rect =
+              skia::SkRect::MakeXYWH(x, y, panelW, diffH);
+          this->drawDiffPanel(canvas, rect, info, selected, corner);
+          fCarouselHits.push_back({rect, si, di});
         }
         y += diffH + gap;
       }
     }
     canvas->restore();
 
-    this->drawBottomBar(canvas,
-                        "Enter play    Arrows navigate    D downloads    "
-                        "I import    Esc menu");
-
-    // Clickable chips in the bottom bar (mouse path, keyboard-independent).
-    const float chipW = 150.0f;
-    fDownloadsChip =
-        skia::SkRect::MakeXYWH(sw - chipW - 16.0f, sh - 38.0f, chipW, 32.0f);
-    fImportChip = skia::SkRect::MakeXYWH(sw - 2 * chipW - 28.0f, sh - 38.0f,
-                                         chipW, 32.0f);
-    const bool dlHover = fDownloadsChip.contains(fMouseX, fMouseY);
-    this->fillRounded(canvas, fDownloadsChip, 8.0f, dlHover ? kCardSel : kCardBg);
-    this->strokeRounded(canvas, fDownloadsChip, 8.0f, kAccent2,
-                        dlHover ? 2.0f : 1.0f);
-    this->drawTextCentered(canvas, "downloads", fDownloadsChip.centerX(),
-                           fDownloadsChip.centerY() + 5.0f, 14.0f,
-                           dlHover ? kAccent2 : skia::kWhite);
-    const bool imHover = fImportChip.contains(fMouseX, fMouseY);
-    this->fillRounded(canvas, fImportChip, 8.0f, imHover ? kCardSel : kCardBg);
-    this->strokeRounded(canvas, fImportChip, 8.0f, kAccent, imHover ? 2.0f : 1.0f);
-    this->drawTextCentered(canvas, "import .osz", fImportChip.centerX(),
-                           fImportChip.centerY() + 5.0f, 14.0f,
-                           imHover ? kAccent : skia::kWhite);
+    this->drawSelectFooter(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
+  }
+
+  void drawSetPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                    const osu::BeatmapSet &set, bool expanded, float corner) {
+    const bool hover = rect.contains(fMouseX, fMouseY);
+    // lazer: colourProvider.Background5-ish, brighter when expanded/hovered.
+    this->fillRounded(canvas, rect, corner,
+                      expanded ? skia::colorSetARGB(255, 66, 48, 74)
+                      : hover  ? skia::colorSetARGB(255, 52, 42, 60)
+                               : skia::colorSetARGB(255, 40, 33, 48));
+    if (expanded) {
+      this->strokeRounded(canvas, rect, corner, kAccent, 2.0f);
+    }
+    const float pad = 18.0f;
+    this->drawTextClipped(canvas, setTitle(set), rect.fLeft + pad,
+                          rect.fTop + rect.height() * 0.44f,
+                          rect.width() - pad * 2, 19.0f, skia::kWhite);
+    this->drawTextClipped(canvas, setArtist(set), rect.fLeft + pad,
+                          rect.fTop + rect.height() * 0.72f,
+                          rect.width() - pad * 2, 14.0f, skia::kWhite, 0.7f);
+    // Difficulty spread dots (PanelBeatmapSet.SpreadDisplay).
+    float dotX = rect.fRight - pad;
+    for (auto it = set.fBeatmaps.rbegin(); it != set.fBeatmaps.rend(); ++it) {
+      skia::SkPaint dot;
+      dot.setAntiAlias(true);
+      dot.setColor(starColor(it->fStars));
+      canvas->drawCircle(dotX, rect.centerY(), 4.0f, dot);
+      dotX -= 12.0f;
+      if (dotX < rect.centerX()) {
+        break;
+      }
+    }
+  }
+
+  void drawDiffPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                     const osu::BeatmapInfo &info, bool selected,
+                     float corner) {
+    const bool hover = rect.contains(fMouseX, fMouseY);
+    this->fillRounded(canvas, rect, corner,
+                      selected ? skia::colorSetARGB(255, 74, 56, 84)
+                      : hover  ? skia::colorSetARGB(255, 48, 39, 56)
+                               : skia::colorSetARGB(255, 34, 28, 42));
+    if (selected) {
+      this->strokeRounded(canvas, rect, corner, kAccent2, 2.0f);
+    }
+    // Star badge, then the difficulty name (PanelBeatmap layout).
+    const float pad = 16.0f;
+    const skia::SkRect badge = skia::SkRect::MakeXYWH(
+        rect.fLeft + pad, rect.centerY() - 11.0f, 62.0f, 22.0f);
+    this->fillRounded(canvas, badge, 11.0f, starColor(info.fStars));
+    this->drawTextCentered(canvas, std::format("{:.2f}", info.fStars),
+                           badge.centerX(), badge.centerY() + 5.0f, 13.0f,
+                           skia::colorSetARGB(255, 20, 16, 26));
+    this->drawTextClipped(canvas, info.fMeta.fVersion, badge.fRight + 14.0f,
+                          rect.centerY() + 5.0f,
+                          rect.width() - badge.width() - pad * 3, 15.0f,
+                          skia::kWhite, 0.95f);
+  }
+
+  // The left-hand wedge showing the selected beatmap, à la BeatmapTitleWedge.
+  void drawInfoWedge(skia::SkCanvas *canvas, const osu::BeatmapSet &set,
+                     const osu::BeatmapInfo &info) {
+    const float sh = static_cast<float>(fScreenH);
+    const float w = std::min(560.0f, static_cast<float>(fScreenW) * 0.44f);
+    const float top = 32.0f;
+    const float h = 168.0f;
+    const float shear = 22.0f; // lazer's wedges are sheared parallelograms
+
+    skia::SkPathBuilder wedge;
+    wedge.moveTo(0.0f, top);
+    wedge.lineTo(w + shear, top);
+    wedge.lineTo(w, top + h);
+    wedge.lineTo(0.0f, top + h);
+    wedge.close();
+    skia::SkPaint bg;
+    bg.setAntiAlias(true);
+    bg.setColor(kPanelBg);
+    canvas->drawPath(wedge.detach(), bg);
+
+    const float pad = 28.0f;
+    this->drawTextClipped(canvas, setTitle(set), pad, top + 46.0f, w - pad * 2,
+                          32.0f, skia::kWhite);
+    this->drawTextClipped(canvas, setArtist(set), pad, top + 76.0f,
+                          w - pad * 2, 18.0f, skia::kWhite, 0.8f);
+    this->drawTextClipped(canvas,
+                          std::format("mapped by {}", info.fMeta.fCreator),
+                          pad, top + 100.0f, w - pad * 2, 15.0f, kAccent2, 0.9f);
+    this->drawTextClipped(
+        canvas,
+        std::format("{}   {:.2f}*   CS {:.1f}  AR {:.1f}  OD {:.1f}  HP {:.1f}",
+                    info.fMeta.fVersion, info.fStars, info.fDiff.fCs,
+                    info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp),
+        pad, top + 128.0f, w - pad * 2, 15.0f, starColor(info.fStars));
+    this->drawTextClipped(
+        canvas,
+        std::format("{} objects   {:.0f}:{:02.0f}", info.fObjectCount,
+                    info.fLengthMs / 60000.0,
+                    std::fmod(info.fLengthMs / 1000.0, 60.0)),
+        pad, top + 152.0f, w - pad * 2, 14.0f, skia::kWhite, 0.7f);
+  }
+
+  // lazer's song select footer: a row of pill buttons along the bottom.
+  void drawSelectFooter(skia::SkCanvas *canvas) {
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    skia::SkPaint bar;
+    bar.setColor(kPanelBg);
+    canvas->drawRect(skia::SkRect::MakeXYWH(0.0f, sh - 62.0f, sw, 62.0f), bar);
+
+    struct FooterBtn {
+      const char *fLabel;
+      skia::SkColor fColor;
+      skia::SkRect *fHit;
+    };
+    const FooterBtn btns[] = {
+        {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
+        {"import", kAccent, &fImportChip},
+        {"browse", skia::colorSetARGB(255, 165, 204, 0), &fDownloadsChip},
+    };
+    float x = 24.0f;
+    for (const auto &b : btns) {
+      const skia::SkRect r = skia::SkRect::MakeXYWH(x, sh - 50.0f, 148.0f, 38.0f);
+      *b.fHit = r;
+      const bool hover = r.contains(fMouseX, fMouseY);
+      this->fillRounded(canvas, r, 19.0f, hover ? kCardSel : kCardBg);
+      this->strokeRounded(canvas, r, 19.0f, b.fColor, hover ? 2.0f : 1.0f);
+      this->drawTextCentered(canvas, b.fLabel, r.centerX(), r.centerY() + 5.0f,
+                             14.0f, hover ? b.fColor : skia::kWhite);
+      x += 158.0f;
+    }
+    this->drawTextCentered(
+        canvas, "Enter play    Arrows navigate    F2 random    Esc menu",
+        sw * 0.72f, sh - 24.0f, 14.0f, skia::kWhite, 0.7f);
   }
 
   void drawBottomBar(skia::SkCanvas *canvas, const std::string &hint) {

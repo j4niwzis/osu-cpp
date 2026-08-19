@@ -4,20 +4,23 @@ import std;
 
 export namespace client {
 
-// Circular-visualiser spectrum, modelled on osu!lazer's LogoVisualisation.
+// Port of osu!lazer's LogoVisualisation amplitude handling.
 //
-// lazer gets FFT amplitudes for free from BASS; OpenAL has no such API, so we
-// keep the decoded PCM around and run our own windowed FFT at the current
-// playback position. The bar behaviour is lazer's: take the new amplitude if
-// it exceeds the current bar (peak hold), otherwise decay continuously.
+// lazer receives 256 FFT bins from BASS (ChannelAmplitudes.FrequencyAmplitudes)
+// and, every 50 ms, folds them onto 200 bars with a rotating index offset,
+// keeping the maximum (peak hold) and decaying continuously in between.
+// OpenAL has no spectrum API, so the bins are computed here from the decoded
+// PCM; everything downstream matches the original constant for constant.
 class Spectrum {
 public:
-  static constexpr std::size_t kBars = 200;
-  static constexpr std::size_t kFftSize = 1024; // power of two
-  static constexpr double kUpdateIntervalMs = 50.0;
-  static constexpr float kDecayPerMs = 0.0024f;
+  static constexpr std::size_t kBars = 200;      // bars_per_visualiser
+  static constexpr std::size_t kBins = 256;      // BASS ChannelAmplitudes size
+  static constexpr std::size_t kFftSize = 512;   // 512-point FFT -> 256 bins
+  static constexpr std::size_t kIndexChange = 5; // index_change
+  static constexpr double kUpdateIntervalMs = 50.0;   // time_between_updates
+  static constexpr float kDecayPerMs = 0.0024f;       // decay_per_millisecond
+  static constexpr float kNonKiaiMultiplier = 0.5f;   // kiai off
 
-  // mono: full decoded track, single channel. posSec: playback position.
   void update(std::span<const std::int16_t> mono, int rate, double posSec,
               double nowMs) {
     this->decay(nowMs);
@@ -31,15 +34,12 @@ public:
 
     const auto center = static_cast<std::ptrdiff_t>(posSec * rate);
     const auto start = center - static_cast<std::ptrdiff_t>(kFftSize / 2);
-    if (start < 0 ||
-        start + static_cast<std::ptrdiff_t>(kFftSize) >=
-            static_cast<std::ptrdiff_t>(mono.size())) {
+    if (start < 0 || start + static_cast<std::ptrdiff_t>(kFftSize) >=
+                         static_cast<std::ptrdiff_t>(mono.size())) {
       return; // outside the track: let the bars decay away
     }
 
     this->ensureTables();
-
-    // Hann-windowed real input into the complex buffer.
     for (std::size_t i = 0; i < kFftSize; ++i) {
       const float sample =
           static_cast<float>(mono[static_cast<std::size_t>(start) + i]) /
@@ -49,58 +49,52 @@ public:
     }
     this->fft();
 
-    // Magnitudes of the lower half, mapped onto the bars. Only the first
-    // quarter of the spectrum carries musical energy worth showing, so the
-    // bars cover 0..rate/8 with a mild logarithmic emphasis on the low end.
-    constexpr std::size_t kUsableBins = kFftSize / 8;
-    for (std::size_t b = 0; b < kBars; ++b) {
-      const float t = static_cast<float>(b) / static_cast<float>(kBars);
-      const auto lo = static_cast<std::size_t>(
-          std::pow(static_cast<float>(kUsableBins), t));
-      const auto hi = std::max(
-          lo + 1, static_cast<std::size_t>(std::pow(
-                      static_cast<float>(kUsableBins),
-                      static_cast<float>(b + 1) / static_cast<float>(kBars))));
-      float peak = 0.0f;
-      for (std::size_t k = lo; k < std::min(hi, kUsableBins); ++k) {
-        const float mag =
-            std::sqrt(fRe[k] * fRe[k] + fIm[k] * fIm[k]) /
-            static_cast<float>(kFftSize / 4);
-        peak = std::max(peak, mag);
-      }
-      // Gentle compression: raw magnitudes are far too spiky to look good.
-      const float target = std::clamp(std::sqrt(peak) * 0.9f, 0.0f, 1.0f);
-      if (target > fBars[b]) {
-        fBars[b] = target;
+    // Magnitudes, normalised the way BASS reports them: roughly 0..1 per bin.
+    for (std::size_t k = 0; k < kBins; ++k) {
+      const float mag = std::sqrt(fRe[k] * fRe[k] + fIm[k] * fIm[k]) * 2.0f /
+                        static_cast<float>(kFftSize);
+      // BASS amplitudes are already perceptually weighted; sqrt approximates
+      // that shaping closely enough to keep the visual behaviour.
+      fBins[k] = std::clamp(std::sqrt(mag) * 1.6f, 0.0f, 1.0f);
+    }
+
+    // lazer: targetAmplitude = temporalAmplitudes[(i + indexOffset) % 200]
+    for (std::size_t i = 0; i < kBars; ++i) {
+      const float target =
+          fBins[(i + fIndexOffset) % kBars] * kNonKiaiMultiplier;
+      if (target > fBars_[i]) {
+        fBars_[i] = target;
       }
     }
+    fIndexOffset = (fIndexOffset + kIndexChange) % kBars;
   }
 
-  [[nodiscard]] std::span<const float> bars() const noexcept { return fBars; }
+  [[nodiscard]] std::span<const float> bars() const noexcept { return fBars_; }
 
-  // Low-frequency energy, useful for pulsing the logo in place of lazer's
-  // beat-synced containers (we have no timing points loaded in the menu).
+  // Stands in for lazer's beat-synced logo pulse (no timing points in menu).
   [[nodiscard]] float bass() const noexcept {
     float sum = 0.0f;
-    for (std::size_t i = 0; i < 12 && i < kBars; ++i) {
-      sum += fBars[i];
+    for (std::size_t i = 0; i < 8; ++i) {
+      sum += fBins[i];
     }
-    return sum / 12.0f;
+    return sum / 8.0f;
   }
 
   void reset() noexcept {
-    fBars.fill(0.0f);
+    fBars_.fill(0.0f);
+    fBins.fill(0.0f);
     fLastAnalysisMs = 0.0;
   }
 
 private:
   void decay(double nowMs) noexcept {
-    const double dt = fLastDecayMs > 0.0 ? std::min(50.0, nowMs - fLastDecayMs)
-                                         : 0.0;
+    const double dt =
+        fLastDecayMs > 0.0 ? std::min(50.0, nowMs - fLastDecayMs) : 0.0;
     fLastDecayMs = nowMs;
     const float factor = static_cast<float>(dt) * kDecayPerMs;
-    for (float &bar : fBars) {
-      bar -= factor * (bar + 0.03f); // lazer's 3% floor speeds up the tail
+    for (float &bar : fBars_) {
+      // lazer adds 3% of a full bar so the tail finishes faster.
+      bar -= factor * (bar + 0.03f);
       if (bar < 0.0f) {
         bar = 0.0f;
       }
@@ -121,7 +115,6 @@ private:
     fIm.resize(kFftSize);
   }
 
-  // Iterative in-place radix-2 Cooley-Tukey.
   void fft() {
     constexpr std::size_t n = kFftSize;
     for (std::size_t i = 1, j = 0; i < n; ++i) {
@@ -136,8 +129,8 @@ private:
       }
     }
     for (std::size_t len = 2; len <= n; len <<= 1) {
-      const float ang = -2.0f * std::numbers::pi_v<float> /
-                        static_cast<float>(len);
+      const float ang =
+          -2.0f * std::numbers::pi_v<float> / static_cast<float>(len);
       const float wRe = std::cos(ang);
       const float wIm = std::sin(ang);
       for (std::size_t i = 0; i < n; i += len) {
@@ -162,7 +155,9 @@ private:
     }
   }
 
-  std::array<float, kBars> fBars{};
+  std::array<float, kBars> fBars_{};
+  std::array<float, kBins> fBins{};
+  std::size_t fIndexOffset = 0;
   std::vector<float> fWindow;
   std::vector<float> fRe;
   std::vector<float> fIm;
