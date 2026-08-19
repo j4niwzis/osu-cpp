@@ -18,6 +18,7 @@ import client.audio;
 import client.input;
 import client.timing;
 import client.http;
+import client.spectrum;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -199,9 +200,46 @@ private:
   float fScrollAnim = 0.0f;    // smoothed carousel scroll
   float fPopAnim = 1.0f;       // selected row pop-out progress
   int fPrevSelKey = -1;
-  bool fMenuExpanded = false;
-  float fMenuExpand = 0.0f;    // eased 0..1
+
+  // ---- Main menu button system (port of lazer's ButtonSystem) ----------
+  //
+  // lazer models the menu as a small state machine (Initial -> TopLevel ->
+  // a submenu), with every button owning an expand/contract animation and
+  // the logo sliding aside to make room. Same structure here.
+  enum class MenuState : std::uint8_t { kInitial, kTopLevel, kPlay };
+  enum class MenuAction : std::uint8_t {
+    kOpenPlay,
+    kBrowse,
+    kImport,
+    kExit,
+    kSolo,
+    kRandom,
+    kBack,
+  };
+  struct MenuBtn {
+    std::string fLabel;
+    std::string fGlyph;      // drawn as a text glyph; no icon font here
+    skia::SkColor fColor{};
+    MenuAction fAction{};
+    MenuState fVisible{};    // menu state this button belongs to
+    bool fLeftSide = false;  // back button sits left of the logo, as in lazer
+    float fExpand = 0.0f;    // 0 contracted .. 1 expanded
+    float fHover = 0.0f;     // eased hover weight
+    float fFlash = 0.0f;     // click flash, decays
+    skia::SkRect fRect = skia::SkRect::MakeEmpty();
+  };
+  std::vector<MenuBtn> fMenuBtns;
+  MenuState fMenuState = MenuState::kInitial;
+  float fLogoX = 0.0f;
+  float fLogoY = 0.0f;
+  float fLogoScale = 1.0f;
+  bool fLogoPlaced = false;
+  float fLogoHover = 0.0f;
+  float fLogoPunch = 0.0f; // click/beat impact, decays
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
+  client::Spectrum fSpectrum;
+  AnchoredClock fMenuClock;
+  double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
   struct Tri {
     float fX, fY, fSize, fSpeed, fAlpha;
   };
@@ -783,8 +821,9 @@ private:
     const int button = ev.fA;
     const int action = ev.fB;
 
-    if (fState == State::kSongSelect || fState == State::kDownload ||
-        fState == State::kPaused || fState == State::kResults) {
+    if (fState == State::kMainMenu || fState == State::kSongSelect ||
+        fState == State::kDownload || fState == State::kPaused ||
+        fState == State::kResults) {
       if (button == glfw::kMouseButtonLeft && action == glfw::kPress) {
         this->clickAt(fMouseX, fMouseY);
       }
@@ -808,25 +847,19 @@ private:
   void clickAt(float x, float y) {
     switch (fState) {
     case State::kMainMenu: {
+      this->ensureMenuButtons();
       const float dx = x - fLogoRect.centerX();
       const float dy = y - fLogoRect.centerY();
       const float r = fLogoRect.width() * 0.5f;
-      if (dx * dx + dy * dy <= r * r) {
-        fMenuExpanded = !fMenuExpanded;
+      if (r > 0.0f && dx * dx + dy * dy <= r * r) {
+        this->triggerLogo();
         return;
       }
-      if (fMenuExpanded) {
-        for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
-          if (fMenuButtons[i].fRect.contains(x, y)) {
-            if (i == 0) {
-              this->switchState(State::kSongSelect);
-            } else if (i == 1) {
-              this->openDownloads();
-            } else {
-              this->requestQuit();
-            }
-            return;
-          }
+      for (auto &b : fMenuBtns) {
+        if (b.fVisible == fMenuState && b.fExpand > 0.5f &&
+            b.fRect.contains(x, y)) {
+          this->menuTrigger(b);
+          return;
         }
       }
       break;
@@ -974,7 +1007,11 @@ private:
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
     fStateEnterWall = wallMs();
-    fMenuExpanded = false;
+    if (st == State::kMainMenu) {
+      // Returning to the menu always lands on the top level, never on a
+      // stale submenu, and the logo re-eases into place from where it was.
+      fMenuState = MenuState::kTopLevel;
+    }
   }
 
   // ---- Frame dispatch ---------------------------------------------------
@@ -1749,9 +1786,130 @@ private:
     }
   }
 
+  // ---- Main menu (port of lazer's ButtonSystem) -------------------------
+
+  void ensureMenuButtons() {
+    if (!fMenuBtns.empty()) {
+      return;
+    }
+    // Colours lifted from lazer's ButtonSystem so the palette reads familiar.
+    fMenuBtns.push_back({"play", "▶", skia::colorSetARGB(255, 102, 68, 204),
+                         MenuAction::kOpenPlay, MenuState::kTopLevel});
+    fMenuBtns.push_back({"browse", "↓", skia::colorSetARGB(255, 165, 204, 0),
+                         MenuAction::kBrowse, MenuState::kTopLevel});
+    fMenuBtns.push_back({"import", "+", skia::colorSetARGB(255, 238, 170, 0),
+                         MenuAction::kImport, MenuState::kTopLevel});
+    fMenuBtns.push_back({"exit", "×", skia::colorSetARGB(255, 238, 51, 153),
+                         MenuAction::kExit, MenuState::kTopLevel});
+
+    fMenuBtns.push_back({"solo", "●", skia::colorSetARGB(255, 102, 68, 204),
+                         MenuAction::kSolo, MenuState::kPlay});
+    fMenuBtns.push_back({"random", "↻", skia::colorSetARGB(255, 94, 63, 186),
+                         MenuAction::kRandom, MenuState::kPlay});
+
+    MenuBtn back{"back", "←", skia::colorSetARGB(255, 51, 58, 94),
+                 MenuAction::kBack, MenuState::kPlay};
+    back.fLeftSide = true;
+    fMenuBtns.push_back(std::move(back));
+  }
+
+  void setMenuState(MenuState st) {
+    if (fMenuState == st) {
+      return;
+    }
+    std::println(std::cerr, "[menu] {} -> {}", menuStateName(fMenuState),
+                 menuStateName(st));
+    fMenuState = st;
+  }
+
+  [[nodiscard]] static const char *menuStateName(MenuState st) {
+    switch (st) {
+    case MenuState::kInitial: return "initial";
+    case MenuState::kTopLevel: return "top-level";
+    case MenuState::kPlay: return "play";
+    }
+    return "?";
+  }
+
+  // Frame-rate independent easing toward a target (tau in milliseconds).
+  [[nodiscard]] float approach(float current, float target, float tauMs) const {
+    const float a = 1.0f - std::exp(-static_cast<float>(fUiDt) / tauMs);
+    return current + (target - current) * a;
+  }
+
+  void menuTrigger(MenuBtn &b) {
+    b.fFlash = 1.0f;
+    switch (b.fAction) {
+    case MenuAction::kOpenPlay:
+      this->setMenuState(MenuState::kPlay);
+      break;
+    case MenuAction::kBrowse:
+      this->openDownloads();
+      break;
+    case MenuAction::kImport:
+      this->importOsz();
+      break;
+    case MenuAction::kExit:
+      this->requestQuit();
+      break;
+    case MenuAction::kSolo:
+      this->switchState(State::kSongSelect);
+      break;
+    case MenuAction::kRandom:
+      this->playRandom();
+      break;
+    case MenuAction::kBack:
+      this->setMenuState(MenuState::kTopLevel);
+      break;
+    }
+  }
+
+  void playRandom() {
+    if (fLibrary.empty()) {
+      this->switchState(State::kSongSelect);
+      return;
+    }
+    std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
+    const auto si = pick(fUiRng);
+    const auto &set = fLibrary[si].fSet;
+    if (set.fBeatmaps.empty()) {
+      return;
+    }
+    std::uniform_int_distribution<std::size_t> pickDiff(
+        0, set.fBeatmaps.size() - 1);
+    fSelSet = static_cast<int>(si);
+    fSelDiff = static_cast<int>(pickDiff(fUiRng));
+    this->startPlay(fSelSet, fSelDiff);
+  }
+
+  // The logo is the menu's primary control: click it to advance a level, as
+  // in lazer (Initial -> TopLevel, then it triggers the first button).
+  void triggerLogo() {
+    fLogoPunch = 1.0f;
+    switch (fMenuState) {
+    case MenuState::kInitial:
+      this->setMenuState(MenuState::kTopLevel);
+      break;
+    case MenuState::kTopLevel:
+    case MenuState::kPlay:
+      for (auto &b : fMenuBtns) {
+        if (b.fVisible == fMenuState && !b.fLeftSide) {
+          this->menuTrigger(b);
+          break;
+        }
+      }
+      break;
+    }
+  }
+
   void frameMainMenu() {
+    this->ensureMenuButtons();
     this->updateMenuMusic();
+    this->updateMenuSpectrum();
+
     auto *canvas = fSurface->getCanvas();
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
 
     // Art backdrop from the selected set (dimmed); triangles drift over it.
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
@@ -1763,133 +1921,304 @@ private:
       this->drawBackground(canvas);
       skia::SkPaint dim;
       dim.setColor(skia::colorSetARGB(180, 12, 9, 18));
-      canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, static_cast<float>(fScreenW),
-                                              static_cast<float>(fScreenH)),
-                       dim);
+      canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
     } else {
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
-
     this->ensureTriangles();
     this->updateAndDrawTriangles(canvas);
 
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    const double wall = wallMs();
+    // ---- Layout: logo plus the visible button row, centred as a group.
+    const float uiScale = std::clamp(sh / 900.0f, 0.75f, 1.6f);
+    const float btnW = 150.0f * uiScale;
+    const float btnH = 96.0f * uiScale;
+    const float btnGap = 6.0f * uiScale;
+    const float wedge = 20.0f * uiScale; // lazer's parallelogram shear
 
-    // Expansion easing toward the target.
-    const float target = fMenuExpanded ? 1.0f : 0.0f;
-    fMenuExpand +=
-        (target - fMenuExpand) *
-        std::min(1.0f, static_cast<float>(fUiDt) / 90.0f);
-
-    // Pulsing logo, sliding left as the buttons expand.
-    const float pulse =
-        1.0f + 0.016f * static_cast<float>(std::sin(wall / 420.0));
-    const float logoR =
-        std::min(sw, sh) * 0.17f * pulse * (1.0f - 0.10f * fMenuExpand);
-    const float cx = sw * 0.5f - fMenuExpand * sw * 0.17f;
-    const float cy = sh * 0.46f;
-
-    skia::SkPaint glow;
-    glow.setAntiAlias(true);
-    glow.setColor(kAccent);
-    glow.setAlphaf(0.22f);
-    canvas->drawCircle(cx, cy, logoR * 1.13f, glow);
-    skia::SkPaint disc;
-    disc.setAntiAlias(true);
-    disc.setColor(kAccent);
-    canvas->drawCircle(cx, cy, logoR, disc);
-    skia::SkPaint ring;
-    ring.setAntiAlias(true);
-    ring.setStyle(skia::kStrokeStyle);
-    ring.setStrokeWidth(logoR * 0.055f);
-    ring.setColor(skia::kWhite);
-    ring.setAlphaf(0.9f);
-    canvas->drawCircle(cx, cy, logoR * 0.82f, ring);
-    this->drawTextCentered(canvas, "osu!", cx, cy + logoR * 0.22f,
-                           logoR * 0.55f, skia::kWhite);
-    fLogoRect =
-        skia::SkRect::MakeXYWH(cx - logoR, cy - logoR, logoR * 2, logoR * 2);
-
-    // Buttons fan out to the right of the logo.
-    fMenuButtons.clear();
-    if (fMenuExpand > 0.02f) {
-      const char *labels[] = {"play", "downloads", "exit"};
-      const skia::SkColor accents[] = {
-          kAccent, kAccent2, skia::colorSetARGB(255, 255, 110, 110)};
-      const float bx0 = cx + logoR + 28.0f;
-      const float bw = std::min(210.0f, (sw - bx0 - 32.0f - 2 * 16.0f) / 3.0f);
-      const float bh = 58.0f;
-      const float ease = easeOutQuint(fMenuExpand);
-      for (int i = 0; i < 3; ++i) {
-        const float bx =
-            bx0 + static_cast<float>(i) * (bw + 16.0f) -
-            (1.0f - ease) * 60.0f * static_cast<float>(i + 1);
-        const skia::SkRect r =
-            skia::SkRect::MakeXYWH(bx, cy - bh * 0.5f, bw, bh);
-        fMenuButtons.push_back({r, labels[i], accents[i]});
+    int rightCount = 0;
+    int leftCount = 0;
+    for (const auto &b : fMenuBtns) {
+      if (b.fVisible != fMenuState) {
+        continue;
       }
-      canvas->save();
-      // Fade the buttons with the expansion.
-      skia::SkPaint dummy;
-      (void)dummy;
-      for (auto &b : fMenuButtons) {
-        // Cheap alpha: draw into layerless canvas with eased colors.
-        const bool hover = b.fRect.contains(fMouseX, fMouseY);
-        skia::SkPaint fill;
-        fill.setAntiAlias(true);
-        fill.setColor(hover ? kCardSel : kCardBg);
-        fill.setAlphaf(ease);
-        canvas->drawRRect(
-            skia::SkRRect::MakeRectXY(b.fRect, 12.0f, 12.0f), fill);
-        skia::SkPaint stroke;
-        stroke.setAntiAlias(true);
-        stroke.setStyle(skia::kStrokeStyle);
-        stroke.setStrokeWidth(hover ? 3.0f : 2.0f);
-        stroke.setColor(b.fAccent);
-        stroke.setAlphaf(ease);
-        canvas->drawRRect(
-            skia::SkRRect::MakeRectXY(b.fRect, 12.0f, 12.0f), stroke);
-        fFont.setSize(19.0f);
-        skia::SkPaint tp;
-        tp.setAntiAlias(true);
-        tp.setColor(hover ? b.fAccent : skia::kWhite);
-        tp.setAlphaf(ease);
-        const float tw = fFont.measureText(b.fLabel.c_str(), b.fLabel.size(),
-                                           skia::SkTextEncoding::kUTF8);
-        canvas->drawString(b.fLabel.c_str(), b.fRect.centerX() - tw * 0.5f,
-                           b.fRect.centerY() + 7.0f, fFont, tp);
+      if (b.fLeftSide) {
+        ++leftCount;
+      } else {
+        ++rightCount;
       }
-      canvas->restore();
     }
 
-    this->drawBottomBar(canvas, fMenuExpanded
-                                    ? "play / downloads / exit    Esc close"
-                                    : "click the circle    Esc quit");
+    const float logoBase = std::min(sw, sh) * 0.17f;
+    const float logoR =
+        logoBase * (fMenuState == MenuState::kInitial ? 1.0f : 0.62f);
+    const float rightW =
+        static_cast<float>(rightCount) * (btnW + btnGap);
+    const float leftW = static_cast<float>(leftCount) * (btnW + btnGap);
+    const float groupW = leftW + 2.0f * logoR + 28.0f * uiScale + rightW;
+
+    const float targetLogoX =
+        fMenuState == MenuState::kInitial
+            ? sw * 0.5f
+            : (sw - groupW) * 0.5f + leftW + logoR;
+    const float targetLogoY = sh * (fMenuState == MenuState::kInitial ? 0.46f
+                                                                     : 0.5f);
+    const float targetScale =
+        fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
+
+    if (!fLogoPlaced) {
+      fLogoX = targetLogoX;
+      fLogoY = targetLogoY;
+      fLogoScale = targetScale;
+      fLogoPlaced = true;
+    }
+    fLogoX = this->approach(fLogoX, targetLogoX, 140.0f);
+    fLogoY = this->approach(fLogoY, targetLogoY, 140.0f);
+    fLogoScale = this->approach(fLogoScale, targetScale, 140.0f);
+
+    // ---- Buttons: animate, lay out, draw.
+    const float rowY = fLogoY - btnH * 0.5f;
+    float xRight = fLogoX + logoBase * fLogoScale + 28.0f * uiScale;
+    float xLeft = fLogoX - logoBase * fLogoScale - 28.0f * uiScale;
+
+    for (auto &b : fMenuBtns) {
+      const bool visible = b.fVisible == fMenuState;
+      b.fExpand = this->approach(b.fExpand, visible ? 1.0f : 0.0f, 95.0f);
+      b.fFlash = this->approach(b.fFlash, 0.0f, 160.0f);
+
+      if (b.fExpand < 0.01f) {
+        b.fRect = skia::SkRect::MakeEmpty();
+        continue;
+      }
+
+      const float w = btnW * b.fExpand * (1.0f + 0.18f * b.fHover);
+      skia::SkRect rect;
+      if (b.fLeftSide) {
+        rect = skia::SkRect::MakeXYWH(xLeft - w, rowY, w, btnH);
+        xLeft -= w + btnGap;
+      } else {
+        rect = skia::SkRect::MakeXYWH(xRight, rowY, w, btnH);
+        xRight += w + btnGap;
+      }
+      b.fRect = rect;
+
+      const bool hovered = visible && rect.contains(fMouseX, fMouseY);
+      b.fHover = this->approach(b.fHover, hovered ? 1.0f : 0.0f, 110.0f);
+
+      this->drawMenuWedge(canvas, b, wedge);
+    }
+
+    // ---- Logo on top of the visualiser.
+    this->drawLogo(canvas, logoBase);
+
+    const char *hint = fMenuState == MenuState::kInitial
+                           ? "click the logo    Esc quit"
+                       : fMenuState == MenuState::kTopLevel
+                           ? "P play    B browse    I import    Q exit"
+                           : "S solo    R random    Esc back";
+    this->drawBottomBar(canvas, hint);
     this->drawScreenFadeIn(canvas);
     this->present();
   }
 
+  // A lazer menu button is a parallelogram: vertical edges sheared by a fixed
+  // wedge width, label under a glyph, both fading in only once the button is
+  // most of the way open (lazer clamps content alpha the same way).
+  void drawMenuWedge(skia::SkCanvas *canvas, const MenuBtn &b, float wedge) {
+    const skia::SkRect &r = b.fRect;
+    skia::SkPathBuilder shape;
+    shape.moveTo(r.fLeft + wedge, r.fTop);
+    shape.lineTo(r.fRight + wedge, r.fTop);
+    shape.lineTo(r.fRight, r.fBottom);
+    shape.lineTo(r.fLeft, r.fBottom);
+    shape.close();
+    const auto path = shape.detach();
+
+    skia::SkPaint fill;
+    fill.setAntiAlias(true);
+    fill.setColor(b.fColor);
+    // Hover brightens; the click flash blows it out briefly, then decays.
+    fill.setAlphaf(std::clamp(b.fExpand * (0.86f + 0.14f * b.fHover), 0.0f,
+                              1.0f));
+    canvas->drawPath(path, fill);
+
+    if (b.fFlash > 0.01f) {
+      skia::SkPaint flash;
+      flash.setAntiAlias(true);
+      flash.setColor(skia::kWhite);
+      flash.setAlphaf(0.55f * b.fFlash);
+      flash.setBlendMode(skia::SkBlendMode::kPlus);
+      canvas->drawPath(path, flash);
+    }
+
+    const float contentAlpha =
+        std::clamp((b.fExpand - 0.5f) / 0.3f, 0.0f, 1.0f);
+    if (contentAlpha <= 0.0f) {
+      return;
+    }
+    const float cx = r.centerX() + wedge * 0.5f;
+    // Icon lifts slightly on hover, mirroring lazer's bouncing icon.
+    const float lift = 6.0f * b.fHover;
+    this->drawTextCentered(canvas, b.fGlyph, cx, r.centerY() - lift, 30.0f,
+                           skia::kWhite, contentAlpha);
+    this->drawTextCentered(canvas, b.fLabel, cx, r.fBottom - 18.0f, 17.0f,
+                           skia::kWhite, contentAlpha * 0.95f);
+  }
+
+  void drawLogo(skia::SkCanvas *canvas, float logoBase) {
+    const float wall = static_cast<float>(wallMs());
+    const bool hovered =
+        (fMouseX - fLogoX) * (fMouseX - fLogoX) +
+            (fMouseY - fLogoY) * (fMouseY - fLogoY) <=
+        (logoBase * fLogoScale) * (logoBase * fLogoScale);
+    fLogoHover = this->approach(fLogoHover, hovered ? 1.0f : 0.0f, 110.0f);
+    fLogoPunch = this->approach(fLogoPunch, 0.0f, 180.0f);
+
+    // Idle breathing + audio-driven pulse (lazer beat-syncs here; we have no
+    // timing points loaded in the menu, so bass energy stands in for the beat).
+    const float breathe = 1.0f + 0.012f * std::sin(wall / 430.0f);
+    const float pulse = 1.0f + 0.11f * fSpectrum.bass();
+    const float r = logoBase * fLogoScale * breathe * pulse *
+                    (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
+    fLogoRect = skia::SkRect::MakeXYWH(fLogoX - r, fLogoY - r, r * 2, r * 2);
+
+    this->drawVisualiser(canvas, r);
+
+    skia::SkPaint glow;
+    glow.setAntiAlias(true);
+    glow.setColor(kAccent);
+    glow.setAlphaf(0.20f + 0.12f * fLogoHover);
+    canvas->drawCircle(fLogoX, fLogoY, r * 1.14f, glow);
+
+    skia::SkPaint disc;
+    disc.setAntiAlias(true);
+    disc.setColor(kAccent);
+    canvas->drawCircle(fLogoX, fLogoY, r, disc);
+
+    skia::SkPaint ring;
+    ring.setAntiAlias(true);
+    ring.setStyle(skia::kStrokeStyle);
+    ring.setStrokeWidth(r * 0.055f);
+    ring.setColor(skia::kWhite);
+    ring.setAlphaf(0.9f);
+    canvas->drawCircle(fLogoX, fLogoY, r * 0.82f, ring);
+
+    this->drawTextCentered(canvas, "osu!", fLogoX, fLogoY + r * 0.22f,
+                           r * 0.55f, skia::kWhite);
+  }
+
+  // lazer's LogoVisualisation: bars radiate from the logo edge, the whole ring
+  // repeated a few times around the circumference, additive and translucent.
+  void drawVisualiser(skia::SkCanvas *canvas, float radius) {
+    const auto bars = fSpectrum.bars();
+    if (bars.empty()) {
+      return;
+    }
+    constexpr int kRounds = 5;
+    const float barLen = radius * 1.9f;
+    const auto count = static_cast<int>(bars.size());
+    const float barW =
+        2.0f * std::numbers::pi_v<float> * radius / static_cast<float>(count) *
+        1.15f;
+
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setColor(skia::kWhite);
+    paint.setAlphaf(0.20f);
+    paint.setBlendMode(skia::SkBlendMode::kPlus);
+
+    for (int round = 0; round < kRounds; ++round) {
+      const float roundOffset = static_cast<float>(round) * 2.0f *
+                                std::numbers::pi_v<float> /
+                                static_cast<float>(kRounds);
+      for (int i = 0; i < count; ++i) {
+        const float amp = bars[static_cast<std::size_t>(i)];
+        if (amp < 0.004f) {
+          continue;
+        }
+        const float ang = roundOffset + 2.0f * std::numbers::pi_v<float> *
+                                            static_cast<float>(i) /
+                                            static_cast<float>(count);
+        const float cosA = std::cos(ang);
+        const float sinA = std::sin(ang);
+        const float len = barLen * amp;
+        // Quad from the logo edge outward, oriented along the radius.
+        const float bx = fLogoX + cosA * radius;
+        const float by = fLogoY + sinA * radius;
+        const float nx = -sinA * barW * 0.5f;
+        const float ny = cosA * barW * 0.5f;
+        skia::SkPathBuilder bar;
+        bar.moveTo(bx + nx, by + ny);
+        bar.lineTo(bx + nx + cosA * len, by + ny + sinA * len);
+        bar.lineTo(bx - nx + cosA * len, by - ny + sinA * len);
+        bar.lineTo(bx - nx, by - ny);
+        bar.close();
+        canvas->drawPath(bar.detach(), paint);
+      }
+    }
+  }
+
+  void updateMenuSpectrum() {
+    const double wall = wallMs();
+    if (!fAudio.playing()) {
+      fSpectrum.update({}, 0, 0.0, wall);
+      return;
+    }
+    // Same anchored-clock trick as gameplay: querying the device every frame
+    // is what used to cost whole milliseconds per call.
+    if (wall - fMenuClockSyncWall >= kClockSyncIntervalMs) {
+      fMenuClockSyncWall = wall;
+      fMenuClock.sync(wall, fAudio.positionSec() * 1000.0);
+    }
+    const double posMs = fMenuClock.sample(wall);
+    fSpectrum.update(fAudio.monoSamples(), fAudio.sampleRate(),
+                     posMs / 1000.0, wall);
+  }
+
   void keyMainMenu(int key) {
+    this->ensureMenuButtons();
     if (key == glfw::kKeyEscape) {
-      if (fMenuExpanded) {
-        fMenuExpanded = false;
-      } else {
+      switch (fMenuState) {
+      case MenuState::kPlay:
+        this->setMenuState(MenuState::kTopLevel);
+        break;
+      case MenuState::kTopLevel:
+        this->setMenuState(MenuState::kInitial);
+        break;
+      case MenuState::kInitial:
         this->requestQuit();
+        break;
       }
       return;
     }
     if (key == glfw::kKeyEnter || key == glfw::kKeySpace) {
-      if (!fMenuExpanded) {
-        fMenuExpanded = true;
-      } else {
-        this->switchState(State::kSongSelect);
-      }
+      this->triggerLogo();
       return;
     }
-    if (key == glfw::kKeyD) {
-      this->openDownloads();
+    // Letter shortcuts, as in lazer.
+    const auto fire = [this](MenuAction act) {
+      for (auto &b : fMenuBtns) {
+        if (b.fVisible == fMenuState && b.fAction == act) {
+          this->menuTrigger(b);
+          return;
+        }
+      }
+    };
+    if (fMenuState == MenuState::kTopLevel) {
+      if (key == glfw::kKeyP) {
+        fire(MenuAction::kOpenPlay);
+      } else if (key == glfw::kKeyB || key == glfw::kKeyD) {
+        fire(MenuAction::kBrowse);
+      } else if (key == glfw::kKeyI) {
+        fire(MenuAction::kImport);
+      } else if (key == glfw::kKeyQ) {
+        fire(MenuAction::kExit);
+      }
+    } else if (fMenuState == MenuState::kPlay) {
+      if (key == glfw::kKeyS) {
+        fire(MenuAction::kSolo);
+      } else if (key == glfw::kKeyR) {
+        fire(MenuAction::kRandom);
+      }
     }
   }
 

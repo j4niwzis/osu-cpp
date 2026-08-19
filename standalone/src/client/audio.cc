@@ -123,6 +123,13 @@ public:
       audio::alSourceStop(fSource);
   }
 
+  // Decoded track kept as mono PCM so the menu visualiser can run its own
+  // FFT (OpenAL exposes no spectrum API, unlike the BASS backend lazer uses).
+  [[nodiscard]] std::span<const std::int16_t> monoSamples() const noexcept {
+    return fMono;
+  }
+  [[nodiscard]] int sampleRate() const noexcept { return fRate; }
+
   [[nodiscard]] double positionSec() const {
     if (fSource == 0)
       return 0.0;
@@ -142,9 +149,30 @@ public:
 private:
   audio::ALuint fBuffer = 0;
   audio::ALuint fSource = 0;
+  std::vector<std::int16_t> fMono;
+  int fRate = 0;
 
   bool upload(const std::vector<std::int16_t> &samples, int rate,
               int channels) {
+    // Downmix a mono copy for analysis before handing the interleaved data
+    // to OpenAL (one extra int16 per frame; a five-minute track costs ~26 MB).
+    fRate = rate;
+    fMono.clear();
+    if (channels <= 1) {
+      fMono = samples;
+    } else {
+      fMono.reserve(samples.size() / static_cast<std::size_t>(channels));
+      for (std::size_t i = 0; i + static_cast<std::size_t>(channels) <=
+                              samples.size();
+           i += static_cast<std::size_t>(channels)) {
+        int sum = 0;
+        for (int c = 0; c < channels; ++c) {
+          sum += samples[i + static_cast<std::size_t>(c)];
+        }
+        fMono.push_back(static_cast<std::int16_t>(sum / channels));
+      }
+    }
+
     audio::alGenBuffers(1, &fBuffer);
     audio::alBufferData(
         fBuffer, alFormat(channels), samples.data(),
@@ -165,6 +193,9 @@ private:
       audio::alDeleteBuffers(1, &fBuffer);
       fBuffer = 0;
     }
+    fMono.clear();
+    fMono.shrink_to_fit();
+    fRate = 0;
   }
 };
 
