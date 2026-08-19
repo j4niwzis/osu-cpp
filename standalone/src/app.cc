@@ -20,6 +20,7 @@ import client.timing;
 import client.http;
 import client.spectrum;
 import client.mapcache;
+import client.filter;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -818,17 +819,16 @@ private:
       this->cycleSortMode();
       return;
     }
-    // With a filter being typed the letters belong to the search box; the
-    // shortcuts only apply when it is empty.
-    if (fFilterText.empty()) {
-      if (key == glfw::kKeyD) {
-        this->openDownloads();
-        return;
-      }
-      if (key == glfw::kKeyI) {
-        this->importOsz();
-        return;
-      }
+    // lazer's song select keeps the search box permanently focused: every
+    // printable key belongs to the query, never to a shortcut. Actions live
+    // on function keys and the footer buttons.
+    if (key == glfw::kKeyF1) {
+      this->openDownloads();
+      return;
+    }
+    if (key == glfw::kKeyF5) {
+      this->importOsz();
+      return;
     }
     if (key == glfw::kKeyF2) {
       this->selectRandom();
@@ -1565,37 +1565,88 @@ private:
       return;
     }
     fFilterDirty = false;
+    const client::Criteria criteria = client::parseQuery(fFilterText);
     fVisible.clear();
-    const std::string needle = toLowerAscii(fFilterText);
+
     for (int i = 0; i < static_cast<int>(fLibrary.size()); ++i) {
       const auto &infos = fLibrary[static_cast<std::size_t>(i)].fInfos;
       if (infos.empty()) {
         continue;
       }
-      if (needle.empty()) {
-        fVisible.push_back(i);
-        continue;
-      }
-      const auto &m = infos.front().fMeta;
-      std::string haystack = toLowerAscii(m.fTitle) + '\x1f' +
-                             toLowerAscii(m.fTitleUnicode) + '\x1f' +
-                             toLowerAscii(m.fArtist) + '\x1f' +
-                             toLowerAscii(m.fArtistUnicode) + '\x1f' +
-                             toLowerAscii(m.fCreator);
+      // A set matches when any of its difficulties matches, which is how
+      // lazer's carousel filters (sets are hidden only if every child fails).
+      bool any = false;
       for (const auto &info : infos) {
-        haystack += '\x1f';
-        haystack += toLowerAscii(info.fMeta.fVersion);
+        if (this->matchesCriteria(criteria, infos.front().fMeta, info)) {
+          any = true;
+          break;
+        }
       }
-      if (haystack.find(needle) != std::string::npos) {
+      if (any) {
         fVisible.push_back(i);
       }
     }
-    // Keep the selection inside the filtered view.
+
     if (!fVisible.empty() &&
         std::ranges::find(fVisible, fSelSet) == fVisible.end()) {
       fSelSet = fVisible.front();
       fSelDiff = 0;
     }
+  }
+
+  [[nodiscard]] bool matchesCriteria(const client::Criteria &c,
+                                     const osu::Metadata &setMeta,
+                                     const osu::BeatmapInfo &info) const {
+    if (!c.fStars.matches(info.fStars) || !c.fAr.matches(info.fDiff.fAr) ||
+        !c.fCs.matches(info.fDiff.fCs) || !c.fOd.matches(info.fDiff.fOd) ||
+        !c.fHp.matches(info.fDiff.fHp) ||
+        !c.fLengthSec.matches(info.fLengthMs / 1000.0) ||
+        !c.fObjects.matches(info.fObjectCount)) {
+      return false;
+    }
+    const auto contains = [](std::string_view hay, const std::string &needle) {
+      return needle.empty() || toLowerAscii(hay).find(needle) != std::string::npos;
+    };
+    if (!contains(info.fMeta.fCreator, c.fCreator)) {
+      return false;
+    }
+    if (!c.fArtist.empty() && !contains(setMeta.fArtist, c.fArtist) &&
+        !contains(setMeta.fArtistUnicode, c.fArtist)) {
+      return false;
+    }
+    if (!c.fTitle.empty() && !contains(setMeta.fTitle, c.fTitle) &&
+        !contains(setMeta.fTitleUnicode, c.fTitle)) {
+      return false;
+    }
+    if (!contains(info.fMeta.fVersion, c.fDiff)) {
+      return false;
+    }
+    if (c.fSearchText.empty()) {
+      return true;
+    }
+    // Remaining free text: every space-separated term must appear somewhere,
+    // as FilterCriteria.Matches does.
+    const std::string haystack =
+        toLowerAscii(setMeta.fTitle) + '\x1f' +
+        toLowerAscii(setMeta.fTitleUnicode) + '\x1f' +
+        toLowerAscii(setMeta.fArtist) + '\x1f' +
+        toLowerAscii(setMeta.fArtistUnicode) + '\x1f' +
+        toLowerAscii(info.fMeta.fCreator) + '\x1f' +
+        toLowerAscii(info.fMeta.fVersion);
+    std::size_t pos = 0;
+    while (pos < c.fSearchText.size()) {
+      const auto next = c.fSearchText.find(' ', pos);
+      const auto term = c.fSearchText.substr(
+          pos, next == std::string::npos ? std::string::npos : next - pos);
+      if (!term.empty() && haystack.find(term) == std::string::npos) {
+        return false;
+      }
+      if (next == std::string::npos) {
+        break;
+      }
+      pos = next + 1;
+    }
+    return true;
   }
 
   [[nodiscard]] int visiblePos() const {
@@ -2721,7 +2772,7 @@ private:
       this->drawTextCentered(
           canvas,
           filtered ? "Backspace to edit, Esc to clear"
-                   : "Drag a .osz onto the window, or press D to browse",
+                   : "Drag a .osz onto the window, or press F1 to browse",
           sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
       this->drawFilterBox(canvas);
       this->drawSelectFooter(canvas);
@@ -2848,6 +2899,10 @@ private:
         std::format("{} of {} sets   sort: {}", fVisible.size(),
                     fLibrary.size(), sortModeName()),
         box.fLeft, box.fBottom + 18.0f, w, 13.0f, skia::kWhite, 0.6f);
+    // Query syntax hint, as lazer shows in its filter tooltip.
+    this->drawTextClipped(canvas, "stars>5  ar<9  length<3:00  creator=peppy",
+                          box.fLeft, box.fBottom + 36.0f, w, 12.0f, kAccent2,
+                          0.55f);
   }
 
   [[nodiscard]] const char *sortModeName() const {
@@ -2882,12 +2937,23 @@ private:
     if (auto art = this->panelArt(setIndex)) {
       canvas->save();
       canvas->clipRRect(skia::SkRRect::MakeRectXY(rect, corner, corner), true);
-      canvas->drawImageRect(
-          art.get(), rect,
-          skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
-      skia::SkPaint veil;
-      veil.setColor(skia::colorSetARGB(expanded ? 150 : 185, 14, 11, 20));
-      canvas->drawRect(rect, veil);
+      // Cover the panel preserving aspect (FillMode.Fill), cropping overflow.
+      const float iw = static_cast<float>(art->width());
+      const float ih = static_cast<float>(art->height());
+      if (iw > 0.0f && ih > 0.0f) {
+        const float scale =
+            std::max(rect.width() / iw, rect.height() / ih);
+        const float dw = iw * scale;
+        const float dh = ih * scale;
+        canvas->drawImageRect(
+            art.get(),
+            skia::SkRect::MakeXYWH(rect.centerX() - dw * 0.5f,
+                                   rect.centerY() - dh * 0.5f, dw, dh),
+            skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
+      }
+      // PanelSetBackground's darkening: a sheared three-step black gradient,
+      // 0.5 alpha over the left 40%, easing to 0.2 by the right edge.
+      this->drawPanelVeil(canvas, rect);
       canvas->restore();
     }
     if (expanded) {
@@ -2924,6 +2990,42 @@ private:
       if (dotX < rect.fRight - 120.0f) {
         break;
       }
+    }
+  }
+
+  // PanelSetBackground: a FillFlowContainer of three boxes sheared by 0.8 on
+  // X, giving a ~40-degree diagonal fade -- solid 50% black over the first
+  // 40% of the width, then 50%->30%, then 30%->20%.
+  void drawPanelVeil(skia::SkCanvas *canvas, const skia::SkRect &rect) {
+    const float w = rect.width();
+    const float h = rect.height();
+    const float shear = 0.8f * h; // horizontal displacement over the height
+    struct Step {
+      float fFrom, fTo;    // fractions of width
+      float fAlphaL, fAlphaR;
+    };
+    const Step steps[] = {
+        {0.0f, 0.40f, 0.5f, 0.5f},
+        {0.40f, 0.60f, 0.5f, 0.3f},
+        {0.60f, 1.05f, 0.3f, 0.2f},
+    };
+    for (const auto &st : steps) {
+      const float x0 = rect.fLeft + st.fFrom * w;
+      const float x1 = rect.fLeft + st.fTo * w;
+      skia::SkPathBuilder quad;
+      quad.moveTo(x0 + shear * 0.5f, rect.fTop);
+      quad.lineTo(x1 + shear * 0.5f, rect.fTop);
+      quad.lineTo(x1 - shear * 0.5f, rect.fBottom);
+      quad.lineTo(x0 - shear * 0.5f, rect.fBottom);
+      quad.close();
+      skia::SkPaint p;
+      p.setAntiAlias(true);
+      // Approximate the per-box horizontal gradient with its mean alpha; the
+      // steps are narrow enough that the banding is not visible.
+      const float alpha = (st.fAlphaL + st.fAlphaR) * 0.5f;
+      p.setColor(skia::colorSetARGB(
+          static_cast<std::uint8_t>(alpha * 255.0f), 0, 0, 0));
+      canvas->drawPath(quad.detach(), p);
     }
   }
 
@@ -3064,7 +3166,8 @@ private:
     }
     this->drawTextCentered(
         canvas,
-        "Enter play    F2 random    F3 sort    type to filter    Esc back",
+        "Enter play   F1 browse   F2 random   F3 sort   F5 import   "
+        "type to search",
         sw * 0.72f, sh - 24.0f, 14.0f, skia::kWhite, 0.7f);
   }
 
