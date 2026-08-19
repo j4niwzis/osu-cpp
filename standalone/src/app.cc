@@ -199,6 +199,7 @@ private:
   int fBackgroundForSet = -1;
   int fMenuMusicForSet = -1; // set whose audio is looping under the menus
   std::filesystem::path fMapsDir;
+  std::filesystem::path fThumbDir;
   struct CarouselHit {
     skia::SkRect fRect;
     int fSetIdx;
@@ -210,6 +211,7 @@ private:
   skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
   skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // footer button
   skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
+  skia::SkRect fSettingsChip = skia::SkRect::MakeEmpty();  // footer button
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -275,6 +277,7 @@ private:
     kSolo,
     kRandom,
     kBack,
+    kSettings,
   };
   struct MenuBtn {
     std::string fLabel;
@@ -305,7 +308,6 @@ private:
   static constexpr float kSettingsPanelWidth = 400.0f;
   static constexpr float kSettingsMargins = 20.0f;
   bool fSettingsOpen = false;
-  bool fCtrlHeld = false;
   float fSettingsSlide = 0.0f; // 0 hidden .. 1 fully out
   int fSettingsSection = 0;
   float fSettingsScroll = 0.0f;
@@ -557,7 +559,7 @@ private:
     // this thread; everything gameplay-related is consumed by the render
     // thread via drainInput().
     glfw::glfwSetKeyCallback(
-        fWindow, [](glfw::GLFWwindow *w, int key, int, int action, int) {
+        fWindow, [](glfw::GLFWwindow *w, int key, int, int action, int mods) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
@@ -567,7 +569,8 @@ private:
           }
           if (action == glfw::kRepeat)
             return; // key auto-repeat is meaningless for gameplay
-          self->enqueue({App::wallMs(), EventType::kKey, key, action});
+          self->enqueue({App::wallMs(), EventType::kKey, key, action,
+                         static_cast<float>(mods)});
         });
     glfw::glfwSetMouseButtonCallback(
         fWindow, [](glfw::GLFWwindow *w, int button, int action, int) {
@@ -815,11 +818,14 @@ private:
   void applyKey(const Event &ev) {
     const int key = ev.fA;
     const int action = ev.fB;
+    // GLFW reports the modifier state with every key event; tracking press
+    // and release of the control keys separately loses sync whenever focus
+    // changes while held.
+    const bool ctrl = (static_cast<int>(ev.fX) & glfw::kModControl) != 0;
     if (key == glfw::kKeyLeftControl || key == glfw::kKeyRightControl) {
-      fCtrlHeld = action != glfw::kRelease;
       return;
     }
-    if (action == glfw::kPress && key == glfw::kKeyO && fCtrlHeld) {
+    if (action == glfw::kPress && key == glfw::kKeyO && ctrl) {
       this->toggleSettings();
       return;
     }
@@ -1039,6 +1045,10 @@ private:
       }
       if (fImportChip.contains(x, y)) {
         this->importOsz();
+        return;
+      }
+      if (fSettingsChip.contains(x, y)) {
+        this->toggleSettings();
         return;
       }
       if (fRandomChip.contains(x, y)) {
@@ -1413,6 +1423,8 @@ private:
 #endif
     std::error_code ec;
     std::filesystem::create_directories(fMapsDir, ec);
+    fThumbDir = fMapsDir / "thumbnails";
+    std::filesystem::create_directories(fThumbDir, ec);
     fMapCache.load(fMapsDir / "metadata-cache.json");
 
     if (fHasInitialSet) {
@@ -1423,13 +1435,65 @@ private:
       fLoadedOrder.push_back(0);
     }
 
+    // Collect the archive list first, then parse the cache misses on every
+    // core: unzipping and star-rating a set is pure computation, and doing it
+    // one at a time was leaving the machine idle.
+    std::vector<std::filesystem::path> archives;
     std::error_code iterEc;
     for (const auto &e :
          std::filesystem::directory_iterator(fMapsDir, iterEc)) {
-      if (!e.is_regular_file() || e.path().extension() != ".osz") {
-        continue;
+      if (e.is_regular_file() && e.path().extension() == ".osz") {
+        archives.push_back(e.path());
       }
-      this->scanArchive(e.path());
+    }
+
+    std::vector<std::filesystem::path> misses;
+    for (const auto &path : archives) {
+      if (auto cached = this->cachedEntryFor(path)) {
+        fLibrary.push_back(std::move(*cached));
+      } else {
+        misses.push_back(path);
+      }
+    }
+
+    if (!misses.empty()) {
+      const auto threads = std::max(
+          1u, std::min(std::thread::hardware_concurrency(),
+                       static_cast<unsigned>(misses.size())));
+      std::println(std::cerr, "[library] parsing {} new sets on {} threads",
+                   misses.size(), threads);
+      std::mutex resultMutex;
+      std::atomic<std::size_t> next{0};
+      std::vector<std::thread> pool;
+      pool.reserve(threads);
+      for (unsigned t = 0; t < threads; ++t) {
+        pool.emplace_back([&] {
+          for (;;) {
+            const std::size_t i = next.fetch_add(1);
+            if (i >= misses.size()) {
+              return;
+            }
+            try {
+              const auto set = loadBeatmapSet(misses[i]);
+              LibraryEntry entry;
+              entry.fPath = misses[i];
+              entry.fInfos = set.fBeatmaps;
+              auto diffs = this->cacheRecordFor(set);
+              const auto stamp = fileStamp(misses[i]);
+              const std::scoped_lock lock(resultMutex);
+              fLibrary.push_back(std::move(entry));
+              fMapCache.store(misses[i].filename().string(), stamp.first,
+                              stamp.second, std::move(diffs));
+            } catch (const std::exception &e) {
+              std::println(std::cerr, "[library] skipping {}: {}",
+                           misses[i].filename().string(), e.what());
+            }
+          }
+        });
+      }
+      for (auto &th : pool) {
+        th.join();
+      }
     }
     fMapCache.save();
     this->syncMapsDir();
@@ -1492,6 +1556,68 @@ private:
     fAudio.setLooping(false);
     fAudio.stop();
     fSpectrum.reset();
+  }
+
+  [[nodiscard]] static std::pair<std::uintmax_t, std::int64_t>
+  fileStamp(const std::filesystem::path &path) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    const auto writeTime = std::filesystem::last_write_time(path, ec);
+    return {size, static_cast<std::int64_t>(writeTime.time_since_epoch().count())};
+  }
+
+  // Library entry straight from the cache, or nothing when it is stale.
+  [[nodiscard]] std::optional<LibraryEntry>
+  cachedEntryFor(const std::filesystem::path &path) {
+    const auto [size, mtime] = fileStamp(path);
+    const auto *cached =
+        fMapCache.lookup(path.filename().string(), size, mtime);
+    if (cached == nullptr || cached->empty()) {
+      return std::nullopt;
+    }
+    LibraryEntry entry;
+    entry.fPath = path;
+    for (const auto &d : *cached) {
+      entry.fInfos.push_back(infoFromCache(d));
+    }
+    return entry;
+  }
+
+  [[nodiscard]] static osu::BeatmapInfo
+  infoFromCache(const client::CachedDifficulty &d) {
+    osu::BeatmapInfo info;
+    info.fFilename = d.fFilename;
+    info.fMeta.fTitle = d.fTitle;
+    info.fMeta.fTitleUnicode = d.fTitleUnicode;
+    info.fMeta.fArtist = d.fArtist;
+    info.fMeta.fArtistUnicode = d.fArtistUnicode;
+    info.fMeta.fCreator = d.fCreator;
+    info.fMeta.fVersion = d.fVersion;
+    info.fMeta.fAudioFilename = d.fAudioFilename;
+    info.fMeta.fBackground = d.fBackground;
+    info.fStars = d.fStars;
+    info.fDiff.fCs = d.fCs;
+    info.fDiff.fAr = d.fAr;
+    info.fDiff.fOd = d.fOd;
+    info.fDiff.fHp = d.fHp;
+    info.fLengthMs = d.fLengthMs;
+    info.fObjectCount = d.fObjectCount;
+    return info;
+  }
+
+  [[nodiscard]] static std::vector<client::CachedDifficulty>
+  cacheRecordFor(const osu::BeatmapSet &set) {
+    std::vector<client::CachedDifficulty> diffs;
+    for (const auto &info : set.fBeatmaps) {
+      diffs.push_back({info.fFilename, info.fMeta.fTitle,
+                       info.fMeta.fTitleUnicode, info.fMeta.fArtist,
+                       info.fMeta.fArtistUnicode, info.fMeta.fCreator,
+                       info.fMeta.fVersion, info.fMeta.fAudioFilename,
+                       info.fMeta.fBackground, info.fStars, info.fDiff.fCs,
+                       info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp,
+                       info.fLengthMs, info.fObjectCount});
+    }
+    return diffs;
   }
 
   // Metadata for one archive, from the cache when the file is unchanged.
@@ -2306,6 +2432,12 @@ private:
       return;
     }
     // Colours lifted from lazer's ButtonSystem so the palette reads familiar.
+    // ButtonArea's leftmost entry is Settings, present at the top level.
+    MenuBtn settings{"settings", "⚙", skia::colorSetARGB(255, 85, 85, 85),
+                     MenuAction::kSettings, MenuState::kTopLevel};
+    settings.fLeftSide = true;
+    fMenuBtns.push_back(std::move(settings));
+
     fMenuBtns.push_back({"play", "▶", skia::colorSetARGB(255, 102, 68, 204),
                          MenuAction::kOpenPlay, MenuState::kTopLevel});
     fMenuBtns.push_back({"browse", "↓", skia::colorSetARGB(255, 165, 204, 0),
@@ -2374,6 +2506,9 @@ private:
       break;
     case MenuAction::kBack:
       this->setMenuState(MenuState::kTopLevel);
+      break;
+    case MenuAction::kSettings:
+      this->toggleSettings();
       break;
     }
   }
@@ -2526,8 +2661,11 @@ private:
     // once the buttons are out. There is no triangle overlay over artwork;
     // triangles are only the fallback background when no art exists at all.
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
-      fBackgroundForSet = fSelSet;
+      // setFor() is asynchronous: only mark the background as up to date once
+      // the set has actually arrived, otherwise the first frame consumes the
+      // request and the artwork never appears.
       if (auto set = this->setFor(fSelSet)) {
+        fBackgroundForSet = fSelSet;
         this->loadSelectBackground(*set);
       }
     }
@@ -2543,11 +2681,14 @@ private:
             static_cast<std::uint8_t>((1.0f - fMenuDim) * 255.0f), 0, 0, 0));
         canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
       }
-    } else {
-      // Fallback background: TrianglesV2-style sparse outlined triangles.
+    } else if (fLibrary.empty()) {
+      // Only with no beatmaps at all does lazer's default (triangle)
+      // background show; while artwork is still loading, stay dark.
       canvas->clear(skia::colorSetARGB(255, 32, 24, 44));
       this->ensureTriangles();
       this->updateAndDrawTriangles(canvas);
+    } else {
+      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
 
     // ---- Layout: logo plus the visible button row, centred as a group.
@@ -2635,7 +2776,8 @@ private:
     const char *hint = fMenuState == MenuState::kInitial
                            ? "click the logo    Esc quit"
                        : fMenuState == MenuState::kTopLevel
-                           ? "P play    B browse    I import    Q exit"
+                           ? "P play   B browse   I import   Q exit   "
+                             "Ctrl+O settings"
                            : "S solo    R random    Esc back";
     this->drawBottomBar(canvas, hint);
     this->drawScreenFadeIn(canvas);
@@ -3227,8 +3369,11 @@ private:
     auto *canvas = fSurface->getCanvas();
 
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
-      fBackgroundForSet = fSelSet;
+      // setFor() is asynchronous: only mark the background as up to date once
+      // the set has actually arrived, otherwise the first frame consumes the
+      // request and the artwork never appears.
       if (auto set = this->setFor(fSelSet)) {
+        fBackgroundForSet = fSelSet;
         this->loadSelectBackground(*set);
       }
     }
@@ -3737,15 +3882,35 @@ private:
       return entry.fPanelArt;
     }
 
-    // The archive is read on the worker; only the finished raster image
-    // crosses back. Reading the whole set just for a thumbnail is wasteful
-    // but keeps this to one code path, and the LRU keeps it bounded.
+    // Thumbnails live on disk next to the metadata cache, so the archive is
+    // only opened the first time a cover is needed. Everything after that is
+    // a small PNG read.
     auto image = std::make_shared<skia::Sp<skia::SkImage>>();
+    const auto thumb = this->thumbPathFor(path);
     fLoader.submit(
         static_cast<std::uint64_t>(setIndex) | (2ull << 32),
-        [path, image, this] {
+        [path, thumb, image, this] {
+          if (std::filesystem::exists(thumb)) {
+            *image = loadImage(thumb);
+            if (*image) {
+              return;
+            }
+          }
           const auto set = loadBeatmapSet(path);
-          *image = this->decodeSetArt(set);
+          auto full = this->decodeSetArt(set);
+          if (!full) {
+            return;
+          }
+          // Downscale once and keep the small copy; panels are ~680px wide.
+          *image = this->makeThumbnail(full);
+          if (*image) {
+            const auto png = skia::encodePng((*image).get());
+            if (!png.empty()) {
+              std::ofstream out(thumb, std::ios::binary);
+              out.write(reinterpret_cast<const char *>(png.data()),
+                        static_cast<std::streamsize>(png.size()));
+            }
+          }
         },
         [this, setIndex, path, image] {
           if (setIndex >= static_cast<int>(fLibrary.size()) ||
@@ -3757,6 +3922,43 @@ private:
           e.fPanelArtTried = true;
         });
     return nullptr;
+  }
+
+  [[nodiscard]] std::filesystem::path
+  thumbPathFor(const std::filesystem::path &archive) const {
+    return fThumbDir / (archive.stem().string() + ".png");
+  }
+
+  // 512px-wide raster copy: enough for a panel, a fraction of the memory and
+  // disk of the original background.
+  [[nodiscard]] static skia::Sp<skia::SkImage>
+  makeThumbnail(const skia::Sp<skia::SkImage> &src) {
+    if (!src) {
+      return nullptr;
+    }
+    constexpr int kWidth = 512;
+    const float scale =
+        static_cast<float>(kWidth) / static_cast<float>(src->width());
+    if (scale >= 1.0f) {
+      return src;
+    }
+    const int h = std::max(1, static_cast<int>(
+                                  static_cast<float>(src->height()) * scale));
+    skia::SkBitmap bmp;
+    if (!bmp.tryAllocPixels(skia::SkImageInfo::Make(
+            kWidth, h, skia::kRGBA_8888_SkColorType,
+            skia::kPremul_SkAlphaType))) {
+      return src;
+    }
+    skia::SkCanvas canvas(bmp);
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+    canvas.drawImageRect(
+        src.get(),
+        skia::SkRect::MakeXYWH(0.0f, 0.0f, static_cast<float>(kWidth),
+                               static_cast<float>(h)),
+        skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &paint);
+    return skia::RasterFromBitmap(bmp);
   }
 
   [[nodiscard]] static skia::Sp<skia::SkImage>
@@ -3886,6 +4088,7 @@ private:
       skia::SkRect *fHit;
     };
     const FooterBtn btns[] = {
+        {"settings", skia::colorSetARGB(255, 140, 140, 155), &fSettingsChip},
         {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
         {"import", kAccent, &fImportChip},
         {"browse", skia::colorSetARGB(255, 165, 204, 0), &fDownloadsChip},

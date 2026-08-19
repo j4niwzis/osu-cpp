@@ -95,6 +95,8 @@ inline constexpr int kKeyRight = GLFW_KEY_RIGHT;
 inline constexpr int kMouseButtonLeft = GLFW_MOUSE_BUTTON_LEFT;
 inline constexpr int kMouseButtonRight = GLFW_MOUSE_BUTTON_RIGHT;
 
+inline constexpr int kModControl = GLFW_MOD_CONTROL;
+inline constexpr int kModShift = GLFW_MOD_SHIFT;
 inline constexpr int kPress = GLFW_PRESS;
 inline constexpr int kRelease = GLFW_RELEASE;
 inline constexpr int kRepeat = GLFW_REPEAT;
