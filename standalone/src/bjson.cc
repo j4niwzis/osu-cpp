@@ -15,6 +15,7 @@ using boost::json::array;
 using boost::json::object;
 using boost::json::string;
 using boost::json::value;
+using boost::json::serialize;
 
 // Non-throwing parse.
 [[nodiscard]] inline std::optional<value> tryParse(std::string_view text) {

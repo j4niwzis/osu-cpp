@@ -19,6 +19,7 @@ import client.input;
 import client.timing;
 import client.http;
 import client.spectrum;
+import client.mapcache;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -130,11 +131,28 @@ private:
   bool fHasInitialSet = false;
 
   // Library / song select (lazer-style carousel on the right).
+  // Library entries hold metadata only. The full BeatmapSet (every file in
+  // the archive, decoded audio, images) is loaded on demand and a handful are
+  // kept alive at a time -- keeping every set resident made startup slow and
+  // the resident set enormous once the library grew.
   struct LibraryEntry {
     std::filesystem::path fPath; // empty for the set passed on the CLI
-    osu::BeatmapSet fSet;
+    std::vector<osu::BeatmapInfo> fInfos;
+    std::shared_ptr<osu::BeatmapSet> fLoaded; // nullptr until needed
+    skia::Sp<skia::SkImage> fPanelArt;        // lazily fetched cover
+    bool fPanelArtTried = false;
   };
   std::vector<LibraryEntry> fLibrary;
+  std::deque<int> fLoadedOrder;          // LRU of entries holding a full set
+  static constexpr std::size_t kMaxLoadedSets = 4;
+  client::MapCache fMapCache;
+
+  // Filtering / sorting (lazer's FilterControl).
+  std::string fFilterText;
+  enum class SortMode : std::uint8_t { kTitle, kArtist, kStars, kLength };
+  SortMode fSortMode = SortMode::kTitle;
+  std::vector<int> fVisible;   // indices into fLibrary passing the filter
+  bool fFilterDirty = true;
   bool fLibraryLoaded = false;
   int fSelSet = 0;
   int fSelDiff = 0;
@@ -154,6 +172,7 @@ private:
   skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
   skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // footer button
   skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
+  skia::SkRect fSortChip = skia::SkRect::MakeEmpty();      // footer button
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -696,14 +715,15 @@ private:
       break;
     case EventType::kChar:
       if (fState == State::kSongSelect) {
-        // Fallback: open downloads on the typed character as well. Char
-        // events take a different GLFW path than key codes, which makes
-        // this immune to whatever eats the key event.
-        if (ev.fA == 'd' || ev.fA == 'D') {
-          this->openDownloads();
-          fSwallowChar = false; // this WAS the char; nothing left to eat
+        if (fSwallowChar) {
+          fSwallowChar = false;
+          break;
         }
-      } else if (fState == State::kDownload) {
+        this->appendUtf8(fFilterText, static_cast<std::uint32_t>(ev.fA));
+        fFilterDirty = true;
+        break;
+      }
+      if (fState == State::kDownload) {
         if (fSwallowChar) {
           fSwallowChar = false;
           break;
@@ -777,18 +797,38 @@ private:
   }
 
   void keySongSelect(int key) {
-    const int nSets = static_cast<int>(fLibrary.size());
+    const int nSets = static_cast<int>(fVisible.size());
     if (key == glfw::kKeyEscape) {
+      if (!fFilterText.empty()) {
+        fFilterText.clear();
+        fFilterDirty = true;
+        return;
+      }
       this->switchState(State::kMainMenu);
       return;
     }
-    if (key == glfw::kKeyD) {
-      this->openDownloads();
+    if (key == glfw::kKeyBackspace) {
+      if (!fFilterText.empty()) {
+        this->popUtf8(fFilterText);
+        fFilterDirty = true;
+      }
       return;
     }
-    if (key == glfw::kKeyI) {
-      this->importOsz();
+    if (key == glfw::kKeyF3) {
+      this->cycleSortMode();
       return;
+    }
+    // With a filter being typed the letters belong to the search box; the
+    // shortcuts only apply when it is empty.
+    if (fFilterText.empty()) {
+      if (key == glfw::kKeyD) {
+        this->openDownloads();
+        return;
+      }
+      if (key == glfw::kKeyI) {
+        this->importOsz();
+        return;
+      }
     }
     if (key == glfw::kKeyF2) {
       this->selectRandom();
@@ -797,32 +837,33 @@ private:
     if (nSets == 0) {
       return;
     }
-    const int nDiffs =
-        static_cast<int>(fLibrary[static_cast<std::size_t>(fSelSet)]
-                             .fSet.fBeatmaps.size());
+    const int nDiffs = static_cast<int>(this->infosFor(fSelSet).size());
     if (key == glfw::kKeyUp) {
       if (fSelDiff > 0) {
         --fSelDiff;
-      } else if (fSelSet > 0) {
-        --fSelSet;
-        fSelDiff = static_cast<int>(
-                       fLibrary[static_cast<std::size_t>(fSelSet)]
-                           .fSet.fBeatmaps.size()) -
-                   1;
+      } else if (const int pos = this->visiblePos(); pos > 0) {
+        fSelSet = fVisible[static_cast<std::size_t>(pos - 1)];
+        fSelDiff = std::max(0, static_cast<int>(this->infosFor(fSelSet).size()) - 1);
       }
     } else if (key == glfw::kKeyDown) {
       if (fSelDiff + 1 < nDiffs) {
         ++fSelDiff;
-      } else if (fSelSet + 1 < nSets) {
-        ++fSelSet;
+      } else if (const int pos = this->visiblePos();
+                 pos >= 0 && pos + 1 < static_cast<int>(fVisible.size())) {
+        fSelSet = fVisible[static_cast<std::size_t>(pos + 1)];
         fSelDiff = 0;
       }
     } else if (key == glfw::kKeyLeft) {
-      fSelSet = std::max(0, fSelSet - 1);
-      fSelDiff = 0;
+      if (const int pos = this->visiblePos(); pos > 0) {
+        fSelSet = fVisible[static_cast<std::size_t>(pos - 1)];
+        fSelDiff = 0;
+      }
     } else if (key == glfw::kKeyRight) {
-      fSelSet = std::min(nSets - 1, fSelSet + 1);
-      fSelDiff = 0;
+      if (const int pos = this->visiblePos();
+          pos >= 0 && pos + 1 < static_cast<int>(fVisible.size())) {
+        fSelSet = fVisible[static_cast<std::size_t>(pos + 1)];
+        fSelDiff = 0;
+      }
     } else if (key == glfw::kKeyEnter) {
       this->startPlay(fSelSet, fSelDiff);
     }
@@ -908,6 +949,10 @@ private:
       }
       if (fRandomChip.contains(x, y)) {
         this->selectRandom();
+        return;
+      }
+      if (fSortChip.contains(x, y)) {
+        this->cycleSortMode();
         return;
       }
       for (const auto &hit : fCarouselHits) {
@@ -1160,14 +1205,14 @@ private:
     if (setIdx < 0 || setIdx >= static_cast<int>(fLibrary.size())) {
       return;
     }
-    auto &entry = fLibrary[static_cast<std::size_t>(setIdx)];
-    if (diffIdx < 0 ||
-        diffIdx >= static_cast<int>(entry.fSet.fBeatmaps.size())) {
+    auto set = this->setFor(setIdx);
+    if (!set || diffIdx < 0 ||
+        diffIdx >= static_cast<int>(set->fBeatmaps.size())) {
       return;
     }
     fPlayingSet = setIdx;
     fPlayingDiff = diffIdx;
-    fSet = entry.fSet; // active copy: gameplay reads audio/bg from here
+    fSet = *set; // active copy: gameplay reads audio/bg from here
     fMenuMusicForSet = -1;  // gameplay reloads the track from scratch
     fAudio.setLooping(false);
     this->resetGameplayState();
@@ -1273,34 +1318,41 @@ private:
 #endif
     std::error_code ec;
     std::filesystem::create_directories(fMapsDir, ec);
+    fMapCache.load(fMapsDir / "metadata-cache.json");
 
     if (fHasInitialSet) {
-      fLibrary.push_back({{}, fSet});
+      LibraryEntry entry;
+      entry.fInfos = fSet.fBeatmaps;
+      entry.fLoaded = std::make_shared<osu::BeatmapSet>(fSet);
+      fLibrary.push_back(std::move(entry));
+      fLoadedOrder.push_back(0);
     }
+
     std::error_code iterEc;
     for (const auto &e :
          std::filesystem::directory_iterator(fMapsDir, iterEc)) {
-      if (!e.is_regular_file()) {
+      if (!e.is_regular_file() || e.path().extension() != ".osz") {
         continue;
       }
-      const auto path = e.path();
-      if (path.extension() != ".osz") {
-        continue;
-      }
-      this->addOszToLibrary(path, false);
+      this->scanArchive(e.path());
     }
-    std::ranges::sort(fLibrary, {}, [](const LibraryEntry &l) {
-      return l.fSet.fBeatmaps.empty() ? std::string{}
-                                      : l.fSet.fBeatmaps.front().fMeta.fTitle;
-    });
-    fSelSet = 0;
-    fSelDiff = 0;
+    fMapCache.save();
+    this->syncMapsDir();
+
+    this->sortLibrary();
+    fFilterDirty = true;
+    this->rebuildVisible();
+    // Start on a random set so the menu isn't always greeted by the same
+    // track (unless a specific beatmap was passed on the command line).
+    if (!fHasInitialSet && !fLibrary.empty()) {
+      std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
+      fSelSet = static_cast<int>(pick(fUiRng));
+      fSelDiff = 0;
+    }
     fLibraryLoaded = true;
+    std::println(std::cerr, "[library] {} sets", fLibrary.size());
   }
 
-  // Point the selection at the set that was passed on the command line (the
-  // one LibraryEntry with an empty path), used when booting straight into
-  // song select on a direct .osz launch.
   // Loop the selected set's audio quietly under the menus, lazer-style. Only
   // reloads when the selection changes; stops when gameplay takes over.
   void updateMenuMusic() {
@@ -1314,16 +1366,17 @@ private:
       return;
     }
     fMenuMusicForSet = fSelSet;
-    const auto &set = fLibrary[static_cast<std::size_t>(fSelSet)].fSet;
-    if (set.fBeatmaps.empty()) {
+    auto set = this->setFor(fSelSet);
+    if (!set || set->fBeatmaps.empty()) {
+      fAudio.stop();
       return;
     }
-    const auto &audioName = set.fBeatmaps.front().fMeta.fAudioFilename;
+    const auto &audioName = set->fBeatmaps.front().fMeta.fAudioFilename;
     if (audioName.empty()) {
       fAudio.stop();
       return;
     }
-    const auto bytes = set.findFile(audioName);
+    const auto bytes = set->findFile(audioName);
     if (bytes.empty()) {
       fAudio.stop();
       return;
@@ -1346,6 +1399,218 @@ private:
     fSpectrum.reset();
   }
 
+  // Metadata for one archive, from the cache when the file is unchanged.
+  void scanArchive(const std::filesystem::path &path) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    const auto writeTime = std::filesystem::last_write_time(path, ec);
+    const auto mtime = static_cast<std::int64_t>(
+        writeTime.time_since_epoch().count());
+    const std::string key = path.filename().string();
+
+    if (const auto *cached = fMapCache.lookup(key, size, mtime)) {
+      LibraryEntry entry;
+      entry.fPath = path;
+      for (const auto &d : *cached) {
+        osu::BeatmapInfo info;
+        info.fFilename = d.fFilename;
+        info.fMeta.fTitle = d.fTitle;
+        info.fMeta.fTitleUnicode = d.fTitleUnicode;
+        info.fMeta.fArtist = d.fArtist;
+        info.fMeta.fArtistUnicode = d.fArtistUnicode;
+        info.fMeta.fCreator = d.fCreator;
+        info.fMeta.fVersion = d.fVersion;
+        info.fMeta.fAudioFilename = d.fAudioFilename;
+        info.fMeta.fBackground = d.fBackground;
+        info.fStars = d.fStars;
+        info.fDiff.fCs = d.fCs;
+        info.fDiff.fAr = d.fAr;
+        info.fDiff.fOd = d.fOd;
+        info.fDiff.fHp = d.fHp;
+        info.fLengthMs = d.fLengthMs;
+        info.fObjectCount = d.fObjectCount;
+        entry.fInfos.push_back(std::move(info));
+      }
+      if (!entry.fInfos.empty()) {
+        fLibrary.push_back(std::move(entry));
+        return;
+      }
+    }
+
+    // Cache miss: parse the archive once, then remember the result.
+    try {
+      auto set = std::make_shared<osu::BeatmapSet>(loadBeatmapSet(path));
+      LibraryEntry entry;
+      entry.fPath = path;
+      entry.fInfos = set->fBeatmaps;
+      fLibrary.push_back(std::move(entry));
+
+      std::vector<client::CachedDifficulty> diffs;
+      for (const auto &info : set->fBeatmaps) {
+        diffs.push_back({info.fFilename, info.fMeta.fTitle,
+                         info.fMeta.fTitleUnicode, info.fMeta.fArtist,
+                         info.fMeta.fArtistUnicode, info.fMeta.fCreator,
+                         info.fMeta.fVersion, info.fMeta.fAudioFilename,
+                         info.fMeta.fBackground, info.fStars, info.fDiff.fCs,
+                         info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp,
+                         info.fLengthMs, info.fObjectCount});
+      }
+      fMapCache.store(key, size, mtime, std::move(diffs));
+    } catch (const std::exception &e) {
+      std::println(std::cerr, "[library] skipping {}: {}", key, e.what());
+    }
+  }
+
+  // Full set for an entry, loading (and evicting) as needed.
+  [[nodiscard]] std::shared_ptr<osu::BeatmapSet> setFor(int index) {
+    if (index < 0 || index >= static_cast<int>(fLibrary.size())) {
+      return nullptr;
+    }
+    auto &entry = fLibrary[static_cast<std::size_t>(index)];
+    if (entry.fLoaded) {
+      return entry.fLoaded;
+    }
+    if (entry.fPath.empty()) {
+      return nullptr; // CLI set is always resident; nothing to reload from
+    }
+    try {
+      entry.fLoaded =
+          std::make_shared<osu::BeatmapSet>(loadBeatmapSet(entry.fPath));
+    } catch (const std::exception &e) {
+      std::println(std::cerr, "[library] load failed {}: {}",
+                   entry.fPath.filename().string(), e.what());
+      return nullptr;
+    }
+    fLoadedOrder.push_back(index);
+    while (fLoadedOrder.size() > kMaxLoadedSets) {
+      const int evict = fLoadedOrder.front();
+      fLoadedOrder.pop_front();
+      if (evict != index && evict >= 0 &&
+          evict < static_cast<int>(fLibrary.size()) &&
+          !fLibrary[static_cast<std::size_t>(evict)].fPath.empty()) {
+        fLibrary[static_cast<std::size_t>(evict)].fLoaded.reset();
+      }
+    }
+    return entry.fLoaded;
+  }
+
+  [[nodiscard]] const std::vector<osu::BeatmapInfo> &infosFor(int index) const {
+    static const std::vector<osu::BeatmapInfo> kEmpty;
+    if (index < 0 || index >= static_cast<int>(fLibrary.size())) {
+      return kEmpty;
+    }
+    return fLibrary[static_cast<std::size_t>(index)].fInfos;
+  }
+
+  void sortLibrary() {
+    const int selected = fSelSet;
+    const std::filesystem::path selPath =
+        selected >= 0 && selected < static_cast<int>(fLibrary.size())
+            ? fLibrary[static_cast<std::size_t>(selected)].fPath
+            : std::filesystem::path{};
+
+    const auto key = [](const LibraryEntry &e) -> const osu::BeatmapInfo * {
+      return e.fInfos.empty() ? nullptr : &e.fInfos.front();
+    };
+    switch (fSortMode) {
+    case SortMode::kTitle:
+      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+        const auto *i = key(e);
+        return i ? toLowerAscii(i->fMeta.fTitle) : std::string{};
+      });
+      break;
+    case SortMode::kArtist:
+      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+        const auto *i = key(e);
+        return i ? toLowerAscii(i->fMeta.fArtist) : std::string{};
+      });
+      break;
+    case SortMode::kStars:
+      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+        const auto *i = key(e);
+        return i ? i->fStars : 0.0;
+      });
+      break;
+    case SortMode::kLength:
+      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+        const auto *i = key(e);
+        return i ? i->fLengthMs : 0.0;
+      });
+      break;
+    }
+    // The LRU holds indices, which the sort just invalidated.
+    fLoadedOrder.clear();
+    for (int i = 0; i < static_cast<int>(fLibrary.size()); ++i) {
+      if (fLibrary[static_cast<std::size_t>(i)].fLoaded) {
+        fLoadedOrder.push_back(i);
+      }
+      if (!selPath.empty() &&
+          fLibrary[static_cast<std::size_t>(i)].fPath == selPath) {
+        fSelSet = i;
+      }
+    }
+    fFilterDirty = true;
+  }
+
+  [[nodiscard]] static std::string toLowerAscii(std::string_view in) {
+    std::string out(in);
+    std::ranges::transform(out, out.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return out;
+  }
+
+  void rebuildVisible() {
+    if (!fFilterDirty) {
+      return;
+    }
+    fFilterDirty = false;
+    fVisible.clear();
+    const std::string needle = toLowerAscii(fFilterText);
+    for (int i = 0; i < static_cast<int>(fLibrary.size()); ++i) {
+      const auto &infos = fLibrary[static_cast<std::size_t>(i)].fInfos;
+      if (infos.empty()) {
+        continue;
+      }
+      if (needle.empty()) {
+        fVisible.push_back(i);
+        continue;
+      }
+      const auto &m = infos.front().fMeta;
+      std::string haystack = toLowerAscii(m.fTitle) + '\x1f' +
+                             toLowerAscii(m.fTitleUnicode) + '\x1f' +
+                             toLowerAscii(m.fArtist) + '\x1f' +
+                             toLowerAscii(m.fArtistUnicode) + '\x1f' +
+                             toLowerAscii(m.fCreator);
+      for (const auto &info : infos) {
+        haystack += '\x1f';
+        haystack += toLowerAscii(info.fMeta.fVersion);
+      }
+      if (haystack.find(needle) != std::string::npos) {
+        fVisible.push_back(i);
+      }
+    }
+    // Keep the selection inside the filtered view.
+    if (!fVisible.empty() &&
+        std::ranges::find(fVisible, fSelSet) == fVisible.end()) {
+      fSelSet = fVisible.front();
+      fSelDiff = 0;
+    }
+  }
+
+  [[nodiscard]] int visiblePos() const {
+    const auto it = std::ranges::find(fVisible, fSelSet);
+    return it == fVisible.end() ? -1
+                                : static_cast<int>(it - fVisible.begin());
+  }
+
+  void syncMapsDir() {
+#ifdef __EMSCRIPTEN__
+    EM_ASM(FS.syncfs(false, function(err) {}));
+#endif
+  }
+
+  // Point the selection at the set that came from the command line.
   void selectInitialSet() {
     for (std::size_t i = 0; i < fLibrary.size(); ++i) {
       if (fLibrary[i].fPath.empty()) {
@@ -1354,6 +1619,29 @@ private:
         return;
       }
     }
+  }
+
+  bool addOszToLibrary(const std::filesystem::path &path, bool select) {
+    const std::size_t before = fLibrary.size();
+    this->scanArchive(path);
+    if (fLibrary.size() == before) {
+      return false;
+    }
+    fMapCache.save();
+    this->syncMapsDir();
+    const auto added = fLibrary.back().fPath;
+    this->sortLibrary();
+    this->rebuildVisible();
+    if (select) {
+      for (int i = 0; i < static_cast<int>(fLibrary.size()); ++i) {
+        if (fLibrary[static_cast<std::size_t>(i)].fPath == added) {
+          fSelSet = i;
+          fSelDiff = 0;
+          break;
+        }
+      }
+    }
+    return true;
   }
 
   // ---- Import an external .osz into the library -------------------------
@@ -1474,21 +1762,6 @@ private:
     return {};
   }
 #endif
-
-  bool addOszToLibrary(const std::filesystem::path &path, bool select) {
-    try {
-      LibraryEntry entry{path, loadBeatmapSet(path)};
-      fLibrary.push_back(std::move(entry));
-      if (select) {
-        fSelSet = static_cast<int>(fLibrary.size()) - 1;
-        fSelDiff = 0;
-      }
-      return true;
-    } catch (const std::exception &e) {
-      std::println("failed to load {}: {}", path.string(), e.what());
-      return false;
-    }
-  }
 
   // ---- Download screen logic -------------------------------------------
 
@@ -1811,20 +2084,6 @@ private:
     return skia::colorSetARGB(255, 90, 90, 110);
   }
 
-  [[nodiscard]] static std::string setTitle(const osu::BeatmapSet &set) {
-    if (set.fBeatmaps.empty())
-      return "(empty set)";
-    const auto &m = set.fBeatmaps.front().fMeta;
-    return m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode;
-  }
-
-  [[nodiscard]] static std::string setArtist(const osu::BeatmapSet &set) {
-    if (set.fBeatmaps.empty())
-      return {};
-    const auto &m = set.fBeatmaps.front().fMeta;
-    return m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode;
-  }
-
   void drawScreenBackground(skia::SkCanvas *canvas) {
     if (fBackgroundScaled) {
       this->drawBackground(canvas);
@@ -1902,6 +2161,7 @@ private:
       this->requestQuit();
       break;
     case MenuAction::kSolo:
+      fSwallowChar = true; // the 's' that triggered this must not be typed
       this->switchState(State::kSongSelect);
       break;
     case MenuAction::kRandom:
@@ -1915,11 +2175,11 @@ private:
 
   // F2 in song select: move the selection (lazer's FooterButtonRandom).
   void selectRandom() {
-    if (fLibrary.empty()) {
+    if (fVisible.empty()) {
       return;
     }
-    std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
-    fSelSet = static_cast<int>(pick(fUiRng));
+    std::uniform_int_distribution<std::size_t> pick(0, fVisible.size() - 1);
+    fSelSet = fVisible[pick(fUiRng)];
     fSelDiff = 0;
   }
 
@@ -1931,12 +2191,11 @@ private:
     }
     std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
     const auto si = pick(fUiRng);
-    const auto &set = fLibrary[si].fSet;
-    if (set.fBeatmaps.empty()) {
+    const auto &infos = fLibrary[si].fInfos;
+    if (infos.empty()) {
       return;
     }
-    std::uniform_int_distribution<std::size_t> pickDiff(
-        0, set.fBeatmaps.size() - 1);
+    std::uniform_int_distribution<std::size_t> pickDiff(0, infos.size() - 1);
     fSelSet = static_cast<int>(si);
     fSelDiff = static_cast<int>(pickDiff(fUiRng));
     this->startPlay(fSelSet, fSelDiff);
@@ -2063,8 +2322,9 @@ private:
     // triangles are only the fallback background when no art exists at all.
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
       fBackgroundForSet = fSelSet;
-      this->loadSelectBackground(
-          fLibrary[static_cast<std::size_t>(fSelSet)].fSet);
+      if (auto set = this->setFor(fSelSet)) {
+        this->loadSelectBackground(*set);
+      }
     }
     const float dimTarget =
         fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
@@ -2442,30 +2702,40 @@ private:
 
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
       fBackgroundForSet = fSelSet;
-      this->loadSelectBackground(
-          fLibrary[static_cast<std::size_t>(fSelSet)].fSet);
+      if (auto set = this->setFor(fSelSet)) {
+        this->loadSelectBackground(*set);
+      }
     }
     this->drawScreenBackground(canvas);
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     fCarouselHits.clear();
+    this->rebuildVisible();
 
-    if (fLibrary.empty()) {
-      this->drawTextCentered(canvas, "No beatmaps in the library", sw * 0.5f,
-                             sh * 0.45f, 28.0f, skia::kWhite, 0.9f);
-      this->drawTextCentered(canvas,
-                             "Press D to browse and download, I to import",
-                             sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
+    if (fVisible.empty()) {
+      const bool filtered = !fFilterText.empty();
+      this->drawTextCentered(
+          canvas, filtered ? "No maps match the filter" : "No beatmaps yet",
+          sw * 0.5f, sh * 0.45f, 28.0f, skia::kWhite, 0.9f);
+      this->drawTextCentered(
+          canvas,
+          filtered ? "Backspace to edit, Esc to clear"
+                   : "Drag a .osz onto the window, or press D to browse",
+          sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
+      this->drawFilterBox(canvas);
       this->drawSelectFooter(canvas);
       this->present();
       return;
     }
 
     // ---- Left: the info wedge (lazer's BeatmapTitleWedge area).
-    const auto &selSet = fLibrary[static_cast<std::size_t>(fSelSet)].fSet;
-    const auto &selInfo = selSet.fBeatmaps[static_cast<std::size_t>(fSelDiff)];
-    this->drawInfoWedge(canvas, selSet, selInfo);
+    const auto &selInfos = this->infosFor(fSelSet);
+    if (!selInfos.empty()) {
+      fSelDiff = std::clamp(fSelDiff, 0, static_cast<int>(selInfos.size()) - 1);
+      this->drawInfoWedge(canvas, selInfos,
+                          selInfos[static_cast<std::size_t>(fSelDiff)]);
+    }
 
     // ---- Right: the carousel.
     const float uiScale = std::clamp(sh / 900.0f, 0.8f, 1.6f);
@@ -2478,24 +2748,19 @@ private:
     const float carLeft = sw - panelW - 20.0f * uiScale;
     const float halfHeight = sh * 0.5f;
 
-    // Vertical layout: total height and the selected row's centre.
     float total = 0.0f;
     float selCentre = 0.0f;
-    for (int si = 0; si < static_cast<int>(fLibrary.size()); ++si) {
+    for (const int si : fVisible) {
       if (si == fSelSet) {
         selCentre = total + setH +
                     (static_cast<float>(fSelDiff) + 0.5f) * (diffH + gap);
       }
       total += setH + gap;
       if (si == fSelSet) {
-        total += static_cast<float>(
-                     fLibrary[static_cast<std::size_t>(si)].fSet.fBeatmaps.size()) *
-                 (diffH + gap);
+        total += static_cast<float>(this->infosFor(si).size()) * (diffH + gap);
       }
     }
 
-    // Selection changes re-centre the view; the wheel scrolls freely in
-    // between (lazer keeps the selection put while you browse).
     const int selKey = fSelSet * 1024 + fSelDiff;
     if (selKey != fPrevSelKey) {
       fPrevSelKey = selKey;
@@ -2503,31 +2768,28 @@ private:
       fCarouselScroll = selCentre - halfHeight;
       fUserScrolled = false;
     }
-    fCarouselScroll =
-        std::clamp(fCarouselScroll, -halfHeight * 0.5f,
-                   std::max(0.0f, total - halfHeight * 0.5f));
+    fCarouselScroll = std::clamp(fCarouselScroll, -halfHeight * 0.5f,
+                                 std::max(0.0f, total - halfHeight * 0.5f));
     fScrollAnim = this->approach(fScrollAnim, fCarouselScroll, 120.0f);
     fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 400.0f);
     const float pop = easeOutQuintT(fPopAnim);
 
     canvas->save();
     float y = -fScrollAnim;
-    for (int si = 0; si < static_cast<int>(fLibrary.size()); ++si) {
-      const auto &set = fLibrary[static_cast<std::size_t>(si)].fSet;
+    for (const int si : fVisible) {
+      const auto &infos = this->infosFor(si);
       const bool expanded = si == fSelSet;
 
       if (y + setH >= -setH && y <= sh) {
-        // Carousel curve: distance of this panel's centre from the middle.
         const float dist = std::abs(1.0f - (y + setH * 0.5f) / halfHeight);
         float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
         if (!expanded) {
-          x += activeX * 4.0f; // unselected set panels sit further right
+          x += activeX * 4.0f;
         }
         x += activeX * (1.0f - (expanded ? pop : 0.0f));
 
-        const skia::SkRect rect =
-            skia::SkRect::MakeXYWH(x, y, panelW, setH);
-        this->drawSetPanel(canvas, rect, set, expanded, corner);
+        const skia::SkRect rect = skia::SkRect::MakeXYWH(x, y, panelW, setH);
+        this->drawSetPanel(canvas, rect, si, infos, expanded, corner);
         fCarouselHits.push_back({rect, si, -1});
       }
       y += setH + gap;
@@ -2535,20 +2797,20 @@ private:
       if (!expanded) {
         continue;
       }
-      for (int di = 0; di < static_cast<int>(set.fBeatmaps.size()); ++di) {
-        const auto &info = set.fBeatmaps[static_cast<std::size_t>(di)];
+      for (int di = 0; di < static_cast<int>(infos.size()); ++di) {
         const bool selected = di == fSelDiff;
         if (y + diffH >= -diffH && y <= sh) {
           const float dist = std::abs(1.0f - (y + diffH * 0.5f) / halfHeight);
           float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
           if (!selected) {
-            x += activeX * 2.0f; // unselected difficulty panels
+            x += activeX * 2.0f;
           }
           x += activeX * (1.0f - (selected ? pop : 0.0f));
 
-          const skia::SkRect rect =
-              skia::SkRect::MakeXYWH(x, y, panelW, diffH);
-          this->drawDiffPanel(canvas, rect, info, selected, corner);
+          const skia::SkRect rect = skia::SkRect::MakeXYWH(x, y, panelW, diffH);
+          this->drawDiffPanel(canvas, rect,
+                              infos[static_cast<std::size_t>(di)], selected,
+                              corner);
           fCarouselHits.push_back({rect, si, di});
         }
         y += diffH + gap;
@@ -2556,41 +2818,147 @@ private:
     }
     canvas->restore();
 
+    this->drawFilterBox(canvas);
     this->drawSelectFooter(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
   }
 
+  // lazer's FilterControl: search field top-right with the match count and
+  // the active sort mode.
+  void drawFilterBox(skia::SkCanvas *canvas) {
+    const float sw = static_cast<float>(fScreenW);
+    const float w = std::min(420.0f, sw * 0.32f);
+    const skia::SkRect box = skia::SkRect::MakeXYWH(sw - w - 20.0f, 16.0f, w, 42.0f);
+    this->fillRounded(canvas, box, 8.0f, kPanelBg);
+    this->strokeRounded(canvas, box, 8.0f,
+                        fFilterText.empty() ? kCardSel : kAccent, 2.0f);
+    const bool caret = std::fmod(wallMs(), 1000.0) < 600.0;
+    if (fFilterText.empty()) {
+      this->drawTextClipped(canvas, "type to search", box.fLeft + 14.0f,
+                            box.centerY() + 6.0f, w - 28.0f, 16.0f,
+                            skia::kWhite, 0.45f);
+    } else {
+      this->drawTextClipped(canvas, fFilterText + (caret ? "|" : " "),
+                            box.fLeft + 14.0f, box.centerY() + 6.0f, w - 28.0f,
+                            16.0f, skia::kWhite);
+    }
+    this->drawTextClipped(
+        canvas,
+        std::format("{} of {} sets   sort: {}", fVisible.size(),
+                    fLibrary.size(), sortModeName()),
+        box.fLeft, box.fBottom + 18.0f, w, 13.0f, skia::kWhite, 0.6f);
+  }
+
+  [[nodiscard]] const char *sortModeName() const {
+    switch (fSortMode) {
+    case SortMode::kTitle: return "title";
+    case SortMode::kArtist: return "artist";
+    case SortMode::kStars: return "difficulty";
+    case SortMode::kLength: return "length";
+    }
+    return "?";
+  }
+
+  void cycleSortMode() {
+    fSortMode = static_cast<SortMode>(
+        (static_cast<int>(fSortMode) + 1) % 4);
+    this->sortLibrary();
+    this->rebuildVisible();
+  }
+
+  // Set panels carry the beatmap's cover art behind the text, as lazer's
+  // PanelSetBackground does. The image is pulled from the archive the first
+  // time the panel is drawn and kept with the entry.
   void drawSetPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
-                    const osu::BeatmapSet &set, bool expanded, float corner) {
+                    int setIndex, const std::vector<osu::BeatmapInfo> &infos,
+                    bool expanded, float corner) {
     const bool hover = rect.contains(fMouseX, fMouseY);
-    // lazer: colourProvider.Background5-ish, brighter when expanded/hovered.
     this->fillRounded(canvas, rect, corner,
                       expanded ? skia::colorSetARGB(255, 66, 48, 74)
                       : hover  ? skia::colorSetARGB(255, 52, 42, 60)
                                : skia::colorSetARGB(255, 40, 33, 48));
+
+    if (auto art = this->panelArt(setIndex)) {
+      canvas->save();
+      canvas->clipRRect(skia::SkRRect::MakeRectXY(rect, corner, corner), true);
+      canvas->drawImageRect(
+          art.get(), rect,
+          skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
+      skia::SkPaint veil;
+      veil.setColor(skia::colorSetARGB(expanded ? 150 : 185, 14, 11, 20));
+      canvas->drawRect(rect, veil);
+      canvas->restore();
+    }
     if (expanded) {
       this->strokeRounded(canvas, rect, corner, kAccent, 2.0f);
     }
+
     const float pad = 18.0f;
-    this->drawTextClipped(canvas, setTitle(set), rect.fLeft + pad,
+    const std::string title =
+        infos.empty() ? "(empty)"
+        : infos.front().fMeta.fTitleUnicode.empty()
+            ? infos.front().fMeta.fTitle
+            : infos.front().fMeta.fTitleUnicode;
+    const std::string artist =
+        infos.empty() ? std::string{}
+        : infos.front().fMeta.fArtistUnicode.empty()
+            ? infos.front().fMeta.fArtist
+            : infos.front().fMeta.fArtistUnicode;
+    this->drawTextClipped(canvas, title, rect.fLeft + pad,
                           rect.fTop + rect.height() * 0.44f,
-                          rect.width() - pad * 2, 19.0f, skia::kWhite);
-    this->drawTextClipped(canvas, setArtist(set), rect.fLeft + pad,
+                          rect.width() - pad * 2 - 90.0f, 19.0f, skia::kWhite);
+    this->drawTextClipped(canvas, artist, rect.fLeft + pad,
                           rect.fTop + rect.height() * 0.72f,
-                          rect.width() - pad * 2, 14.0f, skia::kWhite, 0.7f);
+                          rect.width() - pad * 2 - 90.0f, 14.0f, skia::kWhite,
+                          0.75f);
+
     // Difficulty spread dots (PanelBeatmapSet.SpreadDisplay).
     float dotX = rect.fRight - pad;
-    for (auto it = set.fBeatmaps.rbegin(); it != set.fBeatmaps.rend(); ++it) {
+    for (auto it = infos.rbegin(); it != infos.rend(); ++it) {
       skia::SkPaint dot;
       dot.setAntiAlias(true);
       dot.setColor(starColor(it->fStars));
       canvas->drawCircle(dotX, rect.centerY(), 4.0f, dot);
       dotX -= 12.0f;
-      if (dotX < rect.centerX()) {
+      if (dotX < rect.fRight - 120.0f) {
         break;
       }
     }
+  }
+
+  // Cover art for a set panel, decoded once and cached with the entry.
+  [[nodiscard]] skia::Sp<skia::SkImage> panelArt(int setIndex) {
+    if (setIndex < 0 || setIndex >= static_cast<int>(fLibrary.size())) {
+      return nullptr;
+    }
+    auto &entry = fLibrary[static_cast<std::size_t>(setIndex)];
+    if (entry.fPanelArt || entry.fPanelArtTried) {
+      return entry.fPanelArt;
+    }
+    // Only decode art for the set the user is actually looking at, plus its
+    // neighbours; decoding every panel's background while scrolling would
+    // stall the frame.
+    if (std::abs(setIndex - fSelSet) > 2) {
+      return nullptr;
+    }
+    entry.fPanelArtTried = true;
+    auto set = this->setFor(setIndex);
+    if (!set) {
+      return nullptr;
+    }
+    for (const auto &info : set->fBeatmaps) {
+      if (info.fMeta.fBackground.empty()) {
+        continue;
+      }
+      const auto bytes = set->findFile(info.fMeta.fBackground);
+      if (bytes.empty()) {
+        continue;
+      }
+      entry.fPanelArt = loadImage(bytes);
+      break;
+    }
+    return entry.fPanelArt;
   }
 
   void drawDiffPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
@@ -2604,7 +2972,6 @@ private:
     if (selected) {
       this->strokeRounded(canvas, rect, corner, kAccent2, 2.0f);
     }
-    // Star badge, then the difficulty name (PanelBeatmap layout).
     const float pad = 16.0f;
     const skia::SkRect badge = skia::SkRect::MakeXYWH(
         rect.fLeft + pad, rect.centerY() - 11.0f, 62.0f, 22.0f);
@@ -2619,7 +2986,8 @@ private:
   }
 
   // The left-hand wedge showing the selected beatmap, à la BeatmapTitleWedge.
-  void drawInfoWedge(skia::SkCanvas *canvas, const osu::BeatmapSet &set,
+  void drawInfoWedge(skia::SkCanvas *canvas,
+                     const std::vector<osu::BeatmapInfo> &infos,
                      const osu::BeatmapInfo &info) {
     const float sh = static_cast<float>(fScreenH);
     const float w = std::min(560.0f, static_cast<float>(fScreenW) * 0.44f);
@@ -2639,10 +3007,14 @@ private:
     canvas->drawPath(wedge.detach(), bg);
 
     const float pad = 28.0f;
-    this->drawTextClipped(canvas, setTitle(set), pad, top + 46.0f, w - pad * 2,
-                          32.0f, skia::kWhite);
-    this->drawTextClipped(canvas, setArtist(set), pad, top + 76.0f,
-                          w - pad * 2, 18.0f, skia::kWhite, 0.8f);
+    const auto &meta = infos.empty() ? info.fMeta : infos.front().fMeta;
+    this->drawTextClipped(
+        canvas, meta.fTitleUnicode.empty() ? meta.fTitle : meta.fTitleUnicode,
+        pad, top + 46.0f, w - pad * 2, 32.0f, skia::kWhite);
+    this->drawTextClipped(
+        canvas,
+        meta.fArtistUnicode.empty() ? meta.fArtist : meta.fArtistUnicode, pad,
+        top + 76.0f, w - pad * 2, 18.0f, skia::kWhite, 0.8f);
     this->drawTextClipped(canvas,
                           std::format("mapped by {}", info.fMeta.fCreator),
                           pad, top + 100.0f, w - pad * 2, 15.0f, kAccent2, 0.9f);
@@ -2675,6 +3047,7 @@ private:
     };
     const FooterBtn btns[] = {
         {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
+        {"sort", skia::colorSetARGB(255, 238, 170, 0), &fSortChip},
         {"import", kAccent, &fImportChip},
         {"browse", skia::colorSetARGB(255, 165, 204, 0), &fDownloadsChip},
     };
@@ -2691,7 +3064,7 @@ private:
     }
     this->drawTextCentered(
         canvas,
-        "Enter play    Wheel scroll    F2 random    drag .osz to import",
+        "Enter play    F2 random    F3 sort    type to filter    Esc back",
         sw * 0.72f, sh - 24.0f, 14.0f, skia::kWhite, 0.7f);
   }
 
