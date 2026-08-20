@@ -216,6 +216,12 @@ public:
     fScene->draw(ctx.fCanvas);
   }
 
+  // The region this page repainted, for a caller that clips frames to
+  // damage. Empty means nothing moved.
+  [[nodiscard]] skia::SkRect takeDamage() {
+    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  }
+
   [[nodiscard]] Result click(float x, float y) {
     if (!fOpen || !fScene) {
       return {};

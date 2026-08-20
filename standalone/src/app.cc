@@ -142,6 +142,10 @@ private:
   int fRefreshHz = 60; // the monitor's, sampled where GLFW allows the query
   double fRedrawUntilWall = 0.0; // frames are drawn until at least this time
   double fLastDrawWall = 0.0;
+  skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
+  skia::SkIRect fDamage = skia::SkIRect::MakeEmpty();
+  bool fFullDamage = true;
+  int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
   double fFpsPrevWall = 0.0;
   double fFpsFrameMs = 0.0;
@@ -1352,6 +1356,42 @@ private:
     fRedrawUntilWall = std::max(fRedrawUntilWall, wallMs() + durationMs);
   }
 
+  // The whole screen has to be repainted: a screen changed, the window
+  // resized, or something that does not report its bounds moved.
+  void damageAll() {
+    fFullDamage = true;
+    fDamage = skia::SkIRect::MakeWH(fScreenW, fScreenH);
+  }
+
+  // A region did. Rounded outwards, because a rectangle that is a pixel too
+  // small leaves a seam behind.
+  void damage(const skia::SkRect &rect) {
+    if (rect.isEmpty()) {
+      return;
+    }
+    skia::SkIRect area = rect.roundOut();
+    area.outset(2, 2);
+    if (fDamage.isEmpty()) {
+      fDamage = area;
+    } else {
+      fDamage.join(area);
+    }
+  }
+
+  // Clips the frame to what changed. Everything draws exactly as it would
+  // have -- the screens repaint from state, so a clipped repaint of a region
+  // is the same pixels -- only the work outside the clip is skipped.
+  void beginFrame() {
+    if (!fSurface) {
+      return;
+    }
+    auto *canvas = fSurface->getCanvas();
+    fFrameSave = canvas->save();
+    if (!fFullDamage && !fDamage.isEmpty()) {
+      canvas->clipIRect(fDamage);
+    }
+  }
+
   [[nodiscard]] bool needsFrame() {
     // Gameplay is a moving picture by definition, and so is anything with a
     // clock on screen.
@@ -1396,6 +1436,16 @@ private:
       return;
     }
     fLastDrawWall = wallMs();
+    if (fState == State::kPlaying || fState == State::kMainMenu ||
+        fState == State::kResults) {
+      this->damageAll(); // moving pictures: the whole screen is in play
+    }
+    // Anything that changed without saying where repaints everything; a
+    // frame drawn with nothing marked would otherwise clip to nothing.
+    if (!fFullDamage && fDamage.isEmpty()) {
+      this->damageAll();
+    }
+    this->beginFrame();
     switch (fState) {
     case State::kMainMenu:
       this->frameMainMenu();
@@ -1448,6 +1498,7 @@ private:
                fToastColor, alpha);
     p.textCentered(fToast, box.centerX() + 2.0f, box.centerY() + 5.0f, 14.0f,
                    skia::kWhite, alpha);
+    this->damage(box);
   }
 
   void drawFpsCounter(skia::SkCanvas *canvas) {
@@ -1491,8 +1542,34 @@ private:
     this->drawDeleteConfirmation(canvas);
     this->drawToast(canvas);
     this->drawFpsCounter(canvas);
+    this->showDamage(canvas);
+    canvas->restoreToCount(fFrameSave);
     fContext->flushAndSubmit(fSurface.get());
+
+    // The window's back buffer is a different one each swap, so it always
+    // takes the whole surface; the saving is in what was drawn into the
+    // surface, not in what is copied out of it.
+    if (fWindowSurface) {
+      fSurface->draw(fWindowSurface->getCanvas(), 0.0f, 0.0f);
+      fContext->flushAndSubmit(fWindowSurface.get());
+    }
     glfw::glfwSwapBuffers(fWindow);
+    fDamage = skia::SkIRect::MakeEmpty();
+    fFullDamage = false;
+  }
+
+  // OSU_SHOW_DAMAGE=1 outlines what was repainted, which is the only way to
+  // see whether a screen is reporting its damage honestly.
+  void showDamage(skia::SkCanvas *canvas) {
+    static const bool show = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
+    if (!show || fFullDamage || fDamage.isEmpty()) {
+      return;
+    }
+    skia::SkPaint paint;
+    paint.setStyle(skia::kStrokeStyle);
+    paint.setStrokeWidth(2.0f);
+    paint.setColor(skia::colorSetARGB(255, 255, 0, 255));
+    canvas->drawRect(skia::SkRect::Make(fDamage), paint);
   }
 
   void framePlaying() {
@@ -5045,6 +5122,7 @@ private:
     fConfirmScene->layoutIfNeeded(screen);
     fConfirmScene->setHover(fMouseX, fMouseY);
     fConfirmScene->draw(canvas);
+    this->damage(fConfirmScene->takeDamage());
   }
 
   bool confirmDeleteClick(float x, float y) {
@@ -5149,6 +5227,7 @@ private:
       page.fPreviewPlaying = fPreviewId == fSetPage.setId();
       page.fPreviewProgress = this->previewProgress();
       fSetPage.draw(page);
+      this->damage(fSetPage.takeDamage());
     }
     // Covers are only fetched for what is on screen.
     for (const int idx : fListing.visible()) {
@@ -5893,9 +5972,22 @@ private:
     info.fFormat = skia::kGlRgba8;
     skia::GrBackendRenderTarget target =
         skia::MakeGL(fScreenW, fScreenH, 0, 0, info);
-    fSurface = skia::WrapBackendRenderTarget(
+    fWindowSurface = skia::WrapBackendRenderTarget(
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);
+
+    // Everything is drawn into a surface of our own, which survives from
+    // frame to frame; the window's back buffer does not, because swapping
+    // alternates between two of them. That is what makes it possible to
+    // repaint only the part of the screen that changed and still put a whole
+    // frame in front of the user: the damaged area is redrawn here, and this
+    // surface is then blitted to the window in one textured quad.
+    fSurface = skia::RenderTarget(
+        fContext.get(), skia::kNo,
+        skia::SkImageInfo::Make(fScreenW, fScreenH,
+                                skia::kRGBA_8888_SkColorType,
+                                skia::kPremul_SkAlphaType));
+    this->damageAll();
     fView.invalidate();
     fView.preScaleBackground(this->gameplayCtx(nullptr));
   }

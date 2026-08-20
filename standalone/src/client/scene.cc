@@ -138,7 +138,9 @@ public:
   skia::SkRect fBounds = skia::SkRect::MakeEmpty();
 
   void add(std::unique_ptr<Drawable> child) {
+    child->fParent = this;
     fChildren.push_back(std::move(child));
+    this->markDamaged();
   }
   void clear() { fChildren.clear(); }
   [[nodiscard]] std::span<const std::unique_ptr<Drawable>> children() const {
@@ -177,6 +179,7 @@ public:
   void updateTree(double nowMs) {
     if (!fTransforms.empty()) {
       fLayoutValid = false; // a moving drawable needs placing again
+      this->markDamaged();
     }
     this->updateTransforms(nowMs);
     this->update(nowMs);
@@ -199,6 +202,7 @@ public:
 
   // Marks this drawable, and everything under it, as needing layout again.
   void invalidateLayout() {
+    this->markDamaged();
     fLayoutValid = false;
     for (auto &child : fChildren) {
       child->invalidateLayout();
@@ -288,6 +292,7 @@ public:
       child->draw(canvas, alpha);
     }
     canvas->restoreToCount(saved);
+    fDrawnBounds = fBounds; // where a later move has to repaint from
   }
 
   // Hit testing walks the tree from the front, so what is drawn last is what
@@ -350,8 +355,41 @@ public:
   }
   [[nodiscard]] bool hovered() const noexcept { return fHovered; }
 
+  // Where this drawable is, and where it was: a drawable that moved damages
+  // both, or it leaves a copy of itself behind.
+  void markDamaged() {
+    Drawable *root = this;
+    while (root->fParent != nullptr) {
+      root = root->fParent;
+    }
+    root->joinDamage(fBounds);
+    root->joinDamage(fDrawnBounds);
+  }
+
+  // What has to be repainted for this tree, and forgets it.
+  [[nodiscard]] skia::SkRect takeDamage() {
+    const skia::SkRect out = fDamageAccum;
+    fDamageAccum = skia::SkRect::MakeEmpty();
+    return out;
+  }
+
+  void joinDamage(const skia::SkRect &rect) {
+    if (rect.isEmpty()) {
+      return;
+    }
+    if (fDamageAccum.isEmpty()) {
+      fDamageAccum = rect;
+    } else {
+      fDamageAccum.join(rect);
+    }
+  }
+
   void applyHover(float x, float y) {
-    fHovered = fVisible && fBounds.contains(x, y);
+    const bool hovered = fVisible && fBounds.contains(x, y);
+    if (hovered != fHovered) {
+      fHovered = hovered;
+      this->markDamaged(); // hover is drawn, so a change to it is damage
+    }
     for (auto &child : fChildren) {
       child->applyHover(x, y);
     }
@@ -447,6 +485,13 @@ private:
   double fDelayMs = 0.0;
   bool fLayoutValid = false;
   skia::SkRect fLastParent = skia::SkRect::MakeEmpty();
+
+public:
+  // Damage bookkeeping is reached through the parent chain, so these are not
+  // private: a child hands its rectangle to the root it belongs to.
+  skia::SkRect fDrawnBounds = skia::SkRect::MakeEmpty();
+  skia::SkRect fDamageAccum = skia::SkRect::MakeEmpty(); // meaningful at roots
+  Drawable *fParent = nullptr;
 };
 
 } // namespace client::scene
