@@ -219,7 +219,6 @@ readAsShort(SNDFILE *file, sf_count_t frames, int channels) {
 
 [[nodiscard]] inline std::vector<std::int16_t>
 decode_sndfile(const std::filesystem::path &path, int &rate, int &channels) {
-  std::cerr << "[audio] decode_sndfile: opening " << path << '\n';
   SF_INFO info{};
   SNDFILE *file = sf_open(path.c_str(), SFM_READ, &info);
   if (file == nullptr) {
@@ -233,25 +232,20 @@ decode_sndfile(const std::filesystem::path &path, int &rate, int &channels) {
             << " Hz, " << channels << " ch\n";
   auto out = readAsShort(file, frames, info.channels);
   sf_close(file);
-  std::cerr << "[audio] decode_sndfile: returned " << out.size()
-            << " samples\n";
   return out;
 }
 
 [[nodiscard]] inline std::vector<std::int16_t>
 decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
-  std::cerr << "[audio] decode_mp3: starting " << path << '\n';
   if (!ensureMpg123Init()) {
     std::cerr << "[audio] decode_mp3: mpg123_init failed\n";
     return {};
   }
-  std::cerr << "[audio] decode_mp3: creating handle\n";
   mpg123_handle *handle = mpg123_new(nullptr, nullptr);
   if (handle == nullptr) {
     std::cerr << "[audio] decode_mp3: mpg123_new failed\n";
     return {};
   }
-  std::cerr << "[audio] decode_mp3: opening file\n";
   if (mpg123_open(handle, path.c_str()) != MPG123_OK) {
     std::cerr << "[audio] decode_mp3: mpg123_open failed\n";
     mpg123_delete(handle);
@@ -261,7 +255,6 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
   long nativeRate = 0;
   int nativeChannels = 0;
   int encoding = 0;
-  std::cerr << "[audio] decode_mp3: getting format\n";
   if (mpg123_getformat(handle, &nativeRate, &nativeChannels, &encoding) !=
       MPG123_OK) {
     std::cerr << "[audio] decode_mp3: mpg123_getformat failed\n";
@@ -288,7 +281,6 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
   std::size_t done = 0;
   int emptyReads = 0;
   constexpr int kMaxEmptyReads = 16;
-  std::cerr << "[audio] decode_mp3: entering decode loop\n";
   while (true) {
     const int err = mpg123_read(handle, buffer.data(), buffer.size(), &done);
     if (done > 0) {
@@ -308,7 +300,6 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
       }
     }
     if (err == MPG123_DONE) {
-      std::cerr << "[audio] decode_mp3: MPG123_DONE\n";
       break;
     }
     if (err != MPG123_OK && err != MPG123_NEW_FORMAT) {
@@ -317,7 +308,7 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
     }
   }
 
-  std::cerr << "[audio] decode_mp3: closing, produced " << out.size()
+  std::cerr << "[audio] decode_mp3: " << out.size()
             << " samples\n";
   mpg123_close(handle);
   mpg123_delete(handle);
@@ -327,7 +318,6 @@ decode_mp3(const std::filesystem::path &path, int &rate, int &channels) {
 [[nodiscard]] inline std::vector<std::int16_t>
 decode_sndfile_memory(std::span<const std::uint8_t> data, int &rate,
                       int &channels) {
-  std::cerr << "[audio] decode_sndfile_memory: " << data.size() << " bytes\n";
   SF_VIRTUAL_IO io{};
   io.get_filelen = sndfileGetFilelen;
   io.seek = sndfileSeek;
@@ -353,8 +343,6 @@ decode_sndfile_memory(std::span<const std::uint8_t> data, int &rate,
     std::cerr << "[audio] decode_sndfile_memory: reads outside the buffer "
                  "were requested and refused\n";
   }
-  std::cerr << "[audio] decode_sndfile_memory: returned " << out.size()
-            << " samples\n";
   return out;
 }
 
@@ -489,11 +477,16 @@ inline void report_pcm_level(std::span<const std::int16_t> samples,
       }
     }
   }
-  std::cerr << "[audio] " << what << ": peak " << peak << ", "
-            << (100.0 * static_cast<double>(hot) /
-                static_cast<double>(samples.size()))
-            << "% near full scale, " << jumps << " discontinuities in "
-            << samples.size() << " samples\n";
+  // Silent when the material is intact: this exists to catch a decoder
+  // mangling the samples, which is what it was written for, not to narrate
+  // every track that loads.
+  if (jumps > 0 || std::getenv("OSU_AUDIO_DUMP") != nullptr) {
+    std::cerr << "[audio] " << what << ": peak " << peak << ", "
+              << (100.0 * static_cast<double>(hot) /
+                  static_cast<double>(samples.size()))
+              << "% near full scale, " << jumps << " discontinuities in "
+              << samples.size() << " samples\n";
+  }
 }
 
 // Writes what was decoded, so it can be listened to outside the client: a
