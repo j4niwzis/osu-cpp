@@ -5312,12 +5312,20 @@ private:
     int fSavedH = 0;
   };
 
+  // Said in both places: the dialog is where it belongs, and the log is where
+  // it survives being missed -- which, while the export was blocking the
+  // client, it always was.
+  void exportFailed(std::string reason) {
+    std::println(std::cerr, "[export] failed: {}", reason);
+    fExportDialog.setStatus(std::move(reason));
+  }
+
   void exportReplayVideo() {
     if (fExportJob) {
       return; // one at a time
     }
     if (!fMap || fRecordedEvents.empty()) {
-      fExportDialog.setStatus("nothing to export");
+      this->exportFailed("nothing to export: no play recorded for this map");
       return;
     }
     const auto preset = client::kVideoPresets[static_cast<std::size_t>(
@@ -5330,7 +5338,7 @@ private:
         fMapsDir.parent_path() / std::format("replay-{}.mp4", fBeatmapFilename);
 
     if (!job->fExporter->begin(job->fOpts)) {
-      fExportDialog.setStatus(job->fExporter->error());
+      this->exportFailed(job->fExporter->error());
       return;
     }
 
@@ -5340,7 +5348,7 @@ private:
                                 skia::kRGBA_8888_SkColorType,
                                 skia::kPremul_SkAlphaType));
     if (!job->fSurface) {
-      fExportDialog.setStatus("cannot create the offscreen surface");
+      this->exportFailed("cannot create the offscreen surface");
       return;
     }
 
@@ -5442,9 +5450,12 @@ private:
           finished->second = exporter->error();
         },
         [this, finished, name] {
-          fExportDialog.setStatus(finished->first
-                                      ? std::format("saved {}", name)
-                                      : finished->second);
+          if (finished->first) {
+            fExportDialog.setStatus(std::format("saved {}", name));
+            std::println(std::cerr, "[export] saved {}", name);
+          } else {
+            this->exportFailed(finished->second);
+          }
         });
   }
 
