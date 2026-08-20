@@ -3,6 +3,8 @@ export module client.listing;
 import std;
 import skia;
 import client.ui;
+import client.scene;
+import client.nodes;
 
 // osu!lazer's BeatmapListingOverlay, port of the layout and the palette.
 //
@@ -157,6 +159,124 @@ inline constexpr float kSortBarHeight = 40.0f;
 inline constexpr float kExpandedMaxHeight = 200.0f; // ExpandedContentScrollContainer
 inline constexpr float kExpandDelayMs = 100.0f;     // BeatmapCardContent.ExpandAfterDelay
 
+namespace scene = client::scene;
+namespace nodes = client::nodes;
+
+// Painting shared by the nodes below. Free functions rather than methods,
+// because every node needs them and none of them owns them.
+namespace paint {
+
+inline void rect(skia::SkCanvas *canvas, const skia::SkRect &r,
+                 skia::SkColor colour, float alpha = 1.0f) {
+  skia::SkPaint p;
+  p.setAntiAlias(true);
+  p.setColor(colour);
+  p.setAlphaf(alpha);
+  canvas->drawRect(r, p);
+}
+
+inline void rounded(skia::SkCanvas *canvas, const skia::SkRect &r,
+                    float radius, skia::SkColor colour, float alpha = 1.0f) {
+  skia::SkPaint p;
+  p.setAntiAlias(true);
+  p.setColor(colour);
+  p.setAlphaf(alpha);
+  canvas->drawRRect(skia::SkRRect::MakeRectXY(r, radius, radius), p);
+}
+
+// FillMode.Fill: cropped to the destination's aspect ratio, not squashed.
+inline void imageFilled(skia::SkCanvas *canvas, const skia::SkImage *image,
+                        const skia::SkRect &dst) {
+  const float iw = static_cast<float>(image->width());
+  const float ih = static_cast<float>(image->height());
+  if (iw <= 0.0f || ih <= 0.0f) {
+    return;
+  }
+  const float scale = std::max(dst.width() / iw, dst.height() / ih);
+  const float srcW = dst.width() / scale;
+  const float srcH = dst.height() / scale;
+  const skia::SkRect src = skia::SkRect::MakeXYWH((iw - srcW) * 0.5f,
+                                                  (ih - srcH) * 0.5f, srcW,
+                                                  srcH);
+  canvas->drawImageRect(image, src, dst,
+                        skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
+                        nullptr, skia::SkCanvas::kStrict_SrcRectConstraint);
+}
+
+inline float measure(skia::SkFont &font, const std::string &s, float size,
+                     bool bold) {
+  font.setSize(size);
+  client::ui::fonts().applyWeight(font, bold);
+  const float w = client::ui::fonts().measure(font, s);
+  client::ui::fonts().applyWeight(font, false);
+  return w;
+}
+
+inline void text(skia::SkCanvas *canvas, skia::SkFont &font,
+                 const std::string &s, float x, float y, float size,
+                 skia::SkColor colour, bool bold = false, float alpha = 1.0f) {
+  font.setSize(size);
+  client::ui::fonts().applyWeight(font, bold);
+  skia::SkPaint p;
+  p.setAntiAlias(true);
+  p.setColor(colour);
+  p.setAlphaf(alpha);
+  client::ui::fonts().draw(canvas, font, s, x, y, p);
+  client::ui::fonts().applyWeight(font, false);
+}
+
+inline void textClipped(skia::SkCanvas *canvas, skia::SkFont &font,
+                        const std::string &s, float x, float y, float maxW,
+                        float size, skia::SkColor colour, bool bold = false,
+                        float alpha = 1.0f) {
+  canvas->save();
+  canvas->clipIRect(skia::SkIRect::MakeXYWH(
+      static_cast<int>(x), static_cast<int>(y - size * 1.3f),
+      static_cast<int>(maxW), static_cast<int>(size * 1.9f)));
+  text(canvas, font, s, x, y, size, colour, bold, alpha);
+  canvas->restore();
+}
+
+inline void textCentered(skia::SkCanvas *canvas, skia::SkFont &font,
+                         const std::string &s, float cx, float y, float size,
+                         skia::SkColor colour, bool bold = false,
+                         float alpha = 1.0f) {
+  text(canvas, font, s, cx - measure(font, s, size, bold) * 0.5f, y, size,
+       colour, bold, alpha);
+}
+
+// Colour4.Lighten, as FilterTabItem applies on hover.
+inline skia::SkColor lighten(skia::SkColor c, float amount) {
+  const auto ch = [amount](std::uint32_t v) {
+    return static_cast<std::uint8_t>(
+        std::min(255.0f, static_cast<float>(v) * (1.0f + amount)));
+  };
+  return skia::colorSetARGB(255, ch((c >> 16) & 0xffu), ch((c >> 8) & 0xffu),
+                            ch(c & 0xffu));
+}
+
+inline skia::SkColor statusColour(std::string_view status) {
+  if (status == "ranked" || status == "approved" || status == "qualified") {
+    return skia::colorSetARGB(255, 102, 204, 255);
+  }
+  if (status == "loved") {
+    return skia::colorSetARGB(255, 255, 102, 170);
+  }
+  if (status == "graveyard") {
+    return skia::colorSetARGB(255, 140, 140, 155);
+  }
+  return skia::colorSetARGB(255, 179, 217, 68);
+}
+
+} // namespace paint
+
+// The listing screen, as a tree.
+//
+// What used to be here was a frame's worth of arithmetic: rows measured and
+// placed by hand, a grid whose columns were computed per frame, and a list of
+// rectangles rebuilt every draw so that clicks could be matched against it.
+// The layout is the tree's job now, hit testing walks it, and each part knows
+// what it drew -- which is also what lets a frame repaint only what changed.
 class Listing {
 public:
   struct Ctx {
@@ -165,14 +285,14 @@ public:
     float fWidth = 0.0f, fHeight = 0.0f;
     float fMouseX = 0.0f, fMouseY = 0.0f;
     double fNowMs = 0.0;
-    double fDtMs = 16.0;
+    double fDtMs = 16.0; // unused by the tree, which runs on the clock
     std::span<Entry> fEntries;
     bool fLoading = false;
   };
   enum class Action { kNone, kSearch, kRefilter, kDownload, kOpen, kPreview };
   struct Result {
     Action fAction = Action::kNone;
-    std::size_t fIndex = 0; // entry index for kDownload
+    std::size_t fIndex = 0; // entry index for kDownload, kOpen, kPreview
   };
 
   // Which set the preview is playing, and how far through it is.
@@ -183,25 +303,19 @@ public:
 
   [[nodiscard]] Filters &filters() { return fFilters; }
   [[nodiscard]] const Filters &filters() const { return fFilters; }
-  // Indices of fEntries that survive the client-side filters, in sort order.
   [[nodiscard]] std::span<const int> visible() const { return fVisible; }
 
-  void scroll(float ticks) {
-    fScrollTarget -= ticks * 60.0f;
-    fScrollTarget = std::max(0.0f, std::min(fScrollTarget, fMaxScroll));
-  }
-  void scrollToStart() {
-    fScrollTarget = 0.0f;
-    fScroll = 0.0f;
-  }
+  void scroll(float ticks) { fScrollTicks += ticks; }
+  void scrollToStart() { fScrollToStart = true; }
 
   // The listing pages in as it is scrolled, the way the overlay's scroll
   // container asks for the next cursor near the bottom. Also true when the
   // client-side filters left too little on screen to fill it.
   [[nodiscard]] bool wantsMore() const {
-    return fMaxScroll > 0.0f
-               ? fScrollTarget > fMaxScroll - 600.0f
-               : fVisible.size() < 12;
+    if (fScrollExtent <= 0.0f) {
+      return fVisible.size() < 12;
+    }
+    return fScrollCurrent > fScrollExtent - 600.0f;
   }
 
   // BeatmapListingFilterControl.resetSortControl: a query sorts by relevance,
@@ -214,359 +328,930 @@ public:
     fFilters.fDescending = true;
   }
 
+  void tick(double nowMs) { fBlink = nowMs; }
+
   void draw(const Ctx &ctx) {
-    fCanvas = ctx.fCanvas;
     fFont = ctx.fFont;
     fMouseX = ctx.fMouseX;
     fMouseY = ctx.fMouseY;
-    fHits.clear();
-
-    const float w = ctx.fWidth;
+    fEntries = ctx.fEntries;
+    fLoading = ctx.fLoading;
     this->rebuildVisible(ctx.fEntries);
 
-    fScroll = client::ui::approach(fScroll, fScrollTarget, 30.0f, ctx.fDtMs);
-    this->rect(skia::SkRect::MakeXYWH(0, 0, w, ctx.fHeight), kBackground6);
+    // The tree is rebuilt when what it shows changes, and reused otherwise.
+    const std::string shape = this->treeShape(ctx);
+    if (!fScene || shape != fShape) {
+      fShape = shape;
+      fScene = this->build();
+    }
 
-    fCanvas->save();
-    fCanvas->translate(0.0f, -fScroll);
-
-    float y = this->drawHeader(w);
-    y = this->drawSearchControl(w, y);
-    y = this->drawSortBar(w, y);
-    y = this->drawCards(w, y, ctx);
-
-    fCanvas->restore();
-    fMaxScroll = std::max(0.0f, y - ctx.fHeight + 40.0f);
-    fScrollTarget = std::min(fScrollTarget, fMaxScroll);
+    const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
+    fScene->updateTree(ctx.fNowMs);
+    if (fScrollToStart && fScroll != nullptr) {
+      fScroll->scrollToStart();
+      fScrollToStart = false;
+    }
+    if (fScrollTicks != 0.0f && fScroll != nullptr) {
+      fScene->scroll(ctx.fMouseX, ctx.fMouseY, fScrollTicks);
+      fScrollTicks = 0.0f;
+    }
+    fScene->layoutIfNeeded(screen);
+    fScene->setHover(ctx.fMouseX, ctx.fMouseY);
+    fScene->draw(ctx.fCanvas);
+    if (fScroll != nullptr) {
+      fScrollCurrent = fScroll->current();
+      fScrollExtent = fScroll->extent();
+    }
   }
 
-  // Hit testing runs against the rectangles the last frame recorded.
   [[nodiscard]] Result click(float x, float y) {
-    for (const auto &hit : fHits) {
-      if (!hit.fRect.contains(x, y + fScroll)) {
-        continue;
-      }
-      return this->activate(hit);
+    fPending = {};
+    if (fScene) {
+      fScene->click(x, y);
     }
-    return {};
+    return fPending;
+  }
+
+  // What this screen repainted, for a caller that clips frames to damage.
+  [[nodiscard]] skia::SkRect takeDamage() {
+    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
   }
 
   [[nodiscard]] bool textBoxHit(float x, float y) const {
-    return fTextBox.contains(x, y + fScroll);
+    return fTextBoxBounds.contains(x, y);
   }
 
 private:
-  // What a recorded rectangle stands for.
+  // What a clickable filter stands for. Rows and the sort bar report their
+  // hits in these terms, and the owner turns them into state changes.
   enum class Kind : std::uint8_t {
     kGeneral, kRuleset, kCategory, kGenre, kLanguage, kExtra, kRank, kPlayed,
-    kExplicit, kSort, kCardSize, kCard, kDownload, kPreview
-  };
-  struct Hit {
-    skia::SkRect fRect;
-    Kind fKind;
-    int fValue;
+    kExplicit, kSort, kCardSize
   };
 
-  Result activate(const Hit &hit) {
-    switch (hit.fKind) {
+  // ---- nodes ---------------------------------------------------------------
+
+  // BeatmapSearchTextBox: OsuTextBox is 40 high with a 5px corner radius.
+  class SearchBoxNode : public scene::Drawable {
+  public:
+    explicit SearchBoxNode(Listing *owner) : fOwner(owner) {
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+      fHeight = 40.0f;
+    }
+
+  protected:
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      auto &font = *fOwner->fFont;
+      paint::rounded(canvas, fBounds, 5.0f, kBackground4, alpha);
+      skia::SkPaint icon;
+      icon.setAntiAlias(true);
+      icon.setStyle(skia::kStrokeStyle);
+      icon.setStrokeWidth(1.8f);
+      icon.setColor(kLight1);
+      icon.setAlphaf(alpha);
+      const float ix = fBounds.fLeft + 18.0f;
+      const float iy = fBounds.centerY();
+      canvas->drawCircle(ix, iy - 1.0f, 5.5f, icon);
+      canvas->drawLine(ix + 4.0f, iy + 3.0f, ix + 8.0f, iy + 7.0f, icon);
+
+      const auto &query = fOwner->fFilters.fQuery;
+      if (query.empty()) {
+        paint::text(canvas, font, "type in keywords...", fBounds.fLeft + 32.0f,
+                    fBounds.centerY() + 6.0f, 16.0f, kLight3, false,
+                    alpha * 0.6f);
+      } else {
+        paint::textClipped(canvas, font, query, fBounds.fLeft + 32.0f,
+                           fBounds.centerY() + 6.0f, fBounds.width() - 44.0f,
+                           16.0f, kContent1, false, alpha);
+      }
+      if (std::fmod(fOwner->fBlink, 1000.0) < 600.0) {
+        const float cx = fBounds.fLeft + 32.0f +
+                         paint::measure(font, query, 16.0f, false) + 2.0f;
+        paint::rect(canvas,
+                    skia::SkRect::MakeXYWH(cx, fBounds.centerY() - 9.0f, 1.5f,
+                                           18.0f),
+                    kContent1, alpha * 0.8f);
+      }
+      fOwner->fTextBoxBounds = fBounds;
+    }
+
+  private:
+    Listing *fOwner;
+  };
+
+  // BeatmapSearchFilterRow: a 100px label column beside a wrapping tab flow.
+  class FilterRowNode : public scene::Drawable {
+  public:
+    FilterRowNode(Listing *owner, const char *header,
+                  std::span<const char *const> labels, Kind kind)
+        : fOwner(owner), fHeader(header), fLabels(labels), fKind(kind) {
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+    }
+
+  protected:
+    // The height depends on how the tabs wrap, which depends on the width
+    // this row is being given -- so it is worked out here, where that is
+    // known, and the positions are kept for drawing and for hit testing.
+    void measure(const skia::SkRect &parent) override {
+      auto &font = *fOwner->fFont;
+      const float width = parent.width();
+      const float tabsX = kRowLabelWidth;
+      float cx = tabsX;
+      float cy = 0.0f;
+      fTabs.clear();
+      for (std::size_t i = 0; i < fLabels.size(); ++i) {
+        const std::string label = fLabels[i];
+        // Measured bold either way, so toggling a filter does not shuffle
+        // the row around.
+        const float w = paint::measure(font, label, kFilterFontSize, true);
+        if (cx > tabsX && cx + w > width) {
+          cx = tabsX;
+          cy += kFilterLineHeight;
+        }
+        fTabs.push_back({skia::SkRect::MakeXYWH(cx, cy, w, kFilterLineHeight),
+                         static_cast<int>(i)});
+        cx += w + kTabSpacing;
+      }
+      fHeight = cy + kFilterLineHeight;
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      auto &font = *fOwner->fFont;
+      paint::text(canvas, font, fHeader, fBounds.fLeft,
+                  fBounds.fTop + kFilterFontSize, kFilterFontSize, kContent2,
+                  false, alpha);
+      for (std::size_t i = 0; i < fTabs.size(); ++i) {
+        const bool active = fOwner->filterActive(fKind, fTabs[i].fValue);
+        const skia::SkRect box = this->tabBounds(i);
+        const bool hovered = box.contains(fOwner->fMouseX, fOwner->fMouseY);
+        skia::SkColor colour = active ? kContent1 : kLight2;
+        if (hovered) {
+          colour = paint::lighten(colour, 0.2f);
+        }
+        paint::text(canvas, font, fLabels[fTabs[i].fValue], box.fLeft,
+                    box.fTop + kFilterFontSize, kFilterFontSize, colour,
+                    active, alpha);
+      }
+    }
+
+    bool acceptsInput() const override { return true; }
+
+    bool onClick(float x, float y) override {
+      for (std::size_t i = 0; i < fTabs.size(); ++i) {
+        if (this->tabBounds(i).contains(x, y)) {
+          fOwner->activateFilter(fKind, fTabs[i].fValue);
+          return true;
+        }
+      }
+      return false;
+    }
+
+  private:
+    [[nodiscard]] skia::SkRect tabBounds(std::size_t i) const {
+      const skia::SkRect &local = fTabs[i].fRect;
+      return skia::SkRect::MakeXYWH(fBounds.fLeft + local.fLeft,
+                                    fBounds.fTop + local.fTop, local.width(),
+                                    local.height());
+    }
+
+    struct Tab {
+      skia::SkRect fRect; // relative to the row
+      int fValue;
+    };
+    Listing *fOwner;
+    const char *fHeader;
+    std::span<const char *const> fLabels;
+    Kind fKind;
+    std::vector<Tab> fTabs;
+  };
+
+  // The 40px sort bar: criteria on the left, card size on the right.
+  class SortBarNode : public scene::Drawable {
+  public:
+    explicit SortBarNode(Listing *owner) : fOwner(owner) {
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+      fHeight = kSortBarHeight;
+    }
+
+  protected:
+    void measure(const skia::SkRect &parent) override {
+      auto &font = *fOwner->fFont;
+      fSorts.clear();
+      float x = 20.0f;
+      for (int i = 0; i < static_cast<int>(std::size(kSortLabels)); ++i) {
+        const auto sort = static_cast<Sort>(i);
+        if (!fOwner->sortAvailable(sort)) {
+          continue;
+        }
+        const float w = paint::measure(font, kSortLabels[i], kFilterFontSize,
+                                       true);
+        fSorts.push_back({skia::SkRect::MakeXYWH(x, 0.0f, w, kSortBarHeight),
+                          i});
+        x += w + kTabSpacing * 1.5f +
+             (static_cast<int>(fOwner->fFilters.fSort) == i ? 13.0f : 0.0f);
+      }
+      fCardSizes.clear();
+      for (int i = 0; i < 2; ++i) {
+        const float ix = parent.width() - 20.0f - 14.0f -
+                         static_cast<float>(1 - i) * 24.0f;
+        fCardSizes.push_back(
+            {skia::SkRect::MakeXYWH(ix - 2.0f, kSortBarHeight * 0.5f - 9.0f,
+                                    18.0f, 18.0f),
+             i});
+      }
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      auto &font = *fOwner->fFont;
+      paint::rect(canvas, fBounds, kBackground4, alpha);
+      const float baseline = fBounds.fTop + kSortBarHeight * 0.5f + 5.0f;
+      for (const auto &item : fSorts) {
+        const bool active =
+            static_cast<int>(fOwner->fFilters.fSort) == item.fValue;
+        const skia::SkRect box = this->localToScreen(item.fRect);
+        const bool hovered = box.contains(fOwner->fMouseX, fOwner->fMouseY);
+        skia::SkColor colour = active ? kContent1 : kLight2;
+        if (hovered) {
+          colour = paint::lighten(colour, 0.2f);
+        }
+        paint::text(canvas, font, kSortLabels[item.fValue], box.fLeft,
+                    baseline, kFilterFontSize, colour, active, alpha);
+        if (!active) {
+          continue;
+        }
+        // The active criterion carries the direction chevron.
+        skia::SkPaint arrow;
+        arrow.setAntiAlias(true);
+        arrow.setColor(kContent1);
+        arrow.setAlphaf(alpha);
+        skia::SkPathBuilder pb;
+        const float ax = box.fRight + 5.0f;
+        const float ay = baseline - 4.0f;
+        if (fOwner->fFilters.fDescending) {
+          pb.moveTo(ax, ay - 3.0f)
+              .lineTo(ax + 8.0f, ay - 3.0f)
+              .lineTo(ax + 4.0f, ay + 3.0f)
+              .close();
+        } else {
+          pb.moveTo(ax, ay + 3.0f)
+              .lineTo(ax + 8.0f, ay + 3.0f)
+              .lineTo(ax + 4.0f, ay - 3.0f)
+              .close();
+        }
+        canvas->drawPath(pb.detach(), arrow);
+      }
+
+      // BeatmapListingCardSizeTabControl: two icons, 10 apart, 20 from the
+      // right edge.
+      for (const auto &item : fCardSizes) {
+        const skia::SkRect box = this->localToScreen(item.fRect);
+        const bool active =
+            static_cast<int>(fOwner->fFilters.fCardSize) == item.fValue;
+        const bool hovered = box.contains(fOwner->fMouseX, fOwner->fMouseY);
+        skia::SkPaint p;
+        p.setAntiAlias(true);
+        p.setStyle(skia::kStrokeStyle);
+        p.setStrokeWidth(1.6f);
+        p.setColor(active ? kContent1 : (hovered ? kLight1 : kLight3));
+        p.setAlphaf(alpha);
+        const float ix = box.fLeft + 2.0f;
+        const float iy = box.centerY();
+        if (item.fValue == 0) { // normal: two stacked bars
+          canvas->drawRect(
+              skia::SkRect::MakeXYWH(ix, iy - 7.0f, 14.0f, 5.0f), p);
+          canvas->drawRect(
+              skia::SkRect::MakeXYWH(ix, iy + 2.0f, 14.0f, 5.0f), p);
+        } else { // extra: one taller bar
+          canvas->drawRect(
+              skia::SkRect::MakeXYWH(ix, iy - 7.0f, 14.0f, 14.0f), p);
+        }
+      }
+    }
+
+    bool acceptsInput() const override { return true; }
+
+    bool onClick(float x, float y) override {
+      for (const auto &item : fSorts) {
+        if (this->localToScreen(item.fRect).contains(x, y)) {
+          fOwner->activateFilter(Kind::kSort, item.fValue);
+          return true;
+        }
+      }
+      for (const auto &item : fCardSizes) {
+        if (this->localToScreen(item.fRect).contains(x, y)) {
+          fOwner->activateFilter(Kind::kCardSize, item.fValue);
+          return true;
+        }
+      }
+      return false;
+    }
+
+  private:
+    [[nodiscard]] skia::SkRect localToScreen(const skia::SkRect &r) const {
+      return skia::SkRect::MakeXYWH(fBounds.fLeft + r.fLeft,
+                                    fBounds.fTop + r.fTop, r.width(),
+                                    r.height());
+    }
+
+    struct Item {
+      skia::SkRect fRect;
+      int fValue;
+    };
+    Listing *fOwner;
+    std::vector<Item> fSorts;
+    std::vector<Item> fCardSizes;
+  };
+
+  // BeatmapCardNormal, and its taller sibling. One node per card: it knows
+  // its own hover and expansion, which is what the parallel arrays indexed by
+  // entry used to be for, and those went stale whenever the list reordered.
+  class CardNode : public scene::Drawable {
+  public:
+    CardNode(Listing *owner, int entry) : fOwner(owner), fEntry(entry) {
+      fWidth = kCardWidth;
+    }
+
+  protected:
+    void measure(const skia::SkRect &) override {
+      const Entry &e = fOwner->fEntries[static_cast<std::size_t>(fEntry)];
+      const float cardH = fOwner->fFilters.fCardSize == CardSize::kNormal
+                              ? kCardNormalHeight
+                              : kCardExtraHeight;
+      const float full =
+          std::min(kExpandedMaxHeight,
+                   static_cast<float>(e.fDiffs.size()) * 20.0f + 20.0f);
+      fCardHeight = cardH;
+      fHeight = cardH + full * client::ui::outQuint(fExpanded);
+    }
+
+    void update(double nowMs) override {
+      const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
+      fLastMs = nowMs;
+      const Entry &e = fOwner->fEntries[static_cast<std::size_t>(fEntry)];
+      const bool hovered = fHovered;
+      const float previousExpand = fExpand;
+      const float previousExpanded = fExpanded;
+      fExpand = client::ui::approach(fExpand, hovered ? 1.0f : 0.0f,
+                                     kTransitionMs / 6.0f, dt);
+      // Hovering the bottom of the card opens it after a moment, as
+      // BeatmapCardContent.ExpandAfterDelay does.
+      const bool overInfo = hovered && !e.fDiffs.empty() &&
+                            fOwner->fMouseY > fBounds.fTop + fCardHeight -
+                                                  22.0f &&
+                            fOwner->fMouseY < fBounds.fTop + fCardHeight;
+      fHoverMs = overInfo ? fHoverMs + dt : 0.0;
+      const bool wantExpanded =
+          fHoverMs > kExpandDelayMs || (fExpanded > 0.5f && hovered);
+      fExpanded = client::ui::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
+                                       kTransitionMs / 5.0f, dt);
+      if (fExpand != previousExpand || fExpanded != previousExpanded) {
+        this->invalidateLayout();
+      }
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      Entry &e = fOwner->fEntries[static_cast<std::size_t>(fEntry)];
+      auto &font = *fOwner->fFont;
+      const bool extra = fOwner->fFilters.fCardSize == CardSize::kExtra;
+      const skia::SkRect card = skia::SkRect::MakeXYWH(
+          fBounds.fLeft, fBounds.fTop, kCardWidth, fCardHeight);
+      const float h = card.height();
+      const float buttonsW = kButtonsCollapsed +
+                             (kButtonsExpanded - kButtonsCollapsed) * fExpand;
+
+      paint::rounded(canvas, card, kCardCorner, kBackground2, alpha);
+      const skia::SkRect main = skia::SkRect::MakeLTRB(
+          card.fLeft, card.fTop, card.fRight - buttonsW, card.fBottom);
+
+      // Cover art: a square of the card's height on the left, and the same
+      // image dimmed behind the text.
+      const skia::SkRect thumb =
+          skia::SkRect::MakeXYWH(card.fLeft, card.fTop, h, h);
+      canvas->save();
+      canvas->clipRRect(
+          skia::SkRRect::MakeRectXY(main, kCardCorner, kCardCorner), true);
+      paint::rect(canvas, main, kBackground3, alpha);
+      if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
+        paint::imageFilled(
+            canvas, e.fThumb.get(),
+            skia::SkRect::MakeXYWH(card.fLeft + h - kCardCorner, card.fTop,
+                                   main.width() - h + kCardCorner, h));
+        paint::rect(canvas,
+                    skia::SkRect::MakeLTRB(card.fLeft + h - kCardCorner,
+                                           card.fTop, main.fRight,
+                                           card.fBottom),
+                    kBackground6, alpha * (fHovered ? 0.9f : 0.8f));
+        paint::imageFilled(canvas, e.fThumb.get(), thumb);
+      }
+      canvas->restore();
+
+      // Main content, inset 10 horizontal and 4 vertical.
+      const float tx = card.fLeft + h + 10.0f - kCardCorner;
+      const float tw = main.fRight - tx - 10.0f;
+      float ty = card.fTop + 4.0f + 18.0f;
+      paint::textClipped(canvas, font,
+                         e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode,
+                         tx, ty, tw, 18.0f, kContent1, true, alpha);
+      ty += 17.0f;
+      paint::textClipped(canvas, font,
+                         "by " + (e.fArtistUnicode.empty() ? e.fArtist
+                                                           : e.fArtistUnicode),
+                         tx, ty, tw, 14.0f, kContent1, true, alpha);
+      if (extra) {
+        ty += 14.0f;
+        paint::textClipped(canvas, font, e.fSource, tx, ty, tw, 11.0f,
+                           kContent2, true, alpha);
+      } else {
+        ty += 14.0f;
+        const std::string mapped = "mapped by ";
+        paint::text(canvas, font, mapped, tx, ty, 11.0f, kContent2, true,
+                    alpha);
+        paint::textClipped(canvas, font, e.fCreator,
+                           tx + paint::measure(font, mapped, 11.0f, true), ty,
+                           tw, 11.0f, kContent1, true, alpha);
+      }
+
+      const float bottom = card.fBottom - 6.0f;
+      if (e.fSt == Entry::St::kFetching) {
+        // BeatmapCardDownloadProgressBar: 5 high, across the bottom content.
+        const skia::SkRect bar =
+            skia::SkRect::MakeXYWH(tx, card.fBottom - 9.0f, tw, 5.0f);
+        paint::rounded(canvas, bar, 2.5f, kBackground6, alpha);
+        paint::rounded(canvas,
+                       skia::SkRect::MakeXYWH(bar.fLeft, bar.fTop,
+                                              bar.width() * e.fProgress, 5.0f),
+                       2.5f, kColour1, alpha);
+      } else if (extra) {
+        const std::string mapped = "mapped by ";
+        paint::text(canvas, font, mapped, tx, bottom - 34.0f, 11.0f, kContent2,
+                    true, alpha);
+        paint::textClipped(canvas, font, e.fCreator,
+                           tx + paint::measure(font, mapped, 11.0f, true),
+                           bottom - 34.0f, tw, 11.0f, kContent1, true, alpha);
+        this->drawStatistics(canvas, font, tx, bottom - 20.0f, tw, e, alpha);
+        this->drawExtraInfoRow(canvas, font, tx, bottom, tw, e, alpha);
+      } else {
+        if (fExpand > 0.01f) {
+          this->drawStatistics(canvas, font, tx, bottom - 15.0f, tw, e,
+                               alpha * fExpand);
+        }
+        this->drawExtraInfoRow(canvas, font, tx, bottom, tw, e, alpha);
+      }
+
+      this->drawThumbnailPlay(canvas, thumb, e, alpha);
+      this->drawButtons(canvas, card, main, e, alpha);
+      if (fExpanded > 0.01f) {
+        this->drawExpanded(canvas, font, card, e, alpha);
+      }
+    }
+
+    bool acceptsInput() const override { return true; }
+
+    bool onClick(float x, float y) override {
+      const skia::SkRect card = skia::SkRect::MakeXYWH(
+          fBounds.fLeft, fBounds.fTop, kCardWidth, fCardHeight);
+      if (!card.contains(x, y)) {
+        return false; // the expanded panel below it is not a target
+      }
+      const float buttonsW = kButtonsCollapsed +
+                             (kButtonsExpanded - kButtonsCollapsed) * fExpand;
+      if (x >= card.fRight - buttonsW) {
+        fOwner->fPending = {Action::kDownload,
+                            static_cast<std::size_t>(fEntry)};
+        return true;
+      }
+      if (x <= card.fLeft + fCardHeight) {
+        fOwner->fPending = {Action::kPreview,
+                            static_cast<std::size_t>(fEntry)};
+        return true;
+      }
+      fOwner->fPending = {Action::kOpen, static_cast<std::size_t>(fEntry)};
+      return true;
+    }
+
+  private:
+    // The statistics that fade in with a hover on the normal card and sit in
+    // the bottom content of the extra one.
+    void drawStatistics(skia::SkCanvas *canvas, skia::SkFont &font, float x,
+                        float baseline, float maxW, const Entry &e,
+                        float alpha) {
+      paint::textClipped(
+          canvas, font,
+          std::format("{} plays    {} favourites    {}", e.fPlayCount,
+                      e.fFavouriteCount, e.fUpdated),
+          x, baseline, maxW, 11.0f, kContent2, false, alpha);
+    }
+
+    // BeatmapCardExtraInfoRow: the status pill and the difficulty spectrum.
+    void drawExtraInfoRow(skia::SkCanvas *canvas, skia::SkFont &font, float x,
+                          float baseline, float maxW, const Entry &e,
+                          float alpha) {
+      const std::string status = e.fStatus.empty() ? "unknown" : e.fStatus;
+      const float pillW = paint::measure(font, status, 11.0f, true) + 12.0f;
+      const skia::SkRect pill =
+          skia::SkRect::MakeXYWH(x, baseline - 11.0f, pillW, 15.0f);
+      paint::rounded(canvas, pill, 7.5f, paint::statusColour(status), alpha);
+      paint::text(canvas, font, status, x + 6.0f, baseline - 1.0f, 11.0f,
+                  skia::colorSetARGB(255, 20, 24, 26), true, alpha);
+
+      // DifficultySpectrumDisplay: 5x10 dots, 1px apart, in star order.
+      float dx = x + pillW + 8.0f;
+      for (const auto &diff : e.fDiffs) {
+        if (dx + 6.0f > x + maxW) {
+          break;
+        }
+        paint::rounded(canvas,
+                       skia::SkRect::MakeXYWH(dx, baseline - 10.0f, 5.0f,
+                                              10.0f),
+                       1.0f, client::ui::starColor(diff.fStars), alpha);
+        dx += 6.0f;
+      }
+    }
+
+    // BeatmapCardThumbnail's PlayButton, with its CircularProgress.
+    void drawThumbnailPlay(skia::SkCanvas *canvas, const skia::SkRect &thumb,
+                           const Entry &e, float alpha) {
+      const bool playing = fOwner->fPreviewId == e.fSetId;
+      if (!fHovered && !playing) {
+        return;
+      }
+      paint::rect(canvas, thumb, kBackground6, alpha * 0.6f);
+      skia::SkPaint p;
+      p.setAntiAlias(true);
+      p.setColor(kContent1);
+      p.setAlphaf(alpha);
+      const float cx = thumb.centerX();
+      const float cy = thumb.centerY();
+      if (!playing) {
+        skia::SkPathBuilder tri;
+        tri.moveTo(cx - 6.0f, cy - 9.0f)
+            .lineTo(cx + 9.0f, cy)
+            .lineTo(cx - 6.0f, cy + 9.0f)
+            .close();
+        canvas->drawPath(tri.detach(), p);
+        return;
+      }
+      paint::rect(canvas,
+                  skia::SkRect::MakeXYWH(cx - 6.0f, cy - 8.0f, 4.0f, 16.0f),
+                  kContent1, alpha);
+      paint::rect(canvas,
+                  skia::SkRect::MakeXYWH(cx + 2.0f, cy - 8.0f, 4.0f, 16.0f),
+                  kContent1, alpha);
+      skia::SkPaint ring;
+      ring.setAntiAlias(true);
+      ring.setStyle(skia::kStrokeStyle);
+      ring.setStrokeWidth(3.0f);
+      ring.setColor(kColour1);
+      ring.setAlphaf(alpha);
+      const float r = 18.0f;
+      canvas->drawArc(
+          skia::SkRect::MakeXYWH(cx - r, cy - r, r * 2.0f, r * 2.0f), -90.0f,
+          360.0f * std::clamp(fOwner->fPreviewProgress, 0.0f, 1.0f), false,
+          ring);
+    }
+
+    void drawButtons(skia::SkCanvas *canvas, const skia::SkRect &card,
+                     const skia::SkRect &main, const Entry &e, float alpha) {
+      const skia::SkRect buttons = skia::SkRect::MakeLTRB(
+          main.fRight, card.fTop, card.fRight, card.fBottom);
+      paint::rounded(canvas, buttons, kCardCorner, kBackground3, alpha);
+      paint::rect(canvas,
+                  skia::SkRect::MakeXYWH(buttons.fLeft - kCardCorner,
+                                         buttons.fTop, kCardCorner,
+                                         buttons.height()),
+                  kBackground3, alpha);
+      if (fExpand <= 0.4f) {
+        return;
+      }
+      skia::SkPaint stroke;
+      stroke.setAntiAlias(true);
+      stroke.setColor(kContent2);
+      stroke.setAlphaf(alpha * fExpand);
+      stroke.setStyle(skia::kStrokeStyle);
+      stroke.setStrokeWidth(1.6f);
+      const float cx = buttons.centerX();
+      const float hy = card.fTop + card.height() * 0.25f;
+      skia::SkPathBuilder heart;
+      heart.moveTo(cx, hy + 4.0f)
+          .cubicTo(cx - 8.0f, hy - 2.0f, cx - 3.0f, hy - 7.0f, cx, hy - 2.0f)
+          .cubicTo(cx + 3.0f, hy - 7.0f, cx + 8.0f, hy - 2.0f, cx, hy + 4.0f);
+      canvas->drawPath(heart.detach(), stroke);
+
+      const float dy = card.fTop + card.height() * 0.75f;
+      skia::SkPaint solid;
+      solid.setAntiAlias(true);
+      solid.setAlphaf(alpha * fExpand);
+      solid.setColor(e.fSt == Entry::St::kDone ? kColour1 : kContent1);
+      skia::SkPathBuilder arrow;
+      arrow.moveTo(cx - 5.0f, dy - 1.0f)
+          .lineTo(cx + 5.0f, dy - 1.0f)
+          .lineTo(cx, dy + 5.0f)
+          .close();
+      canvas->drawPath(arrow.detach(), solid);
+      canvas->drawLine(cx, dy - 7.0f, cx, dy - 1.0f, stroke);
+    }
+
+    // BeatmapCardDifficultyList: one row per difficulty under the card.
+    void drawExpanded(skia::SkCanvas *canvas, skia::SkFont &font,
+                      const skia::SkRect &card, const Entry &e, float alpha) {
+      const float rowH = 20.0f;
+      const float height = fBounds.fBottom - card.fBottom;
+      const skia::SkRect panel = skia::SkRect::MakeXYWH(
+          card.fLeft, card.fBottom - kCardCorner, card.width(),
+          height + kCardCorner);
+      paint::rounded(canvas, panel, kCardCorner, kBackground4,
+                     alpha * fExpanded);
+      canvas->save();
+      canvas->clipRect(panel);
+      float y = card.fBottom + 10.0f; // Padding: horizontal 8, vertical 10
+      for (const auto &diff : e.fDiffs) {
+        if (y > panel.fBottom - 4.0f) {
+          break;
+        }
+        const std::string stars = std::format("{:.2f}", diff.fStars);
+        const float pillW = paint::measure(font, stars, 11.0f, true) + 16.0f;
+        const skia::SkRect pill =
+            skia::SkRect::MakeXYWH(card.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
+        paint::rounded(canvas, pill, 8.0f, client::ui::starColor(diff.fStars),
+                       alpha * fExpanded);
+        paint::text(canvas, font, stars, pill.fLeft + 8.0f, y, 11.0f,
+                    skia::colorSetARGB(255, 20, 24, 26), true,
+                    alpha * fExpanded);
+        paint::textClipped(canvas, font, diff.fVersion, pill.fRight + 6.0f, y,
+                           card.width() - pillW - 24.0f, 14.0f, kContent1,
+                           true, alpha * fExpanded);
+        y += rowH;
+      }
+      canvas->restore();
+    }
+
+    Listing *fOwner;
+    int fEntry;
+    float fCardHeight = kCardNormalHeight;
+    float fExpand = 0.0f;   // button column and statistics
+    float fExpanded = 0.0f; // the difficulty list under the card
+    double fHoverMs = 0.0;
+    double fLastMs = 0.0;
+  };
+
+  // OverlayHeader with its title and description.
+  class HeaderNode : public scene::Drawable {
+  public:
+    explicit HeaderNode(Listing *owner) : fOwner(owner) {
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+      fHeight = 55.0f;
+    }
+
+  protected:
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      auto &font = *fOwner->fFont;
+      paint::rect(canvas, fBounds, kBackground5, alpha);
+      const float iconSize = 30.0f;
+      const float x = fBounds.fLeft + kHorizontalPadding;
+      skia::SkPaint icon;
+      icon.setAntiAlias(true);
+      icon.setColor(kContent2);
+      icon.setAlphaf(alpha);
+      icon.setStyle(skia::kStrokeStyle);
+      icon.setStrokeWidth(2.5f);
+      const float cx = x + iconSize * 0.5f;
+      canvas->drawCircle(cx, fBounds.centerY(), iconSize * 0.36f, icon);
+      canvas->drawCircle(cx, fBounds.centerY(), iconSize * 0.12f, icon);
+      const std::string title = "beatmap listing";
+      const float titleX = x + iconSize + 10.0f;
+      paint::text(canvas, font, title, titleX, fBounds.centerY() + 7.0f, 20.0f,
+                  kContent1, false, alpha);
+      paint::text(canvas, font, "browse for new beatmaps",
+                  titleX + paint::measure(font, title, 20.0f, false) + 12.0f,
+                  fBounds.centerY() + 6.0f, 14.0f, kContent2, false,
+                  alpha * 0.8f);
+    }
+
+  private:
+    Listing *fOwner;
+  };
+
+  // NotFoundDrawable: 250 high, its text centred.
+  class EmptyNode : public scene::Drawable {
+  public:
+    explicit EmptyNode(Listing *owner) : fOwner(owner) {
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+      fHeight = 250.0f;
+    }
+
+  protected:
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      paint::textCentered(canvas, *fOwner->fFont,
+                          fOwner->fLoading
+                              ? "searching..."
+                              : "no beatmaps match your criteria!",
+                          fBounds.centerX(), fBounds.centerY(), 16.0f,
+                          kContent2, false, alpha);
+    }
+
+  private:
+    Listing *fOwner;
+  };
+
+  // ---- the tree -----------------------------------------------------------
+
+  [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
+    fScroll = nullptr;
+
+    auto root = std::make_unique<nodes::Box>(kBackground6);
+    root->fRelativeSizeAxes = scene::Axes::kBoth;
+    root->fWidth = 1.0f;
+    root->fHeight = 1.0f;
+
+    auto scroll = std::make_unique<nodes::ScrollContainer>();
+    scroll->fRelativeSizeAxes = scene::Axes::kBoth;
+    scroll->fWidth = 1.0f;
+    scroll->fHeight = 1.0f;
+    fScroll = scroll.get();
+
+    auto column =
+        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
+    column->fRelativeSizeAxes = scene::Axes::kX;
+    column->fWidth = 1.0f;
+    column->fAutoSizeAxes = scene::Axes::kY;
+
+    column->add(std::make_unique<HeaderNode>(this));
+
+    // BeatmapListingSearchControl over Dark6: padded 20 vertical and
+    // HORIZONTAL_PADDING horizontal, contents 20 apart.
+    auto panel = std::make_unique<nodes::Box>(kDark6);
+    panel->fRelativeSizeAxes = scene::Axes::kX;
+    panel->fWidth = 1.0f;
+    panel->fAutoSizeAxes = scene::Axes::kY;
+    panel->fPadding = {20.0f, kHorizontalPadding, 20.0f, kHorizontalPadding};
+
+    auto panelColumn =
+        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
+    panelColumn->fRelativeSizeAxes = scene::Axes::kX;
+    panelColumn->fWidth = 1.0f;
+    panelColumn->fAutoSizeAxes = scene::Axes::kY;
+    panelColumn->setSpacing(0.0f, 20.0f);
+    panelColumn->add(std::make_unique<SearchBoxNode>(this));
+
+    // The filter rows, indented 10 and spaced 5, in lazer's order.
+    auto rows =
+        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
+    rows->fRelativeSizeAxes = scene::Axes::kX;
+    rows->fWidth = 1.0f;
+    rows->fAutoSizeAxes = scene::Axes::kY;
+    rows->fPadding = {0.0f, 10.0f, 0.0f, 10.0f};
+    rows->setSpacing(0.0f, kRowSpacing);
+    rows->add(std::make_unique<FilterRowNode>(this, "General", kGeneralLabels,
+                                              Kind::kGeneral));
+    rows->add(std::make_unique<FilterRowNode>(this, "Mode", kRulesetLabels,
+                                              Kind::kRuleset));
+    rows->add(std::make_unique<FilterRowNode>(this, "Categories",
+                                              kCategoryLabels,
+                                              Kind::kCategory));
+    rows->add(std::make_unique<FilterRowNode>(this, "Genre", kGenreLabels,
+                                              Kind::kGenre));
+    rows->add(std::make_unique<FilterRowNode>(this, "Language",
+                                              kLanguageLabels,
+                                              Kind::kLanguage));
+    rows->add(std::make_unique<FilterRowNode>(this, "Extra", kExtraLabels,
+                                              Kind::kExtra));
+    rows->add(std::make_unique<FilterRowNode>(this, "Rank Achieved",
+                                              kRankLabels, Kind::kRank));
+    rows->add(std::make_unique<FilterRowNode>(this, "Played", kPlayedLabels,
+                                              Kind::kPlayed));
+    rows->add(std::make_unique<FilterRowNode>(this, "Explicit Content",
+                                              kExplicitLabels,
+                                              Kind::kExplicit));
+    panelColumn->add(std::move(rows));
+    panel->add(std::move(panelColumn));
+    column->add(std::move(panel));
+
+    column->add(std::make_unique<SortBarNode>(this));
+
+    // The cards, in panelTarget's 20px padding: as many per row as fit, 10
+    // apart, rows centred -- which is the flow's job, not arithmetic here.
+    if (fVisible.empty()) {
+      column->add(std::make_unique<EmptyNode>(this));
+    } else {
+      auto grid = std::make_unique<nodes::FillFlow>(
+          nodes::FillFlow::Direction::kHorizontal);
+      grid->fRelativeSizeAxes = scene::Axes::kX;
+      grid->fWidth = 1.0f;
+      grid->fAutoSizeAxes = scene::Axes::kY;
+      grid->fPadding = {15.0f, kPanelPadding, 20.0f, kPanelPadding};
+      grid->setSpacing(kCardSpacing, kCardSpacing);
+      grid->fCentreRows = true;
+      for (const int idx : fVisible) {
+        grid->add(std::make_unique<CardNode>(this, idx));
+      }
+      column->add(std::move(grid));
+    }
+
+    scroll->add(std::move(column));
+    root->add(std::move(scroll));
+    return root;
+  }
+
+  // What the tree is built from: rebuilt when any of this changes, reused
+  // when none of it does.
+  [[nodiscard]] std::string treeShape(const Ctx &ctx) const {
+    std::string shape = std::format(
+        "{}x{}|{}|{}|{}|{}|", static_cast<int>(ctx.fWidth),
+        static_cast<int>(ctx.fHeight), static_cast<int>(fFilters.fCardSize),
+        static_cast<int>(fFilters.fSort), fFilters.fDescending ? 1 : 0,
+        fVisible.size());
+    for (const int idx : fVisible) {
+      shape += std::to_string(ctx.fEntries[static_cast<std::size_t>(idx)].fSetId);
+      shape.push_back(',');
+    }
+    return shape;
+  }
+
+  // ---- filters -------------------------------------------------------------
+
+  [[nodiscard]] bool filterActive(Kind kind, int value) const {
+    const auto index = static_cast<std::size_t>(value);
+    switch (kind) {
+    case Kind::kGeneral: return fFilters.fGeneral[index];
+    case Kind::kRuleset: return fFilters.fRuleset == value;
+    case Kind::kCategory: return static_cast<int>(fFilters.fCategory) == value;
+    case Kind::kGenre: return static_cast<int>(fFilters.fGenre) == value;
+    case Kind::kLanguage: return static_cast<int>(fFilters.fLanguage) == value;
+    case Kind::kExtra: return fFilters.fExtra[index];
+    case Kind::kRank: return fFilters.fRanks[index];
+    case Kind::kPlayed: return static_cast<int>(fFilters.fPlayed) == value;
+    case Kind::kExplicit: return static_cast<int>(fFilters.fExplicit) == value;
+    case Kind::kSort: return static_cast<int>(fFilters.fSort) == value;
+    case Kind::kCardSize: return static_cast<int>(fFilters.fCardSize) == value;
+    }
+    return false;
+  }
+
+  void activateFilter(Kind kind, int value) {
+    const auto index = static_cast<std::size_t>(value);
+    switch (kind) {
     case Kind::kGeneral:
-      fFilters.fGeneral[static_cast<std::size_t>(hit.fValue)] =
-          !fFilters.fGeneral[static_cast<std::size_t>(hit.fValue)];
-      return {Action::kRefilter};
+      fFilters.fGeneral[index] = !fFilters.fGeneral[index];
+      fPending = {Action::kRefilter};
+      return;
     case Kind::kRuleset:
-      fFilters.fRuleset = hit.fValue;
-      return {Action::kSearch}; // the mirror filters by ruleset
+      fFilters.fRuleset = value;
+      fPending = {Action::kSearch}; // the mirror filters by ruleset
+      return;
     case Kind::kCategory:
-      fFilters.fCategory = static_cast<Category>(hit.fValue);
-      return {Action::kSearch}; // and by status
+      fFilters.fCategory = static_cast<Category>(value);
+      fPending = {Action::kSearch}; // and by status
+      return;
     case Kind::kGenre:
-      fFilters.fGenre = static_cast<Genre>(hit.fValue);
-      return {Action::kSearch};
+      fFilters.fGenre = static_cast<Genre>(value);
+      fPending = {Action::kSearch};
+      return;
     case Kind::kLanguage:
-      fFilters.fLanguage = static_cast<Language>(hit.fValue);
-      return {Action::kSearch};
+      fFilters.fLanguage = static_cast<Language>(value);
+      fPending = {Action::kSearch};
+      return;
     case Kind::kExtra:
-      fFilters.fExtra[static_cast<std::size_t>(hit.fValue)] =
-          !fFilters.fExtra[static_cast<std::size_t>(hit.fValue)];
-      return {Action::kSearch};
+      fFilters.fExtra[index] = !fFilters.fExtra[index];
+      fPending = {Action::kSearch};
+      return;
     case Kind::kRank:
-      fFilters.fRanks[static_cast<std::size_t>(hit.fValue)] =
-          !fFilters.fRanks[static_cast<std::size_t>(hit.fValue)];
-      return {Action::kRefilter};
+      fFilters.fRanks[index] = !fFilters.fRanks[index];
+      fPending = {Action::kRefilter};
+      return;
     case Kind::kPlayed:
-      fFilters.fPlayed = static_cast<Played>(hit.fValue);
-      return {Action::kRefilter};
+      fFilters.fPlayed = static_cast<Played>(value);
+      fPending = {Action::kRefilter};
+      return;
     case Kind::kExplicit:
-      fFilters.fExplicit = static_cast<Explicit>(hit.fValue);
-      return {Action::kSearch};
+      fFilters.fExplicit = static_cast<Explicit>(value);
+      fPending = {Action::kSearch};
+      return;
     case Kind::kSort: {
-      const auto sort = static_cast<Sort>(hit.fValue);
+      const auto sort = static_cast<Sort>(value);
       // Clicking the active criterion flips the direction, as SortTabControl
       // does; picking another resets to descending. Either way the mirror
-      // sorts, so the query is asked again rather than the loaded pages being
-      // reshuffled among themselves.
+      // sorts, so the query is asked again.
       if (sort == fFilters.fSort) {
         fFilters.fDescending = !fFilters.fDescending;
       } else {
         fFilters.fSort = sort;
         fFilters.fDescending = true;
       }
-      return {Action::kSearch};
-    }
-    case Kind::kCardSize:
-      fFilters.fCardSize = static_cast<CardSize>(hit.fValue);
-      return {Action::kRefilter};
-    case Kind::kCard:
-      // Clicking a card opens its page, as it opens BeatmapSetOverlay.
-      return {Action::kOpen, static_cast<std::size_t>(hit.fValue)};
-    case Kind::kDownload:
-      return {Action::kDownload, static_cast<std::size_t>(hit.fValue)};
-    case Kind::kPreview:
-      return {Action::kPreview, static_cast<std::size_t>(hit.fValue)};
-    }
-    return {};
-  }
-
-  // ---- drawing helpers ----------------------------------------------------
-  void rect(const skia::SkRect &r, skia::SkColor color, float alpha = 1.0f) {
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    fCanvas->drawRect(r, p);
-  }
-  void rounded(const skia::SkRect &r, float radius, skia::SkColor color,
-               float alpha = 1.0f) {
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    fCanvas->drawRRect(skia::SkRRect::MakeRectXY(r, radius, radius), p);
-  }
-  // FillMode.Fill: the source is cropped to the destination's aspect ratio
-  // instead of being squashed into it, which is what the covers were doing.
-  void imageFilled(const skia::SkImage *image, const skia::SkRect &dst) {
-    const float iw = static_cast<float>(image->width());
-    const float ih = static_cast<float>(image->height());
-    if (iw <= 0.0f || ih <= 0.0f) {
+      fPending = {Action::kSearch};
       return;
     }
-    const float scale = std::max(dst.width() / iw, dst.height() / ih);
-    const float srcW = dst.width() / scale;
-    const float srcH = dst.height() / scale;
-    const skia::SkRect src = skia::SkRect::MakeXYWH(
-        (iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
-    fCanvas->drawImageRect(image, src, dst,
-                           skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
-                           nullptr,
-                           skia::SkCanvas::kStrict_SrcRectConstraint);
-  }
-
-  [[nodiscard]] float measure(const std::string &s, float size, bool bold) {
-    fFont->setSize(size);
-    client::ui::fonts().applyWeight(*fFont, bold);
-    const float w = client::ui::fonts().measure(*fFont, s);
-    client::ui::fonts().applyWeight(*fFont, false);
-    return w;
-  }
-  void text(const std::string &s, float x, float y, float size,
-            skia::SkColor color, bool bold = false, float alpha = 1.0f) {
-    fFont->setSize(size);
-    client::ui::fonts().applyWeight(*fFont, bold);
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    client::ui::fonts().draw(fCanvas, *fFont, s, x, y, p);
-    client::ui::fonts().applyWeight(*fFont, false);
-  }
-  void textClipped(const std::string &s, float x, float y, float maxW,
-                   float size, skia::SkColor color, bool bold = false,
-                   float alpha = 1.0f) {
-    fCanvas->save();
-    fCanvas->clipIRect(skia::SkIRect::MakeXYWH(
-        static_cast<int>(x), static_cast<int>(y - size * 1.3f),
-        static_cast<int>(maxW), static_cast<int>(size * 1.9f)));
-    this->text(s, x, y, size, color, bold, alpha);
-    fCanvas->restore();
-  }
-
-  // FilterTabItem: 13px, active is Content1 and bold, otherwise Light2, and
-  // hovering lightens by 0.2.
-  // Colour4.Lighten(amount), as FilterTabItem applies on hover.
-  static skia::SkColor lighten(skia::SkColor c, float amount) {
-    const auto ch = [amount](std::uint32_t v) {
-      return static_cast<std::uint8_t>(
-          std::min(255.0f, static_cast<float>(v) * (1.0f + amount)));
-    };
-    return skia::colorSetARGB(255, ch((c >> 16) & 0xffu), ch((c >> 8) & 0xffu),
-                              ch(c & 0xffu));
-  }
-
-  float tabItem(const std::string &label, float x, float y, bool active,
-                Kind kind, int value, bool emit) {
-    // Both weights are measured at the bold width so that toggling a filter
-    // does not shuffle the row around.
-    const float w = this->measure(label, kFilterFontSize, true);
-    if (!emit) {
-      return w;
-    }
-    const skia::SkRect box =
-        skia::SkRect::MakeXYWH(x, y - kFilterFontSize, w, kFilterLineHeight);
-    const bool hover = box.contains(fMouseX, fMouseY + fScroll);
-    skia::SkColor colour = active ? kContent1 : kLight2;
-    if (hover) {
-      colour = lighten(colour, 0.2f);
-    }
-    this->text(label, x, y, kFilterFontSize, colour, active);
-    fHits.push_back({box, kind, value});
-    return w;
-  }
-
-  // One BeatmapSearchFilterRow: a 100px label column and a wrapping tab flow.
-  float filterRow(const char *header, float x, float y, float width,
-                  std::span<const char *const> labels, Kind kind,
-                  const std::function<bool(int)> &isActive, bool emit) {
-    if (emit) {
-      this->text(header, x, y + kFilterFontSize, kFilterFontSize, kContent2);
-    }
-    const float tabsX = x + kRowLabelWidth;
-    float cx = tabsX;
-    float cy = y + kFilterFontSize;
-    const float lineHeight = kFilterLineHeight;
-    for (std::size_t i = 0; i < labels.size(); ++i) {
-      const std::string label = labels[i];
-      const float w = this->measure(label, kFilterFontSize, true);
-      if (cx > tabsX && cx + w > x + width) {
-        cx = tabsX;
-        cy += lineHeight;
-      }
-      this->tabItem(label, cx, cy, isActive(static_cast<int>(i)), kind,
-                    static_cast<int>(i), emit);
-      cx += w + kTabSpacing;
-    }
-    // The height of the row, which is what the flow above adds up. (This used
-    // to return the last baseline, an absolute coordinate, so each row pushed
-    // the next one down by the whole panel offset.)
-    return cy - y - kFilterFontSize + lineHeight;
-  }
-
-  // ---- sections -----------------------------------------------------------
-  // OverlayHeader: the title bar above the filter control.
-  float drawHeader(float w) {
-    const float height = 55.0f;
-    this->rect(skia::SkRect::MakeXYWH(0, 0, w, height), kBackground5);
-    // OverlayTitle: a 30px icon, 10px of spacing, the 20px title, and the
-    // description beside it in Content2.
-    const float iconSize = 30.0f;
-    const float x = kHorizontalPadding;
-    skia::SkPaint icon;
-    icon.setAntiAlias(true);
-    icon.setColor(kContent2);
-    icon.setStyle(skia::kStrokeStyle);
-    icon.setStrokeWidth(2.5f);
-    const float cx = x + iconSize * 0.5f;
-    fCanvas->drawCircle(cx, height * 0.5f, iconSize * 0.36f, icon);
-    fCanvas->drawCircle(cx, height * 0.5f, iconSize * 0.12f, icon);
-    const std::string title = "beatmap listing";
-    const float titleX = x + iconSize + 10.0f;
-    this->text(title, titleX, height * 0.5f + 7.0f, 20.0f, kContent1);
-    this->text("browse for new beatmaps",
-               titleX + this->measure(title, 20.0f, false) + 12.0f,
-               height * 0.5f + 6.0f, 14.0f, kContent2, false, 0.8f);
-    return height;
-  }
-
-  // BeatmapListingSearchControl over Dark6, padded 20 vertical and
-  // HORIZONTAL_PADDING horizontal, contents spaced 20 apart. The panel is
-  // auto-sized in lazer, so its height is measured before the background can
-  // be filled: the same layout runs twice, drawing only on the second pass.
-  float drawSearchControl(float w, float top) {
-    const float height = this->searchControl(w, top, /*emit=*/false);
-    this->rect(skia::SkRect::MakeXYWH(0, top, w, height - top), kDark6);
-    return this->searchControl(w, top, /*emit=*/true);
-  }
-
-  float searchControl(float w, float top, bool emit) {
-    const float x = kHorizontalPadding;
-    const float innerW = w - kHorizontalPadding * 2.0f;
-    float y = top + 20.0f;
-
-    // BeatmapSearchTextBox: OsuTextBox is 40 high with a 5px corner radius.
-    const skia::SkRect box = skia::SkRect::MakeXYWH(x, y, innerW, 40.0f);
-    if (emit) {
-      fTextBox = box;
-      this->drawTextBox(box);
-    }
-    y += 40.0f + 20.0f;
-
-    // The filter rows are indented by 10 and spaced 5 apart.
-    const float rowsX = x + 10.0f;
-    const float rowsW = innerW - 20.0f;
-    float rowY = y;
-    const auto row = [&](const char *header,
-                         std::span<const char *const> labels, Kind kind,
-                         const std::function<bool(int)> &active) {
-      rowY += this->filterRow(header, rowsX, rowY, rowsW, labels, kind, active,
-                              emit) +
-              kRowSpacing;
-    };
-
-    row("General", kGeneralLabels, Kind::kGeneral, [this](int i) {
-      return fFilters.fGeneral[static_cast<std::size_t>(i)];
-    });
-    row("Mode", kRulesetLabels, Kind::kRuleset,
-        [this](int i) { return fFilters.fRuleset == i; });
-    row("Categories", kCategoryLabels, Kind::kCategory,
-        [this](int i) { return static_cast<int>(fFilters.fCategory) == i; });
-    row("Genre", kGenreLabels, Kind::kGenre,
-        [this](int i) { return static_cast<int>(fFilters.fGenre) == i; });
-    row("Language", kLanguageLabels, Kind::kLanguage,
-        [this](int i) { return static_cast<int>(fFilters.fLanguage) == i; });
-    row("Extra", kExtraLabels, Kind::kExtra, [this](int i) {
-      return fFilters.fExtra[static_cast<std::size_t>(i)];
-    });
-    row("Rank Achieved", kRankLabels, Kind::kRank, [this](int i) {
-      return fFilters.fRanks[static_cast<std::size_t>(i)];
-    });
-    row("Played", kPlayedLabels, Kind::kPlayed,
-        [this](int i) { return static_cast<int>(fFilters.fPlayed) == i; });
-    row("Explicit Content", kExplicitLabels, Kind::kExplicit,
-        [this](int i) { return static_cast<int>(fFilters.fExplicit) == i; });
-
-    return rowY - kRowSpacing + 20.0f;
-  }
-
-  void drawTextBox(const skia::SkRect &box) {
-    this->rounded(box, 5.0f, kBackground4);
-    skia::SkPaint icon;
-    icon.setAntiAlias(true);
-    icon.setStyle(skia::kStrokeStyle);
-    icon.setStrokeWidth(1.8f);
-    icon.setColor(kLight1);
-    const float ix = box.fLeft + 18.0f;
-    const float iy = box.centerY();
-    fCanvas->drawCircle(ix, iy - 1.0f, 5.5f, icon);
-    fCanvas->drawLine(ix + 4.0f, iy + 3.0f, ix + 8.0f, iy + 7.0f, icon);
-
-    if (fFilters.fQuery.empty()) {
-      this->text("type in keywords...", box.fLeft + 32.0f,
-                 box.centerY() + 6.0f, 16.0f, kLight3, false, 0.6f);
-    } else {
-      this->textClipped(fFilters.fQuery, box.fLeft + 32.0f,
-                        box.centerY() + 6.0f, box.width() - 44.0f, 16.0f,
-                        kContent1);
-    }
-    if (std::fmod(fBlink, 1000.0) < 600.0) {
-      const float cx = box.fLeft + 32.0f +
-                       this->measure(fFilters.fQuery, 16.0f, false) + 2.0f;
-      this->rect(skia::SkRect::MakeXYWH(cx, box.centerY() - 9.0f, 1.5f, 18.0f),
-                 kContent1, 0.8f);
+    case Kind::kCardSize:
+      fFilters.fCardSize = static_cast<CardSize>(value);
+      fPending = {Action::kRefilter};
+      return;
     }
   }
 
-  // BeatmapListingSortTabControl.Reset: which criteria are on offer depends on
-  // the category and on whether a query was typed.
   [[nodiscard]] bool sortAvailable(Sort sort) const {
     const Category cat = fFilters.fCategory;
     switch (sort) {
@@ -583,395 +1268,8 @@ private:
     }
   }
 
-  // The 40px sort bar: criteria on the left, card size on the right.
-  float drawSortBar(float w, float top) {
-    this->rect(skia::SkRect::MakeXYWH(0, top, w, kSortBarHeight),
-               kBackground4);
-    float x = 20.0f;
-    const float baseline = top + kSortBarHeight * 0.5f + 5.0f;
-    for (int i = 0; i < static_cast<int>(std::size(kSortLabels)); ++i) {
-      if (!this->sortAvailable(static_cast<Sort>(i))) {
-        continue;
-      }
-      const bool active = static_cast<int>(fFilters.fSort) == i;
-      const std::string label = kSortLabels[i];
-      const float tw =
-          this->tabItem(label, x, baseline, active, Kind::kSort, i, true);
-      if (active) {
-        // The active criterion carries the direction chevron.
-        skia::SkPaint arrow;
-        arrow.setAntiAlias(true);
-        arrow.setColor(kContent1);
-        skia::SkPathBuilder pb;
-        const float ax = x + tw + 5.0f;
-        const float ay = baseline - 4.0f;
-        if (fFilters.fDescending) {
-          pb.moveTo(ax, ay - 3.0f).lineTo(ax + 8.0f, ay - 3.0f)
-              .lineTo(ax + 4.0f, ay + 3.0f).close();
-        } else {
-          pb.moveTo(ax, ay + 3.0f).lineTo(ax + 8.0f, ay + 3.0f)
-              .lineTo(ax + 4.0f, ay - 3.0f).close();
-        }
-        fCanvas->drawPath(pb.detach(), arrow);
-        x += 13.0f;
-      }
-      x += tw + kTabSpacing * 1.5f;
-    }
-
-    // BeatmapListingCardSizeTabControl: two icons, 10 apart, 20 from the right.
-    const float iconY = top + kSortBarHeight * 0.5f;
-    for (int i = 0; i < 2; ++i) {
-      const float ix = w - 20.0f - 14.0f - static_cast<float>(1 - i) * 24.0f;
-      const skia::SkRect box =
-          skia::SkRect::MakeXYWH(ix - 2.0f, iconY - 9.0f, 18.0f, 18.0f);
-      const bool active = static_cast<int>(fFilters.fCardSize) == i;
-      const bool hover = box.contains(fMouseX, fMouseY + fScroll);
-      skia::SkPaint p;
-      p.setAntiAlias(true);
-      p.setStyle(skia::kStrokeStyle);
-      p.setStrokeWidth(1.6f);
-      p.setColor(active ? kContent1 : (hover ? kLight1 : kLight3));
-      if (i == 0) { // normal: two stacked bars
-        fCanvas->drawRect(skia::SkRect::MakeXYWH(ix, iconY - 7.0f, 14.0f, 5.0f), p);
-        fCanvas->drawRect(skia::SkRect::MakeXYWH(ix, iconY + 2.0f, 14.0f, 5.0f), p);
-      } else { // extra: one taller bar
-        fCanvas->drawRect(skia::SkRect::MakeXYWH(ix, iconY - 7.0f, 14.0f, 14.0f), p);
-      }
-      fHits.push_back({box, Kind::kCardSize, i});
-    }
-    return top + kSortBarHeight;
-  }
-
-  // The cards flow left to right and wrap, inside panelTarget's 20px padding.
-  float drawCards(float w, float top, const Ctx &ctx) {
-    const float cardH = fFilters.fCardSize == CardSize::kNormal
-                            ? kCardNormalHeight
-                            : kCardExtraHeight;
-    float y = top + 15.0f; // createCardContainerFor: Top = 15
-    if (fVisible.empty()) {
-      // NotFoundDrawable: 250 high, its text centred.
-      const std::string text = ctx.fLoading ? "searching..."
-                                            : "no beatmaps match your criteria!";
-      this->text(text, w * 0.5f - this->measure(text, 16.0f, false) * 0.5f,
-                 y + 125.0f, 16.0f, kContent2);
-      return y + 250.0f;
-    }
-
-    const float available = w - kPanelPadding * 2.0f;
-    const int columns = std::max(
-        1, static_cast<int>((available + kCardSpacing) /
-                            (kCardWidth + kCardSpacing)));
-    const float rowWidth = static_cast<float>(columns) * kCardWidth +
-                           static_cast<float>(columns - 1) * kCardSpacing;
-    const float rowLeft = (w - rowWidth) * 0.5f;
-
-    int column = 0;
-    float rowExpansion = 0.0f; // the tallest expanded panel in this row
-    for (const int idx : fVisible) {
-      Entry &e = ctx.fEntries[static_cast<std::size_t>(idx)];
-      const float x = rowLeft + static_cast<float>(column) *
-                                    (kCardWidth + kCardSpacing);
-      const skia::SkRect card =
-          skia::SkRect::MakeXYWH(x, y, kCardWidth, cardH);
-      if (y - fScroll < ctx.fHeight + cardH && y - fScroll + cardH > -cardH) {
-        this->drawCard(card, e, idx, ctx);
-      }
-      fHits.push_back({card, Kind::kCard, idx});
-
-      // An expanded card pushes the whole row down, not just itself.
-      const auto &state = fCardState[static_cast<std::size_t>(idx)];
-      if (state.fExpanded > 0.01f) {
-        const float full =
-            std::min(kExpandedMaxHeight,
-                     static_cast<float>(e.fDiffs.size()) * 20.0f + 20.0f);
-        rowExpansion = std::max(rowExpansion,
-                                full * client::ui::outQuint(state.fExpanded));
-      }
-
-      if (++column == columns) {
-        column = 0;
-        y += cardH + kCardSpacing + rowExpansion;
-        rowExpansion = 0.0f;
-      }
-    }
-    if (column != 0) {
-      y += cardH + kCardSpacing + rowExpansion;
-    }
-    return y + 20.0f;
-  }
-
-  void drawCard(const skia::SkRect &card, Entry &e, int index,
-                const Ctx &ctx) {
-    const bool extra = fFilters.fCardSize == CardSize::kExtra;
-    const bool hover = card.contains(fMouseX, fMouseY + fScroll);
-    const float h = card.height();
-    auto &state = fCardState[static_cast<std::size_t>(index)];
-
-    // The button column expands on hover, and hovering the bottom of the card
-    // expands the whole card after a short delay.
-    state.fExpand = client::ui::approach(state.fExpand, hover ? 1.0f : 0.0f,
-                                         kTransitionMs / 6.0f, ctx.fDtMs);
-    const bool overInfo =
-        hover && fMouseY + fScroll > card.fBottom - 22.0f && !e.fDiffs.empty();
-    state.fHoverMs = overInfo ? state.fHoverMs + ctx.fDtMs : 0.0;
-    const bool wantExpanded = state.fHoverMs > kExpandDelayMs ||
-                              (state.fExpanded > 0.5f && hover);
-    state.fExpanded = client::ui::approach(state.fExpanded,
-                                           wantExpanded ? 1.0f : 0.0f,
-                                           kTransitionMs / 5.0f, ctx.fDtMs);
-
-    const float buttonsW =
-        kButtonsCollapsed + (kButtonsExpanded - kButtonsCollapsed) * state.fExpand;
-
-    this->rounded(card, kCardCorner, kBackground2);
-    const skia::SkRect main = skia::SkRect::MakeLTRB(
-        card.fLeft, card.fTop, card.fRight - buttonsW, card.fBottom);
-
-    // Thumbnail: a square of the card's height on the left, the cover art
-    // doubling as the card's background behind the text.
-    const skia::SkRect thumb =
-        skia::SkRect::MakeXYWH(card.fLeft, card.fTop, h, h);
-    fCanvas->save();
-    fCanvas->clipRRect(
-        skia::SkRRect::MakeRectXY(main, kCardCorner, kCardCorner), true);
-    this->rect(main, kBackground3);
-    if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
-      this->imageFilled(
-          e.fThumb.get(),
-          skia::SkRect::MakeXYWH(card.fLeft + h - kCardCorner, card.fTop,
-                                 main.width() - h + kCardCorner, h));
-      this->rect(skia::SkRect::MakeLTRB(card.fLeft + h - kCardCorner,
-                                        card.fTop, main.fRight, card.fBottom),
-                 kBackground6, hover ? 0.9f : 0.8f);
-      this->imageFilled(e.fThumb.get(), thumb);
-    }
-    fCanvas->restore();
-
-    // Main content, inset 10 horizontal and 4 vertical inside the main area.
-    const float tx = card.fLeft + h + 10.0f - kCardCorner;
-    const float tw = main.fRight - tx - 10.0f;
-    float ty = card.fTop + 4.0f + 18.0f;
-    this->textClipped(e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, tx,
-                      ty, tw, 18.0f, kContent1, true);
-    ty += 17.0f;
-    this->textClipped("by " + (e.fArtistUnicode.empty() ? e.fArtist
-                                                        : e.fArtistUnicode),
-                      tx, ty, tw, 14.0f, kContent1, true);
-    if (extra) {
-      // The extra card carries the source line where the normal one has the
-      // author, and moves "mapped by" into the bottom content.
-      ty += 14.0f;
-      this->textClipped(e.fSource, tx, ty, tw, 11.0f, kContent2, true);
-    } else {
-      ty += 14.0f;
-      const std::string mapped = "mapped by ";
-      this->text(mapped, tx, ty, 11.0f, kContent2, true);
-      this->textClipped(e.fCreator, tx + this->measure(mapped, 11.0f, true),
-                        ty, tw, 11.0f, kContent1, true);
-    }
-
-    const float bottom = card.fBottom - 6.0f;
-    if (e.fSt == Entry::St::kFetching) {
-      // BeatmapCardDownloadProgressBar: 5 high, across the bottom content.
-      const skia::SkRect bar =
-          skia::SkRect::MakeXYWH(tx, card.fBottom - 9.0f, tw, 5.0f);
-      this->rounded(bar, 2.5f, kBackground6);
-      this->rounded(skia::SkRect::MakeXYWH(bar.fLeft, bar.fTop,
-                                           bar.width() * e.fProgress, 5.0f),
-                    2.5f, kColour1);
-    } else if (extra) {
-      // "mapped by", then the statistics grid, then the extra info row.
-      const std::string mapped = "mapped by ";
-      this->text(mapped, tx, bottom - 34.0f, 11.0f, kContent2, true);
-      this->textClipped(e.fCreator, tx + this->measure(mapped, 11.0f, true),
-                        bottom - 34.0f, tw, 11.0f, kContent1, true);
-      this->drawStatistics(tx, bottom - 20.0f, tw, e, 1.0f);
-      this->drawExtraInfoRow(tx, bottom, tw, e);
-    } else {
-      // The normal card only shows its statistics while hovered.
-      if (state.fExpand > 0.01f) {
-        this->drawStatistics(tx, bottom - 15.0f, tw, e, state.fExpand);
-      }
-      this->drawExtraInfoRow(tx, bottom, tw, e);
-    }
-
-    this->drawThumbnailPlay(thumb, e, index, hover);
-    this->drawCardButtons(card, main, state.fExpand, e, index);
-
-    // The expanded content: the difficulty list, under the card.
-    if (state.fExpanded > 0.01f) {
-      this->drawExpandedContent(card, e, state.fExpanded);
-    }
-  }
-
-  // BeatmapCardThumbnail's PlayButton: it fades in over the cover on hover
-  // and while the preview is playing, with a CircularProgress around it.
-  void drawThumbnailPlay(const skia::SkRect &thumb, const Entry &e, int index,
-                         bool hover) {
-    const bool playing = fPreviewId == e.fSetId;
-    if (hover || playing) {
-      this->rect(thumb, kBackground6, 0.6f);
-      skia::SkPaint paint;
-      paint.setAntiAlias(true);
-      paint.setColor(kContent1);
-      const float cx = thumb.centerX();
-      const float cy = thumb.centerY();
-      if (playing) {
-        // Pause glyph while this preview is the one playing.
-        this->rect(skia::SkRect::MakeXYWH(cx - 6.0f, cy - 8.0f, 4.0f, 16.0f),
-                   kContent1);
-        this->rect(skia::SkRect::MakeXYWH(cx + 2.0f, cy - 8.0f, 4.0f, 16.0f),
-                   kContent1);
-        skia::SkPaint ring;
-        ring.setAntiAlias(true);
-        ring.setStyle(skia::kStrokeStyle);
-        ring.setStrokeWidth(3.0f);
-        ring.setColor(kColour1);
-        const float r = 18.0f;
-        fCanvas->drawArc(
-            skia::SkRect::MakeXYWH(cx - r, cy - r, r * 2.0f, r * 2.0f), -90.0f,
-            360.0f * std::clamp(fPreviewProgress, 0.0f, 1.0f), false, ring);
-      } else {
-        skia::SkPathBuilder tri;
-        tri.moveTo(cx - 6.0f, cy - 9.0f)
-            .lineTo(cx + 9.0f, cy)
-            .lineTo(cx - 6.0f, cy + 9.0f)
-            .close();
-        fCanvas->drawPath(tri.detach(), paint);
-      }
-    }
-    fHits.push_back({thumb, Kind::kPreview, index});
-  }
-
-  void drawCardButtons(const skia::SkRect &card, const skia::SkRect &main,
-                       float expand, const Entry &e, int index) {
-    const skia::SkRect buttons = skia::SkRect::MakeLTRB(
-        main.fRight, card.fTop, card.fRight, card.fBottom);
-    this->rounded(buttons, kCardCorner, kBackground3);
-    this->rect(skia::SkRect::MakeXYWH(buttons.fLeft - kCardCorner, buttons.fTop,
-                                      kCardCorner, buttons.height()),
-               kBackground3);
-    if (expand > 0.4f) {
-      skia::SkPaint stroke;
-      stroke.setAntiAlias(true);
-      stroke.setColor(kContent2);
-      stroke.setAlphaf(expand);
-      stroke.setStyle(skia::kStrokeStyle);
-      stroke.setStrokeWidth(1.6f);
-      const float cx = buttons.centerX();
-      const float hy = card.fTop + card.height() * 0.25f;
-      skia::SkPathBuilder heart;
-      heart.moveTo(cx, hy + 4.0f)
-          .cubicTo(cx - 8.0f, hy - 2.0f, cx - 3.0f, hy - 7.0f, cx, hy - 2.0f)
-          .cubicTo(cx + 3.0f, hy - 7.0f, cx + 8.0f, hy - 2.0f, cx, hy + 4.0f);
-      fCanvas->drawPath(heart.detach(), stroke);
-
-      const float dy = card.fTop + card.height() * 0.75f;
-      skia::SkPaint solid;
-      solid.setAntiAlias(true);
-      solid.setAlphaf(expand);
-      solid.setColor(e.fSt == Entry::St::kDone ? kColour1 : kContent1);
-      skia::SkPathBuilder arrow;
-      arrow.moveTo(cx - 5.0f, dy - 1.0f)
-          .lineTo(cx + 5.0f, dy - 1.0f)
-          .lineTo(cx, dy + 5.0f)
-          .close();
-      fCanvas->drawPath(arrow.detach(), solid);
-      fCanvas->drawLine(cx, dy - 7.0f, cx, dy - 1.0f, stroke);
-    }
-    fHits.push_back({buttons, Kind::kDownload, index});
-  }
-
-  // The statistics that fade in with a hover on the normal card and sit in a
-  // grid on the extra one: play count, favourites, and the date.
-  void drawStatistics(float x, float baseline, float maxW, const Entry &e,
-                      float alpha) {
-    const std::string stats =
-        std::format("{} plays    {} favourites    {}", e.fPlayCount,
-                    e.fFavouriteCount, e.fUpdated);
-    this->textClipped(stats, x, baseline, maxW, 11.0f, kContent2, false, alpha);
-  }
-
-  // BeatmapCardDifficultyList inside the expanded content: one row per
-  // difficulty, 3 apart, star rating beside the name.
-  void drawExpandedContent(const skia::SkRect &card, const Entry &e,
-                           float progress) {
-    const float rowH = 20.0f;
-    const float full = std::min(kExpandedMaxHeight,
-                                static_cast<float>(e.fDiffs.size()) * rowH +
-                                    20.0f);
-    const float height = full * client::ui::outQuint(progress);
-    const skia::SkRect panel = skia::SkRect::MakeXYWH(
-        card.fLeft, card.fBottom - kCardCorner, card.width(),
-        height + kCardCorner);
-    this->rounded(panel, kCardCorner, kBackground4, progress);
-
-    fCanvas->save();
-    fCanvas->clipRect(panel);
-    float y = card.fBottom + 10.0f; // Padding: horizontal 8, vertical 10
-    for (const auto &diff : e.fDiffs) {
-      if (y > panel.fBottom - 4.0f) {
-        break;
-      }
-      // StarRatingDisplay (small) then the difficulty name at 14 semibold.
-      const std::string stars = std::format("{:.2f}", diff.fStars);
-      const float pillW = this->measure(stars, 11.0f, true) + 16.0f;
-      const skia::SkRect pill =
-          skia::SkRect::MakeXYWH(card.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
-      this->rounded(pill, 8.0f, client::ui::starColor(diff.fStars), progress);
-      this->text(stars, pill.fLeft + 8.0f, y, 11.0f,
-                 skia::colorSetARGB(255, 20, 24, 26), true, progress);
-      this->textClipped(diff.fVersion, pill.fRight + 6.0f, y,
-                        card.width() - pillW - 24.0f, 14.0f, kContent1, true,
-                        progress);
-      y += rowH;
-    }
-    fCanvas->restore();
-  }
-
-  // BeatmapCardExtraInfoRow: the status pill and the difficulty spectrum.
-  void drawExtraInfoRow(float x, float baseline, float maxW, const Entry &e) {
-    // BeatmapSetOnlineStatusPill: 13px text, 4px horizontal padding.
-    const std::string status = e.fStatus.empty() ? "unknown" : e.fStatus;
-    const float pillW = this->measure(status, 11.0f, true) + 12.0f;
-    const skia::SkRect pill =
-        skia::SkRect::MakeXYWH(x, baseline - 11.0f, pillW, 15.0f);
-    this->rounded(pill, 7.5f, statusColour(status));
-    this->text(status, x + 6.0f, baseline - 1.0f, 11.0f,
-               skia::colorSetARGB(255, 20, 24, 26), true);
-
-    // DifficultySpectrumDisplay: 5x10 dots, 1px apart, in star order.
-    float dx = x + pillW + 8.0f;
-    for (const auto &diff : e.fDiffs) {
-      if (dx + 6.0f > x + maxW) {
-        break;
-      }
-      this->rounded(skia::SkRect::MakeXYWH(dx, baseline - 10.0f, 5.0f, 10.0f),
-                    1.0f, client::ui::starColor(diff.fStars));
-      dx += 6.0f;
-    }
-  }
-
-  [[nodiscard]] static skia::SkColor statusColour(std::string_view status) {
-    if (status == "ranked" || status == "approved") {
-      return skia::colorSetARGB(255, 102, 204, 255);
-    }
-    if (status == "loved") {
-      return skia::colorSetARGB(255, 255, 102, 170);
-    }
-    if (status == "qualified") {
-      return skia::colorSetARGB(255, 102, 204, 255);
-    }
-    if (status == "graveyard") {
-      return skia::colorSetARGB(255, 140, 140, 155);
-    }
-    return skia::colorSetARGB(255, 179, 217, 68);
-  }
-
-  // Filters the mirror cannot apply, applied here, then the sort.
   void rebuildVisible(std::span<const Entry> entries) {
     fVisible.clear();
-    fCardState.resize(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
       const Entry &e = entries[i];
       if (fFilters.fCategory == Category::kLeaderboard &&
@@ -1035,11 +1333,11 @@ private:
     });
   }
 
-  // osu! genre/language ids, in the order of the enums above.
   [[nodiscard]] static int genreId(Genre g) {
     constexpr int kIds[] = {0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14};
     return kIds[static_cast<std::size_t>(g)];
   }
+
   [[nodiscard]] static int languageId(Language l) {
     // osu! language ids, in the display order above.
     constexpr int kIds[] = {0, 2, 4, 7, 8, 11, 3, 6, 10, 9, 12, 13, 5, 14, 1};
@@ -1047,25 +1345,25 @@ private:
   }
 
   Filters fFilters;
-  std::vector<Hit> fHits;
   std::vector<int> fVisible;
-  struct CardState {
-    float fExpand = 0.0f;   // button column / statistics
-    float fExpanded = 0.0f; // the difficulty list under the card
-    double fHoverMs = 0.0;  // time spent over the bottom info row
-  };
-  std::vector<CardState> fCardState;
-  skia::SkRect fTextBox = skia::SkRect::MakeEmpty();
-  skia::SkCanvas *fCanvas = nullptr;
+  std::span<Entry> fEntries;
   skia::SkFont *fFont = nullptr;
+  bool fLoading = false;
   float fMouseX = 0.0f, fMouseY = 0.0f;
-  float fScroll = 0.0f, fScrollTarget = 0.0f, fMaxScroll = 0.0f;
   double fBlink = 0.0;
   long fPreviewId = -1;
   float fPreviewProgress = 0.0f;
+  skia::SkRect fTextBoxBounds = skia::SkRect::MakeEmpty();
 
-public:
-  void tick(double nowMs) { fBlink = nowMs; }
+  // The tree, and what it was built for.
+  std::unique_ptr<scene::Drawable> fScene;
+  std::string fShape;
+  nodes::ScrollContainer *fScroll = nullptr; // owned by the tree
+  float fScrollTicks = 0.0f;
+  bool fScrollToStart = false;
+  float fScrollCurrent = 0.0f;
+  float fScrollExtent = 0.0f;
+  Result fPending;
 };
 
 } // namespace client::listing

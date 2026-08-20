@@ -225,8 +225,9 @@ public:
   // inside itself.
   void layout(const skia::SkRect &parent) {
     // A drawable that knows its own size -- text, mainly -- says so before
-    // anything is computed from it.
-    this->measure();
+    // anything is computed from it. It is told the box it is going into,
+    // since a row that wraps has a height only relative to a width.
+    this->measure(parent);
     const float parentW = parent.width();
     const float parentH = parent.height();
 
@@ -405,7 +406,7 @@ protected:
   }
   virtual void update(double) {}
   // Chance to set fWidth/fHeight from content before layout uses them.
-  virtual void measure() {}
+  virtual void measure(const skia::SkRect &) {}
   virtual bool acceptsInput() const { return false; }
   virtual bool onClick(float, float) { return false; }
   virtual bool onScroll(float) { return false; }

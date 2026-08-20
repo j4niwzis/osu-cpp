@@ -70,7 +70,7 @@ public:
 
 protected:
   // Text sizes itself: a flow then reads the size off like any other child.
-  void measure() override {
+  void measure(const skia::SkRect &) override {
     if (fMeasuredSize == fSize) {
       return; // already measured at this size, and the text has not changed
     }

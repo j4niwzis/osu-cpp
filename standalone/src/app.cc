@@ -5644,6 +5644,7 @@ private:
     fListing.tick(wallMs());
     fListing.setPreview(fPreviewId, this->previewProgress());
     fListing.draw(ctx);
+    this->damage(fListing.takeDamage());
     if (fSetPage.open()) {
       const std::size_t idx = this->indexOfSet(fSetPage.setId());
       if (idx >= fFound.size()) {
