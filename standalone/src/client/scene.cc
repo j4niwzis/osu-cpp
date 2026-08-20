@@ -200,12 +200,14 @@ public:
     return true;
   }
 
-  // Marks this drawable, and everything under it, as needing layout again.
+  // Marks this drawable as needing layout again -- and its ancestors, since
+  // layout is asked for at the root: a child that quietly invalidated only
+  // itself was never re-laid, which is what stopped a scroll container from
+  // moving anything after the first frame.
   void invalidateLayout() {
     this->markDamaged();
-    fLayoutValid = false;
-    for (auto &child : fChildren) {
-      child->invalidateLayout();
+    for (Drawable *node = this; node != nullptr; node = node->fParent) {
+      node->fLayoutValid = false;
     }
   }
 

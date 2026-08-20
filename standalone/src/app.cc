@@ -1634,7 +1634,8 @@ private:
     switch (fState) {
     case State::kMainMenu:
     case State::kResults:
-      break; // these mark their moving parts
+    case State::kDownload:
+      break; // these mark what they change: the listing does it per node
     case State::kPlaying:
       this->damageAll("gameplay"); // a moving picture by definition
       break;

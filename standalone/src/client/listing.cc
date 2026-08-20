@@ -347,15 +347,18 @@ public:
 
     const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
     fScene->updateTree(ctx.fNowMs);
+    fScene->layoutIfNeeded(screen);
     if (fScrollToStart && fScroll != nullptr) {
       fScroll->scrollToStart();
       fScrollToStart = false;
     }
-    if (fScrollTicks != 0.0f && fScroll != nullptr) {
+    if (fScrollTicks != 0.0f) {
+      // After the layout, so the wheel has something with bounds to land on:
+      // on the frame a tree is built there are none yet.
       fScene->scroll(ctx.fMouseX, ctx.fMouseY, fScrollTicks);
       fScrollTicks = 0.0f;
+      fScene->layoutIfNeeded(screen);
     }
-    fScene->layoutIfNeeded(screen);
     fScene->setHover(ctx.fMouseX, ctx.fMouseY);
     fScene->draw(ctx.fCanvas);
     if (fScroll != nullptr) {
