@@ -1436,9 +1436,8 @@ private:
       return;
     }
     fLastDrawWall = wallMs();
-    if (fState == State::kPlaying || fState == State::kMainMenu ||
-        fState == State::kResults) {
-      this->damageAll(); // moving pictures: the whole screen is in play
+    if (fState == State::kPlaying) {
+      this->damageAll(); // a moving picture by definition
     }
     // Anything that changed without saying where repaints everything; a
     // frame drawn with nothing marked would otherwise clip to nothing.
@@ -3594,6 +3593,13 @@ private:
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
 
+    // What moves here is the logo with its visualiser and the buttons; the
+    // background is the beatmap's artwork, which sits still. The dim fade and
+    // the triangle fallback do cover the screen, so those say so.
+    if (std::abs(fMenuDim - dimTarget) > 0.001f || !fView.hasBackground()) {
+      this->damageAll();
+    }
+
     // ---- Layout: logo plus the visible button row, centred as a group.
     const float uiScale = std::clamp(sh / 900.0f, 0.75f, 1.6f);
     const float btnW = 150.0f * uiScale;
@@ -3675,6 +3681,18 @@ private:
 
     // ---- Logo on top of the visualiser.
     this->drawLogo(canvas, logoBase);
+    // The bars reach bar_length beyond the logo's circumference, and the
+    // buttons move whenever the menu state or a hover does.
+    skia::SkRect moving = fLogoRect;
+    moving.outset(fLogoRect.width() * 0.75f, fLogoRect.width() * 0.75f);
+    this->damage(moving);
+    for (const auto &b : fMenuBtns) {
+      if (b.fVisible == fMenuState && b.fExpand > 0.001f) {
+        skia::SkRect area = b.fRect;
+        area.outset(8.0f, 8.0f);
+        this->damage(area);
+      }
+    }
 
     const char *hint = fMenuState == MenuState::kInitial
                            ? "click the logo    Esc quit"
@@ -5334,6 +5352,7 @@ private:
       this->drawMenuButton(canvas, fMenuButtons.back());
       bx += bw + gap;
     }
+    this->damage(skia::SkRect::MakeXYWH(0.0f, sh - 100.0f, sw, 100.0f));
 
     this->drawScreenFadeIn(canvas);
     this->present();
@@ -5792,6 +5811,7 @@ private:
       return false;
     }
     fContext = skia::MakeGL(std::move(interface));
+    client::nodes::CachedContainer::setContext(fContext.get());
     return static_cast<bool>(fContext);
   }
 

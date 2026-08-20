@@ -272,7 +272,7 @@ public:
         fBounds.fRight - fPadding.fRight, fBounds.fBottom - fPadding.fBottom);
   }
 
-  void draw(skia::SkCanvas *canvas, float inheritedAlpha = 1.0f) {
+  virtual void draw(skia::SkCanvas *canvas, float inheritedAlpha = 1.0f) {
     if (!fVisible || fAlpha <= 0.001f) {
       return;
     }
