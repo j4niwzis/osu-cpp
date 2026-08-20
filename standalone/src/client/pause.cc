@@ -188,17 +188,24 @@ private:
         this->fillSheared(canvas, this->inflated(bar, 1.08f), fColour,
                           alpha * 0.35f * eased);
       }
-      const skia::SkPath shape = shearedBar(bar);
+      const skia::SkRRect rounded =
+          skia::SkRRect::MakeRectXY(bar, kCorner, kCorner);
+      const skia::SkMatrix shear = shearOf(bar);
       skia::SkPaint fill;
       fill.setAntiAlias(true);
       fill.setColor(fColour);
       fill.setAlphaf(alpha);
       const int saved = canvas->save();
-      canvas->clipPath(shape, true);
-      canvas->drawPath(shape, fill);
+      canvas->concat(shear);
+      canvas->clipRRect(rounded, true);
+      canvas->drawRRect(rounded, fill);
       // TrianglesV2 inside the colour, at a tenth alpha, additive, drifting
       // up at 0.7 -- and upright, because lazer un-shears them against the
-      // container they sit in.
+      // container they sit in. The clip stays; only the matrix goes back.
+      skia::SkMatrix upright;
+      if (shear.invert(&upright)) {
+        canvas->concat(upright);
+      }
       fTriangles.draw(canvas, bar, fDt, alpha * 0.1f, skia::SkBlendMode::kPlus);
       canvas->restoreToCount(saved);
 
@@ -229,18 +236,17 @@ private:
                                     rect.fRight + dx, rect.fBottom + dy);
     }
 
-    // The bar as lazer draws it: a rounded rectangle with the shear applied
-    // to the whole thing, corners included, about its own middle.
-    [[nodiscard]] static skia::SkPath shearedBar(const skia::SkRect &rect) {
-      skia::SkPathBuilder builder;
-      builder.addRRect(skia::SkRRect::MakeRectXY(rect, kCorner, kCorner));
-      skia::SkPath path = builder.detach();
+    // The shear lazer applies to the whole button, corners included, about
+    // its own middle. Carried as a matrix rather than baked into a path: the
+    // canvas can be put into this space to draw the bar, and taken back out
+    // of it -- keeping the clip, which lives in device space -- to draw the
+    // triangles upright inside it.
+    [[nodiscard]] static skia::SkMatrix shearOf(const skia::SkRect &rect) {
       skia::SkMatrix matrix =
           skia::SkMatrix::Translate(rect.centerX(), rect.centerY());
       matrix.preSkew(-kShear, 0.0f);
       matrix.preTranslate(-rect.centerX(), -rect.centerY());
-      path.transform(matrix);
-      return path;
+      return matrix;
     }
 
     // A rectangle sheared by OsuGame.SHEAR: the top edge leads, the bottom
