@@ -63,7 +63,14 @@ inline constexpr skia::SkColor kMiss = skia::colorSetARGB(255, 237, 17, 33);
 [[nodiscard]] inline float approach(float current, float target, float tauMs,
                                     double dtMs) {
   const float a = 1.0f - std::exp(-static_cast<float>(dtMs) / tauMs);
-  return current + (target - current) * a;
+  const float next = current + (target - current) * a;
+  // Exponential easing never arrives. Left alone, a value that has visually
+  // settled keeps changing in the fifth decimal for ever, and anything
+  // comparing it against its previous value -- which is how this client
+  // decides what to repaint -- concludes that it is still moving. Below a
+  // thousandth of a unit, which is under a pixel and under 1/255 of an
+  // alpha, it is there.
+  return std::abs(target - next) < 0.001f ? target : next;
 }
 
 // ---- Text with fallback ---------------------------------------------------

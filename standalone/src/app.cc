@@ -3716,7 +3716,9 @@ private:
     // What moves here is the logo with its visualiser and the buttons; the
     // background is the beatmap's artwork, which sits still. The dim fade and
     // the triangle fallback do cover the screen, so those say so.
-    if (fMenuDim != fDrawnMenuDim) {
+    // Compared with a tolerance: an eased value that has settled must stop
+    // counting as a change, or this fires on every frame for ever.
+    if (std::abs(fMenuDim - fDrawnMenuDim) > 0.001f) {
       this->damageAll("menu dim");
     } else if (!fView.hasBackground()) {
       this->damageAll("no artwork: triangles or flat fill");
