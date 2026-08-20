@@ -49,7 +49,12 @@ if(EMSCRIPTEN_BUILD)
 else()
   find_package(OpenGL REQUIRED)
   find_package(Threads REQUIRED)
-  find_package(OpenSSL REQUIRED)
+  # OpenSSL 3.0 and later is Apache-2.0, which GPLv3 and so AGPLv3 accept.
+  # Everything before it carried the old OpenSSL/SSLeay licence, which does
+  # not combine with the AGPL without an explicit linking exception -- and
+  # this project would rather set a version floor than write one. Asio's TLS
+  # has no other backend, so this is the whole of that decision.
+  find_package(OpenSSL 3.0 REQUIRED)
   pkg_check_modules(GLFW    REQUIRED glfw3)
   pkg_check_modules(OPENAL  REQUIRED openal)
   pkg_check_modules(SKIA    REQUIRED skia)
