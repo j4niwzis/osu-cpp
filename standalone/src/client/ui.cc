@@ -136,6 +136,18 @@ public:
     fCanvas->restore();
   }
 
+  // Centred, but clipped to a width so a long title cannot run past a panel.
+  void textCenteredClipped(const std::string &str, float cx, float y,
+                           float maxW, float size, skia::SkColor color,
+                           float alpha = 1.0f) const {
+    fCanvas->save();
+    fCanvas->clipIRect(skia::SkIRect::MakeXYWH(
+        static_cast<int>(cx - maxW * 0.5f), static_cast<int>(y - size * 1.2f),
+        static_cast<int>(maxW), static_cast<int>(size * 1.8f)));
+    this->textCentered(str, cx, y, size, color, alpha);
+    fCanvas->restore();
+  }
+
   void textCentered(const std::string &str, float cx, float y, float size,
                     skia::SkColor color, float alpha = 1.0f) const {
     const float w = this->measure(str, size);

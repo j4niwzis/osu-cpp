@@ -222,6 +222,17 @@ private:
     int fIndex;
   };
   std::vector<PanelHit> fPanelHits;
+  int fSelectedPanel = 0;
+  float fPanelScroll = 0.0f;
+  float fPanelScrollTarget = 0.0f;
+  float fPanelScrollOrigin = 0.0f;
+  float fPanelDragOrigin = 0.0f;
+  bool fPanelDragging = false;
+  bool fPanelDragged = false;
+  bool fPanelFreeScroll = false; // user dragged/scrolled away from centre
+  bool fPanelOwnScore = false;   // the strip includes the run just played
+  std::vector<int> fPanelEntries; // index into fReplays, -1 = the score in hand
+  skia::SkRect fPanelBand = skia::SkRect::MakeEmpty();
 
   // Pause / results overlays.
   struct MenuButton {
@@ -694,6 +705,9 @@ private:
       if (fFilter.dragging()) {
         this->dragFilterRange(ev.fX);
       }
+      if (fPanelDragging) {
+        this->panelListDrag(ev.fX);
+      }
       if (fState == State::kPlaying && !fAutoplay) {
         fCursor = this->applySensitivity(this->toPlayfield(ev.fX, ev.fY));
         this->submitTimed({this->eventGameTime(ev.fWallMs), fCursor,
@@ -703,6 +717,11 @@ private:
     case EventType::kScroll:
       if (fSettingsPanel.open()) {
         this->scrollSettings(ev.fX);
+        break;
+      }
+      if (this->panelListActive()) {
+        fPanelScrollTarget -= ev.fX * 120.0f;
+        fPanelFreeScroll = true;
         break;
       }
       if (fState == State::kSongSelect) {
@@ -777,6 +796,13 @@ private:
     }
     if (action != glfw::kPress && fState != State::kPlaying) {
       return; // menus only care about presses
+    }
+
+    // The browser covers the screen, so it takes keys before the screen under
+    // it does -- otherwise the arrows would move the carousel behind it.
+    if (fReplayListOpen) {
+      this->keyReplayList(key);
+      return;
     }
 
     switch (fState) {
@@ -926,6 +952,19 @@ private:
     }
   }
 
+  void keyReplayList(int key) {
+    if (key == glfw::kKeyLeft && fSelectedPanel > 0) {
+      --fSelectedPanel;
+      fPanelFreeScroll = false;
+    } else if (key == glfw::kKeyRight &&
+               fSelectedPanel + 1 < static_cast<int>(fPanelEntries.size())) {
+      ++fSelectedPanel;
+      fPanelFreeScroll = false;
+    } else if (key == glfw::kKeyEnter) {
+      this->watchSelectedReplay();
+    }
+  }
+
   void applyMouseButton(const Event &ev) {
     const int button = ev.fA;
     const int action = ev.fB;
@@ -934,7 +973,15 @@ private:
         fState == State::kDownload || fState == State::kPaused ||
         fState == State::kResults) {
       if (button == glfw::kMouseButtonLeft) {
-        if (action == glfw::kPress) {
+        const bool pressed = action == glfw::kPress;
+        // The panel strip takes the press before anything else so that a drag
+        // that starts on a panel scrolls the list instead of selecting.
+        if (this->panelListActive() && !fExportDialog.open() &&
+            !fSettingsPanel.open() && !fModSelect.open() &&
+            this->panelListClick(fMouseX, fMouseY, pressed)) {
+          return;
+        }
+        if (pressed) {
           this->clickAt(fMouseX, fMouseY);
         } else {
           this->settingsClick(fMouseX, fMouseY, false);
@@ -962,8 +1009,8 @@ private:
     if (this->exportClick(x, y)) {
       return;
     }
-    if (this->replayListClick(x, y)) {
-      return;
+    if (fReplayListOpen) {
+      return; // the overlay owns the screen; the strip handled the press
     }
     if (this->settingsClick(x, y, true)) {
       return;
@@ -1021,10 +1068,6 @@ private:
       }
       break;
     case State::kResults:
-      if (this->resultsPanelClick(x, y)) {
-        return;
-      }
-      [[fallthrough]];
     case State::kPaused:
       for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
         if (fMenuButtons[i].fRect.contains(x, y)) {
@@ -3392,13 +3435,19 @@ private:
     }
     // Newest first, as a scores list would be.
     std::ranges::sort(fReplays, std::ranges::greater{}, &ReplayFile::fTime);
+    // The score in hand (or the newest replay) starts expanded, centred.
+    fSelectedPanel = 0;
+    fPanelFreeScroll = false;
+    fPanelDragging = false;
+    fPanelEntries.clear();
   }
 
   // The replay browser is the same ScorePanelList, with no score in hand:
   // the panels are the saved replays and picking one plays it back.
   void drawReplayList(skia::SkCanvas *canvas) {
-    fPanelHits.clear();
     if (!fReplayListOpen) {
+      fPanelHits.clear();
+      fPanelBand = skia::SkRect::MakeEmpty();
       return;
     }
     const client::ui::Painter p(canvas, fFont);
@@ -3406,82 +3455,29 @@ private:
     const float sh = static_cast<float>(fScreenH);
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(220, 8, 6, 12));
-
     p.textCentered("replays", sw * 0.5f, 62.0f, 26.0f, skia::kWhite);
-
-    if (fReplays.empty()) {
-      p.textCentered("no replays saved yet", sw * 0.5f, sh * 0.5f, 16.0f,
-                     skia::kWhite, 0.6f);
-    } else {
-      // Lay the panels out in a row centred on the screen, contracted, as
-      // ScorePanelList does when nothing is expanded.
-      const float scale =
-          std::min(1.0f, (sh - 220.0f) / (kPanelContractedH + 60.0f));
-      const float pw = kPanelContractedW * scale;
-      const float ph = kPanelContractedH * scale;
-      const float step = pw + kPanelSpacing * scale;
-      const int fit = std::max(1, static_cast<int>((sw - 80.0f) / step));
-      const int shown = std::min(static_cast<int>(fReplays.size()), fit);
-      float x = (sw - (step * static_cast<float>(shown) -
-                       kPanelSpacing * scale)) *
-                0.5f;
-      for (int i = 0; i < shown; ++i) {
-        const skia::SkRect r =
-            skia::SkRect::MakeXYWH(x, sh * 0.46f - ph * 0.5f, pw, ph);
-        this->drawContractedPanel(p, r,
-                                  fReplays[static_cast<std::size_t>(i)],
-                                  scale);
-        fPanelHits.push_back({r, i});
-        x += step;
-      }
-      if (static_cast<int>(fReplays.size()) > shown) {
-        p.textCentered(
-            std::format("{} more", static_cast<int>(fReplays.size()) - shown),
-            sw * 0.5f, sh * 0.46f + ph * 0.5f + 26.0f, 13.0f, skia::kWhite,
-            0.55f);
-      }
-    }
-
-    p.textCentered("click a replay to watch    Esc to close", sw * 0.5f,
-                   sh - 46.0f, 14.0f, skia::kWhite, 0.7f);
+    this->drawScorePanelList(canvas, p, sw, sh, /*ownScore=*/false);
   }
 
-  bool replayListClick(float x, float y) {
-    if (!fReplayListOpen) {
-      return false;
-    }
-    for (const auto &hit : fPanelHits) {
-      if (hit.fRect.contains(x, y)) {
-        this->watchReplay(
-            fReplays[static_cast<std::size_t>(hit.fIndex)].fPath);
-        return true;
-      }
-    }
-    return true;
-  }
-
-  // On the results screen the side panels are the other replays; clicking one
-  // watches it.
-  bool resultsPanelClick(float x, float y) {
-    if (fState != State::kResults) {
-      return false;
-    }
-    for (const auto &hit : fPanelHits) {
-      if (hit.fRect.contains(x, y)) {
-        this->watchReplay(
-            fReplays[static_cast<std::size_t>(hit.fIndex)].fPath);
-        return true;
-      }
-    }
-    return false;
+  // The strip is live on the results screen and in the browser overlay.
+  [[nodiscard]] bool panelListActive() const {
+    return fReplayListOpen || fState == State::kResults;
   }
 
 
   void watchReplay(const std::filesystem::path &path) {
+    // On the results screen the strip belongs to the map just played, which is
+    // not necessarily the one selected in the carousel.
+    const bool results = fState == State::kResults;
+    const int setIdx = results ? fPlayingSet : fSelSet;
+    const int diffIdx = results ? fPlayingDiff : fSelDiff;
+    if (setIdx < 0) {
+      return;
+    }
     fReplayListOpen = false;
     fReplayPath = path;
     fAutoplay = true; // playback drives the engine from the recorded events
-    this->startPlay(fSelSet, fSelDiff);
+    this->startPlay(setIdx, diffIdx);
   }
 
   // ---- Song select (port of lazer's carousel geometry) ------------------
@@ -4356,7 +4352,7 @@ private:
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(160, 10, 8, 14));
 
-    this->drawScorePanelList(canvas, p, sw, sh, /*interactive=*/true);
+    this->drawScorePanelList(canvas, p, sw, sh, /*ownScore=*/true);
 
     // ---- Actions, below the list.
     fMenuButtons.clear();
@@ -4380,94 +4376,218 @@ private:
     this->present();
   }
 
-  // The list itself: contracted panels for the saved replays of this beatmap,
-  // the expanded panel for the score in hand. Used by the results screen and
-  // by the replay browser, which in lazer is the same component.
+  // ScorePanelList: a horizontal strip of panels with one expanded. The strip
+  // scrolls (drag or wheel) and clicking a contracted panel expands it --
+  // selecting a score, not launching it. Sizes are ScorePanel's:
+  // EXPANDED_WIDTH 360, CONTRACTED_WIDTH 130, CONTRACTED_HEIGHT 385, with 5px
+  // between panels and 15px either side of the expanded one.
+  //
+  // `ownScore` marks a leading entry carrying the score in hand (the run just
+  // played); the browser has none and shows each replay's own header.
   void drawScorePanelList(skia::SkCanvas *canvas, const client::ui::Painter &p,
-                          float sw, float sh, bool interactive) {
+                          float sw, float sh, bool ownScore) {
     fPanelHits.clear();
+    fPanelOwnScore = ownScore;
 
+    // Native size unless the window cannot fit it; the panels are meant to be
+    // read at a glance, so they scale up on a large window rather than sit
+    // tiny in the middle of it.
     const float scale =
-        std::min(1.0f, (sh - 220.0f) / (kPanelContractedH + 60.0f));
-    const float expandedW = kPanelExpandedW * scale;
+        std::clamp(std::min((sh - 250.0f) / (kPanelContractedH + 60.0f),
+                            sw / 1280.0f * 1.35f),
+                   0.6f, 1.6f);
     const float contractedW = kPanelContractedW * scale;
+    const float expandedW = kPanelExpandedW * scale;
     const float panelH = kPanelContractedH * scale;
-    const float expandedH = panelH + 60.0f * scale;
-    const float cy = sh * 0.46f;
+    const float expandedH = panelH + 70.0f * scale;
+    const float spacing = kPanelSpacing * scale;
+    const float expandedGap = kExpandedSpacing * scale;
+    const float cy = sh * 0.47f;
+    fPanelBand = skia::SkRect::MakeLTRB(0.0f, cy - expandedH * 0.5f - 10.0f,
+                                        sw, cy + expandedH * 0.5f + 10.0f);
 
-    // Contracted panels for the replays, split either side of the middle.
-    const int perSide = std::max(
-        0, static_cast<int>((sw * 0.5f - expandedW * 0.5f -
-                             kExpandedSpacing * scale) /
-                            ((contractedW + kPanelSpacing) * scale)));
-    // The score in hand is the expanded panel, so the replay just written for
-    // it must not appear as a side panel too.
-    std::vector<int> sidePanels;
-    for (int i = 0; i < static_cast<int>(fReplays.size()); ++i) {
-      if (fReplays[static_cast<std::size_t>(i)].fPath != fLastSavedReplay) {
-        sidePanels.push_back(i);
-      }
+    // Entries: the score in hand first when there is one, then every replay
+    // for this difficulty. The run just played is already the expanded panel,
+    // so its own file is not listed a second time.
+    fPanelEntries.clear();
+    if (ownScore) {
+      fPanelEntries.push_back(-1);
     }
-    const int total = static_cast<int>(sidePanels.size());
-    const int shown = std::min(total, perSide * 2);
+    for (std::size_t i = 0; i < fReplays.size(); ++i) {
+      if (ownScore && !fLastSavedReplay.empty() &&
+          fReplays[i].fPath == fLastSavedReplay) {
+        continue;
+      }
+      fPanelEntries.push_back(static_cast<int>(i));
+    }
+    const int count = static_cast<int>(fPanelEntries.size());
+    if (count == 0) {
+      fPanelBand = skia::SkRect::MakeEmpty();
+      p.textCentered("no replays saved for this difficulty", sw * 0.5f,
+                     sh * 0.5f, 18.0f, skia::kWhite, 0.6f);
+      return;
+    }
+    fSelectedPanel = std::clamp(fSelectedPanel, 0, count - 1);
 
-    float leftX = sw * 0.5f - expandedW * 0.5f - kExpandedSpacing * scale -
-                  contractedW;
-    float rightX = sw * 0.5f + expandedW * 0.5f + kExpandedSpacing * scale;
-    for (int i = 0; i < shown; ++i) {
-      const bool onLeft = (i % 2) == 0;
-      skia::SkRect r;
-      if (onLeft) {
-        r = skia::SkRect::MakeXYWH(leftX, cy - panelH * 0.5f, contractedW,
-                                   panelH);
-        leftX -= contractedW + kPanelSpacing * scale;
+    // Lay the strip out, then scroll so the expanded panel sits centred --
+    // unless the user has dragged or wheeled away from it.
+    std::vector<float> widths(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+      widths[static_cast<std::size_t>(i)] =
+          i == fSelectedPanel ? expandedW : contractedW;
+    }
+    float centreOffset = 0.0f;
+    for (int i = 0; i < fSelectedPanel; ++i) {
+      centreOffset += widths[static_cast<std::size_t>(i)] + spacing;
+    }
+    centreOffset += expandedGap + expandedW * 0.5f;
+    if (!fPanelFreeScroll) {
+      fPanelScrollTarget = centreOffset - sw * 0.5f;
+    }
+    fPanelScroll = this->approach(fPanelScroll, fPanelScrollTarget, 70.0f);
+
+    float x = -fPanelScroll;
+    for (int i = 0; i < count; ++i) {
+      const bool expanded = i == fSelectedPanel;
+      if (expanded) {
+        x += expandedGap;
+      }
+      const float w = widths[static_cast<std::size_t>(i)];
+      const float h = expanded ? expandedH : panelH;
+      const skia::SkRect r = skia::SkRect::MakeXYWH(x, cy - h * 0.5f, w, h);
+      const int entry = fPanelEntries[static_cast<std::size_t>(i)];
+      const ReplayFile *replay =
+          entry < 0 ? nullptr : &fReplays[static_cast<std::size_t>(entry)];
+      if (r.fRight > -60.0f && r.fLeft < sw + 60.0f) {
+        if (expanded) {
+          this->drawExpandedPanel(canvas, p, r, scale, replay);
+        } else {
+          this->drawContractedPanel(p, r, replay, scale);
+        }
+      }
+      fPanelHits.push_back({r, i});
+      x += w + spacing + (expanded ? expandedGap : 0.0f);
+    }
+
+    p.textCentered(ownScore
+                       ? "click a panel to view it    drag to scroll"
+                       : "click to select, click again to watch    Esc closes",
+                   sw * 0.5f, sh - 44.0f, 13.0f, skia::kWhite, 0.6f);
+  }
+
+  // Press starts a drag anywhere over the strip; release either resolves the
+  // drag or, if the pointer barely moved, counts as a click on a panel.
+  bool panelListClick(float x, float y, bool pressed) {
+    if (pressed) {
+      if (!fPanelBand.contains(x, y)) {
+        return false;
+      }
+      fPanelDragging = true;
+      fPanelDragged = false;
+      fPanelDragOrigin = x;
+      fPanelScrollOrigin = fPanelScroll;
+      return true;
+    }
+    if (!fPanelDragging) {
+      return false;
+    }
+    const bool dragged = fPanelDragged;
+    fPanelDragging = false;
+    fPanelDragged = false;
+    if (dragged) {
+      return true;
+    }
+    for (const auto &hit : fPanelHits) {
+      if (!hit.fRect.contains(x, y)) {
+        continue;
+      }
+      if (hit.fIndex == fSelectedPanel) {
+        // The expanded panel is already selected; activating it plays the
+        // replay it stands for. The score in hand has none to play.
+        this->watchSelectedReplay();
       } else {
-        r = skia::SkRect::MakeXYWH(rightX, cy - panelH * 0.5f, contractedW,
-                                   panelH);
-        rightX += contractedW + kPanelSpacing * scale;
+        fSelectedPanel = hit.fIndex;
+        fPanelFreeScroll = false; // re-centre on the new selection
       }
-      const int idx = sidePanels[static_cast<std::size_t>(i)];
-      this->drawContractedPanel(p, r, fReplays[static_cast<std::size_t>(idx)],
-                                scale);
-      if (interactive) {
-        fPanelHits.push_back({r, idx});
-      }
+      return true;
     }
+    return true; // a press that landed on the strip is ours either way
+  }
 
-    const skia::SkRect expanded = skia::SkRect::MakeXYWH(
-        sw * 0.5f - expandedW * 0.5f, cy - expandedH * 0.5f, expandedW,
-        expandedH);
-    this->drawExpandedPanel(canvas, p, expanded, scale);
+  void panelListDrag(float x) {
+    const float delta = fPanelDragOrigin - x;
+    if (std::abs(delta) > 4.0f) {
+      fPanelDragged = true;
+      fPanelFreeScroll = true;
+    }
+    fPanelScrollTarget = fPanelScrollOrigin + delta;
+    fPanelScroll = fPanelScrollTarget;
+  }
 
-    if (total > shown) {
-      p.textCentered(std::format("{} more replays", total - shown), sw * 0.5f,
-                     cy + expandedH * 0.5f + 26.0f, 13.0f, skia::kWhite, 0.55f);
+  // The replay behind the expanded panel, if it is not the score in hand.
+  [[nodiscard]] const ReplayFile *selectedReplay() const {
+    if (fSelectedPanel < 0 ||
+        fSelectedPanel >= static_cast<int>(fPanelEntries.size())) {
+      return nullptr;
+    }
+    const int idx = fPanelEntries[static_cast<std::size_t>(fSelectedPanel)];
+    if (idx < 0 || idx >= static_cast<int>(fReplays.size())) {
+      return nullptr; // the score in hand, which has no file to play
+    }
+    return &fReplays[static_cast<std::size_t>(idx)];
+  }
+
+  void watchSelectedReplay() {
+    if (const auto *replay = this->selectedReplay()) {
+      this->watchReplay(replay->fPath);
     }
   }
 
-  // ContractedPanelMiddleContent: the rank, the score and the date, stacked.
+  // `replay` is null for the score in hand, which is contracted whenever some
+  // other panel is expanded.
   void drawContractedPanel(const client::ui::Painter &p, const skia::SkRect &r,
-                           const ReplayFile &replay, float scale) {
+                           const ReplayFile *replayPtr, float scale) {
     const bool hover = r.contains(fMouseX, fMouseY);
+    const float h = r.height();
     p.fillRounded(r, 10.0f * scale,
                   hover ? client::ui::kCardSel : client::ui::kBackground4);
-    if (replay.fHasScore) {
-      // ContractedPanelMiddleContent: rank, total score, accuracy, date.
-      p.textCentered(replay.fGrade, r.centerX(), r.fTop + 62.0f * scale,
-                     44.0f * scale, client::ui::kAccent);
-      p.textCentered(std::format("{}", replay.fScore.fTotalScore),
-                     r.centerX(), r.fTop + 92.0f * scale, 15.0f * scale,
-                     skia::kWhite);
-      p.textCentered(std::format("{:.2f}%", replay.fScore.accuracy() * 100.0),
-                     r.centerX(), r.fTop + 112.0f * scale, 12.0f * scale,
-                     client::ui::kAccent2, 0.9f);
-      p.textCentered(std::format("{}x", replay.fScore.fMaxCombo), r.centerX(),
-                     r.fTop + 130.0f * scale, 12.0f * scale, skia::kWhite,
-                     0.7f);
-    } else {
-      p.textCentered("replay", r.centerX(), r.fTop + 40.0f * scale,
-                     16.0f * scale, client::ui::kAccent2, 0.9f);
+
+    if (replayPtr == nullptr) {
+      const auto &sc = fResult.fScore;
+      p.textCentered(fResult.fGrade, r.centerX(),
+                     r.fTop + h * 0.17f, 46.0f * scale, client::ui::kAccent);
+      p.textCentered(std::format("{}", sc.fScore), r.centerX(),
+                     r.fTop + h * 0.32f, 19.0f * scale, skia::kWhite);
+      p.textCentered(std::format("{:.2f}%", sc.accuracy() * 100.0),
+                     r.centerX(), r.fTop + h * 0.40f, 14.0f * scale,
+                     client::ui::kAccent2, 0.95f);
+      p.textCentered(std::format("{}x", sc.fMaxCombo), r.centerX(),
+                     r.fTop + h * 0.47f, 14.0f * scale, skia::kWhite, 0.75f);
+      p.textCentered("this play", r.centerX(), r.fBottom - 18.0f * scale,
+                     11.0f * scale, client::ui::kAccent2, 0.8f);
+      return;
     }
+    const ReplayFile &replay = *replayPtr;
+
+    // ContractedPanelMiddleContent: rank, total score, accuracy, combo, then
+    // the date the score was set at the bottom.
+    if (replay.fHasScore) {
+      p.textCentered(replay.fGrade, r.centerX(), r.fTop + h * 0.17f,
+                     46.0f * scale, client::ui::kAccent);
+      p.textCentered(std::format("{}", replay.fScore.fTotalScore), r.centerX(),
+                     r.fTop + h * 0.32f, 19.0f * scale, skia::kWhite);
+      p.textCentered(std::format("{:.2f}%", replay.fScore.accuracy() * 100.0),
+                     r.centerX(), r.fTop + h * 0.40f, 14.0f * scale,
+                     client::ui::kAccent2, 0.95f);
+      p.textCentered(std::format("{}x", replay.fScore.fMaxCombo), r.centerX(),
+                     r.fTop + h * 0.47f, 14.0f * scale, skia::kWhite, 0.75f);
+    } else {
+      p.textCentered("replay", r.centerX(), r.fTop + h * 0.20f, 18.0f * scale,
+                     client::ui::kAccent2, 0.9f);
+      p.textCentered("no score stored", r.centerX(), r.fTop + h * 0.28f,
+                     11.0f * scale, skia::kWhite, 0.5f);
+    }
+
     // The stem carries the difficulty and the timestamp it was saved with.
     const auto underscore = replay.fLabel.rfind('_');
     const std::string diff = underscore == std::string::npos
@@ -4476,46 +4596,97 @@ private:
     const std::string when = underscore == std::string::npos
                                  ? std::string{}
                                  : replay.fLabel.substr(underscore + 1);
-    p.textCentered(diff, r.centerX(), r.centerY(), 13.0f * scale, skia::kWhite,
-                   0.95f);
-    p.textCentered(when, r.centerX(), r.fBottom - 30.0f * scale, 11.0f * scale,
-                   skia::kWhite, 0.55f);
+    p.textClipped(diff, r.fLeft + 8.0f * scale, r.fTop + h * 0.66f,
+                  r.width() - 16.0f * scale, 13.0f * scale, skia::kWhite,
+                  0.95f);
+    p.textCentered(when, r.centerX(), r.fBottom - 18.0f * scale,
+                   11.0f * scale, skia::kWhite, 0.55f);
   }
 
+  // The expanded panel: the score in hand when `replay` is null, otherwise the
+  // score stored in that replay's header.
   void drawExpandedPanel(skia::SkCanvas *canvas, const client::ui::Painter &p,
-                         const skia::SkRect &panel, float scale) {
-    const auto &sc = fResult.fScore;
+                         const skia::SkRect &panel, float scale,
+                         const ReplayFile *replay) {
     p.fillRounded(panel, 20.0f * scale, client::ui::kBackground5);
 
-    float y = panel.fTop + 34.0f * scale;
-    if (fMap) {
-      const auto &m = fMap->fMeta;
-      p.textCentered(m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode,
-                     panel.centerX(), y, 20.0f * scale, skia::kWhite);
-      y += 24.0f * scale;
-      p.textCentered(m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode,
-                     panel.centerX(), y, 14.0f * scale, skia::kWhite, 0.8f);
-      y += 30.0f * scale;
+    // Values, from whichever score this panel stands for.
+    struct Shown {
+      std::uint64_t fTotal = 0;
+      int f300 = 0, f100 = 0, f50 = 0, fMiss = 0, fCombo = 0;
+      double fAccuracy = 1.0;
+      bool fDetail = false; // hit error and UR are only kept for this session
+    };
+    Shown sh;
+    if (replay == nullptr) {
+      const auto &sc = fResult.fScore;
+      sh = {sc.fScore,  sc.fGreat,      sc.fGood, sc.fMeh, sc.fMiss,
+            sc.fMaxCombo, sc.accuracy(), true};
+    } else if (replay->fHasScore) {
+      const auto &sc = replay->fScore;
+      sh = {static_cast<std::uint64_t>(sc.fTotalScore),
+            sc.f300,
+            sc.f100,
+            sc.f50,
+            sc.fMiss,
+            sc.fMaxCombo,
+            sc.accuracy(),
+            false};
     }
 
-    const float circleR = 100.0f * scale;
-    const float cy = y + circleR;
-    this->drawAccuracyCircle(canvas, panel.centerX(), cy, circleR,
-                             sc.accuracy());
-    y = cy + circleR + 24.0f * scale;
+    // The beatmap: the one just played on the results screen, the selected one
+    // in the browser. Every replay in the strip belongs to it.
+    const bool results = fState == State::kResults;
+    const int setIdx = results ? fPlayingSet : fSelSet;
+    const int diffIdx = results ? fPlayingDiff : fSelDiff;
+    std::string title;
+    std::string artist;
+    if (results && fMap) {
+      const auto &m = fMap->fMeta;
+      title = m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode;
+      artist = m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode;
+    } else if (setIdx >= 0) {
+      const auto &infos = this->infosFor(setIdx);
+      if (diffIdx >= 0 && diffIdx < static_cast<int>(infos.size())) {
+        const auto &m = infos[static_cast<std::size_t>(diffIdx)].fMeta;
+        title = m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode;
+        artist = m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode;
+      }
+    }
 
-    const float countUp = client::ui::outQuint(
-        static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
-    const auto shown =
-        static_cast<std::uint64_t>(static_cast<double>(sc.fScore) * countUp);
-    p.textCentered(std::format("{:07}", shown), panel.centerX(), y,
+    float y = panel.fTop + 34.0f * scale;
+    p.textCenteredClipped(title, panel.centerX(), y,
+                          panel.width() - 32.0f * scale, 20.0f * scale,
+                          skia::kWhite);
+    y += 24.0f * scale;
+    p.textCenteredClipped(artist, panel.centerX(), y,
+                          panel.width() - 32.0f * scale, 14.0f * scale,
+                          skia::kWhite, 0.8f);
+    y += 30.0f * scale;
+
+    const float circleR = 100.0f * scale;
+    const float ccy = y + circleR;
+    this->drawAccuracyCircle(canvas, panel.centerX(), ccy, circleR,
+                             sh.fAccuracy);
+    y = ccy + circleR + 24.0f * scale;
+
+    // The score counts up as the panel appears; a replay's stored score is
+    // shown outright.
+    std::uint64_t shownScore = sh.fTotal;
+    if (replay == nullptr) {
+      const float countUp = client::ui::outQuint(
+          static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
+      shownScore =
+          static_cast<std::uint64_t>(static_cast<double>(sh.fTotal) * countUp);
+    }
+    p.textCentered(std::format("{:07}", shownScore), panel.centerX(), y,
                    40.0f * scale, skia::kWhite);
     y += 24.0f * scale;
 
-    if (fPlayingSet >= 0) {
-      const auto &infos = this->infosFor(fPlayingSet);
-      if (fPlayingDiff >= 0 && fPlayingDiff < static_cast<int>(infos.size())) {
-        const auto &info = infos[static_cast<std::size_t>(fPlayingDiff)];
+    if (setIdx >= 0) {
+      const auto &infos = this->infosFor(setIdx);
+      if (diffIdx >= 0 && diffIdx < static_cast<int>(infos.size())) {
+        const auto &info = infos[static_cast<std::size_t>(diffIdx)];
         const skia::SkRect chip = skia::SkRect::MakeXYWH(
             panel.centerX() - 88.0f * scale, y - 11.0f * scale, 60.0f * scale,
             22.0f * scale);
@@ -4536,10 +4707,10 @@ private:
       skia::SkColor fColor;
     };
     const Stat top[] = {
-        {"300", std::format("{}", sc.fGreat), client::ui::kGreat},
-        {"100", std::format("{}", sc.fGood), client::ui::kGood},
-        {"50", std::format("{}", sc.fMeh), client::ui::kMeh},
-        {"miss", std::format("{}", sc.fMiss), client::ui::kMiss},
+        {"300", std::format("{}", sh.f300), client::ui::kGreat},
+        {"100", std::format("{}", sh.f100), client::ui::kGood},
+        {"50", std::format("{}", sh.f50), client::ui::kMeh},
+        {"miss", std::format("{}", sh.fMiss), client::ui::kMiss},
     };
     const float cellW = (panel.width() - 32.0f * scale) / 4.0f;
     float cx = panel.fLeft + 16.0f * scale;
@@ -4552,20 +4723,40 @@ private:
     }
     y += 44.0f * scale;
 
-    const Stat bottom[] = {
-        {"combo", std::format("{}x", sc.fMaxCombo), skia::kWhite},
-        {"accuracy", std::format("{:.2f}%", sc.accuracy() * 100.0),
+    std::vector<Stat> bottom{
+        {"combo", std::format("{}x", sh.fCombo), skia::kWhite},
+        {"accuracy", std::format("{:.2f}%", sh.fAccuracy * 100.0),
          skia::kWhite},
-        {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite},
-        {"UR", std::format("{:.0f}", fResult.fUr), skia::kWhite},
     };
+    if (sh.fDetail) {
+      bottom.push_back(
+          {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite});
+      bottom.push_back({"UR", std::format("{:.0f}", fResult.fUr),
+                        skia::kWhite});
+    } else if (replay != nullptr) {
+      // A stored replay keeps no hit statistics, only when it was played.
+      const auto underscore = replay->fLabel.rfind('_');
+      bottom.push_back({"played",
+                        underscore == std::string::npos
+                            ? std::string{"-"}
+                            : replay->fLabel.substr(underscore + 1),
+                        skia::kWhite});
+    }
+    const float bottomW = (panel.width() - 32.0f * scale) /
+                          static_cast<float>(bottom.size());
     cx = panel.fLeft + 16.0f * scale;
     for (const auto &st : bottom) {
-      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
+      p.textCentered(st.fLabel, cx + bottomW * 0.5f, y, 11.0f * scale,
                      skia::kWhite, 0.55f);
-      p.textCentered(st.fValue, cx + cellW * 0.5f, y + 18.0f * scale,
+      p.textCentered(st.fValue, cx + bottomW * 0.5f, y + 18.0f * scale,
                      15.0f * scale, st.fColor);
-      cx += cellW;
+      cx += bottomW;
+    }
+
+    if (replay != nullptr) {
+      p.textCentered("click to watch this replay", panel.centerX(),
+                     panel.fBottom - 16.0f * scale, 12.0f * scale,
+                     client::ui::kAccent2, 0.85f);
     }
   }
 
