@@ -152,6 +152,10 @@ int main(int argc, char **argv) {
       profile = true;
     } else if (arg == "--stars") {
       starsOnly = true;
+      // Optional path right after it, so both spellings work.
+      if (i + 1 < args.size() && !args[i + 1].starts_with('-')) {
+        beatmapPath = args[++i];
+      }
     } else if (arg == "--dt") {
       mods |= osu::mod::kDoubleTime;
     } else if (arg == "--ht") {
@@ -169,6 +173,17 @@ int main(int argc, char **argv) {
       autoplay = true;
     } else if (!arg.starts_with('-')) {
       beatmapPath = arg;
+    } else if (arg == "--beatmap" || arg == "--skin" || arg == "--replay") {
+      std::cerr << "Error: " << arg << " needs a path after it\n";
+      printUsage(argc > 0 ? argv[0] : "osu_client");
+      return 1;
+    } else {
+      // Silently ignoring an option nobody knows means a stale binary looks
+      // like a broken feature: run --stars against a build that predates it
+      // and the client just opens.
+      std::cerr << "Error: unknown option " << arg << '\n';
+      printUsage(argc > 0 ? argv[0] : "osu_client");
+      return 1;
     }
   }
 
@@ -213,28 +228,48 @@ int main(int argc, char **argv) {
       std::cerr << "Error: --stars requires a beatmap\n";
       return 1;
     }
-    try {
-      std::ifstream in(beatmapPath, std::ios::binary);
-      if (!in) {
-        std::cerr << "Error: cannot read " << beatmapPath.string() << '\n';
-        return 1;
+    // A single .osu, or a directory of them, which is how the test maps come.
+    std::vector<std::filesystem::path> targets;
+    if (std::filesystem::is_directory(beatmapPath)) {
+      for (const auto &entry :
+           std::filesystem::directory_iterator(beatmapPath)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".osu") {
+          targets.push_back(entry.path());
+        }
       }
-      const std::string text((std::istreambuf_iterator<char>(in)),
-                             std::istreambuf_iterator<char>());
-      const osu::Beatmap map = osu::loadBeatmap(text);
-      const osu::StarRating rating = osu::calculateStars(map, mods);
-      const osu::Engine engine(map, mods);
-      std::cout << std::format("{}\n", beatmapPath.filename().string())
-                << std::format("  stars     {:.13f}\n", rating.fTotal)
-                << std::format("  aim       {:.13f}\n", rating.fAim)
-                << std::format("  speed     {:.13f}\n", rating.fSpeed)
-                << std::format("  max combo {}\n", engine.maxAchievableCombo())
-                << std::format("  objects   {}\n", map.fObjects.size());
-      return 0;
-    } catch (const std::exception &e) {
-      std::cerr << "Error: " << e.what() << '\n';
+      std::ranges::sort(targets);
+    } else {
+      targets.push_back(beatmapPath);
+    }
+    if (targets.empty()) {
+      std::cerr << "Error: no .osu files in " << beatmapPath.string() << '\n';
       return 1;
     }
+    int failures = 0;
+    for (const auto &target : targets) {
+      try {
+        std::ifstream in(target, std::ios::binary);
+        if (!in) {
+          throw std::runtime_error{"cannot read " + target.string()};
+        }
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        const osu::Beatmap map = osu::loadBeatmap(text);
+        const osu::StarRating rating = osu::calculateStars(map, mods);
+        const osu::Engine engine(map, mods);
+        std::cout << std::format("{}\n", target.filename().string())
+                  << std::format("  stars     {:.13f}\n", rating.fTotal)
+                  << std::format("  aim       {:.13f}\n", rating.fAim)
+                  << std::format("  speed     {:.13f}\n", rating.fSpeed)
+                  << std::format("  max combo {}\n",
+                                 engine.maxAchievableCombo())
+                  << std::format("  objects   {}\n", map.fObjects.size());
+      } catch (const std::exception &e) {
+        std::cerr << target.filename().string() << ": " << e.what() << '\n';
+        ++failures;
+      }
+    }
+    return failures == 0 ? 0 : 1;
   }
 
   try {
