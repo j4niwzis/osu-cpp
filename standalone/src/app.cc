@@ -146,6 +146,7 @@ private:
   double fWakeWall = 0.0;   // when a screen asked to be woken, or 0
   bool fDamageDrives = false; // damage that is worth a frame of its own
   bool fDrawing = false;      // inside a frame: damage reported now is not
+  int fFullRepaintsOwed = 0;  // buffers still holding an older screen
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
   skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
   bool fDrewOnRaster = false;               // this frame went to the CPU one
@@ -161,6 +162,7 @@ private:
   const char *fFullDamageReason = "start";
   bool fOverlayShown = false; // an overlay covered the screen last frame
   double fDamageLogWall = 0.0;
+  const char *fLoggedFullReason = nullptr;
   std::chrono::steady_clock::time_point fFrameStart{};
   std::chrono::steady_clock::time_point fBlitStart{};
   std::int64_t fCostDrawUs = 0, fCostBlitUs = 0, fCostSwapUs = 0;
@@ -1448,8 +1450,18 @@ private:
   // resized, or something that does not report its bounds moved.
   void damageAll(const char *reason = "unspecified") {
     fFullDamage = true;
+    // The window is cycling through several buffers, and a repaint lands in
+    // exactly one of them: the others still hold what was on screen before.
+    // So "everything changed" is a statement about all of them, and is owed
+    // one full repaint each. Getting this from a screen change used to be an
+    // accident of asking for 1500 ms of frames afterwards -- a hundred full
+    // repaints to be sure of three -- and it stopped being an accident when
+    // that went away, which is how coming back to the menu started leaving
+    // the screen it was called from underneath.
+    fFullRepaintsOwed = kFullRepaintsAfterChange;
     if (!fDrawing) {
       fDamageDrives = true;
+      this->oweFrames(kFullRepaintsAfterChange + 1);
     }
     fFullDamageReason = reason;
     fDamage.clear();
@@ -1526,6 +1538,14 @@ private:
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
     //
+    // A full repaint still owed to a buffer that has not had one.
+    if (fFullRepaintsOwed > 0) {
+      --fFullRepaintsOwed;
+      if (!fFullDamage) {
+        fFullDamage = true;
+        fFullDamageReason = "buffer has not had this screen yet";
+      }
+    }
     // What the frame repaints. A frame drawn with nothing marked repaints
     // everything -- the buffer being drawn into is several frames old and
     // there is no region to trust -- so it is reported as full, honestly.
@@ -1920,7 +1940,15 @@ private:
   // How many back buffers the window may be cycling through; each of them
   // needs the pixels a repaint produced, so a region stays in the blit set
   // for that many frames.
-  static constexpr std::size_t kSwapChainDepth = 3;
+  //
+  // There is no way to ask: GLFW does not say, the driver need not tell, and
+  // a compositor can hold one of its own on top of whatever the driver does.
+  // Three was a guess, and the guess is what a screen change was landing on
+  // -- one buffer short means one buffer still holding the screen that was
+  // left. A screen change is worth more margin than it costs, so the frames
+  // that repaint whole after one are counted with some to spare.
+  static constexpr std::size_t kSwapChainDepth = 4;
+  static constexpr int kFullRepaintsAfterChange = 6;
 
   [[nodiscard]] bool blitRegionFull() const {
     if (fBlitHistory.size() < kSwapChainDepth) {
@@ -1966,8 +1994,15 @@ private:
                                                  static_cast<float>(fScreenH));
       border.inset(3.0f, 3.0f);
       canvas->drawRect(border, paint);
-      if (wallMs() - fDamageLogWall > 1000.0) {
+      // Deduplicated by reason rather than by the clock: a one-off -- a
+      // screen change, a resize -- would otherwise be swallowed by whatever
+      // repeating reason spoke first in that second.
+      const bool sameReason = fLoggedFullReason != nullptr &&
+                              std::string_view(fLoggedFullReason) ==
+                                  std::string_view(fFullDamageReason);
+      if (!sameReason || wallMs() - fDamageLogWall > 1000.0) {
         fDamageLogWall = wallMs();
+        fLoggedFullReason = fFullDamageReason;
         std::println(std::cerr, "[damage] would repaint everything: {}",
                      fFullDamageReason);
       }
