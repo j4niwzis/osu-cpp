@@ -191,7 +191,12 @@ public:
       return false;
     }
     this->encode(nullptr); // drain
-    this->pumpAudio(std::numeric_limits<double>::max());
+    // Up to the last picture and no further: the beatmap's mp3 outlives the
+    // replay by whatever tail the track has, and draining all of it here left
+    // a file whose video stopped seven seconds before its sound did. This is
+    // what -shortest does on the pipe path.
+    this->pumpAudio(static_cast<double>(fPts) /
+                    static_cast<double>(fOpts.fFps));
     if (!fAudioCopy) {
       this->drainAudioFifo(true); // and whatever the queue still holds
     }
