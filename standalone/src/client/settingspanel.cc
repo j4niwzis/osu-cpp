@@ -143,6 +143,14 @@ public:
     fScene->setHover(frame.fMouseX, frame.fMouseY);
 
     skia::SkRect damage = fScene->takeDamage();
+    // A column in motion moves everything in it, by fractions of a pixel per
+    // frame, and a clip is a whole number of them: the edges of what moved
+    // and the edges of what is repainted stop agreeing, which is a seam at
+    // every row. While it glides, the column is the answer rather than the
+    // rows -- and it is what the rows add up to anyway.
+    if (fScroll != nullptr && fScroll->moving()) {
+      fTouched = true;
+    }
     if (this->animating(frame.fNowMs) || fTouched) {
       // Sliding dims the whole screen with it, which is one of the few honest
       // whole-screen repaints there are.

@@ -266,6 +266,11 @@ public:
     this->invalidateLayout();
   }
 
+  // Still gliding towards where it was asked to go.
+  [[nodiscard]] bool moving() const noexcept {
+    return std::abs(fCurrent - fTarget) > 0.05f;
+  }
+
   [[nodiscard]] float current() const noexcept { return fCurrent; }
   [[nodiscard]] float extent() const noexcept { return fExtent; }
 
