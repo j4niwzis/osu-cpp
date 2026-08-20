@@ -7,6 +7,17 @@ import client.util;
 export namespace client {
 namespace audio_client {
 
+// OpenAL reports failures out of band; a source that could not be generated
+// looks exactly like one that simply refuses to play.
+inline bool alFailed(const char *what) {
+  const audio::ALenum err = audio::alGetError();
+  if (err == audio::kNoError) {
+    return false;
+  }
+  std::println(std::cerr, "[audio] {} failed: 0x{:x}", what, err);
+  return true;
+}
+
 inline audio::ALenum alFormat(int channels) {
   return channels == 1 ? audio::kFormatMono16 : audio::kFormatStereo16;
 }
@@ -26,7 +37,13 @@ private:
     fDevice = audio::alcOpenDevice(nullptr);
     if (fDevice == nullptr)
       return;
-    fContext = audio::alcCreateContext(fDevice, nullptr);
+    // Every SamplePlayer keeps a pool of sources and each track player owns
+    // one, so the default limit (256 on OpenAL Soft) is reachable with a
+    // skin's worth of hitsounds -- and once it is reached, alGenSources
+    // silently hands back nothing and the next sound never plays.
+    const audio::ALCint attrs[] = {audio::kAlcMonoSources, 1024,
+                                   audio::kAlcStereoSources, 128, 0};
+    fContext = audio::alcCreateContext(fDevice, attrs);
     if (fContext == nullptr) {
       audio::alcCloseDevice(fDevice);
       fDevice = nullptr;
@@ -158,8 +175,12 @@ public:
   }
 
   void play() {
-    if (fSource != 0)
-      audio::alSourcePlay(fSource);
+    if (fSource == 0) {
+      std::println(std::cerr, "[audio] play with no source");
+      return;
+    }
+    audio::alSourcePlay(fSource);
+    alFailed("alSourcePlay");
   }
 
   void setVolume(float gain) {
@@ -254,15 +275,22 @@ private:
       }
     }
 
+    audio::alGetError(); // clear anything left by an earlier call
     audio::alGenBuffers(1, &fBuffer);
     audio::alBufferData(
         fBuffer, alFormat(channels), samples.data(),
         static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
         rate);
+    if (alFailed("alBufferData")) {
+      return false;
+    }
     audio::alGenSources(1, &fSource);
+    if (alFailed("alGenSources") || fSource == 0) {
+      return false;
+    }
     audio::alSourcei(fSource, audio::kBuffer,
                      static_cast<audio::ALint>(fBuffer));
-    return true;
+    return !alFailed("alSourcei(buffer)");
   }
 
   void shutdown() {
@@ -334,16 +362,31 @@ private:
 
   bool upload(const std::vector<std::int16_t> &samples, int rate,
               int channels) {
+    audio::alGetError();
     audio::alGenBuffers(1, &fBuffer);
     audio::alBufferData(
         fBuffer, alFormat(channels), samples.data(),
         static_cast<audio::ALsizei>(samples.size() * sizeof(std::int16_t)),
         rate);
 
+    if (alFailed("alBufferData(sample)")) {
+      return false;
+    }
+    // A pool per sample lets the same hitsound overlap with itself. If the
+    // device will not give the whole pool, take what it will give rather
+    // than leaving the sample silent.
     constexpr std::size_t kPoolSize = 8;
-    fSources.resize(kPoolSize, 0);
+    fSources.assign(kPoolSize, 0);
     audio::alGenSources(static_cast<audio::ALsizei>(fSources.size()),
                         fSources.data());
+    if (alFailed("alGenSources(pool)")) {
+      fSources.assign(1, 0);
+      audio::alGenSources(1, fSources.data());
+      if (alFailed("alGenSources(single)") || fSources[0] == 0) {
+        fSources.clear();
+        return false;
+      }
+    }
     return true;
   }
 

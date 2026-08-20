@@ -41,6 +41,7 @@ using ::alDeleteBuffers;
 using ::alDeleteSources;
 using ::alGenBuffers;
 using ::alGenSources;
+using ::alGetError;
 using ::alGetSourcef;
 using ::alGetSourcei;
 using ::alListenerf;
@@ -54,6 +55,9 @@ using ::alSourceStop;
 using ::mpg123_handle;
 
 // Constants
+inline constexpr ALenum kNoError = AL_NO_ERROR;
+inline constexpr ALCint kAlcMonoSources = ALC_MONO_SOURCES;
+inline constexpr ALCint kAlcStereoSources = ALC_STEREO_SOURCES;
 inline constexpr ALenum kFormatMono8 = AL_FORMAT_MONO8;
 inline constexpr ALenum kFormatMono16 = AL_FORMAT_MONO16;
 inline constexpr ALenum kFormatStereo8 = AL_FORMAT_STEREO8;

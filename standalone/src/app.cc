@@ -180,7 +180,8 @@ private:
   float fCarouselScroll = 0.0f;
   bool fUserScrolled = false;
   int fBackgroundForSet = -1;
-  int fMenuMusicForSet = -1; // set whose audio is looping under the menus
+  int fMenuMusicForSet = -1; // set whose audio is playing under the menus
+  double fMenuTrackWall = 0.0; // when it started, so its end can be told
   std::filesystem::path fMapsDir;
   std::filesystem::path fThumbDir;
   std::filesystem::path fReplayDir;
@@ -1723,8 +1724,10 @@ private:
       return;
     }
     if (fMenuMusicForSet == fSelSet) {
-      if (!fAudio.playing()) {
-        fAudio.play(); // track ended and looping missed the wrap; nudge it
+      // The track is given a moment to start before its silence counts as
+      // having ended; OpenAL reports a source as stopped until it does.
+      if (!fAudio.playing() && wallMs() - fMenuTrackWall > 1000.0) {
+        this->nextMenuTrack();
       }
       return;
     }
@@ -1763,7 +1766,8 @@ private:
             return; // selection moved on while decoding
           }
           fAudio.adopt(std::move(*pcm));
-          fAudio.setLooping(true);
+          fAudio.setLooping(false); // the next track is chosen when it ends
+          fMenuTrackWall = wallMs();
           fAudio.setVolume(fSettings.value("master") * fSettings.value("music"));
           fAudio.play();
           // The analysis clock is anchored to the *old* track until reset.
@@ -1771,6 +1775,28 @@ private:
           fMenuClockSyncWall = std::numeric_limits<double>::lowest();
           fSpectrum.reset();
         });
+  }
+
+  // Picks another map to listen to. Random, and never the one just heard as
+  // long as there is anything else in the library.
+  void nextMenuTrack() {
+    if (fVisible.size() > 1) {
+      const int previous = fSelSet;
+      for (int attempt = 0; attempt < 8; ++attempt) {
+        std::uniform_int_distribution<std::size_t> pick(0, fVisible.size() - 1);
+        const int candidate = fVisible[pick(fUiRng)];
+        if (candidate != previous) {
+          fSelSet = candidate;
+          fSelDiff = 0;
+          fUserScrolled = false; // let the carousel follow the new selection
+          fMenuTrackWall = wallMs();
+          return;
+        }
+      }
+    }
+    // Nothing else to play: start this one again.
+    fMenuTrackWall = wallMs();
+    fAudio.play();
   }
 
   void stopMenuMusic() {
