@@ -192,6 +192,9 @@ public:
   }
 
   [[nodiscard]] double weightSum() const { return fWeightSum; }
+  [[nodiscard]] double reducedNoteCount() const {
+    return static_cast<double>(this->calculateReducedNoteCount());
+  }
 
 private:
   static constexpr double kSM = 2.5;
@@ -207,14 +210,17 @@ private:
     for (double v : ds)
       if (v > 0)
         result.push_back(v);
-    int reducedCount =
-        static_cast<int>(std::min(result.size(), calculateReducedNoteCount()));
+    // The ramp divides by the note count of the first minute, not by however
+    // many of those notes ended up with a difficulty above zero: lazer takes
+    // the smaller of the two only for how many notes to scale, and divides by
+    // reducedNoteCount throughout.
+    const double noteCount = static_cast<double>(calculateReducedNoteCount());
+    const int reducedCount =
+        static_cast<int>(std::min<double>(static_cast<double>(result.size()),
+                                          noteCount));
     for (int i = 0; i < reducedCount; ++i) {
       double scale = std::log10(
-          std::clamp(static_cast<double>(i) / static_cast<double>(reducedCount),
-                     0.0, 1.0) *
-              9.0 +
-          1.0);
+          std::clamp(static_cast<double>(i) / noteCount, 0.0, 1.0) * 9.0 + 1.0);
       result[i] *= scale; // lerp(0, 1, scale) = scale
     }
     return result;

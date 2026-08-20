@@ -286,6 +286,9 @@ int main(int argc, char **argv) {
                   << std::format("  stars     {:.13f}\n", rating.fTotal)
                   << std::format("  aim       {:.13f}\n", rating.fAim)
                   << std::format("  speed     {:.13f}\n", rating.fSpeed)
+                  << std::format("  reading   {:.13f}\n", rating.fReading)
+                  << std::format("  readval   {:.10f}\n", rating.fReadingValue)
+                  << std::format("  reduced   {:.0f}\n", rating.fReducedNotes)
                   << std::format("  max combo {}\n",
                                  engine.maxAchievableCombo())
                   << std::format("  objects   {}\n", processed);

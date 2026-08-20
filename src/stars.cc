@@ -60,7 +60,8 @@ calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
 
   double ar = std::pow(aimDiff, 0.63) * 0.02275;
   double speedRating = std::sqrt(spdDiff) * 0.0675;
-  double readingRating = std::sqrt(rdSkill.difficulty()) * 0.0675;
+  const double readingValue = rdSkill.difficulty();
+  double readingRating = std::sqrt(readingValue) * 0.0675;
 
   double ba = 4.0 * std::pow(ar, 3.0);
   double bs = 4.0 * std::pow(speedRating, 3.0);
@@ -69,7 +70,8 @@ calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
 
   double total = std::cbrt(bp * 1.12);
 
-  return {ar, speedRating, total};
+  return {ar,          speedRating,  total,
+          readingRating, readingValue, rdSkill.reducedNoteCount()};
 }
 
 } // namespace osu

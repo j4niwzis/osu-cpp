@@ -12,6 +12,9 @@ struct StarRating {
   double fAim = 0.0;
   double fSpeed = 0.0;
   double fTotal = 0.0;
+  double fReading = 0.0;
+  double fReadingValue = 0.0;   // before the rating curve
+  double fReducedNotes = 0.0;   // how many notes the first minute covers
 };
 
 namespace diffutil {
