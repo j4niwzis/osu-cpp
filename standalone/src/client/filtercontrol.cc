@@ -39,6 +39,40 @@ public:
 
   [[nodiscard]] const std::string &text() const noexcept { return fFilterText; }
 
+  // Which element the pointer is on, as one number. Only two things in here
+  // respond to hover -- the two dropdowns and the rows of an open list -- so
+  // a client that repaints regions can repaint this control when that number
+  // changes, rather than for as long as the pointer is anywhere inside it.
+  [[nodiscard]] int hotElement(float x, float y) const {
+    for (std::size_t i = 0; i < fSortItemRects.size(); ++i) {
+      if (fSortItemRects[i].contains(x, y)) {
+        return 100 + static_cast<int>(i);
+      }
+    }
+    for (std::size_t i = 0; i < fGroupItemRects.size(); ++i) {
+      if (fGroupItemRects[i].contains(x, y)) {
+        return 200 + static_cast<int>(i);
+      }
+    }
+    if (fSortRect.contains(x, y)) {
+      return 1;
+    }
+    if (fGroupRect.contains(x, y)) {
+      return 2;
+    }
+    return 0;
+  }
+
+  // Everything it draws that is not the text or the count: the two criteria,
+  // whether a list is open, and where the difficulty handles sit.
+  [[nodiscard]] std::int64_t stateKey() const {
+    return (static_cast<std::int64_t>(fSortMode) << 40) ^
+           (static_cast<std::int64_t>(fGroupMode) << 34) ^
+           (fSortOpen ? 1LL << 32 : 0) ^ (fGroupOpen ? 1LL << 33 : 0) ^
+           static_cast<std::int64_t>(fDiffRangeMin * 100.0f) ^
+           (static_cast<std::int64_t>(fDiffRangeMax * 100.0f) << 16);
+  }
+
   // Where the control actually is. It is a wedge anchored to the top right --
   // it does not span the width of the screen, and a client that repaints
   // regions was repainting the title wedge on the far left along with it.

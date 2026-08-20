@@ -333,8 +333,10 @@ private:
   double fUiDt = 16.0;         // ms, clamped
   // What the parts of song select that are still drawn immediately last drew,
   // so they can say when it changes rather than repainting on every frame.
-  bool fFilterPointerIn = false;
-  bool fFooterPointerIn = false;
+  int fHotFilter = 0;   // which filter control the pointer is on
+  int fHotFooter = 0;   // which footer chip the pointer is on
+  skia::SkRect fHotFooterRect = skia::SkRect::MakeEmpty();
+  std::int64_t fFilterState = -1;
   bool fFilterCaret = false;
   bool fDrawnOptionsOpen = false;
   bool fDrawnEmpty = false;
@@ -1462,16 +1464,22 @@ private:
     fRedrawUntilWall = std::max(fRedrawUntilWall, wallMs() + durationMs);
   }
 
-  // A widget that is still drawn immediately reports the strip it covers:
-  // while the pointer is inside it -- and on the frame it leaves, or the
-  // hover it was drawing stays behind -- and whenever what it shows changed.
-  void damageStrip(const skia::SkRect &strip, bool &pointerWasIn,
-                   bool contentChanged) {
-    const bool inside = strip.contains(fMouseX, fMouseY);
-    if (inside || pointerWasIn || contentChanged) {
-      this->damage(strip);
+  // Which footer element the pointer is on, and where that element is. The
+  // footer draws a highlight on exactly one of them at a time.
+  [[nodiscard]] std::pair<int, skia::SkRect> footerHot() const {
+    const skia::SkRect chips[] = {fBackChip, fModsChip, fRandomChip,
+                                  fOptionsChip};
+    for (int i = 0; i < 4; ++i) {
+      if (chips[static_cast<std::size_t>(i)].contains(fMouseX, fMouseY)) {
+        return {i + 1, chips[static_cast<std::size_t>(i)]};
+      }
     }
-    pointerWasIn = inside;
+    for (std::size_t i = 0; i < fOptionHits.size(); ++i) {
+      if (fOptionHits[i].contains(fMouseX, fMouseY)) {
+        return {100 + static_cast<int>(i), fOptionHits[i]};
+      }
+    }
+    return {0, skia::SkRect::MakeEmpty()};
   }
 
   // A text caret is shown for 600 ms of every 1000; this is when it next
@@ -5127,11 +5135,18 @@ private:
     fCarousel.update(ctx);
     this->damage(fCarousel.takeDamage());
 
-    // The filter control is a wedge in the top right, not a band across the
-    // screen: reporting the band was repainting the title wedge on the far
-    // left with it, twice a second, for a caret.
-    this->damageStrip(client::FilterControl::bounds(fScreenW), fFilterPointerIn,
-                      false);
+    // Two things in the filter respond to the pointer -- the dropdowns and the
+    // rows of an open list -- so it is repainted when which of them is under
+    // the pointer changes, rather than for as long as the pointer is inside
+    // it. The handles of the difficulty slider move while dragged.
+    const int hotFilter = fFilter.hotElement(fMouseX, fMouseY);
+    const std::int64_t filterState = fFilter.stateKey();
+    if (hotFilter != fHotFilter || filterState != fFilterState ||
+        fFilter.dragging()) {
+      fHotFilter = hotFilter;
+      fFilterState = filterState;
+      this->damage(client::FilterControl::bounds(fScreenW));
+    }
     // The caret and the set count are inside the search box, which is what
     // gets repainted for them -- and the caret only exists while there is
     // text to put it after, so an empty filter asks for nothing at all.
@@ -5147,14 +5162,21 @@ private:
       this->wakeAt(nextCaretFlip(wallMs()));
     }
 
-    // The options popover grows out of the footer, so while it is up the
-    // strip the footer reports is the one that includes it.
+    // The footer lights the chip under the pointer and nothing else, so
+    // crossing it is worth the two chips involved rather than the strip. The
+    // popover grows out of it, and appearing or going away is worth the lot.
     const bool optionsChanged = fOptionsOpen != fDrawnOptionsOpen;
     fDrawnOptionsOpen = fOptionsOpen;
-    this->damageStrip(
-        skia::SkRect::MakeLTRB(0.0f, sh - (fOptionsOpen ? 320.0f : 60.0f), sw,
-                               sh),
-        fFooterPointerIn, optionsChanged);
+    if (optionsChanged) {
+      this->damage(skia::SkRect::MakeLTRB(0.0f, sh - 320.0f, sw, sh));
+    }
+    const auto [hotFooter, hotFooterRect] = this->footerHot();
+    if (hotFooter != fHotFooter) {
+      fHotFooter = hotFooter;
+      this->damage(fHotFooterRect); // where the highlight was
+      this->damage(hotFooterRect);  // and where it is now
+      fHotFooterRect = hotFooterRect;
+    }
 
     // The wedge is the selection written out: it changes when the selection
     // does, or when a mod changes what the numbers on it say.
