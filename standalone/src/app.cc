@@ -1883,6 +1883,7 @@ private:
     osu::BeatmapInfo info;
     info.fFilename = d.fFilename;
     info.fMd5 = d.fMd5;
+    info.fMeta.fBeatmapSetId = d.fSetId;
     info.fMeta.fTitle = d.fTitle;
     info.fMeta.fTitleUnicode = d.fTitleUnicode;
     info.fMeta.fArtist = d.fArtist;
@@ -1906,7 +1907,8 @@ private:
     std::vector<client::CachedDifficulty> diffs;
     diffs.reserve(set.fBeatmaps.size());
     for (const auto &info : set.fBeatmaps) {
-      diffs.push_back({info.fFilename, info.fMd5, info.fMeta.fTitle,
+      diffs.push_back({info.fFilename, info.fMd5, info.fMeta.fBeatmapSetId,
+                       info.fMeta.fTitle,
                        info.fMeta.fTitleUnicode, info.fMeta.fArtist,
                        info.fMeta.fArtistUnicode, info.fMeta.fCreator,
                        info.fMeta.fVersion, info.fMeta.fAudioFilename,
@@ -2223,11 +2225,94 @@ private:
     }
   }
 
+  // The online id of a library entry, from the .osu files themselves.
+  [[nodiscard]] static int onlineSetId(const LibraryEntry &entry) {
+    for (const auto &info : entry.fInfos) {
+      if (info.fMeta.fBeatmapSetId > 0) {
+        return info.fMeta.fBeatmapSetId;
+      }
+    }
+    return 0;
+  }
+
+  [[nodiscard]] int libraryIndexForSet(int setId) const {
+    if (setId <= 0) {
+      return -1;
+    }
+    for (std::size_t i = 0; i < fLibrary.size(); ++i) {
+      if (onlineSetId(fLibrary[i]) == setId) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+
+  // Marks the results that are already installed, so they read as owned and
+  // cannot be downloaded a second time.
+  void markOwnedResults() {
+    for (auto &e : fFound) {
+      if (e.fSt == client::listing::Entry::St::kFetching) {
+        continue;
+      }
+      e.fSt = this->libraryIndexForSet(static_cast<int>(e.fSetId)) >= 0
+                  ? client::listing::Entry::St::kDone
+                  : client::listing::Entry::St::kIdle;
+    }
+  }
+
   bool addOszToLibrary(const std::filesystem::path &path, bool select) {
     const std::size_t before = fLibrary.size();
     this->scanArchive(path);
     if (fLibrary.size() == before) {
       return false;
+    }
+    // The same set can already be in the library under another file name --
+    // imported from elsewhere, or downloaded before. Keep the new archive and
+    // drop the old entry rather than listing the beatmap twice.
+    const int setId = onlineSetId(fLibrary.back());
+    // Unsubmitted maps carry no online id; their difficulty hashes identify
+    // them just as well.
+    std::vector<std::string> hashes;
+    if (setId <= 0) {
+      for (const auto &info : fLibrary.back().fInfos) {
+        if (!info.fMd5.empty()) {
+          hashes.push_back(info.fMd5);
+        }
+      }
+      std::ranges::sort(hashes);
+    }
+    const auto sameSet = [&](const LibraryEntry &entry) {
+      if (setId > 0) {
+        return onlineSetId(entry) == setId;
+      }
+      if (hashes.empty()) {
+        return false;
+      }
+      std::vector<std::string> other;
+      for (const auto &info : entry.fInfos) {
+        if (!info.fMd5.empty()) {
+          other.push_back(info.fMd5);
+        }
+      }
+      std::ranges::sort(other);
+      return other == hashes;
+    };
+    {
+      for (std::size_t i = 0; i + 1 < fLibrary.size();) {
+        if (!sameSet(fLibrary[i])) {
+          ++i;
+          continue;
+        }
+        const auto stale = fLibrary[i].fPath;
+        fLibrary.erase(fLibrary.begin() + static_cast<std::ptrdiff_t>(i));
+        if (!stale.empty() && stale != path &&
+            stale.parent_path() == fMapsDir) {
+          std::error_code ec;
+          std::filesystem::remove(stale, ec);
+          std::println(std::cerr, "[library] replaced {} with {}",
+                       stale.filename().string(), path.filename().string());
+        }
+      }
     }
     fMapCache.save();
     this->syncMapsDir();
@@ -2722,6 +2807,7 @@ private:
       }
       fFound.push_back(std::move(d));
     }
+    this->markOwnedResults();
     const std::size_t added = fFound.size() - before;
     fSearchOffset = offset + kSearchPageSize;
     fMoreAvailable = added >= static_cast<std::size_t>(kSearchPageSize) / 2;
@@ -2901,8 +2987,15 @@ private:
       return;
     }
     auto &d = fFound[idx];
-    if (d.fSt == client::listing::Entry::St::kFetching ||
-        d.fSt == client::listing::Entry::St::kDone) {
+    if (d.fSt == client::listing::Entry::St::kFetching) {
+      return;
+    }
+    if (this->libraryIndexForSet(static_cast<int>(d.fSetId)) >= 0) {
+      d.fSt = client::listing::Entry::St::kDone;
+      this->notify("already in the library");
+      return;
+    }
+    if (d.fSt == client::listing::Entry::St::kDone) {
       return;
     }
     d.fSt = client::listing::Entry::St::kFetching;
@@ -2956,6 +3049,7 @@ private:
       this->notify(std::format("imported {}",
                                d != nullptr ? d->fTitle : std::to_string(id)),
                    skia::colorSetARGB(255, 120, 220, 120));
+      this->markOwnedResults();
     } else if (d != nullptr) {
       d->fSt = client::listing::Entry::St::kError;
     }

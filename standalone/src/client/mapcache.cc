@@ -17,6 +17,7 @@ export namespace client {
 struct CachedDifficulty {
   std::string fFilename;
   std::string fMd5;
+  int fSetId = 0; // BeatmapSetID from the .osu, so a re-download is spotted
   std::string fTitle, fTitleUnicode, fArtist, fArtistUnicode, fCreator,
       fVersion, fAudioFilename, fBackground;
   double fStars = 0.0;
@@ -36,7 +37,7 @@ public:
   // Bump when the star algorithm changes so stale ratings are recomputed.
   static constexpr int kStarAlgorithmVersion = 1;
   // Bump when this file's field layout changes.
-  static constexpr int kSchemaVersion = 2;
+  static constexpr int kSchemaVersion = 3;
 
   void load(const std::filesystem::path &file) {
     fFile = file;
@@ -84,6 +85,7 @@ public:
           CachedDifficulty cd;
           cd.fFilename = strOf(dobj, "file");
           cd.fMd5 = strOf(dobj, "md5");
+          cd.fSetId = intOf(dobj, "setId");
           cd.fTitle = strOf(dobj, "title");
           cd.fTitleUnicode = strOf(dobj, "titleU");
           cd.fArtist = strOf(dobj, "artist");
@@ -143,6 +145,7 @@ public:
         bjson::object dobj;
         dobj["file"] = d.fFilename;
         dobj["md5"] = d.fMd5;
+        dobj["setId"] = d.fSetId;
         dobj["title"] = d.fTitle;
         dobj["titleU"] = d.fTitleUnicode;
         dobj["artist"] = d.fArtist;
