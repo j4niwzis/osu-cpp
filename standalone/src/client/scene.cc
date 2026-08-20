@@ -78,6 +78,19 @@ struct Margin {
   [[nodiscard]] float totalY() const noexcept { return fTop + fBottom; }
 };
 
+// How many drawables a frame walked and how many it actually drew. Counters
+// rather than anything cleverer: the question "why does a frame cost what it
+// costs" has been answered by guessing twice now, and guessing is slower than
+// counting.
+inline std::uint64_t &visitedCount() {
+  static std::uint64_t count = 0;
+  return count;
+}
+inline std::uint64_t &drawnCount() {
+  static std::uint64_t count = 0;
+  return count;
+}
+
 // ---- transforms -----------------------------------------------------------
 
 enum class Easing : std::uint8_t { kNone, kOut, kOutQuint, kOutElasticHalf };
@@ -295,9 +308,11 @@ public:
     // full every frame and Skia discards the off-screen ones after it has
     // been told about them -- and once frames are clipped to damage, the same
     // test is what keeps a repaint of one card from walking the other 200.
+    ++visitedCount();
     if (!fBounds.isEmpty() && canvas->quickReject(fBounds)) {
       return;
     }
+    ++drawnCount();
     const float alpha = inheritedAlpha * fAlpha;
     const int saved = canvas->save();
     if (fMasking) {

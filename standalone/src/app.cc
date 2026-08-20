@@ -170,7 +170,10 @@ private:
   const char *fLoggedFullReason = nullptr;
   std::chrono::steady_clock::time_point fFrameStart{};
   std::chrono::steady_clock::time_point fBlitStart{};
-  std::int64_t fCostDrawUs = 0, fCostBlitUs = 0, fCostSwapUs = 0;
+  std::int64_t fCostUpdateUs = 0, fCostDrawUs = 0, fCostBlitUs = 0,
+      fCostSwapUs = 0;
+  std::int64_t fLastUpdateUs = 0;
+  std::uint64_t fCostVisited = 0, fCostDrawn = 0;
   std::int64_t fCostClipArea = 0; // pixels the frames were allowed to touch
   int fCostFrames = 0;
   double fCostLogWall = 0.0;
@@ -1966,7 +1969,11 @@ private:
     // pointer lands where it lands, values ease, the layout is redone, and
     // what changed is marked. Only then is it known whether the frame that
     // was asked for has anything to put on screen.
+    const auto updateStart = std::chrono::steady_clock::now();
     this->updateScreens();
+    fLastUpdateUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - updateStart)
+                        .count();
     if (this->nothingToPaint()) {
       // The question the safety net exists to ask has just been asked and
       // answered, so the net does not need to fire.
@@ -2193,9 +2200,14 @@ private:
       return std::chrono::duration_cast<std::chrono::microseconds>(to - from)
           .count();
     };
-    fCostDrawUs += us(start, fBlitStart);
+    fCostUpdateUs += fLastUpdateUs;
+    fCostDrawUs += us(start, fBlitStart) - fLastUpdateUs;
     fCostBlitUs += us(fBlitStart, beforeSwap);
     fCostSwapUs += us(beforeSwap, now);
+    fCostVisited += client::scene::visitedCount();
+    fCostDrawn += client::scene::drawnCount();
+    client::scene::visitedCount() = 0;
+    client::scene::drawnCount() = 0;
     if (fComputedClipFull) {
       fCostClipArea += static_cast<std::int64_t>(fScreenW) * fScreenH;
     } else if (!fComputedClip.empty()) {
@@ -2208,13 +2220,19 @@ private:
     if (wallMs() - fCostLogWall < 1000.0 || fCostFrames == 0) {
       return;
     }
+    // Named for what they are: settling the screen, drawing it (which on the
+    // CPU renderer is where rasterisation happens too), handing the result to
+    // the window, and waiting for the swap.
     std::println(std::cerr,
-                 "[frame] record {:.2f} ms, raster {:.2f} ms, swap {:.2f} "
-                 "ms over {} frames, {:.0f}% of the screen repainted{}",
+                 "[frame] update {:.2f} ms, draw {:.2f} ms, blit {:.2f} ms, "
+                 "swap {:.2f} ms over {} frames, {} of {} drawables, "
+                 "{:.0f}% of the screen repainted{}",
+                 static_cast<double>(fCostUpdateUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostDrawUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0,
-                 fCostFrames,
+                 fCostFrames, fCostDrawn / std::max<std::uint64_t>(1, fCostFrames),
+                 fCostVisited / std::max<std::uint64_t>(1, fCostFrames),
                  100.0 * static_cast<double>(fCostClipArea) /
                      std::max<double>(1.0, static_cast<double>(fCostFrames) *
                                                fScreenW * fScreenH),
@@ -2227,7 +2245,8 @@ private:
                                                   : present::backend())
                           : ""));
     fCostLogWall = wallMs();
-    fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
+    fCostUpdateUs = fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
+    fCostVisited = fCostDrawn = 0;
     fCostClipArea = 0;
     fCostFrames = 0;
   }
