@@ -38,9 +38,11 @@ public:
   // 2: strain peak capping, slider repeat/tick thresholds, spinners no longer
   //    skipped by the speed and reading skills.
   // 3: the angle fix (atan2 of a zero vector), the reduction loop, zero-length
-  //    sliders, NaN green lines, stack heights, curve approximation. This is
-  //    the version that matches lazer's own diffcalc tests.
-  static constexpr int kStarAlgorithmVersion = 3;
+  //    sliders, NaN green lines, stack heights, curve approximation.
+  // 4: slider path extension, RepeatCount off by one, the normalised vector
+  //    angle of a zero vector. This is the version that matches lazer's own
+  //    diffcalc tests to within a ten-thousandth.
+  static constexpr int kStarAlgorithmVersion = 4;
   // Bump when this file's field layout changes.
   static constexpr int kSchemaVersion = 3;
 
