@@ -262,7 +262,18 @@ public:
     const float ay = parent.fTop + parentH * anchorY(fAnchor);
     const float left = ax - width * anchorX(fOrigin) + fX + fMargin.fLeft;
     const float top = ay - height * anchorY(fOrigin) + fY + fMargin.fTop;
+    const skia::SkRect previous = fBounds;
     fBounds = skia::SkRect::MakeXYWH(left, top, width, height);
+    if (fBounds != previous) {
+      // A drawable that moved or changed size has to repaint both where it is
+      // now and where it used to be, and the layout is the only place that
+      // knows both. Without this, a card collapsing in the beatmap browser
+      // left the rows below it standing where they were: they moved, nothing
+      // said so, and a clipped frame painted them at their new place over the
+      // copy at the old one.
+      this->damageUpwards(previous);
+      this->damageUpwards(fBounds);
+    }
 
     this->layoutChildren();
     fLayoutValid = true;
