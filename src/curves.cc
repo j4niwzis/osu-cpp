@@ -60,7 +60,12 @@ inline void appendPoint(std::vector<Vec2> &out, Vec2 p) {
 
 inline void subdivideBezier(std::span<const Vec2> ctrl, std::vector<Vec2> &out,
                             int depth = 0) {
-  constexpr double kTolerance = 0.125;
+  // PathApproximator.BEZIER_TOLERANCE. The flatness test compares against
+  // TOLERANCE_SQ * 4, so this constant is the framework's 0.25 and not half
+  // of it: subdividing finer than lazer does gives a longer polyline and a
+  // slightly different slider length, which then moves the duration, the
+  // ticks and the star rating.
+  constexpr double kTolerance = 0.25;
   constexpr int kMaxDepth = 14;
 
   const std::size_t n = ctrl.size();
@@ -131,6 +136,10 @@ inline void subdivideBezier(std::span<const Vec2> ctrl, std::vector<Vec2> &out,
   subdivideBezier(std::span<const Vec2>(right.data(), n), out, depth + 1);
 }
 
+// A repeated control point ends one bezier segment and starts the next --
+// that is how the legacy format spells "corner here", and how a slider ends
+// up with several independent curves. Running one de Casteljau over the whole
+// list instead draws a quite different shape, which is what this did.
 inline void bake(curve::Bezier, std::span<const Vec2> ctrl,
                  std::vector<Vec2> &out) {
   if (ctrl.size() < 2) {
@@ -138,22 +147,25 @@ inline void bake(curve::Bezier, std::span<const Vec2> ctrl,
     return;
   }
   appendPoint(out, ctrl.front());
-  if (ctrl.size() > 60) {
-    constexpr int kSamples = 1024;
-    const std::size_t n = ctrl.size();
-    std::vector<Vec2> work(ctrl.begin(), ctrl.end());
-    for (int s = 1; s <= kSamples; ++s) {
-      const double t = static_cast<double>(s) / kSamples;
-      for (std::size_t level = n - 1; level > 0; --level) {
-        for (std::size_t i = 0; i < level; ++i) {
-          work[i] = work[i].lerp(work[i + 1], t);
-        }
-      }
-      appendPoint(out, work[0]);
+  std::size_t start = 0;
+  for (std::size_t i = 1; i < ctrl.size(); ++i) {
+    if (ctrl[i].distanceTo(ctrl[i - 1]) > 1e-6) {
+      continue;
     }
-    return;
+    const auto segment = ctrl.subspan(start, i - start);
+    if (segment.size() >= 2) {
+      subdivideBezier(segment, out);
+    } else if (!segment.empty()) {
+      appendPoint(out, segment.front());
+    }
+    start = i;
   }
-  subdivideBezier(ctrl, out);
+  const auto tail = ctrl.subspan(start);
+  if (tail.size() >= 2) {
+    subdivideBezier(tail, out);
+  } else if (!tail.empty()) {
+    appendPoint(out, tail.front());
+  }
 }
 
 inline void bake(curve::Linear, std::span<const Vec2> ctrl,
@@ -165,7 +177,10 @@ inline void bake(curve::Linear, std::span<const Vec2> ctrl,
 
 inline void bake(curve::Catmull, std::span<const Vec2> ctrl,
                  std::vector<Vec2> &out) {
-  constexpr int kStepsPerSegment = 20;
+  // PathApproximator.catmull_detail, and the same handling of the ends:
+  // beyond the last control point the spline is extrapolated rather than
+  // clamped.
+  constexpr int kStepsPerSegment = 50;
   const std::size_t n = ctrl.size();
   if (n < 2) {
     std::ranges::copy(ctrl, std::back_inserter(out));
@@ -175,8 +190,8 @@ inline void bake(curve::Catmull, std::span<const Vec2> ctrl,
   for (std::size_t i = 0; i + 1 < n; ++i) {
     const Vec2 p0 = ctrl[i == 0 ? 0 : i - 1];
     const Vec2 p1 = ctrl[i];
-    const Vec2 p2 = ctrl[i + 1];
-    const Vec2 p3 = ctrl[i + 2 < n ? i + 2 : n - 1];
+    const Vec2 p2 = i + 1 < n ? ctrl[i + 1] : p1 + p1 - p0;
+    const Vec2 p3 = i + 2 < n ? ctrl[i + 2] : p2 + p2 - p1;
     for (int step = 1; step <= kStepsPerSegment; ++step) {
       const double t = static_cast<double>(step) / kStepsPerSegment;
       const double t2 = t * t;
@@ -192,8 +207,10 @@ inline void bake(curve::Catmull, std::span<const Vec2> ctrl,
 
 inline void bake(curve::Perfect tag, std::span<const Vec2> ctrl,
                  std::vector<Vec2> &out) {
+  // A perfect curve is three points and nothing else; the legacy parser
+  // downgrades anything else to a bezier rather than to a line.
   if (ctrl.size() != 3) {
-    bake(curve::Linear{}, ctrl, out);
+    bake(curve::Bezier{}, ctrl, out);
     return;
   }
   const auto [a, b, c] = std::tie(ctrl[0], ctrl[1], ctrl[2]);
@@ -233,11 +250,20 @@ inline void bake(curve::Perfect tag, std::span<const Vec2> ctrl,
   const double span =
       counterClockwise ? ccwSpan : ccwSpan - 2.0 * std::numbers::pi;
 
+  // CircularArcToPiecewiseLinear: enough points that the discrete curvature
+  // stays under the framework's tolerance of 0.1, which is
+  // ceil(thetaRange / (2 * acos(1 - tolerance / radius))).
+  constexpr double kArcTolerance = 0.1;
+  const double thetaRange = std::abs(span);
   const int steps =
-      std::clamp(static_cast<int>(std::abs(span) * radius / 8.0), 8, 512);
-  appendPoint(out, a);
-  for (int i = 1; i <= steps; ++i) {
-    const double ang = s + span * static_cast<double>(i) / steps;
+      2.0 * radius <= kArcTolerance
+          ? 2
+          : std::max(2, static_cast<int>(std::ceil(
+                            thetaRange /
+                            (2.0 * std::acos(1.0 - kArcTolerance / radius)))));
+  for (int i = 0; i < steps; ++i) {
+    const double fract = static_cast<double>(i) / (steps - 1);
+    const double ang = s + span * fract;
     appendPoint(out, {center.fX + radius * std::cos(ang),
                       center.fY + radius * std::sin(ang)});
   }
