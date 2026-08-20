@@ -420,6 +420,8 @@ private:
   float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
   int fHotResultButton = -1; // which action the pointer is on
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
+  int fHotReplayPanel = -1;
+  bool fPointerWasInDialog = false;
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
@@ -2178,11 +2180,18 @@ private:
       this->damageAll("overlay appeared or went away");
     } else if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
       this->damageAll("overlay sliding");
-    } else if (fExportDialog.open() &&
-               (this->pointerMoved() || fExportDialog.takeStatusChanged())) {
-      // Live status while a video is being written; a dialog waiting for an
-      // answer changes only when the pointer is on it.
-      this->damageAll("export dialog");
+    } else if (fExportDialog.open()) {
+      // The box, not the window: what is behind the dim does not change while
+      // the dialog is up. Repainted while the status line is being rewritten
+      // by a video being written, and while the pointer is inside it, since
+      // its buttons light up.
+      const skia::SkRect box =
+          client::ExportDialog::bounds(fScreenW, fScreenH);
+      const bool inside = box.contains(fMouseX, fMouseY);
+      if (fExportDialog.takeStatusChanged() || inside || fPointerWasInDialog) {
+        this->damage(box);
+      }
+      fPointerWasInDialog = inside;
     }
     fOverlayShown = overlay;
     this->beginFrame();
@@ -2297,11 +2306,15 @@ private:
     auto *canvas = fSurface->getCanvas();
     if (fModSelect.visible()) {
       this->drawModSelect(canvas);
-      // It covers the screen and reports no regions, so the whole screen is
-      // the honest answer -- but only while it is moving or being pointed at.
-      // Standing open and untouched, it is a picture that does not change.
-      if (fModSelect.animating() || this->pointerMoved()) {
-        this->damageAll("mod select");
+      // It says what changed now: the whole screen while it slides, because
+      // the dim behind it fades with it, and otherwise the chip the pointer
+      // has arrived on and the one it left.
+      const skia::SkRect region = fModSelect.damageFor(
+          {fScreenW, fScreenH, fMouseX, fMouseY, fUiDt});
+      if (region.width() >= static_cast<float>(fScreenW)) {
+        this->damageAll("mod select sliding");
+      } else {
+        this->damage(region);
       }
     }
     if (fSettingsPanel.visible()) {
@@ -2314,9 +2327,23 @@ private:
       // Same: the strip of panels glides when another replay is chosen, and
       // the pointer picks out the one under it. Neither happening means
       // nothing to repaint.
-      if (this->pointerMoved() ||
-          std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
-        this->damageAll("replay browser");
+      if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
+        this->damageAll("replay browser gliding");
+      } else {
+        // The panels are the only thing in it that answers the pointer, and
+        // the client knows where they are: the band they occupy is the answer
+        // rather than the window they are drawn over.
+        int hot = -1;
+        for (std::size_t i = 0; i < fPanelHits.size(); ++i) {
+          if (fPanelHits[i].fRect.contains(fMouseX, fMouseY)) {
+            hot = static_cast<int>(i);
+            break;
+          }
+        }
+        if (hot != fHotReplayPanel) {
+          fHotReplayPanel = hot;
+          this->damage(fPanelBand);
+        }
       }
     }
     if (fExportDialog.open()) {
@@ -5359,7 +5386,10 @@ private:
                     {fScreenW, fScreenH, fMouseX, fMouseY, fUiDt});
   }
 
-  bool modClick(float x, float y) { return fModSelect.click(x, y, fMods); }
+  bool modClick(float x, float y) {
+    fModSelect.touched(); // whatever it hit, the chips draw the answer
+    return fModSelect.click(x, y, fMods);
+  }
 
   void drawExportDialog(skia::SkCanvas *canvas) {
     fExportDialog.draw(canvas, fFont, fScreenW, fScreenH, fMouseX, fMouseY);

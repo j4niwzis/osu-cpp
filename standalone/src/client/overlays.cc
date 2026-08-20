@@ -33,6 +33,53 @@ public:
   void toggle() noexcept { fOpen = !fOpen; }
   void close() noexcept { fOpen = false; }
 
+  // What has to be repainted for this overlay, worked out from where its
+  // chips ended up on the last frame. Empty means it is open, still, and
+  // showing exactly what it showed before.
+  //
+  // While it slides the answer is the whole screen: the dim behind it fades
+  // with it. Settled, the only thing that moves is the chip under the
+  // pointer, so the answer is that chip and the one being left.
+  [[nodiscard]] skia::SkRect damageFor(const Frame &frame) {
+    const float sw = static_cast<float>(frame.fScreenW);
+    const float sh = static_cast<float>(frame.fScreenH);
+    if (this->animating() || fTouched) {
+      fTouched = false;
+      fHot = -1;
+      return skia::SkRect::MakeWH(sw, sh);
+    }
+    int hot = -1;
+    for (std::size_t i = 0; i < fHits.size(); ++i) {
+      if (fHits[i].fRect.contains(frame.fMouseX, frame.fMouseY)) {
+        hot = static_cast<int>(i);
+        break;
+      }
+    }
+    if (hot == fHot) {
+      return skia::SkRect::MakeEmpty();
+    }
+    skia::SkRect out = skia::SkRect::MakeEmpty();
+    const auto join = [&out, this](int index) {
+      if (index < 0 || index >= static_cast<int>(fHits.size())) {
+        return;
+      }
+      skia::SkRect rect = fHits[static_cast<std::size_t>(index)].fRect;
+      rect.outset(6.0f, 6.0f);
+      if (out.isEmpty()) {
+        out = rect;
+      } else {
+        out.join(rect);
+      }
+    };
+    join(fHot);
+    join(hot);
+    fHot = hot;
+    return out;
+  }
+
+  // A click changed which mods are on, and the chips draw that.
+  void touched() noexcept { fTouched = true; }
+
   void draw(skia::SkCanvas *canvas, skia::SkFont &font,
             std::span<const ModEntry> entries, osu::ModSet active,
             const Frame &frame) {
@@ -139,6 +186,8 @@ private:
   };
   bool fOpen = false;
   float fSlide = 0.0f;
+  bool fTouched = true;
+  int fHot = -1;
   std::vector<Hit> fHits;
 };
 
@@ -159,6 +208,16 @@ public:
   // Whether the line of status under the buttons has changed since this was
   // last asked. A dialog waiting for an answer is a still picture; one
   // writing a video is not, and this is the difference.
+  // The box it draws, which is all of it: the rest of the screen behind the
+  // dim does not change while it is up.
+  [[nodiscard]] static skia::SkRect bounds(int screenW, int screenH) {
+    const float sw = static_cast<float>(screenW);
+    const float sh = static_cast<float>(screenH);
+    const float w = std::min(520.0f, sw * 0.6f);
+    const float h = 300.0f;
+    return skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
+  }
+
   [[nodiscard]] bool takeStatusChanged() noexcept {
     const bool changed = fStatusChanged;
     fStatusChanged = false;
