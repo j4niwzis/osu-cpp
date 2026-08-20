@@ -143,6 +143,8 @@ private:
   double fRedrawUntilWall = 0.0; // frames are drawn until at least this time
   double fLastDrawWall = 0.0;
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
+  skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
+  bool fDrewOnRaster = false;               // this frame went to the CPU one
   // Two distinct things, which sharing one variable confused: what the next
   // frame has to repaint (filled in while this one draws) and what this frame
   // is clipped to (taken from that accumulator when the frame starts).
@@ -171,6 +173,7 @@ private:
   std::int64_t fLastSwapUs = 0; // how long the last swap blocked for
   double fFpsPrevWall = 0.0;
   double fFpsFrameMs = 0.0;
+  double fFpsDamageWall = 0.0;
 
   // ---- Screens ---------------------------------------------------------
   enum class State {
@@ -1577,6 +1580,16 @@ private:
     fLastDrawWall = wallMs();
     fFrameStart = std::chrono::steady_clock::now();
 
+    // The renderer is chosen per frame, because only the UI screens may use
+    // the CPU one: gameplay draws precomputed GPU textures.
+    const bool software = fSettings.flag("software") && fRasterSurface &&
+                          fState != State::kPlaying && fState != State::kPaused;
+    if (software != fDrewOnRaster) {
+      this->damageAll("renderer changed");
+    }
+    fDrewOnRaster = software;
+    fSurface = software ? fRasterSurface : fWindowSurface;
+
     // Only screens that have been taught to say what they changed may be
     // clipped to it. The rest have to repaint whole, and saying so here is
     // what stops a small widget that does report itself -- the FPS counter,
@@ -1693,7 +1706,14 @@ private:
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
                    box.fBottom - 8.0f, 12.0f, skia::kWhite, 0.7f);
-    this->damage(box);
+    // Marked a few times a second rather than every frame: it sits in the
+    // corner furthest from everything else, so its rectangle is what makes
+    // the frame's bounding box cover the screen. The number is smoothed
+    // anyway and reads the same either way.
+    if (now - fFpsDamageWall > 250.0) {
+      fFpsDamageWall = now;
+      this->damage(box);
+    }
   }
 
   void present() {
@@ -1729,7 +1749,15 @@ private:
     this->showDamage(canvas);
     canvas->restoreToCount(fFrameSave);
     fBlitStart = std::chrono::steady_clock::now();
-    fContext->flushAndSubmit(fSurface.get());
+    if (fDrewOnRaster && fWindowSurface) {
+      // The CPU frame lives in main memory; the window wants it as pixels.
+      if (auto image = fRasterSurface->makeImageSnapshot()) {
+        fWindowSurface->getCanvas()->drawImage(image.get(), 0.0f, 0.0f);
+      }
+      fContext->flushAndSubmit(fWindowSurface.get());
+    } else {
+      fContext->flushAndSubmit(fSurface.get());
+    }
 
     const auto beforeSwap = std::chrono::steady_clock::now();
     glfw::glfwSwapBuffers(fWindow);
@@ -1767,7 +1795,8 @@ private:
                  static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0,
                  fCostFrames,
-                 fPartialRedraw ? " (partial redraw)" : "");
+                 std::string(fDrewOnRaster ? " [cpu]" : " [gpu]") +
+                     (fPartialRedraw ? " (partial redraw)" : ""));
     fCostLogWall = wallMs();
     fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
     fCostFrames = 0;
@@ -3943,9 +3972,18 @@ private:
 
     // ---- Logo on top of the visualiser.
     this->drawLogo(canvas, logoBase);
-    // The bars reach bar_length beyond the logo's circumference.
+    // How far the bars actually reach this frame. A flat guess of three
+    // quarters of the logo's width was covering 40% of the screen on its
+    // own, which with the counter in the opposite corner pushed the frame
+    // over the "repaint it whole" threshold and saved nothing at all.
+    float loudest = 0.0f;
+    for (const float amp : fSpectrum.bars()) {
+      loudest = std::max(loudest, amp);
+    }
+    const float logoRadius = fLogoRect.width() * 0.5f;
+    const float reach = logoRadius * 2.0f * (600.0f / 480.0f) * loudest;
     skia::SkRect moving = fLogoRect;
-    moving.outset(fLogoRect.width() * 0.75f, fLogoRect.width() * 0.75f);
+    moving.outset(reach + 4.0f, reach + 4.0f);
     this->damage(moving);
 
     // A button only needs repainting while something about it changes. Its
@@ -4383,6 +4421,7 @@ private:
     }
     fSwapIntervalRequest.store(fSettings.flag("vsync") ? 1 : 0,
                                std::memory_order_release);
+    this->damageAll("settings applied");
     // Sensitivity other than 1 needs relative motion, which needs the pointer
     // grabbed; so does raw input.
     this->applyPointerMode();
@@ -6291,6 +6330,18 @@ private:
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);
     fSurface = fWindowSurface;
+    // Skia's CPU rasteriser, as an alternative target for the menus. On a
+    // software GL stack the driver's own rasteriser is not obviously better
+    // than Skia's, and which one wins is a question for measurement rather
+    // than for argument -- hence the setting.
+    //
+    // Gameplay is never drawn this way, and that is deliberate: slider bodies
+    // are precomputed once into textures through SkSL, which llvmpipe's JIT
+    // handles better than a CPU rasteriser would, and drawing those textures
+    // into a raster canvas would mean reading them back every frame.
+    fRasterSurface = skia::Raster(skia::SkImageInfo::Make(
+        fScreenW, fScreenH, skia::kRGBA_8888_SkColorType,
+        skia::kPremul_SkAlphaType));
     fBlitHistory.clear();
     this->damageAll("resize");
     fView.invalidate();

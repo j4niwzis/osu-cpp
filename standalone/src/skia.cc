@@ -115,6 +115,7 @@ using ::GrBackendRenderTargets::MakeGL;
 using ::GrDirectContexts::MakeGL;
 using ::skgpu::Budgeted;
 using ::skgpu::Budgeted::kNo;
+using ::SkSurfaces::Raster;
 using ::SkSurfaces::RenderTarget;
 using ::SkSurfaces::WrapBackendRenderTarget;
 
