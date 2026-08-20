@@ -2419,9 +2419,14 @@ private:
                           : kSwapChainDepth;
   }
 
-  [[nodiscard]] std::size_t drawReach() const {
-    return fDrewOnRaster ? 1 : this->windowReach();
-  }
+  // It reaches as far as the window does, on either renderer. The raster
+  // surface holding the last complete frame means one frame is *enough* --
+  // but only if every screen reports everything it changes, and a gap in that
+  // reporting stops being a flicker and becomes a piece of the screen that
+  // never updates again, because nothing else will ever repaint it. Reaching
+  // further papers over those gaps; it also hides them, which is the trade
+  // being made here knowingly rather than by accident.
+  [[nodiscard]] std::size_t drawReach() const { return this->windowReach(); }
 
   // Whether the history says enough about that many frames back.
   [[nodiscard]] bool historyShorterThan(std::size_t reach) const {
