@@ -1068,7 +1068,10 @@ private:
   void keyDownload(int key) {
     if (key == glfw::kKeyEscape) {
       if (fSetPage.open()) {
+        // The page covered the listing; what it uncovers has to be repainted,
+        // and the listing has no way of knowing it was ever covered.
         fSetPage.close(); // back to the listing, as the overlay stacks
+        this->damageAll("beatmap page closed");
         return;
       }
       fPreview.stop();
@@ -1624,6 +1627,49 @@ private:
     }
   }
 
+  // The half of a screen that is not drawing: what is in the tree, where it
+  // sits, what the pointer is over. Damage marked here is marked before the
+  // frame begins, so it is a reason to draw rather than a note about what to
+  // repaint next time.
+  void updateScreens() {
+    if (fState == State::kDownload) {
+      this->updateDownload();
+    }
+  }
+
+  // Whether the frame that was asked for would put anything new on screen.
+  // Only a screen that reports its damage can be asked: for the others,
+  // "nothing is marked" means "nobody was asked", not "nothing changed".
+  [[nodiscard]] bool nothingToPaint() {
+    if (fFullDamage || !fDamage.empty() || fFullRepaintsOwed > 0) {
+      return false;
+    }
+    if (fState != State::kDownload) {
+      return false; // the screens still drawn immediately cannot answer
+    }
+    // Anything drawn over the screen repaints whole and does not report a
+    // region, so it cannot be skipped on the strength of the screen's silence.
+    if (fSettingsPanel.visible() || fModSelect.visible() || fReplayListOpen ||
+        fConfirmDelete || fExportDialog.open()) {
+      return false;
+    }
+    // Live status the tree reads straight out of the client rather than
+    // holding as state of its own, so it cannot mark it as changed: a
+    // download's progress bar, the preview's ring, the loading spinner.
+    if (fPreviewId >= 0 || fSearchPending || fPreviewPending ||
+        !fTransfers.empty()) {
+      return false;
+    }
+    // Things the screen draws that live on a clock rather than on damage.
+    if (this->screenFade() < 1.0f) {
+      return false;
+    }
+    if (!fToast.empty() && wallMs() - fToastWall < 4000.0) {
+      return false;
+    }
+    return true;
+  }
+
   [[nodiscard]] bool needsFrame() {
     // Gameplay is a moving picture by definition, and so is anything with a
     // clock on screen.
@@ -1700,6 +1746,21 @@ private:
       // Nothing to show: no clear, no draw, no swap, so the front buffer
       // keeps what it already had.
       std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      return;
+    }
+    // Screens built as a scene tree settle before anything is drawn: the
+    // pointer lands where it lands, values ease, the layout is redone, and
+    // what changed is marked. Only then is it known whether the frame that
+    // was asked for has anything to put on screen.
+    this->updateScreens();
+    if (this->nothingToPaint()) {
+      // The question the safety net exists to ask has just been asked and
+      // answered, so the net does not need to fire.
+      fLastDrawWall = wallMs();
+      if (client::ui::takeEasingMoved()) {
+        this->oweFrames(2);
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
       return;
     }
     fLastDrawWall = wallMs();
@@ -3553,7 +3614,8 @@ private:
     auto handle = std::make_shared<client::http::Handle>();
     client::http::get(
         url, std::move(handle), [this, id](client::http::Response r) {
-          for (auto &e : fFound) {
+          for (std::size_t i = 0; i < fFound.size(); ++i) {
+            auto &e = fFound[i];
             if (e.fSetId != id) {
               continue;
             }
@@ -3565,6 +3627,9 @@ private:
             } else {
               e.fThumbSt = client::listing::Entry::Thumb::kFailed;
             }
+            // The card draws the image out of the entry, so it cannot notice
+            // this by itself: one card is marked, rather than the screen.
+            fListing.coverArrived(static_cast<int>(i));
             break;
           }
         });
@@ -5742,8 +5807,10 @@ private:
   // The whole listing -- header, filters, sort bar and cards -- is drawn by
   // client.listing; here it only gets the data and the transfer state.
 
-  void frameDownload() {
-    auto *canvas = fSurface->getCanvas();
+  // Everything about this screen that is not drawing. It runs before the
+  // client has committed to a frame, so what it marks as damaged is the
+  // answer to "is this frame worth drawing".
+  void updateDownload() {
     // Progress lives on the transfer handles; the view just reads a float.
     for (auto &e : fFound) {
       const auto it = fTransfers.find(e.fSetId);
@@ -5752,7 +5819,6 @@ private:
       }
     }
     client::listing::Listing::Ctx ctx;
-    ctx.fCanvas = canvas;
     ctx.fFont = &fFont;
     ctx.fWidth = static_cast<float>(fScreenW);
     ctx.fHeight = static_cast<float>(fScreenH);
@@ -5767,16 +5833,16 @@ private:
       this->restoreMusic();
     }
     fListing.setPreview(fPreviewId, this->previewProgress());
-    fListing.draw(ctx);
+    fListing.update(ctx);
     this->damage(fListing.takeDamage());
     if (fSetPage.open()) {
       const std::size_t idx = this->indexOfSet(fSetPage.setId());
       if (idx >= fFound.size()) {
         fSetPage.close(); // the set fell out of the results
+        this->damageAll("beatmap page closed");
       }
       client::setpage::SetPage::Ctx page;
       page.fEntry = idx < fFound.size() ? &fFound[idx] : nullptr;
-      page.fCanvas = canvas;
       page.fFont = &fFont;
       page.fWidth = ctx.fWidth;
       page.fHeight = ctx.fHeight;
@@ -5785,7 +5851,7 @@ private:
       page.fNowMs = wallMs();
       page.fPreviewPlaying = fPreviewId == fSetPage.setId();
       page.fPreviewProgress = this->previewProgress();
-      fSetPage.draw(page);
+      fSetPage.update(page);
       this->damage(fSetPage.takeDamage());
     }
     // Covers are only fetched for what is on screen.
@@ -5800,6 +5866,12 @@ private:
     // The caret blinks on a clock of its own. Rather than keeping frames
     // coming so the moment is not missed, the screen says when the moment is.
     this->wakeAt(fListing.nextChangeWall(wallMs()));
+  }
+
+  void frameDownload() {
+    auto *canvas = fSurface->getCanvas();
+    fListing.render(canvas);
+    fSetPage.render(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
   }

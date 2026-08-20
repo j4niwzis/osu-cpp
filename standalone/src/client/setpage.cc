@@ -184,7 +184,22 @@ public:
 
   void scroll(float ticks) { fScrollTicks += ticks; }
 
+  // Split in two on purpose: everything that decides what the page looks
+  // like happens in update(), before a frame has been committed to, and
+  // render() only puts it on a canvas. That is what lets the client find out
+  // whether a frame is worth drawing before it draws it.
   void draw(const Ctx &ctx) {
+    this->update(ctx);
+    this->render(ctx.fCanvas);
+  }
+
+  void render(skia::SkCanvas *canvas) {
+    if (fOpen && fScene && canvas != nullptr) {
+      fScene->draw(canvas);
+    }
+  }
+
+  void update(const Ctx &ctx) {
     if (!fOpen || ctx.fEntry == nullptr) {
       return;
     }
@@ -199,6 +214,7 @@ public:
     if (!fScene || fingerprint != fFingerprint) {
       fFingerprint = fingerprint;
       fScene = this->build(e, ctx);
+      fRebuilt = true;
     }
     if (fPreviewGlyph != nullptr) {
       fPreviewGlyph->fPlaying = ctx.fPreviewPlaying;
@@ -212,8 +228,13 @@ public:
       fScrollTicks = 0.0f;
     }
     fScene->layoutIfNeeded(screen);
+    if (fRebuilt) {
+      // Nothing in a freshly built tree has marked itself yet; after the
+      // first layout it can say how much of the screen it covers.
+      fRebuilt = false;
+      fScene->markDamaged();
+    }
     fScene->setHover(ctx.fMouseX, ctx.fMouseY);
-    fScene->draw(ctx.fCanvas);
   }
 
   // The region this page repainted, for a caller that clips frames to
@@ -668,6 +689,7 @@ private:
   float fScrollTicks = 0.0f;
   Result fPending;
   std::string fFingerprint;
+  bool fRebuilt = false;
   std::unique_ptr<scene::Drawable> fScene;
   PreviewGlyph *fPreviewGlyph = nullptr; // owned by the tree
 };

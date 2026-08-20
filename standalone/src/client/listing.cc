@@ -301,6 +301,20 @@ public:
     fPreviewProgress = progress;
   }
 
+  // A cover finished loading. The card reads the image straight out of the
+  // entry, so it has no way of noticing by itself -- and now that a frame is
+  // only drawn when something says it changed, not noticing means the cover
+  // never appears. Marking the one card is what keeps that from meaning a
+  // full repaint per cover, of which there are fifty.
+  void coverArrived(int entry) {
+    for (const auto &card : fCards) {
+      if (card.first == entry && card.second != nullptr) {
+        card.second->markDamaged();
+        return;
+      }
+    }
+  }
+
   [[nodiscard]] Filters &filters() { return fFilters; }
   [[nodiscard]] const Filters &filters() const { return fFilters; }
   [[nodiscard]] std::span<const int> visible() const { return fVisible; }
@@ -328,7 +342,23 @@ public:
     fFilters.fDescending = true;
   }
 
+  // Split in two: update() settles everything -- what is in the tree, where
+  // it sits, what the pointer is over -- and marks what changed, while
+  // render() only draws. The client runs the first half before it decides
+  // whether the frame is worth drawing at all, which is how a pointer moving
+  // over nothing in particular costs nothing at all.
   void draw(const Ctx &ctx) {
+    this->update(ctx);
+    this->render(ctx.fCanvas);
+  }
+
+  void render(skia::SkCanvas *canvas) {
+    if (fScene && canvas != nullptr) {
+      fScene->draw(canvas);
+    }
+  }
+
+  void update(const Ctx &ctx) {
     fFont = ctx.fFont;
     fMouseX = ctx.fMouseX;
     fMouseY = ctx.fMouseY;
@@ -351,14 +381,24 @@ public:
       const float offset = fScroll != nullptr ? fScroll->current() : 0.0f;
       fShape = shape;
       fScene = this->build();
+      fRebuilt = true;
       if (fScroll != nullptr && offset > 0.0f && !fScrollToStart) {
         fScroll->setCurrent(offset);
       }
     }
 
     const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
+    fTicking = false; // nodes counting out a delay set this again below
     fScene->updateTree(ctx.fNowMs);
     fScene->layoutIfNeeded(screen);
+    if (fRebuilt) {
+      // A tree that has just been built has drawn nothing yet, so nothing in
+      // it has marked itself: after the first layout it knows how big it is,
+      // and says so. Without this a page of results arrives into a client
+      // that has been told nothing changed.
+      fRebuilt = false;
+      fScene->markDamaged();
+    }
     if (fScrollToStart && fScroll != nullptr) {
       fScroll->scrollToStart();
       fScrollToStart = false;
@@ -371,7 +411,6 @@ public:
       fScene->layoutIfNeeded(screen);
     }
     fScene->setHover(ctx.fMouseX, ctx.fMouseY);
-    fScene->draw(ctx.fCanvas);
     if (fScroll != nullptr) {
       fScrollCurrent = fScroll->current();
       fScrollExtent = fScroll->extent();
@@ -399,7 +438,7 @@ public:
   // themselves through client::ui::approach; transforms do not, so they are
   // asked directly.
   [[nodiscard]] bool animating() const {
-    return fScene && fScene->animatingTree();
+    return fTicking || (fScene && fScene->animatingTree());
   }
 
   // When the picture changes next without anybody touching it: the caret is
@@ -518,6 +557,23 @@ private:
       fHeight = cy + kFilterLineHeight;
     }
 
+    // The row lights the tab under the pointer, so moving between two tabs
+    // of the same row changes what it draws while the row itself stays
+    // hovered. Nothing else would notice that.
+    void update(double) override {
+      int hot = -1;
+      for (std::size_t i = 0; i < fTabs.size(); ++i) {
+        if (this->tabBounds(i).contains(fOwner->fMouseX, fOwner->fMouseY)) {
+          hot = static_cast<int>(i);
+          break;
+        }
+      }
+      if (hot != fHotTab) {
+        fHotTab = hot;
+        this->markDamaged();
+      }
+    }
+
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       auto &font = *fOwner->fFont;
       paint::text(canvas, font, fHeader, fBounds.fLeft,
@@ -556,6 +612,8 @@ private:
                                     fBounds.fTop + local.fTop, local.width(),
                                     local.height());
     }
+
+    int fHotTab = -1;
 
     struct Tab {
       skia::SkRect fRect; // relative to the row
@@ -602,6 +660,30 @@ private:
             {skia::SkRect::MakeXYWH(ix - 2.0f, kSortBarHeight * 0.5f - 9.0f,
                                     18.0f, 18.0f),
              i});
+      }
+    }
+
+    // Same as the filter rows: the bar lights whichever criterion or card
+    // size the pointer is on, and that changes without the bar's own hover
+    // state changing.
+    void update(double) override {
+      const auto hotOf = [this](const auto &items) {
+        int hot = -1;
+        for (std::size_t i = 0; i < items.size(); ++i) {
+          if (this->localToScreen(items[i].fRect)
+                  .contains(fOwner->fMouseX, fOwner->fMouseY)) {
+            hot = static_cast<int>(i);
+            break;
+          }
+        }
+        return hot;
+      };
+      const int sort = hotOf(fSorts);
+      const int size = hotOf(fCardSizes);
+      if (sort != fHotSort || size != fHotSize) {
+        fHotSort = sort;
+        fHotSize = size;
+        this->markDamaged();
       }
     }
 
@@ -704,6 +786,8 @@ private:
     Listing *fOwner;
     std::vector<Item> fSorts;
     std::vector<Item> fCardSizes;
+    int fHotSort = -1;
+    int fHotSize = -1;
   };
 
   // BeatmapCardNormal, and its taller sibling. One node per card: it knows
@@ -746,6 +830,12 @@ private:
       fHoverMs = overInfo ? fHoverMs + dt : 0.0;
       const bool wantExpanded =
           fHoverMs > kExpandDelayMs || (fExpanded > 0.5f && hovered);
+      // A card waiting out the delay changes nothing on screen, so nothing
+      // marks itself -- and a client that only draws when something changed
+      // would stop calling this, which would stop the delay from passing.
+      if (overInfo && !wantExpanded) {
+        fOwner->fTicking = true;
+      }
       fExpanded = client::ui::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
                                        kTransitionMs / 5.0f, dt);
       if (fExpand != previousExpand || fExpanded != previousExpanded) {
@@ -1103,6 +1193,7 @@ private:
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
     fScroll = nullptr;
+    fCards.clear();
 
     auto root = std::make_unique<nodes::Box>(kBackground6);
     root->fRelativeSizeAxes = scene::Axes::kBoth;
@@ -1188,7 +1279,9 @@ private:
       grid->setSpacing(kCardSpacing, kCardSpacing);
       grid->fCentreRows = true;
       for (const int idx : fVisible) {
-        grid->add(std::make_unique<CardNode>(this, idx));
+        auto card = std::make_unique<CardNode>(this, idx);
+        fCards.emplace_back(idx, card.get());
+        grid->add(std::move(card));
       }
       column->add(std::move(grid));
     }
@@ -1432,7 +1525,12 @@ private:
 
   // The tree, and what it was built for.
   std::unique_ptr<scene::Drawable> fScene;
+  // The cards by entry, so a cover that arrives can mark the one it belongs
+  // to. Rebuilt with the tree, so these never outlive what they point at.
+  std::vector<std::pair<int, CardNode *>> fCards;
   std::uint64_t fShape = 0;
+  bool fRebuilt = false;
+  bool fTicking = false; // something in the tree is waiting on the clock
   std::uint64_t fVisibleShape = 0;
   nodes::ScrollContainer *fScroll = nullptr; // owned by the tree
   float fScrollTicks = 0.0f;
