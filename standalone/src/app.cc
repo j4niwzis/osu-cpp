@@ -1862,13 +1862,23 @@ private:
     // What this frame actually repainted: magenta around each region, red
     // around the edge when the whole screen went -- with the reason, since
     // "why is it full again" is the question that keeps coming up.
+    const float width = fFrameClipFull ? 6.0f : 2.0f;
     skia::SkPaint paint;
     paint.setStyle(skia::kStrokeStyle);
-    paint.setStrokeWidth(fFrameClipFull ? 6.0f : 2.0f);
+    paint.setStrokeWidth(width);
     paint.setColor(fFrameClipFull ? skia::colorSetARGB(255, 255, 40, 40)
                                   : skia::colorSetARGB(255, 255, 0, 255));
     for (const auto &rect : fFrameClip) {
-      canvas->drawRect(skia::SkRect::Make(rect), paint);
+      // Inset by half the stroke, so the whole outline lies inside the area
+      // that was repainted. Drawn on the boundary, its outer half falls on
+      // pixels this frame never touches and nothing ever paints over it --
+      // which is how it was leaving stripes behind as the region moved.
+      skia::SkRect outline = skia::SkRect::Make(rect);
+      outline.inset(width * 0.5f, width * 0.5f);
+      if (outline.isEmpty()) {
+        continue;
+      }
+      canvas->drawRect(outline, paint);
     }
     // The outline lands in a back buffer that comes round again, so the
     // rectangles it drew last time have to be repainted over. They are added
