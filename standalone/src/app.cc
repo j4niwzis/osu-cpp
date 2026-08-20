@@ -5320,6 +5320,12 @@ private:
     bool fReadFailed = false;          // said once, not once per frame
     std::size_t fJudged = 0;           // judgements handed to the view
     int fCombo = 0;
+    // Its own view, with its own background, trail, popups and counters. The
+    // client's carries on showing whatever the client is doing -- and while
+    // an export was borrowing it, a track changing in the menu changed the
+    // artwork in the middle of the video.
+    client::GameplayView fView;
+    bool fPrepared = false;
   };
 
   // Said in both places: the dialog is where it belongs, and the log is where
@@ -5398,11 +5404,6 @@ private:
       return;
     }
 
-    // The view still holds the play that was just watched -- its trail, its
-    // popups, its counters -- and an export starting at zero would draw them
-    // over its own first seconds. It keeps the background, which is what the
-    // screen behind the dialog is drawn from.
-    fView.reset();
     job->fEngine.emplace(*fMap, fMods);
     job->fEnd = fMap->lastObjectEndTime() + 1500.0;
     job->fStep = 1000.0 / static_cast<double>(job->fOpts.fFps);
@@ -5434,13 +5435,32 @@ private:
     fScreenH = job.fOpts.fHeight;
     this->layoutForScreen();
 
+    if (!job.fPrepared) {
+      // Its own copy of the map's artwork, scaled for the size being
+      // rendered rather than for the window.
+      job.fPrepared = true;
+      for (const auto &info : fSet.fBeatmaps) {
+        if (info.fMeta.fBackground.empty()) {
+          continue;
+        }
+        const auto bytes = fSet.findFile(info.fMeta.fBackground);
+        if (bytes.empty()) {
+          continue;
+        }
+        job.fView.setBackground(loadImage(bytes));
+        break;
+      }
+      job.fView.preScaleBackground(this->gameplayCtx(nullptr));
+    }
+
     while (job.fTime <= job.fEnd) {
       while (job.fEvent < fRecordedEvents.size() &&
              fRecordedEvents[job.fEvent].fTime <= job.fTime) {
         job.fEngine->submit(fRecordedEvents[job.fEvent]);
         if (fRecordedEvents[job.fEvent].fAction == osu::InputAction::kMove) {
           fCursor = fRecordedEvents[job.fEvent].fPos;
-          fView.addTrailPoint(fCursor, fRecordedEvents[job.fEvent].fTime);
+          job.fView.addTrailPoint(fCursor,
+                                  fRecordedEvents[job.fEvent].fTime);
         }
         ++job.fEvent;
       }
@@ -5457,17 +5477,17 @@ private:
         const bool counts =
             !std::holds_alternative<osu::judgement::Miss>(judged.fResult) &&
             judged.fIndex < fComboInfo.fIndices.size();
-        fView.addJudgement(judged.fResult, judged.fIndex, pos, job.fTime,
-                           counts ? fComboInfo.fIndices[judged.fIndex] : 0,
-                           counts);
+        job.fView.addJudgement(judged.fResult, judged.fIndex, pos, job.fTime,
+                               counts ? fComboInfo.fIndices[judged.fIndex] : 0,
+                               counts);
         if (std::holds_alternative<osu::judgement::Miss>(judged.fResult)) {
           job.fCombo = 0;
         } else {
           ++job.fCombo;
         }
-        fView.setCombo(job.fCombo);
+        job.fView.setCombo(job.fCombo);
       }
-      fView.render(this->gameplayCtx(fSurface->getCanvas()), job.fTime);
+      job.fView.render(this->gameplayCtx(fSurface->getCanvas()), job.fTime);
       fContext->flushAndSubmit(fSurface.get());
       // Read straight off the surface into a buffer the job keeps: a
       // snapshot per frame would allocate an image and copy it, and the
