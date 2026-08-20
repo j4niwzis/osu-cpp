@@ -58,6 +58,8 @@ public:
     // and loses where draw calls do.
     this->add({1, "partial", "Repaint only what changed",
                SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 0.0f, ""});
+    this->add({1, "damageoverlay", "Outline repainted regions",
+               SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 0.0f, ""});
     // Section 2: Gameplay
     this->add({2, "cursorsize", "Cursor size", SettingKind::kSlider, 0.5f,
                2.0f, 0.01f, 1.0f, "x"});

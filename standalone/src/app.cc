@@ -171,6 +171,7 @@ private:
   // exist, and to force it on while measuring.
   const bool fForcePartialRedraw =
       std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
+  const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
 
   [[nodiscard]] bool partialRedraw() const {
     return fForcePartialRedraw || fSettings.flag("partial");
@@ -1783,8 +1784,7 @@ private:
   // at which of the three got slower has not worked so far.
   void reportFrameCost(std::chrono::steady_clock::time_point start,
                        std::chrono::steady_clock::time_point beforeSwap) {
-    static const bool show = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-    if (!show) {
+    if (!fForceShowDamage) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -1842,9 +1842,12 @@ private:
 
   // OSU_SHOW_DAMAGE=1 outlines what was repainted, which is the only way to
   // see whether a screen is reporting its damage honestly.
+  [[nodiscard]] bool showingDamage() const {
+    return fForceShowDamage || fSettings.flag("damageoverlay");
+  }
+
   void showDamage(skia::SkCanvas *canvas) {
-    static const bool show = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-    if (!show) {
+    if (!this->showingDamage()) {
       return;
     }
     // What this frame actually repainted: magenta around each region, red
@@ -1857,6 +1860,9 @@ private:
                                   : skia::colorSetARGB(255, 255, 0, 255));
     for (const auto &rect : fFrameClip) {
       canvas->drawRect(skia::SkRect::Make(rect), paint);
+      // The outline lands in a back buffer that comes round again; without
+      // marking it, an old rectangle stays on screen next to the current one.
+      this->damage(skia::SkRect::Make(rect));
     }
     if (fFrameClipFull && wallMs() - fDamageLogWall > 1000.0) {
       fDamageLogWall = wallMs();
