@@ -842,12 +842,15 @@ public:
                     score.fGood, score.fMeh, score.fMiss);
     client::ui::fonts().draw(canvas, *c.fFont, countsText, 20.0f, 140.0f, fHudPaint);
 
-    // Progress time.
+    // Time since the map started, top right. It used to sit in the bottom
+    // right, which is where the frame counter is, and the two drew over each
+    // other. Right-aligned, so the number growing a digit does not shift it.
     (*c.fFont).setSize(14.0f);
     fHudPaint.setAlphaf(0.7f);
     const std::string timeText = std::format("{:.1f}s", now / 1000.0);
-    client::ui::fonts().draw(canvas, *c.fFont, timeText, sw - 80.0f,
-                             sh - 20.0f, fHudPaint);
+    const float timeWidth = client::ui::fonts().measure(*c.fFont, timeText);
+    client::ui::fonts().draw(canvas, *c.fFont, timeText,
+                             sw - timeWidth - 20.0f, 34.0f, fHudPaint);
 
     if (c.fShowProfile) {
       double avgAdv = 0.0, avgRender = 0.0, avgFlush = 0.0, avgSwap = 0.0;
