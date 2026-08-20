@@ -121,10 +121,10 @@ public:
       fShell->fAlpha = fade;
     }
 
-    // Half a screen of nothing after the last row: the column used to be
-    // scrollable well past its end, and a flow that stops exactly at its last
-    // child does not.
-    const float tail = sh * 0.5f;
+    // A viewport of nothing after the last row. Not decoration: clicking the
+    // last section in the sidebar scrolls its header to the top, and it can
+    // only get there if there is a screen's worth of column behind it.
+    const float tail = sh - kContentTop;
     if (fColumn != nullptr && fColumn->fPadding.fBottom != tail) {
       fColumn->fPadding.fBottom = tail;
       fColumn->invalidateLayout();
@@ -684,10 +684,11 @@ private:
         fSectionHeaders[section] == nullptr) {
       return;
     }
+    // Where the header is, in the column's own coordinates: the column has
+    // already been scrolled by however much, so its own top moved with it.
     const float offset = fSectionHeaders[section]->fBounds.fTop -
                          fColumn->fBounds.fTop;
-    fScroll->setCurrent(std::max(0.0f, offset));
-    fScroll->invalidateLayout();
+    fScroll->scrollTo(std::max(0.0f, offset));
     fTouched = true;
   }
 

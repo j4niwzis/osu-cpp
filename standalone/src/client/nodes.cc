@@ -259,6 +259,13 @@ public:
     fCurrent = offset;
     fTarget = offset;
   }
+  // Eased: the view glides to the offset rather than jumping to it, which is
+  // what a jump to a section in a settings list should look like.
+  void scrollTo(float offset) {
+    fTarget = std::clamp(offset, 0.0f, fExtent);
+    this->invalidateLayout();
+  }
+
   [[nodiscard]] float current() const noexcept { return fCurrent; }
   [[nodiscard]] float extent() const noexcept { return fExtent; }
 
