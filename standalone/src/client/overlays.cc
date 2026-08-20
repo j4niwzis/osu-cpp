@@ -218,6 +218,14 @@ public:
     return skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
   }
 
+  // The line under the buttons, which is the only thing that moves while a
+  // video is being written: a per cent that counts up.
+  [[nodiscard]] static skia::SkRect statusBounds(int screenW, int screenH) {
+    const skia::SkRect box = bounds(screenW, screenH);
+    return skia::SkRect::MakeLTRB(box.fLeft + 8.0f, box.fBottom - 42.0f,
+                                  box.fRight - 8.0f, box.fBottom - 8.0f);
+  }
+
   [[nodiscard]] bool takeStatusChanged() noexcept {
     const bool changed = fStatusChanged;
     fStatusChanged = false;

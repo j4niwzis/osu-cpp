@@ -133,6 +133,18 @@ else()
   )
 endif()
 
+# Video export through libavcodec rather than through an ffmpeg process. Off
+# by default because it is a build dependency for a feature most builds do not
+# use; on, it is the only way to export from a build that cannot spawn one --
+# a browser, or anywhere ffmpeg is not installed.
+option(OSU_VIDEO_LIBAV "Encode exported video with libavcodec" OFF)
+if(OSU_VIDEO_LIBAV)
+  pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
+    libavcodec libavformat libavutil libswscale)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_VIDEO_LIBAV=1)
+  target_link_libraries(${PROJECT_NAME} PkgConfig::LIBAV)
+endif()
+
 # ---- Emscripten-specific options ----
 
 if(EMSCRIPTEN_BUILD)

@@ -4,6 +4,21 @@ module;
 // global fragment rather than through import std.
 #include <cstdio>
 
+// OSU_VIDEO_LIBAV builds against libavcodec instead of talking to an ffmpeg
+// binary. Two reasons to want it: a wasm build has no processes to spawn at
+// all, and a desktop one stops depending on what is installed on the machine.
+// The third possibility -- letting a browser encode through WebCodecs and
+// shipping no encoder at all -- goes behind the same seam when it arrives.
+#ifdef OSU_VIDEO_LIBAV
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
+}
+#endif
+
 export module client.video;
 
 import std;

@@ -1910,8 +1910,11 @@ private:
     // region, so it cannot be skipped on the strength of the screen's silence.
     // The settings panel reports its own regions, so it does not stop a frame
     // from being skipped. The rest do not, and cannot be skipped over.
-    if (fModSelect.visible() || fReplayListOpen || fConfirmDelete ||
-        fExportDialog.open()) {
+    // The export dialog reports its own box and its own status line, so it
+    // does not stop a frame from being skipped. A frame drawn for it with
+    // nothing marked would repaint the window -- which is what moving the
+    // pointer outside the dialog used to do.
+    if (fModSelect.visible() || fReplayListOpen || fConfirmDelete) {
       return false;
     }
     // A preview still being fetched has nothing on screen to show for it
@@ -2188,15 +2191,17 @@ private:
     } else if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
       this->damageAll("overlay sliding");
     } else if (fExportDialog.open()) {
-      // The box, not the window: what is behind the dim does not change while
-      // the dialog is up. Repainted while the status line is being rewritten
-      // by a video being written, and while the pointer is inside it, since
-      // its buttons light up.
+      // Neither the window nor even the whole box: what is behind the dim
+      // does not change while the dialog is up, and while a video is being
+      // written the only thing that moves is the per cent on the status line.
+      // The box itself is repainted for the pointer, whose buttons light up.
       const skia::SkRect box =
           client::ExportDialog::bounds(fScreenW, fScreenH);
       const bool inside = box.contains(fMouseX, fMouseY);
-      if (fExportDialog.takeStatusChanged() || inside || fPointerWasInDialog) {
+      if (inside || fPointerWasInDialog) {
         this->damage(box);
+      } else if (fExportDialog.takeStatusChanged()) {
+        this->damage(client::ExportDialog::statusBounds(fScreenW, fScreenH));
       }
       fPointerWasInDialog = inside;
     }
