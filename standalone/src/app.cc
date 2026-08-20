@@ -167,6 +167,7 @@ private:
   int fMenuMusicForSet = -1; // set whose audio is looping under the menus
   std::filesystem::path fMapsDir;
   std::filesystem::path fThumbDir;
+  std::filesystem::path fReplayDir;
   struct CarouselHit {
     skia::SkRect fRect;
     int fSetIdx;
@@ -179,6 +180,8 @@ private:
   skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // footer button
   skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
   skia::SkRect fSettingsChip = skia::SkRect::MakeEmpty();  // footer button
+  skia::SkRect fModsChip = skia::SkRect::MakeEmpty();      // footer button
+  skia::SkRect fReplaysChip = skia::SkRect::MakeEmpty();   // footer button
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -202,6 +205,9 @@ private:
   float fDownloadScroll = 0.0f;
   std::string fDownloadStatus = "Type a query and press Enter";
   std::vector<skia::SkRect> fFoundHits; // rebuilt every download frame
+  bool fReplayListOpen = false;
+  std::vector<ReplayFile> fReplays;
+  std::vector<skia::SkRect> fReplayHits;
 
   // Pause / results overlays.
   struct MenuButton {
@@ -739,6 +745,10 @@ private:
         fExportDialog.close();
         return;
       }
+      if (fReplayListOpen) {
+        fReplayListOpen = false;
+        return;
+      }
       if (fSettingsPanel.open()) {
         this->closeSettings();
         return;
@@ -935,6 +945,9 @@ private:
     if (this->exportClick(x, y)) {
       return;
     }
+    if (this->replayListClick(x, y)) {
+      return;
+    }
     if (this->settingsClick(x, y, true)) {
       return;
     }
@@ -974,6 +987,14 @@ private:
       }
       if (fSettingsChip.contains(x, y)) {
         this->toggleSettings();
+        return;
+      }
+      if (fModsChip.contains(x, y)) {
+        this->toggleMods();
+        return;
+      }
+      if (fReplaysChip.contains(x, y)) {
+        this->toggleReplayList();
         return;
       }
       if (fRandomChip.contains(x, y)) {
@@ -1165,6 +1186,9 @@ private:
     }
     if (fSettingsPanel.visible()) {
       this->drawSettings(canvas);
+    }
+    if (fReplayListOpen) {
+      this->drawReplayList(canvas);
     }
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
@@ -1375,6 +1399,7 @@ private:
     std::error_code ec;
     std::filesystem::create_directories(fMapsDir, ec);
     fThumbDir = fMapsDir / "thumbnails";
+    fReplayDir = fMapsDir.parent_path() / "replays";
     std::filesystem::create_directories(fThumbDir, ec);
     fMapCache.load(fMapsDir / "metadata-cache.json");
     fSettings.load(fMapsDir.parent_path() / "settings.json");
@@ -3263,6 +3288,105 @@ private:
             : exporter.error());
   }
 
+  // ---- Replay browser ------------------------------------------------------
+  //
+  // lazer surfaces past plays through the leaderboard beside song select and
+  // replays them with the standard playback path. Here the saved .osr files
+  // are listed in a panel; picking one starts the map with that replay.
+
+  struct ReplayFile {
+    std::filesystem::path fPath;
+    std::string fLabel;
+    std::filesystem::file_time_type fTime;
+  };
+
+  void toggleReplayList() {
+    fReplayListOpen = !fReplayListOpen;
+    if (fReplayListOpen) {
+      this->scanReplays();
+    }
+  }
+
+  void scanReplays() {
+    fReplays.clear();
+    std::error_code ec;
+    for (const auto &e : std::filesystem::directory_iterator(fReplayDir, ec)) {
+      if (!e.is_regular_file() || e.path().extension() != ".osr") {
+        continue;
+      }
+      fReplays.push_back({e.path(), e.path().stem().string(),
+                          e.last_write_time(ec)});
+    }
+    // Newest first, as a scores list would be.
+    std::ranges::sort(fReplays, std::ranges::greater{}, &ReplayFile::fTime);
+  }
+
+  void drawReplayList(skia::SkCanvas *canvas) {
+    fReplayHits.clear();
+    if (!fReplayListOpen) {
+      return;
+    }
+    const client::ui::Painter p(canvas, fFont);
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
+               skia::colorSetARGB(190, 8, 6, 12));
+
+    const float w = std::min(720.0f, sw * 0.7f);
+    const float h = std::min(560.0f, sh * 0.75f);
+    const skia::SkRect box =
+        skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
+    p.fillRounded(box, 14.0f, client::ui::kBackground5);
+    p.strokeRounded(box, 14.0f, client::ui::kAccent, 2.0f);
+    p.textCentered("replays", box.centerX(), box.fTop + 46.0f, 24.0f,
+                   skia::kWhite);
+
+    if (fReplays.empty()) {
+      p.textCentered("no replays saved yet", box.centerX(), box.centerY(),
+                     16.0f, skia::kWhite, 0.6f);
+    }
+
+    float y = box.fTop + 76.0f;
+    for (std::size_t i = 0; i < fReplays.size(); ++i) {
+      if (y + 44.0f > box.fBottom - 60.0f) {
+        break;
+      }
+      const skia::SkRect row = skia::SkRect::MakeXYWH(box.fLeft + 20.0f, y,
+                                                      w - 40.0f, 40.0f);
+      fReplayHits.push_back(row);
+      const bool hover = row.contains(fMouseX, fMouseY);
+      p.fillRounded(row, 8.0f,
+                    hover ? client::ui::kCardSel : client::ui::kCardBg);
+      p.textClipped(fReplays[i].fLabel, row.fLeft + 14.0f,
+                    row.centerY() + 5.0f, row.width() - 28.0f, 14.0f,
+                    skia::kWhite, 0.95f);
+      y += 46.0f;
+    }
+
+    p.textCentered("click to watch    Esc to close", box.centerX(),
+                   box.fBottom - 24.0f, 13.0f, skia::kWhite, 0.7f);
+  }
+
+  bool replayListClick(float x, float y) {
+    if (!fReplayListOpen) {
+      return false;
+    }
+    for (std::size_t i = 0; i < fReplayHits.size(); ++i) {
+      if (fReplayHits[i].contains(x, y)) {
+        this->watchReplay(fReplays[i].fPath);
+        return true;
+      }
+    }
+    return true;
+  }
+
+  void watchReplay(const std::filesystem::path &path) {
+    fReplayListOpen = false;
+    fReplayPath = path;
+    fAutoplay = true; // playback drives the engine from the recorded events
+    this->startPlay(fSelSet, fSelDiff);
+  }
+
   // ---- Song select (port of lazer's carousel geometry) ------------------
   //
   // Numbers from osu.Game/Screens/Select: CarouselItem.DEFAULT_HEIGHT = 45 for
@@ -3807,22 +3931,25 @@ private:
       skia::SkColor fColor;
       skia::SkRect *fHit;
     };
+    // lazer's song select footer: mods first, then the rest.
     const FooterBtn btns[] = {
-        {"settings", skia::colorSetARGB(255, 140, 140, 155), &fSettingsChip},
+        {"mods", kAccent, &fModsChip},
+        {"replays", skia::colorSetARGB(255, 170, 102, 255), &fReplaysChip},
         {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
-        {"import", kAccent, &fImportChip},
+        {"import", skia::colorSetARGB(255, 238, 170, 0), &fImportChip},
         {"browse", skia::colorSetARGB(255, 165, 204, 0), &fDownloadsChip},
+        {"settings", skia::colorSetARGB(255, 140, 140, 155), &fSettingsChip},
     };
     float x = 24.0f;
     for (const auto &b : btns) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(x, sh - 50.0f, 148.0f, 38.0f);
+      const skia::SkRect r = skia::SkRect::MakeXYWH(x, sh - 50.0f, 120.0f, 38.0f);
       *b.fHit = r;
       const bool hover = r.contains(fMouseX, fMouseY);
       this->fillRounded(canvas, r, 19.0f, hover ? kCardSel : kCardBg);
       this->strokeRounded(canvas, r, 19.0f, b.fColor, hover ? 2.0f : 1.0f);
       this->drawTextCentered(canvas, b.fLabel, r.centerX(), r.centerY() + 5.0f,
                              14.0f, hover ? b.fColor : skia::kWhite);
-      x += 158.0f;
+      x += 128.0f;
     }
     this->drawTextCentered(
         canvas,
@@ -4035,50 +4162,66 @@ private:
 
   // ---- Results ----------------------------------------------------------
 
+  // lazer's ResultsScreen: the beatmap line across the top, a wide score
+  // panel with the grade badge on the left, the score and accuracy stacked
+  // beside it, and the judgement counts in a row underneath.
   void frameResults() {
     fView.invalidate();
     auto *canvas = fSurface->getCanvas();
     this->drawScreenBackground(canvas);
+    const client::ui::Painter p(canvas, fFont);
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     const auto &sc = fResult.fScore;
 
-    this->drawTextCentered(canvas, "results", sw * 0.5f, 52.0f, 30.0f,
-                           skia::kWhite, 0.9f);
+    // Dim the artwork the way the results screen does.
+    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
+               skia::colorSetARGB(150, 10, 8, 14));
+
+    // ---- Beatmap line.
+    if (fMap) {
+      const auto &m = fMap->fMeta;
+      const std::string title =
+          (m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode) + " - " +
+          (m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode);
+      p.textCentered(title, sw * 0.5f, 56.0f, 26.0f, skia::kWhite);
+      p.textCentered(std::format("[{}]   mapped by {}", m.fVersion, m.fCreator),
+                     sw * 0.5f, 82.0f, 15.0f, skia::kWhite, 0.7f);
+    }
+
+    // ---- Score panel.
+    const float panelW = std::min(980.0f, sw * 0.82f);
+    const float panelH = 260.0f;
+    const skia::SkRect panel = skia::SkRect::MakeXYWH(
+        (sw - panelW) * 0.5f, sh * 0.22f, panelW, panelH);
+    p.fillRounded(panel, 16.0f, client::ui::kBackground5);
 
     // Grade badge.
-    const float gx = sw * 0.72f;
-    const float gy = sh * 0.40f;
-    skia::SkPaint gp;
-    gp.setAntiAlias(true);
-    gp.setColor(kAccent);
-    gp.setAlphaf(0.18f);
-    canvas->drawCircle(gx, gy, 110.0f, gp);
-    this->drawTextCentered(canvas, fResult.fGrade, gx, gy + 30.0f, 96.0f,
-                           kAccent);
+    const float gx = panel.fLeft + 130.0f;
+    const float gy = panel.centerY();
+    p.circle(gx, gy, 86.0f, client::ui::kAccent, 0.16f);
+    p.textCentered(fResult.fGrade, gx, gy + 30.0f, 84.0f, client::ui::kAccent);
 
-    // Score panel.
-    const float px = sw * 0.08f;
-    const float pw = sw * 0.5f;
-    this->fillRounded(canvas,
-                      skia::SkRect::MakeXYWH(px, sh * 0.18f, pw, sh * 0.52f),
-                      14.0f, kPanelBg);
-    float ty = sh * 0.18f + 58.0f;
-    // Score counts up over the first second, classic osu results feel.
-    const float countUp = easeOutQuint(
+    // Score and accuracy, counting up over the first second.
+    const float countUp = client::ui::outQuint(
         static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
-    const auto shownScore =
+    const auto shown =
         static_cast<std::uint64_t>(static_cast<double>(sc.fScore) * countUp);
-    this->drawTextClipped(canvas, std::format("{:010}", shownScore),
-                          px + 30.0f, ty, pw - 60.0f, 40.0f, skia::kWhite);
-    ty += 54.0f;
-    this->drawTextClipped(
-        canvas,
-        std::format("accuracy {:.2f}%   combo {}x", sc.accuracy() * 100.0,
-                    sc.fMaxCombo),
-        px + 30.0f, ty, pw - 60.0f, 20.0f, kAccent2);
-    ty += 42.0f;
+    p.textClipped(std::format("{:010}", shown), panel.fLeft + 250.0f,
+                  panel.fTop + 92.0f, panelW - 280.0f, 46.0f, skia::kWhite);
+    p.textClipped(std::format("{:.2f}%", sc.accuracy() * 100.0),
+                  panel.fLeft + 250.0f, panel.fTop + 140.0f, 220.0f, 26.0f,
+                  client::ui::kAccent2);
+    p.textClipped(std::format("{}x  /  {}x", sc.fMaxCombo, sc.fMaxCombo),
+                  panel.fLeft + 470.0f, panel.fTop + 140.0f, 220.0f, 26.0f,
+                  skia::kWhite, 0.85f);
+    p.textClipped("accuracy", panel.fLeft + 250.0f, panel.fTop + 162.0f, 120.0f,
+                  12.0f, skia::kWhite, 0.5f);
+    p.textClipped("max combo", panel.fLeft + 470.0f, panel.fTop + 162.0f,
+                  120.0f, 12.0f, skia::kWhite, 0.5f);
+
+    // Judgement counts along the bottom of the panel.
     struct Row {
       const char *fLabel;
       int fCount;
@@ -4090,40 +4233,43 @@ private:
         {"50", sc.fMeh, client::ui::kMeh},
         {"miss", sc.fMiss, client::ui::kMiss},
     };
+    float cx = panel.fLeft + 250.0f;
     for (const auto &row : rows) {
-      this->drawTextClipped(canvas, row.fLabel, px + 30.0f, ty, 120.0f, 18.0f,
-                            row.fColor);
-      this->drawTextClipped(canvas, std::format("{}", row.fCount), px + 150.0f,
-                            ty, 120.0f, 18.0f, skia::kWhite);
-      ty += 30.0f;
+      p.textClipped(row.fLabel, cx, panel.fBottom - 46.0f, 90.0f, 15.0f,
+                    row.fColor);
+      p.textClipped(std::format("{}", row.fCount), cx, panel.fBottom - 22.0f,
+                    90.0f, 22.0f, skia::kWhite);
+      cx += 110.0f;
     }
-    ty += 12.0f;
-    this->drawTextClipped(
-        canvas,
-        std::format("hit error {:+.1f} ms   UR {:.0f}", fResult.fMean,
-                    fResult.fUr),
-        px + 30.0f, ty, pw - 60.0f, 16.0f, skia::kWhite, 0.8f);
+    p.textClipped(std::format("hit error {:+.1f} ms", fResult.fMean),
+                  panel.fRight - 220.0f, panel.fBottom - 46.0f, 200.0f, 13.0f,
+                  skia::kWhite, 0.7f);
+    p.textClipped(std::format("unstable rate {:.0f}", fResult.fUr),
+                  panel.fRight - 220.0f, panel.fBottom - 22.0f, 200.0f, 13.0f,
+                  skia::kWhite, 0.7f);
 
-    // Buttons.
+    // ---- Buttons.
     fMenuButtons.clear();
-    const float bw = std::min(360.0f, sw * 0.4f);
-    const float bh = 56.0f;
-    const skia::SkRect r1 =
-        skia::SkRect::MakeXYWH(px, sh * 0.76f, bw, bh);
-    const skia::SkRect r2 =
-        skia::SkRect::MakeXYWH(px + bw + 20.0f, sh * 0.76f, bw, bh);
-    fMenuButtons.push_back(
-        {r1, "retry", skia::colorSetARGB(255, 255, 204, 102)});
-    fMenuButtons.push_back({r2, "back to song select", kAccent2});
-    const skia::SkRect r3 =
-        skia::SkRect::MakeXYWH(px, sh * 0.76f + bh + 12.0f, bw, bh);
-    fMenuButtons.push_back(
-        {r3, "export video", skia::colorSetARGB(255, 102, 204, 255)});
-    for (const auto &b : fMenuButtons) {
-      this->drawMenuButton(canvas, b);
+    const float bw = std::min(300.0f, sw * 0.26f);
+    const float bh = 52.0f;
+    const float by = panel.fBottom + 40.0f;
+    const float gap = 16.0f;
+    const float total = bw * 3.0f + gap * 2.0f;
+    float bx = (sw - total) * 0.5f;
+    const char *labels[] = {"retry", "back to song select", "export video"};
+    const skia::SkColor accents[] = {skia::colorSetARGB(255, 255, 204, 102),
+                                     client::ui::kAccent2,
+                                     skia::colorSetARGB(255, 170, 102, 255)};
+    for (int i = 0; i < 3; ++i) {
+      const skia::SkRect r = skia::SkRect::MakeXYWH(bx, by, bw, bh);
+      fMenuButtons.push_back({r, labels[i], accents[i]});
+      this->drawMenuButton(canvas, fMenuButtons.back());
+      bx += bw + gap;
     }
 
-    this->drawBottomBar(canvas, "Enter retry    Esc back to song select");
+    this->drawBottomBar(canvas,
+                        "Enter retry    Esc back to song select    "
+                        "replays are saved automatically");
     this->drawScreenFadeIn(canvas);
     this->present();
   }
@@ -4547,8 +4693,10 @@ private:
     nameStream << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S");
     auto replayBytes =
         osu::encodeReplay(fRecordedEvents, this->beatmapMd5(), "Player", fMods);
-    std::filesystem::path outPath =
-        fMap->fMeta.fVersion + "_" + nameStream.str() + ".osr";
+    std::error_code ec;
+    std::filesystem::create_directories(fReplayDir, ec);
+    const std::filesystem::path outPath =
+        fReplayDir / (fMap->fMeta.fVersion + "_" + nameStream.str() + ".osr");
     std::ofstream out(outPath, std::ios::binary);
     for (std::uint8_t b : replayBytes)
       out.put(static_cast<char>(b));

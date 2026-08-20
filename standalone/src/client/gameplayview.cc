@@ -675,6 +675,10 @@ public:
                      c.fCursorSize / c.fScale);
   }
 
+  // Judgement text, ported from webosu-2's playback.js: bitmap text tinted per
+  // result, no outline, fading over 500 ms (800 for a miss, which also drops
+  // and rotates), and -- the characteristic part -- the letters spread apart
+  // as it fades, letterSpacing = 70 * ((t/1800 - 1)^5 + 1).
   void drawPopups(const Ctx &c, skia::SkCanvas *canvas, double now, double cs) {
     const double hitSpriteScale = osu::circleRadius(cs) / 60.0;
     auto it = fPopups.begin();
@@ -688,81 +692,91 @@ public:
         continue;
       }
 
-      double alpha;
+      double alpha = 0.0;
       float yOffset = 0.0f;
+      float rotation = 0.0f;
+      float spacing = 0.0f;
       if (isMiss) {
         alpha = age < 100.0   ? age / 100.0
                 : age < 600.0 ? 1.0
                               : 1.0 - (age - 600.0) / 200.0;
-        yOffset = static_cast<float>(100.0 * std::pow(age / lifetime, 5.0) *
-                                     hitSpriteScale);
+        const double k = std::pow(age / 800.0, 5.0);
+        yOffset = static_cast<float>(100.0 * k * hitSpriteScale);
+        rotation = static_cast<float>(0.7 * k);
       } else {
         alpha = age < 100.0 ? age / 100.0 : 1.0 - (age - 100.0) / 400.0;
+        spacing = static_cast<float>(
+            70.0 * (std::pow(age / 1800.0 - 1.0, 5.0) + 1.0));
       }
-
-      const int value = judgementValue(it->fResult);
-      const float x = static_cast<float>(it->fPos.fX);
-      const float y =
-          static_cast<float>(it->fPos.fY) - 40.0f * hitSpriteScale + yOffset;
-
-      // Skins provide hit300/hit100/hit50/hit0 sprites; that is what stable
-      // and web-osu2 show. Fall back to text only when the skin has none.
-      if (auto sprite = c.fSkin->judgement(value)) {
-        skia::SkPaint paint;
-        paint.setAntiAlias(true);
-        paint.setAlphaf(static_cast<float>(alpha));
-        const float w = static_cast<float>(sprite->width()) * 0.5f *
-                        static_cast<float>(hitSpriteScale);
-        const float h = static_cast<float>(sprite->height()) * 0.5f *
-                        static_cast<float>(hitSpriteScale);
-        canvas->drawImageRect(
-            sprite.get(),
-            skia::SkRect::MakeXYWH(x - w * 0.5f, y - h * 0.5f, w, h),
-            skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &paint);
-        ++it;
-        continue;
-      }
+      alpha = std::clamp(alpha, 0.0, 1.0);
 
       const auto [text, color] = popupInfo(it->fResult);
+      const float x = static_cast<float>(it->fPos.fX);
+      const float y = static_cast<float>(it->fPos.fY) + yOffset;
+
+      // webosu-2 scales the text 0.85 horizontally against 1.0 vertically.
       const float fontSize = static_cast<float>(20.0 * hitSpriteScale);
-      (*c.fFont).setSize(fontSize);
+      c.fFont->setSize(fontSize);
+      const float letterSpacing =
+          spacing * static_cast<float>(hitSpriteScale) * 0.01f * fontSize;
 
-      const float textWidth = (*c.fFont).measureText(text, std::strlen(text),
-                                                skia::SkTextEncoding::kUTF8);
-      const float drawX = x - textWidth * 0.5f;
-
-      skia::SkPaint stroke;
-      stroke.setColor(skia::kBlack);
-      stroke.setStyle(skia::kStrokeAndFillStyle);
-      stroke.setStrokeWidth(fontSize * 0.12f);
-      stroke.setAntiAlias(true);
-      stroke.setAlphaf(static_cast<float>(alpha));
-      canvas->drawString(text, drawX, y, (*c.fFont), stroke);
+      // Measure with the spacing applied so the string stays centred.
+      const std::string str(text);
+      float total = 0.0f;
+      for (std::size_t k = 0; k < str.size(); ++k) {
+        total += c.fFont->measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) *
+                 0.85f;
+        if (k + 1 < str.size()) {
+          total += letterSpacing;
+        }
+      }
 
       skia::SkPaint paint;
-      paint.setColor(color);
-      paint.setStyle(skia::kFillStyle);
       paint.setAntiAlias(true);
+      paint.setColor(color);
       paint.setAlphaf(static_cast<float>(alpha));
-      canvas->drawString(text, drawX, y, (*c.fFont), paint);
+
+      canvas->save();
+      canvas->translate(x, y);
+      if (rotation != 0.0f) {
+        canvas->rotate(rotation * 180.0f / std::numbers::pi_v<float>);
+      }
+      canvas->scale(0.85f, 1.0f);
+      float pen = -total / 0.85f * 0.5f;
+      for (std::size_t k = 0; k < str.size(); ++k) {
+        canvas->drawSimpleText(&str[k], 1, skia::SkTextEncoding::kUTF8, pen,
+                               0.0f, *c.fFont, paint);
+        pen += c.fFont->measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) +
+               letterSpacing / 0.85f;
+      }
+      canvas->restore();
       ++it;
     }
   }
 
-  [[nodiscard]] static int judgementValue(const osu::Judgement &j) {
-    return std::visit(osu::Overloaded{
-                          [](osu::judgement::Great) { return 300; },
-                          [](osu::judgement::Good) { return 100; },
-                          [](osu::judgement::Meh) { return 50; },
-                          [](osu::judgement::Miss) { return 0; },
-                      },
-                      j);
-  }
-
+  // Labels and tints from webosu-2: miss 0xed1121, meh 0xffcc22,
+  // good 0x88b300, great 0x66ccff.
   [[nodiscard]] static std::pair<const char *, skia::SkColor>
   popupInfo(const osu::Judgement &j) {
-    const auto [label, rgb] = osu::judgementInfo(j);
-    return {label, skia::colorSetARGB(255, rgb[0], rgb[1], rgb[2])};
+    return std::visit(
+        osu::Overloaded{
+            [](osu::judgement::Great)
+                -> std::pair<const char *, skia::SkColor> {
+              return {"great", skia::colorSetARGB(255, 0x66, 0xcc, 0xff)};
+            },
+            [](osu::judgement::Good)
+                -> std::pair<const char *, skia::SkColor> {
+              return {"good", skia::colorSetARGB(255, 0x88, 0xb3, 0x00)};
+            },
+            [](osu::judgement::Meh) -> std::pair<const char *, skia::SkColor> {
+              return {"meh", skia::colorSetARGB(255, 0xff, 0xcc, 0x22)};
+            },
+            [](osu::judgement::Miss)
+                -> std::pair<const char *, skia::SkColor> {
+              return {"miss", skia::colorSetARGB(255, 0xed, 0x11, 0x21)};
+            },
+        },
+        j);
   }
 
   void drawHud(const Ctx &c, skia::SkCanvas *canvas, double now) {
