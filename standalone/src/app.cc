@@ -212,7 +212,11 @@ private:
   };
   bool fReplayListOpen = false;
   std::vector<ReplayFile> fReplays;
-  std::vector<skia::SkRect> fReplayHits;
+  struct PanelHit {
+    skia::SkRect fRect;
+    int fIndex;
+  };
+  std::vector<PanelHit> fPanelHits;
 
   // Pause / results overlays.
   struct MenuButton {
@@ -1011,8 +1015,12 @@ private:
         }
       }
       break;
-    case State::kPaused:
     case State::kResults:
+      if (this->resultsPanelClick(x, y)) {
+        return;
+      }
+      [[fallthrough]];
+    case State::kPaused:
       for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
         if (fMenuButtons[i].fRect.contains(x, y)) {
           this->menuButtonPressed(i);
@@ -1125,6 +1133,10 @@ private:
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
     fStateEnterWall = wallMs();
+    if (st == State::kResults) {
+      // The side panels are the other replays for this beatmap.
+      this->scanReplays();
+    }
     if (st == State::kMainMenu) {
       // Returning to the menu always lands on the top level, never on a
       // stale submenu, and the logo re-eases into place from where it was.
@@ -3306,8 +3318,10 @@ private:
     std::ranges::sort(fReplays, std::ranges::greater{}, &ReplayFile::fTime);
   }
 
+  // The replay browser is the same ScorePanelList, with no score in hand:
+  // the panels are the saved replays and picking one plays it back.
   void drawReplayList(skia::SkCanvas *canvas) {
-    fReplayHits.clear();
+    fPanelHits.clear();
     if (!fReplayListOpen) {
       return;
     }
@@ -3315,55 +3329,77 @@ private:
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(190, 8, 6, 12));
+               skia::colorSetARGB(220, 8, 6, 12));
 
-    const float w = std::min(720.0f, sw * 0.7f);
-    const float h = std::min(560.0f, sh * 0.75f);
-    const skia::SkRect box =
-        skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
-    p.fillRounded(box, 14.0f, client::ui::kBackground5);
-    p.strokeRounded(box, 14.0f, client::ui::kAccent, 2.0f);
-    p.textCentered("replays", box.centerX(), box.fTop + 46.0f, 24.0f,
-                   skia::kWhite);
+    p.textCentered("replays", sw * 0.5f, 62.0f, 26.0f, skia::kWhite);
 
     if (fReplays.empty()) {
-      p.textCentered("no replays saved yet", box.centerX(), box.centerY(),
-                     16.0f, skia::kWhite, 0.6f);
-    }
-
-    float y = box.fTop + 76.0f;
-    for (std::size_t i = 0; i < fReplays.size(); ++i) {
-      if (y + 44.0f > box.fBottom - 60.0f) {
-        break;
+      p.textCentered("no replays saved yet", sw * 0.5f, sh * 0.5f, 16.0f,
+                     skia::kWhite, 0.6f);
+    } else {
+      // Lay the panels out in a row centred on the screen, contracted, as
+      // ScorePanelList does when nothing is expanded.
+      const float scale =
+          std::min(1.0f, (sh - 220.0f) / (kPanelContractedH + 60.0f));
+      const float pw = kPanelContractedW * scale;
+      const float ph = kPanelContractedH * scale;
+      const float step = pw + kPanelSpacing * scale;
+      const int fit = std::max(1, static_cast<int>((sw - 80.0f) / step));
+      const int shown = std::min(static_cast<int>(fReplays.size()), fit);
+      float x = (sw - (step * static_cast<float>(shown) -
+                       kPanelSpacing * scale)) *
+                0.5f;
+      for (int i = 0; i < shown; ++i) {
+        const skia::SkRect r =
+            skia::SkRect::MakeXYWH(x, sh * 0.46f - ph * 0.5f, pw, ph);
+        this->drawContractedPanel(p, r,
+                                  fReplays[static_cast<std::size_t>(i)],
+                                  scale);
+        fPanelHits.push_back({r, i});
+        x += step;
       }
-      const skia::SkRect row = skia::SkRect::MakeXYWH(box.fLeft + 20.0f, y,
-                                                      w - 40.0f, 40.0f);
-      fReplayHits.push_back(row);
-      const bool hover = row.contains(fMouseX, fMouseY);
-      p.fillRounded(row, 8.0f,
-                    hover ? client::ui::kCardSel : client::ui::kCardBg);
-      p.textClipped(fReplays[i].fLabel, row.fLeft + 14.0f,
-                    row.centerY() + 5.0f, row.width() - 28.0f, 14.0f,
-                    skia::kWhite, 0.95f);
-      y += 46.0f;
+      if (static_cast<int>(fReplays.size()) > shown) {
+        p.textCentered(
+            std::format("{} more", static_cast<int>(fReplays.size()) - shown),
+            sw * 0.5f, sh * 0.46f + ph * 0.5f + 26.0f, 13.0f, skia::kWhite,
+            0.55f);
+      }
     }
 
-    p.textCentered("click to watch    Esc to close", box.centerX(),
-                   box.fBottom - 24.0f, 13.0f, skia::kWhite, 0.7f);
+    p.textCentered("click a replay to watch    Esc to close", sw * 0.5f,
+                   sh - 46.0f, 14.0f, skia::kWhite, 0.7f);
   }
 
   bool replayListClick(float x, float y) {
     if (!fReplayListOpen) {
       return false;
     }
-    for (std::size_t i = 0; i < fReplayHits.size(); ++i) {
-      if (fReplayHits[i].contains(x, y)) {
-        this->watchReplay(fReplays[i].fPath);
+    for (const auto &hit : fPanelHits) {
+      if (hit.fRect.contains(x, y)) {
+        this->watchReplay(
+            fReplays[static_cast<std::size_t>(hit.fIndex)].fPath);
         return true;
       }
     }
     return true;
   }
+
+  // On the results screen the side panels are the other replays; clicking one
+  // watches it.
+  bool resultsPanelClick(float x, float y) {
+    if (fState != State::kResults) {
+      return false;
+    }
+    for (const auto &hit : fPanelHits) {
+      if (hit.fRect.contains(x, y)) {
+        this->watchReplay(
+            fReplays[static_cast<std::size_t>(hit.fIndex)].fPath);
+        return true;
+      }
+    }
+    return false;
+  }
+
 
   void watchReplay(const std::filesystem::path &path) {
     fReplayListOpen = false;
@@ -4222,10 +4258,17 @@ private:
 
   // ---- Results ----------------------------------------------------------
 
-  // ResultsScreen / ExpandedPanelMiddleContent, in order down the panel:
-  // beatmap metadata, the AccuracyCircle, the total score counter, the
-  // difficulty line, then the statistics rows. ScorePanel.EXPANDED_WIDTH is
-  // 360 and the circle sits in a 230px band, which sets the proportions.
+  // ResultsScreen is a ScorePanelList: the played score expanded in the
+  // middle, every other score for the beatmap contracted beside it.
+  // ScorePanel gives the sizes -- EXPANDED_WIDTH 360, CONTRACTED_WIDTH 130,
+  // CONTRACTED_HEIGHT 385 -- with 5px between panels and 15px extra either
+  // side of the expanded one.
+  static constexpr float kPanelExpandedW = 360.0f;
+  static constexpr float kPanelContractedW = 130.0f;
+  static constexpr float kPanelContractedH = 385.0f;
+  static constexpr float kPanelSpacing = 5.0f;
+  static constexpr float kExpandedSpacing = 15.0f;
+
   void frameResults() {
     fView.invalidate();
     auto *canvas = fSurface->getCanvas();
@@ -4234,115 +4277,12 @@ private:
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
-    const auto &sc = fResult.fScore;
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(160, 10, 8, 14));
 
-    // The panel keeps lazer's proportions, scaled to the window.
-    const float panelW = std::min(520.0f, sw * 0.42f);
-    const float scale = panelW / 360.0f; // EXPANDED_WIDTH
-    const float panelH = std::min(sh - 140.0f, 620.0f * scale);
-    const skia::SkRect panel = skia::SkRect::MakeXYWH(
-        (sw - panelW) * 0.5f, (sh - panelH) * 0.5f - 20.0f, panelW, panelH);
-    p.fillRounded(panel, 20.0f, client::ui::kBackground5);
+    this->drawScorePanelList(canvas, p, sw, sh, /*interactive=*/true);
 
-    float y = panel.fTop + 34.0f * scale;
-
-    // ---- Metadata.
-    if (fMap) {
-      const auto &m = fMap->fMeta;
-      p.textCentered(m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode,
-                     panel.centerX(), y, 20.0f * scale, skia::kWhite);
-      y += 24.0f * scale;
-      p.textCentered(m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode,
-                     panel.centerX(), y, 14.0f * scale, skia::kWhite, 0.8f);
-      y += 34.0f * scale;
-    }
-
-    // ---- AccuracyCircle: a ring whose graded segments are the rank
-    // thresholds, with the achieved accuracy drawn over them and the rank
-    // badge in the middle.
-    const float circleR = 108.0f * scale;
-    const float cy = y + circleR;
-    this->drawAccuracyCircle(canvas, panel.centerX(), cy, circleR,
-                             sc.accuracy());
-    y = cy + circleR + 28.0f * scale;
-
-    // ---- Total score, counting up as TotalScoreCounter does.
-    const float countUp = client::ui::outQuint(
-        static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
-    const auto shown =
-        static_cast<std::uint64_t>(static_cast<double>(sc.fScore) * countUp);
-    p.textCentered(std::format("{:07}", shown), panel.centerX(), y,
-                   44.0f * scale, skia::kWhite);
-    y += 26.0f * scale;
-
-    // ---- Difficulty line: star rating chip, difficulty name, mods.
-    if (fPlayingSet >= 0) {
-      const auto &infos = this->infosFor(fPlayingSet);
-      if (fPlayingDiff >= 0 &&
-          fPlayingDiff < static_cast<int>(infos.size())) {
-        const auto &info = infos[static_cast<std::size_t>(fPlayingDiff)];
-        const skia::SkRect chip = skia::SkRect::MakeXYWH(
-            panel.centerX() - 90.0f * scale, y - 11.0f * scale, 62.0f * scale,
-            22.0f * scale);
-        p.fillRounded(chip, 11.0f * scale,
-                      client::ui::starColor(info.fStars));
-        p.textCentered(std::format("{:.2f}", info.fStars), chip.centerX(),
-                       chip.centerY() + 5.0f * scale, 12.0f * scale,
-                       skia::colorSetARGB(255, 20, 16, 26));
-        p.textClipped(info.fMeta.fVersion, chip.fRight + 10.0f * scale,
-                      y + 5.0f * scale, 150.0f * scale, 14.0f * scale,
-                      skia::kWhite, 0.9f);
-      }
-      y += 26.0f * scale;
-      p.textCentered(std::format("mapped by {}",
-                                 fMap ? fMap->fMeta.fCreator : std::string{}),
-                     panel.centerX(), y, 12.0f * scale, skia::kWhite, 0.7f);
-      y += 30.0f * scale;
-    }
-
-    // ---- Statistics: the top row carries the judgement counts, the bottom
-    // row combo / accuracy, as the two GridContainers do.
-    struct Stat {
-      const char *fLabel;
-      std::string fValue;
-      skia::SkColor fColor;
-    };
-    const Stat top[] = {
-        {"300", std::format("{}", sc.fGreat), client::ui::kGreat},
-        {"100", std::format("{}", sc.fGood), client::ui::kGood},
-        {"50", std::format("{}", sc.fMeh), client::ui::kMeh},
-        {"miss", std::format("{}", sc.fMiss), client::ui::kMiss},
-    };
-    const float cellW = (panelW - 40.0f * scale) / 4.0f;
-    float cx = panel.fLeft + 20.0f * scale;
-    for (const auto &st : top) {
-      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
-                     st.fColor);
-      p.textCentered(st.fValue, cx + cellW * 0.5f, y + 22.0f * scale,
-                     20.0f * scale, skia::kWhite);
-      cx += cellW;
-    }
-    y += 48.0f * scale;
-
-    const Stat bottom[] = {
-        {"combo", std::format("{}x", sc.fMaxCombo), skia::kWhite},
-        {"accuracy", std::format("{:.2f}%", sc.accuracy() * 100.0),
-         skia::kWhite},
-        {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite},
-        {"UR", std::format("{:.0f}", fResult.fUr), skia::kWhite},
-    };
-    cx = panel.fLeft + 20.0f * scale;
-    for (const auto &st : bottom) {
-      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
-                     skia::kWhite, 0.55f);
-      p.textCentered(st.fValue, cx + cellW * 0.5f, y + 20.0f * scale,
-                     16.0f * scale, st.fColor);
-      cx += cellW;
-    }
-
-    // ---- Actions, below the panel.
+    // ---- Actions, below the list.
     fMenuButtons.clear();
     const float bw = std::min(260.0f, sw * 0.22f);
     const float bh = 46.0f;
@@ -4354,7 +4294,7 @@ private:
                                      skia::colorSetARGB(255, 170, 102, 255)};
     for (int i = 0; i < 3; ++i) {
       const skia::SkRect r =
-          skia::SkRect::MakeXYWH(bx, panel.fBottom + 24.0f, bw, bh);
+          skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh);
       fMenuButtons.push_back({r, labels[i], accents[i]});
       this->drawMenuButton(canvas, fMenuButtons.back());
       bx += bw + gap;
@@ -4362,6 +4302,171 @@ private:
 
     this->drawScreenFadeIn(canvas);
     this->present();
+  }
+
+  // The list itself: contracted panels for the saved replays of this beatmap,
+  // the expanded panel for the score in hand. Used by the results screen and
+  // by the replay browser, which in lazer is the same component.
+  void drawScorePanelList(skia::SkCanvas *canvas, const client::ui::Painter &p,
+                          float sw, float sh, bool interactive) {
+    fPanelHits.clear();
+
+    const float scale =
+        std::min(1.0f, (sh - 220.0f) / (kPanelContractedH + 60.0f));
+    const float expandedW = kPanelExpandedW * scale;
+    const float contractedW = kPanelContractedW * scale;
+    const float panelH = kPanelContractedH * scale;
+    const float expandedH = panelH + 60.0f * scale;
+    const float cy = sh * 0.46f;
+
+    // Contracted panels for the replays, split either side of the middle.
+    const int perSide = std::max(
+        0, static_cast<int>((sw * 0.5f - expandedW * 0.5f -
+                             kExpandedSpacing * scale) /
+                            ((contractedW + kPanelSpacing) * scale)));
+    const int total = static_cast<int>(fReplays.size());
+    const int shown = std::min(total, perSide * 2);
+
+    float leftX = sw * 0.5f - expandedW * 0.5f - kExpandedSpacing * scale -
+                  contractedW;
+    float rightX = sw * 0.5f + expandedW * 0.5f + kExpandedSpacing * scale;
+    for (int i = 0; i < shown; ++i) {
+      const bool onLeft = (i % 2) == 0;
+      skia::SkRect r;
+      if (onLeft) {
+        r = skia::SkRect::MakeXYWH(leftX, cy - panelH * 0.5f, contractedW,
+                                   panelH);
+        leftX -= contractedW + kPanelSpacing * scale;
+      } else {
+        r = skia::SkRect::MakeXYWH(rightX, cy - panelH * 0.5f, contractedW,
+                                   panelH);
+        rightX += contractedW + kPanelSpacing * scale;
+      }
+      this->drawContractedPanel(p, r, fReplays[static_cast<std::size_t>(i)],
+                                scale);
+      if (interactive) {
+        fPanelHits.push_back({r, i});
+      }
+    }
+
+    const skia::SkRect expanded = skia::SkRect::MakeXYWH(
+        sw * 0.5f - expandedW * 0.5f, cy - expandedH * 0.5f, expandedW,
+        expandedH);
+    this->drawExpandedPanel(canvas, p, expanded, scale);
+
+    if (total > shown) {
+      p.textCentered(std::format("{} more replays", total - shown), sw * 0.5f,
+                     cy + expandedH * 0.5f + 26.0f, 13.0f, skia::kWhite, 0.55f);
+    }
+  }
+
+  // ContractedPanelMiddleContent: the rank, the score and the date, stacked.
+  void drawContractedPanel(const client::ui::Painter &p, const skia::SkRect &r,
+                           const ReplayFile &replay, float scale) {
+    const bool hover = r.contains(fMouseX, fMouseY);
+    p.fillRounded(r, 10.0f * scale,
+                  hover ? client::ui::kCardSel : client::ui::kBackground4);
+    p.textCentered("replay", r.centerX(), r.fTop + 40.0f * scale,
+                   16.0f * scale, client::ui::kAccent2, 0.9f);
+    // The stem carries the difficulty and the timestamp it was saved with.
+    const auto underscore = replay.fLabel.rfind('_');
+    const std::string diff = underscore == std::string::npos
+                                 ? replay.fLabel
+                                 : replay.fLabel.substr(0, underscore);
+    const std::string when = underscore == std::string::npos
+                                 ? std::string{}
+                                 : replay.fLabel.substr(underscore + 1);
+    p.textCentered(diff, r.centerX(), r.centerY(), 13.0f * scale, skia::kWhite,
+                   0.95f);
+    p.textCentered(when, r.centerX(), r.fBottom - 30.0f * scale, 11.0f * scale,
+                   skia::kWhite, 0.55f);
+  }
+
+  void drawExpandedPanel(skia::SkCanvas *canvas, const client::ui::Painter &p,
+                         const skia::SkRect &panel, float scale) {
+    const auto &sc = fResult.fScore;
+    p.fillRounded(panel, 20.0f * scale, client::ui::kBackground5);
+
+    float y = panel.fTop + 34.0f * scale;
+    if (fMap) {
+      const auto &m = fMap->fMeta;
+      p.textCentered(m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode,
+                     panel.centerX(), y, 20.0f * scale, skia::kWhite);
+      y += 24.0f * scale;
+      p.textCentered(m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode,
+                     panel.centerX(), y, 14.0f * scale, skia::kWhite, 0.8f);
+      y += 30.0f * scale;
+    }
+
+    const float circleR = 100.0f * scale;
+    const float cy = y + circleR;
+    this->drawAccuracyCircle(canvas, panel.centerX(), cy, circleR,
+                             sc.accuracy());
+    y = cy + circleR + 24.0f * scale;
+
+    const float countUp = client::ui::outQuint(
+        static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
+    const auto shown =
+        static_cast<std::uint64_t>(static_cast<double>(sc.fScore) * countUp);
+    p.textCentered(std::format("{:07}", shown), panel.centerX(), y,
+                   40.0f * scale, skia::kWhite);
+    y += 24.0f * scale;
+
+    if (fPlayingSet >= 0) {
+      const auto &infos = this->infosFor(fPlayingSet);
+      if (fPlayingDiff >= 0 && fPlayingDiff < static_cast<int>(infos.size())) {
+        const auto &info = infos[static_cast<std::size_t>(fPlayingDiff)];
+        const skia::SkRect chip = skia::SkRect::MakeXYWH(
+            panel.centerX() - 88.0f * scale, y - 11.0f * scale, 60.0f * scale,
+            22.0f * scale);
+        p.fillRounded(chip, 11.0f * scale, client::ui::starColor(info.fStars));
+        p.textCentered(std::format("{:.2f}", info.fStars), chip.centerX(),
+                       chip.centerY() + 5.0f * scale, 12.0f * scale,
+                       skia::colorSetARGB(255, 20, 16, 26));
+        p.textClipped(info.fMeta.fVersion, chip.fRight + 10.0f * scale,
+                      y + 5.0f * scale, 150.0f * scale, 13.0f * scale,
+                      skia::kWhite, 0.9f);
+      }
+      y += 30.0f * scale;
+    }
+
+    struct Stat {
+      const char *fLabel;
+      std::string fValue;
+      skia::SkColor fColor;
+    };
+    const Stat top[] = {
+        {"300", std::format("{}", sc.fGreat), client::ui::kGreat},
+        {"100", std::format("{}", sc.fGood), client::ui::kGood},
+        {"50", std::format("{}", sc.fMeh), client::ui::kMeh},
+        {"miss", std::format("{}", sc.fMiss), client::ui::kMiss},
+    };
+    const float cellW = (panel.width() - 32.0f * scale) / 4.0f;
+    float cx = panel.fLeft + 16.0f * scale;
+    for (const auto &st : top) {
+      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
+                     st.fColor);
+      p.textCentered(st.fValue, cx + cellW * 0.5f, y + 20.0f * scale,
+                     18.0f * scale, skia::kWhite);
+      cx += cellW;
+    }
+    y += 44.0f * scale;
+
+    const Stat bottom[] = {
+        {"combo", std::format("{}x", sc.fMaxCombo), skia::kWhite},
+        {"accuracy", std::format("{:.2f}%", sc.accuracy() * 100.0),
+         skia::kWhite},
+        {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite},
+        {"UR", std::format("{:.0f}", fResult.fUr), skia::kWhite},
+    };
+    cx = panel.fLeft + 16.0f * scale;
+    for (const auto &st : bottom) {
+      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
+                     skia::kWhite, 0.55f);
+      p.textCentered(st.fValue, cx + cellW * 0.5f, y + 18.0f * scale,
+                     15.0f * scale, st.fColor);
+      cx += cellW;
+    }
   }
 
   // AccuracyCircle: a grey backing ring, the graded arcs (D/C/B/A/S/SS at
