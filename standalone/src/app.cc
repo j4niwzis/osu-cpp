@@ -5677,6 +5677,18 @@ private:
       fReplays.push_back({e->fPath, e->fLabel, e->fScore, e->fGrade,
                           e->fHasScore});
     }
+    // Best first, which is the order a leaderboard is in and the order these
+    // panels imply by sitting in a row. The index hands them over in whatever
+    // order the directory was read in, which is no order at all.
+    std::ranges::stable_sort(fReplays, [](const ReplayFile &a,
+                                          const ReplayFile &b) {
+      const std::int64_t left =
+          a.fHasScore ? static_cast<std::int64_t>(a.fScore.fTotalScore) : -1;
+      const std::int64_t right =
+          b.fHasScore ? static_cast<std::int64_t>(b.fScore.fTotalScore) : -1;
+      return left > right;
+    });
+
     // The score in hand starts expanded and centred; after watching a replay
     // it is that replay's own panel, which is already in the list.
     fSelectedPanel = 0;
