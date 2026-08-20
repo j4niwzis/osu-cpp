@@ -1334,6 +1334,7 @@ private:
     fPlayedEvents = 0;
     fCombo = 0;
     fView.reset();
+    fAutoplayEvents.clear();
     fAutoplayIndex = 0;
     fRecordedEvents.clear();
     fHeldMask = 0;
@@ -3387,8 +3388,15 @@ private:
       fReplays.push_back({e->fPath, e->fLabel, e->fScore, e->fGrade,
                           e->fHasScore});
     }
-    // The score in hand starts expanded, centred.
+    // The score in hand starts expanded and centred; after watching a replay
+    // it is that replay's own panel, which is already in the list.
     fSelectedPanel = 0;
+    for (std::size_t i = 0; i < fReplays.size(); ++i) {
+      if (!fReplayPath.empty() && fReplays[i].fPath == fReplayPath) {
+        fSelectedPanel = static_cast<int>(i);
+        break;
+      }
+    }
     fPanelFreeScroll = false;
     fPanelDragging = false;
     fPanelEntries.clear();
@@ -4340,7 +4348,8 @@ private:
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(160, 10, 8, 14));
 
-    this->drawScorePanelList(canvas, p, sw, sh, /*ownScore=*/true);
+    this->drawScorePanelList(canvas, p, sw, sh,
+                            /*ownScore=*/fReplayPath.empty());
 
     // ---- Actions, below the list.
     fMenuButtons.clear();
@@ -5090,6 +5099,9 @@ private:
 
 
   void submitAutoplay(double now) {
+    if (!fAutoplay) {
+      return; // the player is driving
+    }
     while (fAutoplayIndex < fAutoplayEvents.size() &&
            fAutoplayEvents[fAutoplayIndex].fTime <= now) {
       const auto &ev = fAutoplayEvents[fAutoplayIndex];
