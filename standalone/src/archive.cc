@@ -84,8 +84,11 @@ readOsz(const std::filesystem::path &path) {
 
 } // namespace detail
 
+// Star ratings are the expensive half of loading a set -- seconds, over a
+// library -- and a client that has scanned before already knows them. Loading
+// for the audio, the objects or the artwork asks for them off.
 export [[nodiscard]] inline osu::BeatmapSet
-loadBeatmapSet(const std::filesystem::path &path) {
+loadBeatmapSet(const std::filesystem::path &path, bool computeStars = true) {
   if (!std::filesystem::exists(path)) {
     throw std::runtime_error{"beatmap path does not exist: " + path.string()};
   }
@@ -105,7 +108,9 @@ loadBeatmapSet(const std::filesystem::path &path) {
     const std::string text(it->second.begin(), it->second.end());
     const osu::Beatmap bm = osu::loadBeatmap(text);
     auto info = osu::buildBeatmapInfo(target, bm);
-    info.fStars = osu::calculateStars(bm).fTotal;
+    if (computeStars) {
+      info.fStars = osu::calculateStars(bm).fTotal;
+    }
     info.fMd5 = osu::md5HashString(it->second);
     set.fBeatmaps.push_back(std::move(info));
   } else {
@@ -121,9 +126,12 @@ loadBeatmapSet(const std::filesystem::path &path) {
         const std::string text(bytes.begin(), bytes.end());
         const osu::Beatmap bm = osu::loadBeatmap(text);
         auto info = osu::buildBeatmapInfo(name, bm);
-        info.fStars = osu::calculateStars(bm).fTotal;
+        if (computeStars) {
+          info.fStars = osu::calculateStars(bm).fTotal;
+          std::println(std::cerr, "[stars] {} -> {:.2f}*", info.fMeta.fVersion,
+                       info.fStars);
+        }
         info.fMd5 = osu::md5HashString(bytes);
-        std::println("{} -> {:.2f}*", info.fMeta.fVersion, info.fStars);
         set.fBeatmaps.push_back(std::move(info));
       } catch (const osu::UnsupportedModeError &) {
         // Skip non-standard difficulties (taiko, catch, mania).

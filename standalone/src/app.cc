@@ -2709,6 +2709,11 @@ private:
       return; // still loading; try again next frame
     }
     fMenuMusicForSet = fSelSet;
+    // The grace period starts when the track is asked for, not when it starts
+    // playing: decoding takes a few hundred milliseconds, and silence while
+    // that happens is not a track that ended. This is what made the client
+    // open on one beatmap and jump to another a second later.
+    fMenuTrackWall = wallMs();
     if (set->fBeatmaps.empty()) {
       fAudio.stop();
       return;
@@ -2931,8 +2936,9 @@ private:
       return nullptr;
     }
     try {
-      entry.fLoaded =
-          std::make_shared<osu::BeatmapSet>(loadBeatmapSet(entry.fPath));
+      entry.fLoaded = std::make_shared<osu::BeatmapSet>(
+          loadBeatmapSet(entry.fPath, false));
+      this->adoptCachedStars(index, *entry.fLoaded);
       this->touchLoaded(index);
     } catch (const std::exception &e) {
       std::println(std::cerr, "[library] load failed {}: {}",
@@ -2951,7 +2957,8 @@ private:
     fLoader.submit(
         static_cast<std::uint64_t>(index) | (1ull << 32),
         [path, result] {
-          *result = std::make_shared<osu::BeatmapSet>(loadBeatmapSet(path));
+          *result = std::make_shared<osu::BeatmapSet>(
+              loadBeatmapSet(path, false));
         },
         [this, index, path, result] {
           if (index >= static_cast<int>(fLibrary.size()) ||
@@ -2961,9 +2968,27 @@ private:
           if (!*result) {
             return;
           }
+          // The scan already worked the star ratings out and wrote them to the
+          // cache; this load was for the objects and the audio.
+          this->adoptCachedStars(index, **result);
           fLibrary[static_cast<std::size_t>(index)].fLoaded = *result;
           this->touchLoaded(index);
         });
+  }
+
+  // The library knows the star ratings from its cache, so a set loaded for
+  // its objects and its audio takes them from there rather than spending
+  // seconds working them out again.
+  void adoptCachedStars(int index, osu::BeatmapSet &set) const {
+    const auto &known = this->infosFor(index);
+    for (auto &info : set.fBeatmaps) {
+      for (const auto &cached : known) {
+        if (cached.fFilename == info.fFilename) {
+          info.fStars = cached.fStars;
+          break;
+        }
+      }
+    }
   }
 
   void touchLoaded(int index) {
@@ -5625,7 +5650,7 @@ private:
               return;
             }
           }
-          const auto set = loadBeatmapSet(path);
+          const auto set = loadBeatmapSet(path, false); // artwork only
           auto full = this->decodeSetArt(set);
           if (!full) {
             return;
