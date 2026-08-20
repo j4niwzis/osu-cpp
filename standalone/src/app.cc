@@ -413,10 +413,6 @@ private:
   };
   std::vector<Angle> fVisualiserAngles; // fixed per bar count, not per frame
   int fVisualiserCount = 0;
-  // Reused between frames so building the batch allocates nothing.
-  std::vector<skia::SkPoint> fVisualiserPos;
-  std::vector<skia::SkColor> fVisualiserCol;
-  std::vector<std::uint16_t> fVisualiserIdx;
   std::mt19937 fUiRng{0xC0FFEEu};
 
   [[nodiscard]] static float easeOutQuint(float t) {
@@ -4275,6 +4271,7 @@ private:
     constexpr float kAmplitudeDeadZone = 1.0f / 600.0f;
     const auto count = static_cast<int>(bars.size());
 
+    // Nothing above the dead zone is the usual case between tracks.
     bool anyAudible = false;
     for (const float amp : bars) {
       if (amp >= kAmplitudeDeadZone) {
@@ -4286,8 +4283,16 @@ private:
       return;
     }
 
-    // lazer works in a box of `size` = logo diameter, with bar_length = 600
-    // against a default logo of ~480px; keep the same proportion here.
+    // A bar at a time, as a small convex path with antialiasing.
+    //
+    // Two attempts at making this cheaper both cost more, and both for
+    // reasons worth keeping written down. Collecting the bars of a round into
+    // one path takes Skia off the analytic route it has for convex shapes and
+    // onto a coverage mask over the whole circle. Sending them as vertices
+    // removes the per-draw overhead but also the antialiasing, and adding it
+    // back as a ring of transparent geometry means blending five times the
+    // triangles -- which on a software rasteriser is paid per pixel, and cost
+    // more than the draws it saved. What is here is what measured best.
     const float barLength = logoRadius * 2.0f * (600.0f / 480.0f);
     // barSize.X = size * sqrt(2 * (1 - cos(360/bars))) / 2  -- the chord.
     const float chord =
@@ -4298,23 +4303,12 @@ private:
 
     this->ensureVisualiserAngles(count, kRounds);
 
-    // One triangle batch for the whole visualiser.
-    //
-    // A draw per bar was a thousand of them a frame. Collecting them into a
-    // path per round was worse, not better: a path of two hundred disjoint
-    // quads is not convex, so Skia leaves its analytic path and builds a
-    // coverage mask over the union's bounding box -- the whole circle --
-    // once per round. Vertices avoid both: the geometry goes straight to the
-    // rasteriser, and because each triangle is blended as it is drawn, bars
-    // that overlap still add up, which is what the rounds are for.
-    // transparent_white at the core, the same colour with no alpha at the
-    // feather's rim, so the edge fades instead of stepping.
-    constexpr skia::SkColor kBarColor = skia::colorSetARGB(51, 255, 255, 255);
-    constexpr skia::SkColor kBarEdgeColor =
-        skia::colorSetARGB(0, 255, 255, 255);
-    fVisualiserPos.clear();
-    fVisualiserCol.clear();
-    fVisualiserIdx.clear();
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setColor(skia::kWhite);
+    paint.setAlphaf(0.2f); // transparent_white
+    paint.setBlendMode(skia::SkBlendMode::kPlus);
+
     for (int round = 0; round < kRounds; ++round) {
       for (int i = 0; i < count; ++i) {
         const float amp = bars[static_cast<std::size_t>(i)];
@@ -4325,75 +4319,21 @@ private:
             fVisualiserAngles[static_cast<std::size_t>(round * count + i)];
         const float bx = fLogoX + angle.fCos * logoRadius;
         const float by = fLogoY + angle.fSin * logoRadius;
+        // bottomOffset is perpendicular; amplitudeOffset is radial.
         const float ox = -angle.fSin * chord * 0.5f;
         const float oy = angle.fCos * chord * 0.5f;
         const float ax = angle.fCos * barLength * amp;
         const float ay = angle.fSin * barLength * amp;
 
-        // The bar, and a ring around it that fades to nothing. Vertices
-        // carry no per-edge antialiasing, so the edge is made by geometry:
-        // one pixel of feather, transparent at its outer rim, which is the
-        // same trick the cursor trail uses.
-        constexpr float kFeather = 1.0f;
-        const float fx = angle.fCos * kFeather;
-        const float fy = angle.fSin * kFeather;
-        const float px = -angle.fSin * kFeather;
-        const float py = angle.fCos * kFeather;
-
-        const auto base = static_cast<std::uint16_t>(fVisualiserPos.size());
-        // Core, then the same four corners pushed out by the feather.
-        const skia::SkPoint core[4] = {{bx - ox, by - oy},
-                                       {bx - ox + ax, by - oy + ay},
-                                       {bx + ox + ax, by + oy + ay},
-                                       {bx + ox, by + oy}};
-        const skia::SkPoint outer[4] = {
-            {core[0].fX - px - fx, core[0].fY - py - fy},
-            {core[1].fX - px + fx, core[1].fY - py + fy},
-            {core[2].fX + px + fx, core[2].fY + py + fy},
-            {core[3].fX + px - fx, core[3].fY + py - fy}};
-        for (const auto &point : core) {
-          fVisualiserPos.push_back(point);
-          fVisualiserCol.push_back(kBarColor);
-        }
-        for (const auto &point : outer) {
-          fVisualiserPos.push_back(point);
-          fVisualiserCol.push_back(kBarEdgeColor);
-        }
-
-        const auto c0 = base;
-        const auto o0 = static_cast<std::uint16_t>(base + 4);
-        fVisualiserIdx.insert(
-            fVisualiserIdx.end(),
-            {c0, static_cast<std::uint16_t>(c0 + 1),
-             static_cast<std::uint16_t>(c0 + 2), c0,
-             static_cast<std::uint16_t>(c0 + 2),
-             static_cast<std::uint16_t>(c0 + 3)});
-        for (std::uint16_t edge = 0; edge < 4; ++edge) {
-          const auto a = static_cast<std::uint16_t>(c0 + edge);
-          const auto b = static_cast<std::uint16_t>(c0 + (edge + 1) % 4);
-          const auto oa = static_cast<std::uint16_t>(o0 + edge);
-          const auto ob = static_cast<std::uint16_t>(o0 + (edge + 1) % 4);
-          fVisualiserIdx.insert(fVisualiserIdx.end(), {a, b, oa, oa, b, ob});
-        }
+        skia::SkPathBuilder bar;
+        bar.moveTo(bx - ox, by - oy);
+        bar.lineTo(bx - ox + ax, by - oy + ay);
+        bar.lineTo(bx + ox + ax, by + oy + ay);
+        bar.lineTo(bx + ox, by + oy);
+        bar.close();
+        canvas->drawPath(bar.detach(), paint);
       }
     }
-    if (fVisualiserIdx.empty()) {
-      return;
-    }
-
-    auto verts = skia::SkVertices::MakeCopy(
-        skia::SkVertices::kTriangles_VertexMode,
-        static_cast<int>(fVisualiserPos.size()), fVisualiserPos.data(), nullptr,
-        fVisualiserCol.data(), static_cast<int>(fVisualiserIdx.size()),
-        fVisualiserIdx.data());
-    if (!verts) {
-      return;
-    }
-    skia::SkPaint paint;
-    paint.setBlendMode(skia::SkBlendMode::kPlus);
-    // kDst keeps the interpolated vertex colours; the paint only says how
-    // the result meets what is already there.
-    canvas->drawVertices(verts, skia::SkBlendMode::kDst, paint);
   }
 
   // The bars sit at fixed angles; only their lengths change. Computing two
