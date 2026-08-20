@@ -116,6 +116,9 @@ private:
 
   // Input
   osu::Vec2 fCursor = osu::kPlayfieldCenter;
+  osu::Vec2 fRawPrev{};                              // last pointer position
+  osu::Vec2 fVirtualCursor = osu::kPlayfieldCenter;  // integrated position
+  bool fHasRawPrev = false;
   float fMouseX = 0.0f;
   float fMouseY = 0.0f;
   std::uint32_t fHeldMask = 0; // bit per held key/button (Z/X/Space/M1/M2)
@@ -128,6 +131,13 @@ private:
   // Cursor-mode change requests marshalled to the main thread (GLFW requires
   // glfwSetInputMode on the thread that owns the window). -1 = none.
   std::atomic<int> fCursorModeRequest{-1};
+  std::atomic<int> fRawMotionRequest{-1};
+  // Swap interval is a property of the context, so only the thread holding it
+  // may set it; a toggle in the settings parks the value here.
+  std::atomic<int> fSwapIntervalRequest{-1};
+  int fSwapInterval = -1;
+  double fFpsPrevWall = 0.0;
+  double fFpsFrameMs = 0.0;
 
   // ---- Screens ---------------------------------------------------------
   enum class State {
@@ -603,6 +613,10 @@ private:
       if (cursorMode != -1) {
         glfw::glfwSetInputMode(fWindow, glfw::kCursor, cursorMode);
       }
+      const int rawMotion = fRawMotionRequest.exchange(-1);
+      if (rawMotion != -1 && glfw::glfwRawMouseMotionSupported()) {
+        glfw::glfwSetInputMode(fWindow, glfw::kRawMouseMotion, rawMotion);
+      }
     }
     fQuit.store(true, std::memory_order_release);
     renderThread.join();
@@ -613,7 +627,6 @@ private:
 #ifndef __EMSCRIPTEN__
   void renderThreadMain() {
     glfw::glfwMakeContextCurrent(fWindow);
-    glfw::glfwSwapInterval(1);
 
     if (!this->initSkia()) {
       fExitCode.store(1, std::memory_order_release);
@@ -705,7 +718,7 @@ private:
         this->panelListDrag(ev.fX);
       }
       if (fState == State::kPlaying && !fAutoplay) {
-        fCursor = this->applySensitivity(this->toPlayfield(ev.fX, ev.fY));
+        fCursor = this->cursorFromEvent(ev);
         this->submitTimed({this->eventGameTime(ev.fWallMs), fCursor,
                            osu::InputAction::kMove});
       }
@@ -1206,7 +1219,22 @@ private:
 
   // ---- Frame dispatch ---------------------------------------------------
 
+  // Applied here because glfwSwapInterval only affects the calling thread's
+  // context, and this is the thread that owns it.
+  void applySwapInterval() {
+#ifndef __EMSCRIPTEN__
+    const int wanted = fSwapIntervalRequest.load(std::memory_order_acquire);
+    if (wanted < 0 || wanted == fSwapInterval) {
+      return;
+    }
+    fSwapInterval = wanted;
+    glfw::glfwSwapInterval(wanted);
+    std::println(std::cerr, "[gfx] swap interval {}", wanted);
+#endif
+  }
+
   void frame() {
+    this->applySwapInterval();
     client::http::poll();  // completed network callbacks land here
     fLoader.poll();        // finished background loads land here
     this->drainDroppedFiles();
@@ -1239,6 +1267,32 @@ private:
     }
   }
 
+  // lazer's FPSCounter sits in the corner of every screen, and shows the
+  // frame time beside the rate. The profiling readout is a separate thing and
+  // stays behind --profile.
+  void drawFpsCounter(skia::SkCanvas *canvas) {
+    const double now = wallMs();
+    if (fFpsPrevWall > 0.0) {
+      const double dt = now - fFpsPrevWall;
+      // Exponential smoothing, so the number is readable rather than jittery.
+      fFpsFrameMs = fFpsFrameMs > 0.0 ? fFpsFrameMs * 0.9 + dt * 0.1 : dt;
+    }
+    fFpsPrevWall = now;
+    if (!fSettings.flag("fps") || fFpsFrameMs <= 0.0) {
+      return;
+    }
+    const client::ui::Painter p(canvas, fFont);
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    const skia::SkRect box =
+        skia::SkRect::MakeXYWH(sw - 92.0f, sh - 52.0f, 80.0f, 42.0f);
+    p.fillRounded(box, 6.0f, skia::colorSetARGB(150, 8, 6, 12));
+    p.textCentered(std::format("{:.0f} fps", std::round(1000.0 / fFpsFrameMs)),
+                   box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
+    p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
+                   box.fBottom - 8.0f, 12.0f, skia::kWhite, 0.7f);
+  }
+
   void present() {
     // Overlays float above whatever screen is drawn.
     auto *canvas = fSurface->getCanvas();
@@ -1254,6 +1308,7 @@ private:
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
     }
+    this->drawFpsCounter(canvas);
     fContext->flushAndSubmit(fSurface.get());
     glfw::glfwSwapBuffers(fWindow);
   }
@@ -1267,7 +1322,7 @@ private:
       return;
     }
     this->submitAutoplay(now);
-    if (fShowProfile || fSettings.flag("fps")) {
+    if (fShowProfile) {
       auto t0 = clock::now();
       fEngine->advance(now);
       auto t1 = clock::now();
@@ -1321,7 +1376,6 @@ private:
     c.fCursorSize = fSettings.value("cursorsize");
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
-    c.fShowFps = fSettings.flag("fps");
     c.fShowProfile = fShowProfile;
     return c;
   }
@@ -1329,6 +1383,8 @@ private:
   // ---- Play lifecycle ---------------------------------------------------
 
   void resetGameplayState() {
+    fHasRawPrev = false;
+    fVirtualCursor = osu::kPlayfieldCenter;
     fPlayedEvents = 0;
     fCombo = 0;
     fView.reset();
@@ -1435,6 +1491,28 @@ private:
     fResult.fGrade = osu::gradeString(osu::computeGrade(fResult.fScore));
   }
 
+  // With an absolute pointer the desktop cursor stops at the screen edge, so
+  // scaling its position by a sensitivity below 1 fences the playfield into a
+  // smaller box -- the "invisible walls". Anything other than 1:1 therefore
+  // grabs the pointer and integrates its motion instead, which is also what
+  // raw input needs.
+  [[nodiscard]] bool relativeCursor() const {
+    return std::abs(fSettings.value("sensitivity") - 1.0f) > 1e-3f ||
+           fSettings.flag("rawinput");
+  }
+
+  void applyPointerMode() {
+    if (fState == State::kPlaying) {
+      this->setCursorVisible(false); // re-evaluates the mode below
+    }
+    fRawMotionRequest.store(fSettings.flag("rawinput") ? glfw::kTrue
+                                                       : glfw::kFalse,
+                            std::memory_order_release);
+#ifndef __EMSCRIPTEN__
+    glfw::glfwPostEmptyEvent();
+#endif
+  }
+
   void setCursorVisible(bool visible) {
 #ifdef __EMSCRIPTEN__
     if (visible) {
@@ -1446,8 +1524,9 @@ private:
                            visible ? glfw::kCursorNormal
                                    : glfw::kCursorHidden);
 #else
-    fCursorModeRequest.store(visible ? glfw::kCursorNormal
-                                     : glfw::kCursorHidden,
+    const int hidden =
+        this->relativeCursor() ? glfw::kCursorDisabled : glfw::kCursorHidden;
+    fCursorModeRequest.store(visible ? glfw::kCursorNormal : hidden,
                              std::memory_order_release);
     glfw::glfwPostEmptyEvent();
 #endif
@@ -1475,6 +1554,8 @@ private:
     fReplayIndex.load(fMapsDir.parent_path() / "replay-index.json");
     fReplayIndex.refresh(fReplayDir);
     fSettings.load(fMapsDir.parent_path() / "settings.json");
+    fSwapIntervalRequest.store(fSettings.flag("vsync") ? 1 : 0,
+                               std::memory_order_release);
     fAppliedDim = fSettings.value("dim");
 
     if (fHasInitialSet) {
@@ -3269,9 +3350,11 @@ private:
       fAppliedDim = dim;
       fView.preScaleBackground(this->gameplayCtx(nullptr));
     }
-#ifndef __EMSCRIPTEN__
-    glfw::glfwSwapInterval(fSettings.flag("vsync") ? 1 : 0);
-#endif
+    fSwapIntervalRequest.store(fSettings.flag("vsync") ? 1 : 0,
+                               std::memory_order_release);
+    // Sensitivity other than 1 needs relative motion, which needs the pointer
+    // grabbed; so does raw input.
+    this->applyPointerMode();
   }
 
   // ---- Mod select and export dialog ---------------------------------------
@@ -5231,13 +5314,29 @@ private:
 
   // Cursor sensitivity scales movement about the playfield centre, which is
   // what osu! does when the setting is not 1x.
-  [[nodiscard]] osu::Vec2 applySensitivity(osu::Vec2 raw) const {
-    const double s = fSettings.value("sensitivity");
-    if (std::abs(s - 1.0) < 1e-3) {
+  // 1:1 maps the pointer straight onto the playfield, which is what a tablet
+  // wants. Otherwise the pointer is grabbed and its motion is integrated at
+  // the chosen sensitivity, so the whole playfield stays reachable however
+  // low the sensitivity is.
+  [[nodiscard]] osu::Vec2 cursorFromEvent(const Event &ev) {
+    const auto raw = this->toPlayfield(ev.fX, ev.fY);
+    if (!this->relativeCursor()) {
+      fVirtualCursor = raw;
+      fHasRawPrev = false;
       return raw;
     }
-    const auto c = osu::kPlayfieldCenter;
-    return {c.fX + (raw.fX - c.fX) * s, c.fY + (raw.fY - c.fY) * s};
+    const double s = fSettings.value("sensitivity");
+    if (!fHasRawPrev) {
+      fRawPrev = raw;
+      fHasRawPrev = true;
+    }
+    const osu::Vec2 delta{(raw.fX - fRawPrev.fX) * s,
+                          (raw.fY - fRawPrev.fY) * s};
+    fRawPrev = raw;
+    fVirtualCursor = {
+        std::clamp(fVirtualCursor.fX + delta.fX, 0.0, osu::kPlayfieldWidth),
+        std::clamp(fVirtualCursor.fY + delta.fY, 0.0, osu::kPlayfieldHeight)};
+    return fVirtualCursor;
   }
 
 

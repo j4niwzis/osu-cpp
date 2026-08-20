@@ -33,7 +33,6 @@ public:
     float fCursorSize = 1.0f;
     float fDim = 0.7f;
     bool fNoGlow = false;
-    bool fShowFps = false;
     bool fShowProfile = false;
   };
 
@@ -275,7 +274,7 @@ public:
 
     canvas->restore();
 
-    if (c.fShowProfile || c.fShowFps) {
+    if (c.fShowProfile) {
       auto &p = fProfile[fProfileIdx];
       p.renderFollowUs = static_cast<double>(
           std::chrono::duration_cast<std::chrono::microseconds>(rtb - rta)
@@ -864,18 +863,7 @@ public:
     canvas->drawString(timeText.c_str(), sw - 80.0f, sh - 20.0f, (*c.fFont),
                        fHudPaint);
 
-    double avgFrameMs = 0.0;
-    if (fFrameTimeCount > 0) {
-      for (std::size_t i = 0; i < fFrameTimeCount; ++i)
-        avgFrameMs += fFrameTimes[i];
-      avgFrameMs /= static_cast<double>(fFrameTimeCount);
-    }
-    const double fps = avgFrameMs > 0.0 ? 1000.0 / avgFrameMs : 0.0;
-    const std::string fpsText = std::format("{:.0f} fps", std::round(fps));
-    canvas->drawString(fpsText.c_str(), sw - 80.0f, sh - 40.0f, (*c.fFont),
-                       fHudPaint);
-
-    if (c.fShowProfile || c.fShowFps) {
+    if (c.fShowProfile) {
       double avgAdv = 0.0, avgRender = 0.0, avgFlush = 0.0, avgSwap = 0.0;
       double avgFollow = 0.0, avgObjs = 0.0, avgRest = 0.0, avgHud = 0.0;
       if (fProfileNum > 0) {

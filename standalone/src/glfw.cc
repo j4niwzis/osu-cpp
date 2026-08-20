@@ -31,6 +31,7 @@ using ::glfwGetWindowUserPointer;
 using ::glfwInit;
 using ::glfwMakeContextCurrent;
 using ::glfwPollEvents;
+using ::glfwRawMouseMotionSupported;
 using ::glfwPostEmptyEvent;
 using ::glfwSetCharCallback;
 using ::glfwSetDropCallback;
@@ -108,5 +109,6 @@ inline constexpr int kCursor = GLFW_CURSOR;
 inline constexpr int kCursorNormal = GLFW_CURSOR_NORMAL;
 inline constexpr int kCursorHidden = GLFW_CURSOR_HIDDEN;
 inline constexpr int kCursorDisabled = GLFW_CURSOR_DISABLED;
+inline constexpr int kRawMouseMotion = GLFW_RAW_MOUSE_MOTION;
 
 } // namespace glfw
