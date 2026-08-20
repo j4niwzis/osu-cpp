@@ -3574,6 +3574,13 @@ private:
                    sh - 40.0f, 14.0f, skia::kWhite, slide * 0.7f);
   }
 
+  // ModSet exposes | and & but no ~, so removal goes through its explicit
+  // integer conversion rather than inventing an operator in the engine.
+  [[nodiscard]] static osu::ModSet without(osu::ModSet set, osu::ModSet flag) {
+    return osu::ModSet(static_cast<std::uint32_t>(set) &
+                       ~static_cast<std::uint32_t>(flag));
+  }
+
   bool modClick(float x, float y) {
     if (fModsSlide < 0.5f) {
       return false;
@@ -3582,24 +3589,24 @@ private:
     std::size_t i = 0;
     for (const auto &m : entries) {
       if (i < fModHits.size() && fModHits[i].contains(x, y)) {
-        fMods = (fMods & m.fFlag) != osu::mod::kNone ? (fMods & ~m.fFlag)
+        fMods = (fMods & m.fFlag) != osu::mod::kNone ? without(fMods, m.fFlag)
                                                      : (fMods | m.fFlag);
         // Speed mods are mutually exclusive, as in lazer.
         if (m.fFlag == osu::mod::kDoubleTime &&
             (fMods & osu::mod::kDoubleTime) != osu::mod::kNone) {
-          fMods = fMods & ~osu::mod::kHalfTime;
+          fMods = without(fMods, osu::mod::kHalfTime);
         }
         if (m.fFlag == osu::mod::kHalfTime &&
             (fMods & osu::mod::kHalfTime) != osu::mod::kNone) {
-          fMods = fMods & ~osu::mod::kDoubleTime;
+          fMods = without(fMods, osu::mod::kDoubleTime);
         }
         if (m.fFlag == osu::mod::kHardRock &&
             (fMods & osu::mod::kHardRock) != osu::mod::kNone) {
-          fMods = fMods & ~osu::mod::kEasy;
+          fMods = without(fMods, osu::mod::kEasy);
         }
         if (m.fFlag == osu::mod::kEasy &&
             (fMods & osu::mod::kEasy) != osu::mod::kNone) {
-          fMods = fMods & ~osu::mod::kHardRock;
+          fMods = without(fMods, osu::mod::kHardRock);
         }
         return true;
       }
@@ -5780,9 +5787,14 @@ private:
         skia::SkPaint paint;
         paint.setAntiAlias(true);
         paint.setAlphaf(static_cast<float>(alpha));
-        detail::drawImageCentered(canvas, sprite.get(), x, y,
-                                  0.5f * static_cast<float>(hitSpriteScale),
-                                  paint);
+        const float w = static_cast<float>(sprite->width()) * 0.5f *
+                        static_cast<float>(hitSpriteScale);
+        const float h = static_cast<float>(sprite->height()) * 0.5f *
+                        static_cast<float>(hitSpriteScale);
+        canvas->drawImageRect(
+            sprite.get(),
+            skia::SkRect::MakeXYWH(x - w * 0.5f, y - h * 0.5f, w, h),
+            skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &paint);
         ++it;
         continue;
       }
