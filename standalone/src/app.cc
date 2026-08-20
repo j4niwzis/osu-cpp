@@ -1691,6 +1691,7 @@ private:
     // it is open and untouched, which is most of the time.
     if (fSettingsPanel.visible()) {
       this->damage(fSettingsPanel.update(
+          fFont, fSettings,
           {fScreenW, fScreenH, fMouseX, fMouseY, wallMs(), fUiDt}));
     }
     if (fState == State::kDownload) {
@@ -4732,11 +4733,7 @@ private:
     }
   }
 
-  void drawSettings(skia::SkCanvas *canvas) {
-    fSettingsPanel.draw(canvas, fFont, fSettings,
-                        {fScreenW, fScreenH, fMouseX, fMouseY, wallMs(),
-                         fUiDt});
-  }
+  void drawSettings(skia::SkCanvas *canvas) { fSettingsPanel.render(canvas); }
 
   bool settingsClick(float x, float y, bool pressed) {
     fSettingsPanel.touched(); // whatever it hit, the panel draws it next frame

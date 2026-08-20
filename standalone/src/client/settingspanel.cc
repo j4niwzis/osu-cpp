@@ -4,6 +4,8 @@ import std;
 import skia;
 import client.ui;
 import client.settings;
+import client.scene;
+import client.nodes;
 
 export namespace client {
 
@@ -11,6 +13,9 @@ export namespace client {
 // content column sliding in from the left over TRANSITION_LENGTH with
 // OutQuint, one continuous scroll of every section, the sidebar scrolling to
 // a section and tracking which one the viewport is in.
+//
+// Built as a scene tree, like the rest of the client: the panel decides what
+// exists and what changed, and the frame is only drawn when something did.
 class SettingsPanel {
 public:
   static constexpr float kSidebarWidth = 170.0f;  // EXPANDED_WIDTH
@@ -19,6 +24,7 @@ public:
   static constexpr float kItemSpacing = 14.0f;    // ITEM_SPACING
   static constexpr float kSidebarItemHeight = 46.0f;
   static constexpr float kTransitionMs = 600.0f;  // TRANSITION_LENGTH
+  static constexpr float kContentTop = 110.0f;    // under the panel's header
 
   struct Frame {
     int fScreenW = 0, fScreenH = 0;
@@ -31,17 +37,14 @@ public:
 
   [[nodiscard]] bool open() const noexcept { return fOpen; }
   [[nodiscard]] float slide() const noexcept { return fSlide; }
-  // The strip it occupies on screen, which is what has to be repainted when
-  // anything inside it changes.
   [[nodiscard]] float occupiedWidth() const noexcept {
     return (kSidebarWidth + kPanelWidth) * fSlide;
   }
 
   // Still sliding: the only time an untouched panel needs frames.
   //
-  // Asked of the clock, not of fSlide. fSlide is only advanced while the
-  // panel draws, and it stops being drawn as soon as it is out of sight --
-  // leaving a value just above zero that made this answer "yes" for ever.
+  // Asked of the clock, not of fSlide, which only advances while the panel is
+  // being updated.
   [[nodiscard]] bool animating(double nowMs) const noexcept {
     return nowMs - fEnterWall < kTransitionMs;
   }
@@ -62,278 +65,98 @@ public:
     }
   }
 
-  void scroll(float delta, float screenH) {
-    fScroll = std::clamp(fScroll - delta * 60.0f, 0.0f,
-                         std::max(0.0f, fContentHeight - screenH * 0.6f));
+  void scroll(float delta, float) {
+    fScrollTicks += delta;
     fTouched = true;
   }
 
   // Something in the panel was clicked or dragged: whatever it did, the panel
-  // is drawing something different next frame.
+  // draws something different next frame.
   void touched() noexcept { fTouched = true; }
 
-  // What has to be repainted for the panel, worked out before anything is
-  // drawn. Empty means it is on screen and showing exactly what it showed
-  // last frame -- which is what an open settings panel does almost all of the
-  // time, and what used to cost a repaint of the whole screen per frame.
-  [[nodiscard]] skia::SkRect update(const Frame &frame) {
-    if (!this->visible()) {
-      fTouched = false;
-      return skia::SkRect::MakeEmpty();
-    }
-    const float sw = static_cast<float>(frame.fScreenW);
-    const float sh = static_cast<float>(frame.fScreenH);
-    if (this->animating(frame.fNowMs)) {
-      // Sliding: the dim over the screen changes with it, so this is one of
-      // the few honest whole-screen repaints.
-      fTouched = false;
-      return skia::SkRect::MakeXYWH(0.0f, 0.0f, sw, sh);
-    }
+  // Everything that decides what the panel looks like, with nothing drawn.
+  // Returns what has to be repainted for it: empty means it is on screen and
+  // showing exactly what it showed last frame, which is what an open settings
+  // panel does almost all of the time.
+  [[nodiscard]] skia::SkRect update(skia::SkFont &font, Settings &settings,
+                                    const Frame &frame) {
+    fFont = &font;
+    fSettings = &settings;
+    fMouseX = frame.fMouseX;
+    fMouseY = frame.fMouseY;
 
-    skia::SkRect out = skia::SkRect::MakeEmpty();
-    const auto join = [&out](const skia::SkRect &rect) {
-      if (out.isEmpty()) {
-        out = rect;
-      } else {
-        out.join(rect);
-      }
-    };
-
-    // The sidebar's section indicator eases in and out, and its labels tint
-    // under the pointer.
-    bool indicatorMoving = false;
-    for (const float grow : fGrow) {
-      if (grow > 0.001f && grow < 0.999f) {
-        indicatorMoving = true;
-        break;
-      }
-    }
-    int hotSidebar = -1;
-    for (std::size_t i = 0; i < fSidebarHits.size(); ++i) {
-      if (fSidebarHits[i].contains(frame.fMouseX, frame.fMouseY)) {
-        hotSidebar = static_cast<int>(i);
-        break;
-      }
-    }
-    if (indicatorMoving || hotSidebar != fHotSidebar) {
-      fHotSidebar = hotSidebar;
-      join(skia::SkRect::MakeXYWH(0.0f, 0.0f, kSidebarWidth, sh));
-    }
-
-    // An option list highlights whatever the pointer is over; nothing else in
-    // the panel responds to hover at all.
-    int hotOption = -1;
-    for (std::size_t i = 0; i < fChoiceOptionHits.size(); ++i) {
-      if (fChoiceOptionHits[i].fRect.contains(frame.fMouseX, frame.fMouseY)) {
-        hotOption = static_cast<int>(i);
-        break;
-      }
-    }
-    if (hotOption != fHotOption) {
-      fHotOption = hotOption;
-      fTouched = true;
-    }
-
-    if (fTouched || std::abs(fScrollAnim - fScroll) > 0.05f) {
-      join(skia::SkRect::MakeXYWH(kSidebarWidth, 0.0f, kPanelWidth, sh));
-    }
-    fTouched = false;
-    return out;
-  }
-
-  void draw(skia::SkCanvas *canvas, skia::SkFont &font, Settings &settings,
-            const Frame &frame) {
     const float progress =
         static_cast<float>((frame.fNowMs - fEnterWall) / kTransitionMs);
     const float eased = ui::outQuint(std::clamp(progress, 0.0f, 1.0f));
     fSlide = fOpen ? eased : 1.0f - eased;
-
-    fRows.clear();
-    fRestoreHits.clear();
-    fSidebarHits.clear();
-    fChoiceHits.clear();
-    fChoiceOptionHits.clear();
-    if (!fOpen && fSlide <= 0.001f) {
-      return;
-    }
-
-    const ui::Painter p(canvas, font);
     const float sw = static_cast<float>(frame.fScreenW);
     const float sh = static_cast<float>(frame.fScreenH);
-    const float x0 = -(kSidebarWidth + kPanelWidth) * (1.0f - fSlide);
+
+    if (!this->visible()) {
+      fScene.reset();
+      fTouched = false;
+      fScrollTicks = 0.0f;
+      return skia::SkRect::MakeEmpty();
+    }
+
+    if (!fScene || fBuiltFor != settings.defs().size()) {
+      fBuiltFor = settings.defs().size();
+      fScene = this->build();
+      fTouched = true;
+    }
+
+    // The slide is a position rather than a transform: it is driven by the
+    // same clock the client asks about, so there is one answer to "is this
+    // still moving".
+    const float shellX = -(kSidebarWidth + kPanelWidth) * (1.0f - fSlide);
     const float fade = std::min(1.0f, fSlide * 2.0f);
-
-    fSectionOffsets.assign(Settings::kSections.size(), 0.0f);
-
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 110.0f), 0,
-                                  0, 0));
-    p.fillRect(skia::SkRect::MakeXYWH(x0, 0.0f, kSidebarWidth, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 252.0f), 23,
-                                  19, 30));
-
-    const float px = x0 + kSidebarWidth;
-    p.fillRect(skia::SkRect::MakeXYWH(px, 0.0f, kPanelWidth, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 250.0f), 31,
-                                  25, 40));
-    p.textClipped("settings", px + kContentMargins, 56.0f,
-                  kPanelWidth - kContentMargins * 2, 30.0f, skia::kWhite, fade);
-    p.textClipped("change the way osu! behaves", px + kContentMargins, 78.0f,
-                  kPanelWidth - kContentMargins * 2, 13.0f, skia::kWhite,
-                  fade * 0.6f);
-
-    constexpr float kTop = 110.0f;
-    fScrollAnim = ui::approach(fScrollAnim, fScroll, 110.0f, frame.fDtMs);
-
-    canvas->save();
-    canvas->clipIRect(skia::SkIRect::MakeXYWH(
-        static_cast<int>(px), static_cast<int>(kTop),
-        static_cast<int>(kPanelWidth), static_cast<int>(sh - kTop)));
-
-    const auto &defs = settings.defs();
-    float y = kTop + 24.0f - fScrollAnim;
-    int lastSection = -1;
-    int viewportSection = 0;
-    for (std::size_t i = 0; i < defs.size(); ++i) {
-      const auto &d = defs[i];
-      if (d.fSection != lastSection) {
-        lastSection = d.fSection;
-        fSectionOffsets[static_cast<std::size_t>(d.fSection)] =
-            y - kTop - 24.0f + fScrollAnim;
-        p.textClipped(Settings::kSections[static_cast<std::size_t>(d.fSection)],
-                      px + kContentMargins, y,
-                      kPanelWidth - kContentMargins * 2, 22.0f, ui::kAccent,
-                      fade);
-        y += 34.0f;
-      }
-      if (y < kTop + 80.0f) {
-        viewportSection = d.fSection;
-      }
-
-      const skia::SkRect row =
-          skia::SkRect::MakeXYWH(px + kContentMargins, y - 16.0f,
-                                 kPanelWidth - kContentMargins * 2, 44.0f);
-      fRows.push_back({row, static_cast<int>(i)});
-
-      if (settings.isModified(i)) {
-        p.fillRounded(skia::SkRect::MakeXYWH(row.fLeft - 12.0f, row.fTop + 4.0f,
-                                             4.0f, row.height() - 8.0f),
-                      2.0f, ui::kAccent);
-        fRestoreHits.push_back({skia::SkRect::MakeXYWH(row.fLeft - 18.0f,
-                                                       row.fTop, 16.0f,
-                                                       row.height()),
-                                static_cast<int>(i)});
-      }
-
-      p.textClipped(d.fLabel, row.fLeft, y, row.width() * 0.62f, 14.0f,
-                    skia::kWhite, fade * 0.95f);
-
-      if (d.fKind == SettingKind::kSlider) {
-        const float t = (settings.value(d.fKey) - d.fMin) / (d.fMax - d.fMin);
-        const skia::SkRect track =
-            skia::SkRect::MakeXYWH(row.fLeft, y + 14.0f, row.width(), 6.0f);
-        p.fillRounded(track, 3.0f, skia::colorSetARGB(255, 58, 48, 70));
-        p.fillRounded(skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
-                                             track.width() * t, track.height()),
-                      3.0f, ui::kAccent);
-        p.circle(track.fLeft + track.width() * t, track.centerY(), 7.0f,
-                 skia::kWhite, fade);
-        p.textClipped(settings.displayValue(i), row.fRight - 76.0f, y, 76.0f,
-                      13.0f, skia::kWhite, fade * 0.75f);
-        y += 44.0f + kItemSpacing;
-      } else if (d.fKind == SettingKind::kChoice) {
-        const auto index = static_cast<std::size_t>(settings.choice(d.fKey));
-        const std::string &option =
-            index < d.fOptions.size() ? d.fOptions[index] : d.fOptions.front();
-        // Widest option, so the control does not resize as it is used.
-        float width = 0.0f;
-        for (const auto &candidate : d.fOptions) {
-          width = std::max(width, p.measure(candidate, 13.0f));
-        }
-        width += 40.0f;
-        const skia::SkRect box = skia::SkRect::MakeXYWH(
-            row.fRight - width, y - 13.0f, width, 24.0f);
-        const bool open = fOpenChoice == static_cast<int>(i);
-        p.fillRounded(box, 6.0f,
-                      open ? ui::kAccent : skia::colorSetARGB(255, 58, 48, 70));
-        p.textClipped(option, box.fLeft + 12.0f, y + 4.0f, width - 32.0f,
-                      13.0f, skia::kWhite, fade);
-        // The chevron, so it reads as something that opens.
-        p.textClipped(open ? "^" : "v", box.fRight - 18.0f, y + 4.0f, 12.0f,
-                      12.0f, skia::kWhite, fade * 0.8f);
-        fChoiceHits.push_back({box, static_cast<int>(i)});
-        y += 30.0f + kItemSpacing;
-
-        if (open) {
-          // The list, under the control, one row per option.
-          for (std::size_t o = 0; o < d.fOptions.size(); ++o) {
-            const skia::SkRect item = skia::SkRect::MakeXYWH(
-                box.fLeft, y - 13.0f, width, 24.0f);
-            const bool hovered = item.contains(frame.fMouseX, frame.fMouseY);
-            p.fillRounded(item, 6.0f,
-                          hovered ? ui::kCardSel
-                                  : skia::colorSetARGB(255, 44, 36, 54));
-            p.textClipped(d.fOptions[o], item.fLeft + 12.0f, y + 4.0f,
-                          width - 24.0f, 13.0f, skia::kWhite,
-                          fade * (o == index ? 1.0f : 0.8f));
-            fChoiceOptionHits.push_back(
-                {item, static_cast<int>(i), static_cast<int>(o)});
-            y += 26.0f;
-          }
-          y += kItemSpacing;
-        }
-      } else {
-        const bool on = settings.flag(d.fKey);
-        const skia::SkRect box =
-            skia::SkRect::MakeXYWH(row.fRight - 46.0f, y - 12.0f, 40.0f, 22.0f);
-        p.fillRounded(box, 11.0f,
-                      on ? ui::kAccent : skia::colorSetARGB(255, 58, 48, 70));
-        p.circle(on ? box.fRight - 11.0f : box.fLeft + 11.0f, box.centerY(),
-                 8.0f, skia::kWhite, fade);
-        y += 30.0f + kItemSpacing;
-      }
+    if (fShell != nullptr && fShell->fX != shellX) {
+      fShell->fX = shellX;
+      fShell->invalidateLayout();
     }
-    fContentHeight = y - kTop + fScrollAnim;
-    canvas->restore();
-
-    // Sidebar last, so its highlight reflects the scroll just measured.
-    float sy = 70.0f;
-    for (std::size_t i = 0; i < Settings::kSections.size(); ++i) {
-      const skia::SkRect r =
-          skia::SkRect::MakeXYWH(x0, sy, kSidebarWidth, kSidebarItemHeight);
-      fSidebarHits.push_back(r);
-      const bool active = static_cast<int>(i) == viewportSection;
-      const bool hover = r.contains(frame.fMouseX, frame.fMouseY);
-
-      float &grow = fGrow[i];
-      grow = ui::approach(grow, active ? 1.0f : 0.0f, 90.0f, frame.fDtMs);
-      const float indicatorH = 4.0f + 14.0f * ui::outElasticHalf(grow);
-      if (grow > 0.01f) {
-        p.fillRounded(skia::SkRect::MakeXYWH(r.fLeft + 6.0f,
-                                             r.centerY() - indicatorH * 0.5f,
-                                             4.0f, indicatorH),
-                      2.0f, skia::kWhite);
-      }
-      const skia::SkColor tint =
-          active ? skia::kWhite
-                 : (hover ? skia::colorSetARGB(255, 200, 195, 210)
-                          : skia::colorSetARGB(255, 153, 153, 153));
-      p.textClipped(Settings::kSectionIcons[i], r.fLeft + 26.0f,
-                    r.centerY() + 7.0f, 24.0f, 18.0f, tint, fade);
-      p.textClipped(Settings::kSections[i], r.fLeft + 56.0f, r.centerY() + 6.0f,
-                    kSidebarWidth - 66.0f, 15.0f, tint, fade);
-      sy += kSidebarItemHeight + 5.0f;
+    if (fDim != nullptr) {
+      fDim->fAlpha = fade * (110.0f / 255.0f);
+    }
+    if (fShell != nullptr) {
+      fShell->fAlpha = fade;
     }
 
-    p.textClipped("Ctrl+O to close", px + kContentMargins, sh - 24.0f,
-                  kPanelWidth - kContentMargins * 2, 12.0f, skia::kWhite,
-                  fade * 0.5f);
+    const skia::SkRect screen = skia::SkRect::MakeWH(sw, sh);
+    fScene->updateTree(frame.fNowMs);
+    fScene->layoutIfNeeded(screen);
+    if (fScrollTicks != 0.0f && fScroll != nullptr) {
+      // After the layout, so the wheel lands on something with bounds.
+      fScene->scroll(frame.fMouseX, frame.fMouseY, fScrollTicks);
+      fScrollTicks = 0.0f;
+      fScene->layoutIfNeeded(screen);
+    }
+    this->trackViewportSection();
+    fScene->setHover(frame.fMouseX, frame.fMouseY);
+
+    skia::SkRect damage = fScene->takeDamage();
+    if (this->animating(frame.fNowMs) || fTouched) {
+      // Sliding dims the whole screen with it, which is one of the few honest
+      // whole-screen repaints there are.
+      damage = this->animating(frame.fNowMs) ? screen : damage;
+      if (fTouched && !this->animating(frame.fNowMs)) {
+        damage.join(skia::SkRect::MakeXYWH(
+            std::max(0.0f, shellX), 0.0f, kSidebarWidth + kPanelWidth, sh));
+      }
+    }
+    fTouched = false;
+    return damage;
+  }
+
+  void render(skia::SkCanvas *canvas) {
+    if (fScene && canvas != nullptr) {
+      fScene->draw(canvas);
+    }
   }
 
   // Returns kChanged when a value was touched (so the caller can apply and
   // persist), kSwallowed when the overlay consumed the click regardless.
   [[nodiscard]] Hit click(float x, float y, bool pressed, Settings &settings) {
-    if (fSlide < 0.5f) {
+    if (fSlide < 0.5f || !fScene) {
       return Hit::kNone;
     }
     if (!pressed) {
@@ -341,105 +164,554 @@ public:
       fDragging = -1;
       return wasDragging ? Hit::kChanged : Hit::kSwallowed;
     }
-    for (const auto &hit : fRestoreHits) {
-      if (hit.fRect.contains(x, y)) {
-        settings.restoreDefault(static_cast<std::size_t>(hit.fIndex));
-        return Hit::kChanged;
-      }
-    }
-    for (std::size_t i = 0; i < fSidebarHits.size(); ++i) {
-      if (fSidebarHits[i].contains(x, y)) {
-        if (i < fSectionOffsets.size()) {
-          fScroll = fSectionOffsets[i];
-        }
+    fAction = {};
+    fScene->click(x, y);
+    switch (fAction.fKind) {
+    case Action::kNone:
+      // A click anywhere else in the panel closes an open list, and is
+      // swallowed if it landed on the panel at all.
+      if (fOpenChoice >= 0) {
+        this->setOpenChoice(-1);
         return Hit::kSwallowed;
       }
-    }
-    // The open list first: its rows sit over whatever is beneath them.
-    for (const auto &option : fChoiceOptionHits) {
-      if (option.fRect.contains(x, y)) {
-        settings.setChoice(static_cast<std::size_t>(option.fIndex),
-                           option.fOption);
-        fOpenChoice = -1;
-        return Hit::kChanged;
+      return x < (kSidebarWidth + kPanelWidth) * fSlide ? Hit::kSwallowed
+                                                        : Hit::kNone;
+    case Action::kRestore:
+      settings.restoreDefault(fAction.fIndex);
+      this->markRow(fAction.fIndex);
+      return Hit::kChanged;
+    case Action::kToggle:
+      settings.toggle(fAction.fIndex);
+      this->markRow(fAction.fIndex);
+      return Hit::kChanged;
+    case Action::kChoiceOpen:
+      this->setOpenChoice(fOpenChoice == static_cast<int>(fAction.fIndex)
+                              ? -1
+                              : static_cast<int>(fAction.fIndex));
+      return Hit::kSwallowed;
+    case Action::kChoiceSet:
+      settings.setChoice(fAction.fIndex, fAction.fOption);
+      this->setOpenChoice(-1);
+      return Hit::kChanged;
+    case Action::kSlider:
+      if (fOpenChoice >= 0) {
+        this->setOpenChoice(-1);
       }
-    }
-    for (const auto &choice : fChoiceHits) {
-      if (choice.fRect.contains(x, y)) {
-        fOpenChoice = fOpenChoice == choice.fIndex ? -1 : choice.fIndex;
-        return Hit::kSwallowed;
-      }
-    }
-    if (fOpenChoice >= 0) {
-      fOpenChoice = -1; // a click anywhere else closes it
-    }
-    for (const auto &row : fRows) {
-      if (!row.fRect.contains(x, y)) {
-        continue;
-      }
-      const auto idx = static_cast<std::size_t>(row.fIndex);
-      if (settings.defs()[idx].fKind == SettingKind::kToggle) {
-        settings.toggle(idx);
-        return Hit::kChanged;
-      }
-
-      fDragging = row.fIndex;
+      fDragging = static_cast<int>(fAction.fIndex);
       this->drag(x, settings);
       return Hit::kChanged;
+    case Action::kSection:
+      this->scrollToSection(fAction.fIndex);
+      return Hit::kSwallowed;
     }
-    return x < kSidebarWidth + kPanelWidth ? Hit::kSwallowed : Hit::kNone;
+    return Hit::kSwallowed;
   }
 
   bool drag(float x, Settings &settings) {
     if (fDragging < 0) {
       return false;
     }
-    for (const auto &row : fRows) {
-      if (row.fIndex != fDragging) {
-        continue;
-      }
-      settings.setFromFraction(static_cast<std::size_t>(row.fIndex),
-                               (x - row.fRect.fLeft) / row.fRect.width());
-      return true;
+    const auto index = static_cast<std::size_t>(fDragging);
+    if (index >= fRowNodes.size() || fRowNodes[index] == nullptr) {
+      return false;
     }
-    return false;
+    const skia::SkRect track = fRowNodes[index]->trackRect();
+    if (track.width() <= 0.0f) {
+      return false;
+    }
+    settings.setFromFraction(index, (x - track.fLeft) / track.width());
+    this->markRow(index);
+    return true;
   }
 
   [[nodiscard]] bool dragging() const noexcept { return fDragging >= 0; }
 
 private:
-  struct Row {
-    skia::SkRect fRect;
-    int fIndex;
+  // What a click in the tree asked for. The nodes do not touch the settings
+  // themselves: click() owns that, because its caller has to know whether a
+  // value changed in order to persist it.
+  struct Action {
+    enum Kind : std::uint8_t {
+      kNone,
+      kRestore,
+      kToggle,
+      kChoiceOpen,
+      kChoiceSet,
+      kSlider,
+      kSection
+    };
+    Kind fKind = kNone;
+    std::size_t fIndex = 0;
+    int fOption = 0;
   };
+
+  // ---- rows ---------------------------------------------------------------
+
+  // One setting. It draws its own kind -- slider, toggle or choice -- and
+  // notices when the value under it changes, which is the only way a row that
+  // is never hovered ever needs repainting.
+  class RowNode : public scene::Drawable {
+  public:
+    RowNode(SettingsPanel *owner, std::size_t index)
+        : fOwner(owner), fIndex(index) {
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+    }
+
+    [[nodiscard]] skia::SkRect trackRect() const {
+      const skia::SkRect content = this->contentRect();
+      return skia::SkRect::MakeXYWH(content.fLeft, fBounds.fTop + 30.0f,
+                                    content.width(), 6.0f);
+    }
+
+  protected:
+    void measure(const skia::SkRect &) override {
+      const auto &def = fOwner->fSettings->defs()[fIndex];
+      if (def.fKind == SettingKind::kSlider) {
+        fHeight = 44.0f;
+        return;
+      }
+      if (def.fKind == SettingKind::kChoice && fOwner->fOpenChoice ==
+                                                   static_cast<int>(fIndex)) {
+        fHeight = 47.0f +
+                  static_cast<float>(def.fOptions.size()) * 26.0f + 6.0f;
+        return;
+      }
+      fHeight = 30.0f;
+    }
+
+    // The value is read out of the settings rather than held here, so this is
+    // where a row finds out that something else changed it.
+    void update(double) override {
+      const Settings &settings = *fOwner->fSettings;
+      const auto &def = settings.defs()[fIndex];
+      const float value = def.fKind == SettingKind::kToggle
+                              ? (settings.flag(def.fKey) ? 1.0f : 0.0f)
+                          : def.fKind == SettingKind::kChoice
+                              ? static_cast<float>(settings.choice(def.fKey))
+                              : settings.value(def.fKey);
+      const bool modified = settings.isModified(fIndex);
+      const bool open = fOwner->fOpenChoice == static_cast<int>(fIndex);
+      if (value != fDrawnValue || modified != fDrawnModified) {
+        fDrawnValue = value;
+        fDrawnModified = modified;
+        this->markDamaged();
+      }
+      if (open != fDrawnOpen) {
+        fDrawnOpen = open;
+        this->invalidateLayout(); // the list changes how tall the row is
+      }
+      if (!open) {
+        fDrawnHotOption = -1;
+        return;
+      }
+      const ui::Painter measurer(nullptr, *fOwner->fFont);
+      const skia::SkRect box = this->choiceBox(measurer);
+      int hot = -1;
+      for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
+        if (this->optionBox(box, o).contains(fOwner->fMouseX,
+                                            fOwner->fMouseY)) {
+          hot = static_cast<int>(o);
+          break;
+        }
+      }
+      if (hot != fDrawnHotOption) {
+        fDrawnHotOption = hot;
+        this->markDamaged();
+      }
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      const Settings &settings = *fOwner->fSettings;
+      const auto &def = settings.defs()[fIndex];
+      const ui::Painter p(canvas, *fOwner->fFont);
+      const skia::SkRect content = this->contentRect();
+      const float baseline = fBounds.fTop + 16.0f;
+
+      if (settings.isModified(fIndex)) {
+        // The bar in the margin that says "this is not the default".
+        p.fillRounded(skia::SkRect::MakeXYWH(content.fLeft - 12.0f,
+                                             fBounds.fTop + 4.0f, 4.0f, 22.0f),
+                      2.0f, ui::kAccent, alpha);
+      }
+
+      p.textClipped(def.fLabel, content.fLeft, baseline, content.width() * 0.62f,
+                    14.0f, skia::kWhite, alpha * 0.95f);
+
+      if (def.fKind == SettingKind::kSlider) {
+        const float t = (settings.value(def.fKey) - def.fMin) /
+                        (def.fMax - def.fMin);
+        const skia::SkRect track = this->trackRect();
+        p.fillRounded(track, 3.0f, skia::colorSetARGB(255, 58, 48, 70), alpha);
+        p.fillRounded(skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
+                                             track.width() * t, track.height()),
+                      3.0f, ui::kAccent, alpha);
+        p.circle(track.fLeft + track.width() * t, track.centerY(), 7.0f,
+                 skia::kWhite, alpha);
+        p.textClipped(settings.displayValue(fIndex), content.fRight - 76.0f,
+                      baseline, 76.0f, 13.0f, skia::kWhite, alpha * 0.75f);
+        return;
+      }
+
+      if (def.fKind == SettingKind::kChoice) {
+        const skia::SkRect box = this->choiceBox(p);
+        const bool open = fOwner->fOpenChoice == static_cast<int>(fIndex);
+        const auto index = static_cast<std::size_t>(settings.choice(def.fKey));
+        const std::string &option =
+            index < def.fOptions.size() ? def.fOptions[index]
+                                        : def.fOptions.front();
+        p.fillRounded(box, 6.0f,
+                      open ? ui::kAccent : skia::colorSetARGB(255, 58, 48, 70),
+                      alpha);
+        p.textClipped(option, box.fLeft + 12.0f, box.centerY() + 4.0f,
+                      box.width() - 32.0f, 13.0f, skia::kWhite, alpha);
+        // The chevron, so it reads as something that opens.
+        p.textClipped(open ? "^" : "v", box.fRight - 18.0f, box.centerY() + 4.0f,
+                      12.0f, 12.0f, skia::kWhite, alpha * 0.8f);
+        if (!open) {
+          return;
+        }
+        for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
+          const skia::SkRect item = this->optionBox(box, o);
+          const bool hovered = item.contains(fOwner->fMouseX, fOwner->fMouseY);
+          p.fillRounded(item, 6.0f,
+                        hovered ? ui::kCardSel
+                                : skia::colorSetARGB(255, 44, 36, 54),
+                        alpha);
+          p.textClipped(def.fOptions[o], item.fLeft + 12.0f,
+                        item.centerY() + 4.0f, item.width() - 24.0f, 13.0f,
+                        skia::kWhite, alpha * (o == index ? 1.0f : 0.8f));
+        }
+        return;
+      }
+
+      const bool on = settings.flag(def.fKey);
+      const skia::SkRect box = skia::SkRect::MakeXYWH(
+          content.fRight - 46.0f, fBounds.fTop + 4.0f, 40.0f, 22.0f);
+      p.fillRounded(box, 11.0f,
+                    on ? ui::kAccent : skia::colorSetARGB(255, 58, 48, 70),
+                    alpha);
+      p.circle(on ? box.fRight - 11.0f : box.fLeft + 11.0f, box.centerY(), 8.0f,
+               skia::kWhite, alpha);
+    }
+
+    bool acceptsInput() const override { return true; }
+
+    bool onClick(float x, float y) override {
+      const auto &def = fOwner->fSettings->defs()[fIndex];
+      const skia::SkRect content = this->contentRect();
+      if (fOwner->fSettings->isModified(fIndex) && x < content.fLeft) {
+        fOwner->fAction = {Action::kRestore, fIndex, 0};
+        return true;
+      }
+      if (def.fKind == SettingKind::kChoice) {
+        const ui::Painter p(nullptr, *fOwner->fFont);
+        const skia::SkRect box = this->choiceBox(p);
+        if (fOwner->fOpenChoice == static_cast<int>(fIndex)) {
+          for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
+            if (this->optionBox(box, o).contains(x, y)) {
+              fOwner->fAction = {Action::kChoiceSet, fIndex,
+                                 static_cast<int>(o)};
+              return true;
+            }
+          }
+        }
+        if (box.contains(x, y)) {
+          fOwner->fAction = {Action::kChoiceOpen, fIndex, 0};
+          return true;
+        }
+        return true; // inside the row, but not on the control
+      }
+      if (def.fKind == SettingKind::kToggle) {
+        fOwner->fAction = {Action::kToggle, fIndex, 0};
+        return true;
+      }
+      fOwner->fAction = {Action::kSlider, fIndex, 0};
+      return true;
+    }
+
+  private:
+    [[nodiscard]] skia::SkRect contentRect() const {
+      return skia::SkRect::MakeLTRB(fBounds.fLeft + kContentMargins,
+                                    fBounds.fTop,
+                                    fBounds.fRight - kContentMargins,
+                                    fBounds.fBottom);
+    }
+
+    // Sized to the widest option, so the control does not resize as it is
+    // used.
+    [[nodiscard]] skia::SkRect choiceBox(const ui::Painter &p) const {
+      const auto &def = fOwner->fSettings->defs()[fIndex];
+      float width = 0.0f;
+      for (const auto &candidate : def.fOptions) {
+        width = std::max(width, p.measure(candidate, 13.0f));
+      }
+      width += 40.0f;
+      const skia::SkRect content = this->contentRect();
+      return skia::SkRect::MakeXYWH(content.fRight - width,
+                                    fBounds.fTop + 3.0f, width, 24.0f);
+    }
+
+    [[nodiscard]] skia::SkRect optionBox(const skia::SkRect &box,
+                                         std::size_t option) const {
+      return skia::SkRect::MakeXYWH(
+          box.fLeft, fBounds.fTop + 47.0f + static_cast<float>(option) * 26.0f,
+          box.width(), 24.0f);
+    }
+
+    SettingsPanel *fOwner;
+    std::size_t fIndex;
+    float fDrawnValue = std::numeric_limits<float>::quiet_NaN();
+    bool fDrawnModified = false;
+    bool fDrawnOpen = false;
+    int fDrawnHotOption = -1;
+  };
+
+  // One entry in the sidebar: an icon, a label, and the elastic indicator
+  // that grows when the viewport is inside that section.
+  class SectionNode : public scene::Drawable {
+  public:
+    SectionNode(SettingsPanel *owner, std::size_t index)
+        : fOwner(owner), fIndex(index) {
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+      fHeight = kSidebarItemHeight;
+    }
+
+  protected:
+    void update(double nowMs) override {
+      const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
+      fLastMs = nowMs;
+      const bool active = fOwner->fActiveSection == static_cast<int>(fIndex);
+      const float previous = fGrow;
+      fGrow = ui::approach(fGrow, active ? 1.0f : 0.0f, 90.0f, dt);
+      if (fGrow != previous || fHovered != fDrawnHovered) {
+        fDrawnHovered = fHovered;
+        this->markDamaged();
+      }
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      const ui::Painter p(canvas, *fOwner->fFont);
+      const bool active = fOwner->fActiveSection == static_cast<int>(fIndex);
+      const float indicatorH = 4.0f + 14.0f * ui::outElasticHalf(fGrow);
+      if (fGrow > 0.01f) {
+        p.fillRounded(skia::SkRect::MakeXYWH(fBounds.fLeft + 6.0f,
+                                             fBounds.centerY() -
+                                                 indicatorH * 0.5f,
+                                             4.0f, indicatorH),
+                      2.0f, skia::kWhite, alpha);
+      }
+      const skia::SkColor tint =
+          active ? skia::kWhite
+                 : (fHovered ? skia::colorSetARGB(255, 200, 195, 210)
+                             : skia::colorSetARGB(255, 153, 153, 153));
+      p.textClipped(Settings::kSectionIcons[fIndex], fBounds.fLeft + 26.0f,
+                    fBounds.centerY() + 7.0f, 24.0f, 18.0f, tint, alpha);
+      p.textClipped(Settings::kSections[fIndex], fBounds.fLeft + 56.0f,
+                    fBounds.centerY() + 6.0f, kSidebarWidth - 66.0f, 15.0f,
+                    tint, alpha);
+    }
+
+    bool acceptsInput() const override { return true; }
+
+    bool onClick(float, float) override {
+      fOwner->fAction = {Action::kSection, fIndex, 0};
+      return true;
+    }
+
+  private:
+    SettingsPanel *fOwner;
+    std::size_t fIndex;
+    float fGrow = 0.0f;
+    bool fDrawnHovered = false;
+    double fLastMs = 0.0;
+  };
+
+  // ---- the tree -----------------------------------------------------------
+
+  [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
+    fShell = nullptr;
+    fDim = nullptr;
+    fScroll = nullptr;
+    fColumn = nullptr;
+    fRowNodes.assign(fSettings->defs().size(), nullptr);
+    fSectionHeaders.fill(nullptr);
+
+    auto root = std::make_unique<scene::Drawable>();
+    root->fRelativeSizeAxes = scene::Axes::kBoth;
+    root->fWidth = 1.0f;
+    root->fHeight = 1.0f;
+
+    // The dim is its own drawable rather than the root, so that the panel
+    // over it does not inherit its transparency.
+    auto dim = std::make_unique<nodes::Box>(skia::colorSetARGB(255, 0, 0, 0));
+    dim->fRelativeSizeAxes = scene::Axes::kBoth;
+    dim->fWidth = 1.0f;
+    dim->fHeight = 1.0f;
+    fDim = dim.get();
+    root->add(std::move(dim));
+
+    auto shell = std::make_unique<scene::Drawable>();
+    shell->fRelativeSizeAxes = scene::Axes::kY;
+    shell->fWidth = kSidebarWidth + kPanelWidth;
+    shell->fHeight = 1.0f;
+    fShell = shell.get();
+
+    auto sidebar =
+        std::make_unique<nodes::Box>(skia::colorSetARGB(252, 23, 19, 30));
+    sidebar->fRelativeSizeAxes = scene::Axes::kY;
+    sidebar->fWidth = kSidebarWidth;
+    sidebar->fHeight = 1.0f;
+    auto sections =
+        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
+    sections->fRelativeSizeAxes = scene::Axes::kX;
+    sections->fWidth = 1.0f;
+    sections->fAutoSizeAxes = scene::Axes::kY;
+    sections->fY = 70.0f;
+    sections->setSpacing(0.0f, 5.0f);
+    for (std::size_t i = 0; i < Settings::kSections.size(); ++i) {
+      sections->add(std::make_unique<SectionNode>(this, i));
+    }
+    sidebar->add(std::move(sections));
+    shell->add(std::move(sidebar));
+
+    auto panel =
+        std::make_unique<nodes::Box>(skia::colorSetARGB(250, 31, 25, 40));
+    panel->fRelativeSizeAxes = scene::Axes::kY;
+    panel->fWidth = kPanelWidth;
+    panel->fHeight = 1.0f;
+    panel->fX = kSidebarWidth;
+
+    // Text draws its baseline at the top of its box plus the size, so these
+    // are placed by where the baseline used to be: 56 and 78.
+    auto title = std::make_unique<nodes::Text>("settings", 30.0f, skia::kWhite);
+    title->fX = kContentMargins;
+    title->fY = 26.0f;
+    panel->add(std::move(title));
+    auto subtitle = std::make_unique<nodes::Text>(
+        "change the way osu! behaves", 13.0f, skia::kWhite);
+    subtitle->fAlpha = 0.6f;
+    subtitle->fX = kContentMargins;
+    subtitle->fY = 65.0f;
+    panel->add(std::move(subtitle));
+
+    auto scroll = std::make_unique<nodes::ScrollContainer>();
+    scroll->fRelativeSizeAxes = scene::Axes::kBoth;
+    scroll->fWidth = 1.0f;
+    scroll->fHeight = 1.0f;
+    scroll->fMargin = {kContentTop, 0.0f, 0.0f, 0.0f};
+    fScroll = scroll.get();
+
+    auto column =
+        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
+    column->fRelativeSizeAxes = scene::Axes::kX;
+    column->fWidth = 1.0f;
+    column->fAutoSizeAxes = scene::Axes::kY;
+    column->fMargin = {8.0f, 0.0f, 0.0f, 0.0f};
+    column->setSpacing(0.0f, kItemSpacing);
+    fColumn = column.get();
+
+    int lastSection = -1;
+    const auto &defs = fSettings->defs();
+    for (std::size_t i = 0; i < defs.size(); ++i) {
+      if (defs[i].fSection != lastSection) {
+        lastSection = defs[i].fSection;
+        auto header = std::make_unique<nodes::Text>(
+            Settings::kSections[static_cast<std::size_t>(defs[i].fSection)],
+            18.0f, ui::kAccent);
+        header->fX = kContentMargins;
+        fSectionHeaders[static_cast<std::size_t>(defs[i].fSection)] =
+            header.get();
+        column->add(std::move(header));
+      }
+      auto row = std::make_unique<RowNode>(this, i);
+      fRowNodes[i] = row.get();
+      column->add(std::move(row));
+    }
+    scroll->add(std::move(column));
+    panel->add(std::move(scroll));
+
+    auto hint = std::make_unique<nodes::Text>("Ctrl+O to close", 12.0f,
+                                              skia::kWhite);
+    hint->fAlpha = 0.5f;
+    hint->fAnchor = scene::Anchor::kBottomLeft;
+    hint->fOrigin = scene::Anchor::kBottomLeft;
+    hint->fX = kContentMargins;
+    hint->fY = -21.0f; // baseline 24 above the bottom edge
+    panel->add(std::move(hint));
+
+    shell->add(std::move(panel));
+    root->add(std::move(shell));
+    return root;
+  }
+
+  // Which section the top of the viewport is in, which is what the sidebar
+  // highlights. Taken from where the headers ended up rather than from a
+  // running total kept while drawing.
+  void trackViewportSection() {
+    if (fScroll == nullptr) {
+      return;
+    }
+    const float top = fScroll->fBounds.fTop + 80.0f;
+    int active = 0;
+    for (std::size_t i = 0; i < fSectionHeaders.size(); ++i) {
+      const scene::Drawable *header = fSectionHeaders[i];
+      if (header != nullptr && header->fBounds.fTop <= top) {
+        active = static_cast<int>(i);
+      }
+    }
+    fActiveSection = active;
+  }
+
+  void scrollToSection(std::size_t section) {
+    if (fScroll == nullptr || fColumn == nullptr ||
+        section >= fSectionHeaders.size() ||
+        fSectionHeaders[section] == nullptr) {
+      return;
+    }
+    const float offset = fSectionHeaders[section]->fBounds.fTop -
+                         fColumn->fBounds.fTop;
+    fScroll->setCurrent(std::max(0.0f, offset));
+    fScroll->invalidateLayout();
+    fTouched = true;
+  }
+
+  void setOpenChoice(int index) {
+    if (fOpenChoice == index) {
+      return;
+    }
+    fOpenChoice = index;
+    fTouched = true;
+  }
+
+  void markRow(std::size_t index) {
+    if (index < fRowNodes.size() && fRowNodes[index] != nullptr) {
+      fRowNodes[index]->markDamaged();
+    }
+  }
 
   bool fOpen = false;
   float fSlide = 0.0f;
   double fEnterWall = 0.0;
-  float fScroll = 0.0f;
-  float fScrollAnim = 0.0f;
-  float fContentHeight = 0.0f;
+  float fScrollTicks = 0.0f;
   int fDragging = -1;
-  bool fTouched = true;   // something changed that the panel has to redraw
-  int fHotSidebar = -1;   // section label under the pointer
-  int fHotOption = -1;    // option in an open list under the pointer
-  std::vector<Row> fRows;
-  std::vector<Row> fRestoreHits;
-  std::vector<skia::SkRect> fSidebarHits;
-  struct ChoiceHit {
-    skia::SkRect fRect;
-    int fIndex;
-  };
-  struct ChoiceOptionHit {
-    skia::SkRect fRect;
-    int fIndex;
-    int fOption;
-  };
-  std::vector<ChoiceHit> fChoiceHits;
-  std::vector<ChoiceOptionHit> fChoiceOptionHits;
   int fOpenChoice = -1; // which choice has its list open
-  std::vector<float> fSectionOffsets;
-  std::array<float, 8> fGrow{};
+  int fActiveSection = 0;
+  bool fTouched = true;
+  float fMouseX = 0.0f, fMouseY = 0.0f;
+  std::size_t fBuiltFor = 0;
+  skia::SkFont *fFont = nullptr;
+  Settings *fSettings = nullptr;
+  Action fAction;
+
+  std::unique_ptr<scene::Drawable> fScene;
+  scene::Drawable *fShell = nullptr;
+  nodes::Box *fDim = nullptr;
+  nodes::ScrollContainer *fScroll = nullptr;
+  nodes::FillFlow *fColumn = nullptr;
+  std::vector<RowNode *> fRowNodes;
+  std::array<scene::Drawable *, 8> fSectionHeaders{};
 };
 
 } // namespace client
