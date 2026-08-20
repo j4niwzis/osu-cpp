@@ -62,7 +62,6 @@ inline constexpr int kContextCreationApi = GLFW_CONTEXT_CREATION_API;
 inline constexpr int kEglContextApi = GLFW_EGL_CONTEXT_API;
 inline constexpr int kNativeContextApi = GLFW_NATIVE_CONTEXT_API;
 inline constexpr int kOpenGLAnyProfile = GLFW_OPENGL_ANY_PROFILE;
-inline constexpr int kFalse = GLFW_FALSE;
 inline constexpr int kOpenGLProfile = GLFW_OPENGL_PROFILE;
 inline constexpr int kOpenGLCoreProfile = GLFW_OPENGL_CORE_PROFILE;
 inline constexpr int kOpenGLForwardCompat = GLFW_OPENGL_FORWARD_COMPAT;
