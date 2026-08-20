@@ -114,6 +114,8 @@ void printUsage(std::string_view program) {
       << "  --stars            Print the star rating of the beatmap and "
          "exit\n"
       << "  --until <ms>       With --stars, only objects up to this time\n"
+      << "  --dump-aim         With --stars, print the per-object aim "
+         "strain\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"
@@ -135,6 +137,7 @@ int main(int argc, char **argv) {
   bool profile = false;
   bool starsOnly = false;
   double until = std::numeric_limits<double>::infinity();
+  bool dumpAim = false;
   osu::ModSet mods = osu::mod::kNone;
 
   for (std::size_t i = 0; i < args.size(); ++i) {
@@ -166,6 +169,8 @@ int main(int argc, char **argv) {
       mods |= osu::mod::kHardRock;
     } else if (arg == "--ez") {
       mods |= osu::mod::kEasy;
+    } else if (arg == "--dump-aim") {
+      dumpAim = true;
     } else if (arg == "--until" && i + 1 < args.size()) {
       until = std::stod(std::string(args[++i]));
     } else if (arg == "--beatmap" && i + 1 < args.size()) {
@@ -271,7 +276,9 @@ int main(int argc, char **argv) {
           map.fObjects.resize(keep);
           map.fSliderPaths.resize(keep);
         }
-        const osu::StarRating rating = osu::calculateStars(map, mods);
+        std::vector<std::pair<double, double>> aimTrace;
+        const osu::StarRating rating =
+            osu::calculateStars(map, mods, dumpAim ? &aimTrace : nullptr);
         const osu::Engine engine(map, mods);
         std::cout << std::format("{}\n", target.filename().string())
                   << std::format("  stars     {:.13f}\n", rating.fTotal)
@@ -280,6 +287,9 @@ int main(int argc, char **argv) {
                   << std::format("  max combo {}\n",
                                  engine.maxAchievableCombo())
                   << std::format("  objects   {}\n", map.fObjects.size());
+        for (const auto &[time, strain] : aimTrace) {
+          std::cout << std::format("strain {:.1f} {:.13f}\n", time, strain);
+        }
       } catch (const std::exception &e) {
         std::cerr << target.filename().string() << ": " << e.what() << '\n';
         ++failures;

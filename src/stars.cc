@@ -14,8 +14,11 @@ export import :reading;
 
 export namespace osu {
 
-[[nodiscard]] inline StarRating calculateStars(const Beatmap &bm,
-                                               ModSet mods = mod::kNone) {
+// `aimTrace`, when given, is filled with the per-object aim strain: the
+// series behind the aim value, for comparing against lazer's own.
+[[nodiscard]] inline StarRating
+calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
+               std::vector<std::pair<double, double>> *aimTrace = nullptr) {
   using namespace stars;
   if (bm.fObjects.size() < 2)
     return {};
@@ -35,6 +38,10 @@ export namespace osu {
     aimSkill.process(o);
     spdSkill.process(o);
     rdSkill.process(o);
+  }
+  if (aimTrace != nullptr) {
+    const auto trace = aimSkill.trace();
+    aimTrace->assign(trace.begin(), trace.end());
   }
   double aimDiff = aimSkill.difficulty();
   double spdDiff = spdSkill.difficulty();

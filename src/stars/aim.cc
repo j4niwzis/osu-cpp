@@ -213,8 +213,16 @@ public:
   std::vector<Q> fQ;
   double fLenSum = 0;
   int fObjCount = 0;
+  std::vector<std::pair<double, double>> fTrace;
 
   AimSkill(bool inc) : fInc(inc) {}
+
+  // Per-object strain, kept for diagnostics: this is the series the section
+  // machinery is fed, and comparing it against lazer's is the only way to
+  // tell an evaluator's mistake from an aggregation one.
+  [[nodiscard]] std::span<const std::pair<double, double>> trace() const {
+    return fTrace;
+  }
 
   void process(const OsuDifficultyHitObject &c) {
     ++fObjCount;
@@ -222,10 +230,12 @@ public:
       fSecB = c.fStart;
       fSecE = fSecB + kSL;
       fSecP = strainOf(c);
+      fTrace.emplace_back(c.fStart, fSecP);
       return;
     }
     backfill(c);
     double s = strainOf(c);
+    fTrace.emplace_back(c.fStart, s);
     if (s > fSecP) {
       fQ.clear();
       // The section that just ended is as long as the time spent in it, not
