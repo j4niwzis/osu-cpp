@@ -284,6 +284,12 @@ inline void SliderPath::bake(CurveType type, std::span<const Vec2> control,
   this->finish(pixelLength);
 }
 
+// SliderPath.calculateLength. A declared length that differs from what the
+// control points give is not just a trim: when it is longer, the path is
+// *extended* along the direction of its last segment, which is where a
+// slider's tail actually ends up. Only trimming, as this did, left every
+// such slider short -- and the tail position is what MinimumJumpDistance
+// and the lazy travel are measured against.
 inline void SliderPath::finish(double pixelLength) {
   if (fPoints.size() < 2) {
     fCumulative.assign(fPoints.size(), 0.0);
@@ -296,17 +302,45 @@ inline void SliderPath::finish(double pixelLength) {
   }
   fTotalLength = fCumulative.back();
 
-  if (pixelLength > 0.0 && fTotalLength > pixelLength) {
-    const Vec2 tail = this->positionAt(pixelLength);
-    const auto it = std::ranges::upper_bound(fCumulative, pixelLength);
-    const auto keep =
-        static_cast<std::size_t>(std::distance(fCumulative.begin(), it));
-    fPoints.resize(keep);
-    fCumulative.resize(keep);
-    fPoints.push_back(tail);
-    fCumulative.push_back(pixelLength);
-    fTotalLength = pixelLength;
+  if (pixelLength <= 0.0 || pixelLength == fTotalLength) {
+    return; // no expected distance, or it already agrees
   }
+
+  // osu-stable does not extend a path whose last two points are equal.
+  if (fPoints.size() >= 2 &&
+      fPoints[fPoints.size() - 1].distanceTo(fPoints[fPoints.size() - 2]) ==
+          0.0 &&
+      pixelLength > fTotalLength) {
+    fCumulative.push_back(fTotalLength);
+    return;
+  }
+
+  fCumulative.pop_back(); // the last length is always the wrong one
+  auto pathEnd = static_cast<std::ptrdiff_t>(fPoints.size()) - 1;
+
+  if (fTotalLength > pixelLength) {
+    while (!fCumulative.empty() && fCumulative.back() >= pixelLength) {
+      fCumulative.pop_back();
+      fPoints.erase(fPoints.begin() + pathEnd);
+      --pathEnd;
+    }
+  }
+
+  if (pathEnd <= 0) {
+    fCumulative.push_back(0.0);
+    fTotalLength = 0.0;
+    return;
+  }
+
+  const Vec2 delta = fPoints[static_cast<std::size_t>(pathEnd)] -
+                     fPoints[static_cast<std::size_t>(pathEnd - 1)];
+  const double len = delta.length();
+  const Vec2 dir = len > 0.0 ? delta / len : Vec2{};
+  fPoints[static_cast<std::size_t>(pathEnd)] =
+      fPoints[static_cast<std::size_t>(pathEnd - 1)] +
+      dir * (pixelLength - fCumulative.back());
+  fCumulative.push_back(pixelLength);
+  fTotalLength = pixelLength;
 }
 
 [[nodiscard]] inline Vec2 sliderBallPosition(const SliderPath &path,
