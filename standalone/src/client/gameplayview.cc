@@ -678,9 +678,13 @@ public:
 
   // Judgement text, ported from webosu-2's playback.js. The node there is a
   // BitmapText at fontSize 20 with anchor 0.5, scaled by
-  // (0.85 * hitSpriteScale, hitSpriteScale), tinted per result, and its
-  // letterSpacing -- expressed in the node's own units, so 70 is 3.5x the
-  // font size -- runs 70 * ((t/1800 - 1)^5 + 1) as it fades.
+  // (0.85 * hitSpriteScale, hitSpriteScale) and tinted per result, its
+  // letterSpacing running 70 * ((t/1800 - 1)^5 + 1) as it fades.
+  //
+  // BitmapText advances glyphs by (xAdvance + letterSpacing) * fontSize /
+  // font.size, and venera.fnt declares size="100" against a fontSize of 20 --
+  // so the spacing lands at a fifth of its nominal value. Taking 70 at face
+  // value threw the letters far too wide.
   void drawPopups(const Ctx &c, skia::SkCanvas *canvas, double now,
                   double cs) {
     const double hitSpriteScale = osu::circleRadius(cs) / 60.0;
@@ -695,6 +699,9 @@ public:
         continue;
       }
 
+      // Node units: everything below is laid out at the base font size and
+      // scaled by the canvas transform, as PIXI scales the node.
+      constexpr float kBaseSize = 20.0f;
       double alpha = 0.0;
       float yOffset = 0.0f;
       float rotation = 0.0f;
@@ -708,8 +715,10 @@ public:
         rotation = static_cast<float>(0.7 * k);
       } else {
         alpha = age < 100.0 ? age / 100.0 : 1.0 - (age - 100.0) / 400.0;
+        constexpr float kBitmapFontSize = 100.0f; // venera.fnt size=
         spacingUnits = static_cast<float>(
-            70.0 * (std::pow(age / 1800.0 - 1.0, 5.0) + 1.0));
+                           70.0 * (std::pow(age / 1800.0 - 1.0, 5.0) + 1.0)) *
+                       (kBaseSize / kBitmapFontSize);
       }
       alpha = std::clamp(alpha, 0.0, 1.0);
 
@@ -724,9 +733,6 @@ public:
       const float x = static_cast<float>(it->fPos.fX);
       const float y = static_cast<float>(it->fPos.fY) + yOffset;
 
-      // Everything below is in node units (font size 20); the canvas
-      // transform applies the sprite scale, as PIXI's node scale does.
-      constexpr float kBaseSize = 20.0f;
       skia::SkFont &font = c.fDisplayFont ? *c.fDisplayFont : *c.fFont;
       font.setSize(kBaseSize);
 
