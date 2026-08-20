@@ -1576,8 +1576,21 @@ private:
     }
     fLastDrawWall = wallMs();
     fFrameStart = std::chrono::steady_clock::now();
-    if (fState == State::kPlaying) {
+
+    // Only screens that have been taught to say what they changed may be
+    // clipped to it. The rest have to repaint whole, and saying so here is
+    // what stops a small widget that does report itself -- the FPS counter,
+    // say -- from becoming the only thing a frame is allowed to touch.
+    switch (fState) {
+    case State::kMainMenu:
+    case State::kResults:
+      break; // these mark their moving parts
+    case State::kPlaying:
       this->damageAll("gameplay"); // a moving picture by definition
+      break;
+    default:
+      this->damageAll("screen does not report damage");
+      break;
     }
     // Overlays are drawn after the screen, over most of it, and none of them
     // declares a region -- so while one is up, and on the frame it goes away,
