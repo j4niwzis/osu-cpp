@@ -126,10 +126,19 @@ TEST(Rules, WindowsAndMods) {
 TEST(Engine, AutoplayPerfect) {
   auto bm = parseBeatmap(kTestBeatmap);
   const auto result = runAutoplay(bm);
-  ASSERT_EQ(result.fEvents.size(), 3u);
+  // Three objects, four judgements: a slider is its head and its tail now,
+  // and this one is short enough to have no ticks between them.
+  ASSERT_EQ(result.fEvents.size(), 4u);
+  const auto basic = std::ranges::count_if(
+      result.fEvents,
+      [](const HitEvent &e) { return e.fKind == HitKind::kBasic; });
+  ASSERT_EQ(basic, 3);
   ASSERT_EQ(result.fScore.fGreat, 3);
+  ASSERT_EQ(result.fScore.fTailHit, 1);
   ASSERT_EQ(result.fScore.fMiss, 0);
-  ASSERT_EQ(result.fScore.fMaxCombo, 3);
+  // The tail raises the combo like anything else does.
+  ASSERT_EQ(result.fScore.fMaxCombo, 4);
+  ASSERT_DOUBLE_EQ(result.fScore.accuracy(), 1.0);
   ASSERT_TRUE(std::holds_alternative<grade::SS>(computeGrade(result.fScore)));
 }
 
@@ -137,15 +146,20 @@ TEST(Engine, NoInputAllMiss) {
   auto bm = parseBeatmap(kTestBeatmap);
   Engine engine(bm);
   engine.advance(bm.lastObjectEndTime() + 500.0);
+  // The circle, the slider's head and the spinner are misses; the tail is an
+  // IgnoreMiss, which is counted apart and breaks nothing.
   ASSERT_EQ(engine.score().fMiss, 3);
+  ASSERT_EQ(engine.score().fTailMiss, 1);
   ASSERT_EQ(engine.score().fScore, 0u);
+  ASSERT_DOUBLE_EQ(engine.score().accuracy(), 0.0);
 }
 
 TEST(Replay, RunAutoplay) {
   auto bm = parseBeatmap(kTestBeatmap);
   const auto result = runAutoplay(bm, mod::kDoubleTime);
-  ASSERT_EQ(result.fEvents.size(), 3u);
+  ASSERT_EQ(result.fEvents.size(), 4u);
   ASSERT_EQ(result.fScore.fGreat, 3);
+  ASSERT_EQ(result.fScore.fTailHit, 1);
 }
 
 TEST(Beatmap, ComboInfo) {
