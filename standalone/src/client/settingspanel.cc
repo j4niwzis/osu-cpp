@@ -254,6 +254,24 @@ private:
     int fOption = 0;
   };
 
+  [[nodiscard]] static skia::SkColor lerpColour(skia::SkColor from,
+                                                skia::SkColor to, float t) {
+    const auto mix = [t](std::uint8_t a, std::uint8_t b) {
+      return static_cast<std::uint8_t>(static_cast<float>(a) +
+                                       (static_cast<float>(b) -
+                                        static_cast<float>(a)) *
+                                           t);
+    };
+    const auto channel = [](skia::SkColor c, int shift) {
+      return static_cast<std::uint8_t>((c >> shift) & 0xffu);
+    };
+    return skia::colorSetARGB(
+        mix(channel(from, 24), channel(to, 24)),
+        mix(channel(from, 16), channel(to, 16)),
+        mix(channel(from, 8), channel(to, 8)),
+        mix(channel(from, 0), channel(to, 0)));
+  }
+
   // ---- rows ---------------------------------------------------------------
 
   // One setting. It draws its own kind -- slider, toggle or choice -- and
@@ -276,22 +294,17 @@ private:
   protected:
     void measure(const skia::SkRect &) override {
       const auto &def = fOwner->fSettings->defs()[fIndex];
-      if (def.fKind == SettingKind::kSlider) {
-        fHeight = 44.0f;
-        return;
-      }
-      if (def.fKind == SettingKind::kChoice && fOwner->fOpenChoice ==
-                                                   static_cast<int>(fIndex)) {
-        fHeight = 47.0f +
-                  static_cast<float>(def.fOptions.size()) * 26.0f + 6.0f;
-        return;
-      }
-      fHeight = 30.0f;
+      // An open list does not make the row taller: it is drawn over what is
+      // below it by an overlay above the column, the way a dropdown should
+      // behave, rather than shoving the rest of the settings down the page.
+      fHeight = def.fKind == SettingKind::kSlider ? 44.0f : 30.0f;
     }
 
     // The value is read out of the settings rather than held here, so this is
     // where a row finds out that something else changed it.
-    void update(double) override {
+    void update(double nowMs) override {
+      const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
+      fLastMs = nowMs;
       const Settings &settings = *fOwner->fSettings;
       const auto &def = settings.defs()[fIndex];
       const float value = def.fKind == SettingKind::kToggle
@@ -307,26 +320,17 @@ private:
         this->markDamaged();
       }
       if (open != fDrawnOpen) {
-        fDrawnOpen = open;
-        this->invalidateLayout(); // the list changes how tall the row is
-      }
-      if (!open) {
-        fDrawnHotOption = -1;
-        return;
-      }
-      const ui::Painter measurer(nullptr, *fOwner->fFont);
-      const skia::SkRect box = this->choiceBox(measurer);
-      int hot = -1;
-      for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
-        if (this->optionBox(box, o).contains(fOwner->fMouseX,
-                                            fOwner->fMouseY)) {
-          hot = static_cast<int>(o);
-          break;
-        }
-      }
-      if (hot != fDrawnHotOption) {
-        fDrawnHotOption = hot;
+        fDrawnOpen = open; // the control itself is tinted while its list is up
         this->markDamaged();
+      }
+      // The knob slides between its two ends rather than teleporting.
+      if (def.fKind == SettingKind::kToggle) {
+        const float previous = fKnob;
+        fKnob = ui::approach(fKnob, settings.flag(def.fKey) ? 1.0f : 0.0f,
+                             60.0f, dt);
+        if (fKnob != previous) {
+          this->markDamaged();
+        }
       }
     }
 
@@ -377,31 +381,17 @@ private:
         // The chevron, so it reads as something that opens.
         p.textClipped(open ? "^" : "v", box.fRight - 18.0f, box.centerY() + 4.0f,
                       12.0f, 12.0f, skia::kWhite, alpha * 0.8f);
-        if (!open) {
-          return;
-        }
-        for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
-          const skia::SkRect item = this->optionBox(box, o);
-          const bool hovered = item.contains(fOwner->fMouseX, fOwner->fMouseY);
-          p.fillRounded(item, 6.0f,
-                        hovered ? ui::kCardSel
-                                : skia::colorSetARGB(255, 44, 36, 54),
-                        alpha);
-          p.textClipped(def.fOptions[o], item.fLeft + 12.0f,
-                        item.centerY() + 4.0f, item.width() - 24.0f, 13.0f,
-                        skia::kWhite, alpha * (o == index ? 1.0f : 0.8f));
-        }
-        return;
+        return; // the list, if it is open, belongs to the overlay above
       }
 
-      const bool on = settings.flag(def.fKey);
       const skia::SkRect box = skia::SkRect::MakeXYWH(
           content.fRight - 46.0f, fBounds.fTop + 4.0f, 40.0f, 22.0f);
       p.fillRounded(box, 11.0f,
-                    on ? ui::kAccent : skia::colorSetARGB(255, 58, 48, 70),
+                    lerpColour(skia::colorSetARGB(255, 58, 48, 70), ui::kAccent,
+                               fKnob),
                     alpha);
-      p.circle(on ? box.fRight - 11.0f : box.fLeft + 11.0f, box.centerY(), 8.0f,
-               skia::kWhite, alpha);
+      p.circle(box.fLeft + 11.0f + (box.width() - 22.0f) * fKnob,
+               box.centerY(), 8.0f, skia::kWhite, alpha);
     }
 
     bool acceptsInput() const override { return true; }
@@ -415,17 +405,7 @@ private:
       }
       if (def.fKind == SettingKind::kChoice) {
         const ui::Painter p(nullptr, *fOwner->fFont);
-        const skia::SkRect box = this->choiceBox(p);
-        if (fOwner->fOpenChoice == static_cast<int>(fIndex)) {
-          for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
-            if (this->optionBox(box, o).contains(x, y)) {
-              fOwner->fAction = {Action::kChoiceSet, fIndex,
-                                 static_cast<int>(o)};
-              return true;
-            }
-          }
-        }
-        if (box.contains(x, y)) {
+        if (this->choiceBox(p).contains(x, y)) {
           fOwner->fAction = {Action::kChoiceOpen, fIndex, 0};
           return true;
         }
@@ -461,11 +441,23 @@ private:
                                     fBounds.fTop + 3.0f, width, 24.0f);
     }
 
-    [[nodiscard]] skia::SkRect optionBox(const skia::SkRect &box,
-                                         std::size_t option) const {
+    // Where the open list goes: under the control, one row per option, in
+    // screen coordinates, for the overlay that draws it.
+    [[nodiscard]] skia::SkRect listRect() const {
+      const ui::Painter measurer(nullptr, *fOwner->fFont);
+      const skia::SkRect box = this->choiceBox(measurer);
+      const auto &def = fOwner->fSettings->defs()[fIndex];
+      const float height =
+          static_cast<float>(def.fOptions.size()) * 26.0f + 4.0f;
+      return skia::SkRect::MakeXYWH(box.fLeft, box.fBottom + 4.0f, box.width(),
+                                    height);
+    }
+
+    [[nodiscard]] static skia::SkRect optionBox(const skia::SkRect &list,
+                                                std::size_t option) {
       return skia::SkRect::MakeXYWH(
-          box.fLeft, fBounds.fTop + 47.0f + static_cast<float>(option) * 26.0f,
-          box.width(), 24.0f);
+          list.fLeft, list.fTop + 2.0f + static_cast<float>(option) * 26.0f,
+          list.width(), 24.0f);
     }
 
     SettingsPanel *fOwner;
@@ -473,7 +465,8 @@ private:
     float fDrawnValue = std::numeric_limits<float>::quiet_NaN();
     bool fDrawnModified = false;
     bool fDrawnOpen = false;
-    int fDrawnHotOption = -1;
+    float fKnob = 0.0f; // eased position of a toggle's knob
+    double fLastMs = 0.0;
   };
 
   // One entry in the sidebar: an icon, a label, and the elastic indicator
@@ -537,6 +530,118 @@ private:
     double fLastMs = 0.0;
   };
 
+  // The open list of a choice. It is a sibling of the scrolling column rather
+  // than a part of the row, because a dropdown belongs over what is under it:
+  // as a child of the row it would have been drawn before the rows below it
+  // and hit-tested after them, which is exactly backwards.
+  class ChoiceListNode : public scene::Drawable {
+  public:
+    explicit ChoiceListNode(SettingsPanel *owner) : fOwner(owner) {}
+
+  protected:
+    // Placed by hand from the row it belongs to: measure() is where a
+    // drawable gets to say where it goes before the box is computed.
+    void measure(const skia::SkRect &parent) override {
+      const skia::SkRect list = fOwner->openListRect();
+      fVisible = !list.isEmpty();
+      if (!fVisible) {
+        fWidth = 0.0f;
+        fHeight = 0.0f;
+        return;
+      }
+      fX = list.fLeft - parent.fLeft;
+      fY = list.fTop - parent.fTop;
+      fWidth = list.width();
+      fHeight = list.height();
+    }
+
+    void update(double) override {
+      const int open = fOwner->fOpenChoice;
+      const int hot = this->hotOption();
+      if (open != fDrawnOpen || hot != fDrawnHot) {
+        fDrawnOpen = open;
+        fDrawnHot = hot;
+        this->markDamaged();
+      }
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      const RowNode *row = fOwner->openRow();
+      if (row == nullptr) {
+        return;
+      }
+      const ui::Painter p(canvas, *fOwner->fFont);
+      const auto &def =
+          fOwner->fSettings->defs()[static_cast<std::size_t>(
+              fOwner->fOpenChoice)];
+      const auto chosen =
+          static_cast<std::size_t>(fOwner->fSettings->choice(def.fKey));
+      // Its own backing plate, since what is underneath it stays where it is.
+      p.fillRounded(fBounds, 6.0f, skia::colorSetARGB(255, 32, 26, 40), alpha);
+      for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
+        const skia::SkRect item = RowNode::optionBox(fBounds, o);
+        const bool hovered = item.contains(fOwner->fMouseX, fOwner->fMouseY);
+        p.fillRounded(item, 6.0f,
+                      hovered ? ui::kCardSel
+                              : skia::colorSetARGB(255, 44, 36, 54),
+                      alpha);
+        p.textClipped(def.fOptions[o], item.fLeft + 12.0f,
+                      item.centerY() + 4.0f, item.width() - 24.0f, 13.0f,
+                      skia::kWhite, alpha * (o == chosen ? 1.0f : 0.8f));
+      }
+    }
+
+    bool acceptsInput() const override { return fVisible; }
+
+    bool onClick(float x, float y) override {
+      const int option = this->optionAt(x, y);
+      if (option < 0) {
+        return true; // inside the list but between rows: swallow it
+      }
+      fOwner->fAction = {Action::kChoiceSet,
+                         static_cast<std::size_t>(fOwner->fOpenChoice), option};
+      return true;
+    }
+
+  private:
+    [[nodiscard]] int optionAt(float x, float y) const {
+      const RowNode *row = fOwner->openRow();
+      if (row == nullptr) {
+        return -1;
+      }
+      const auto &def =
+          fOwner->fSettings->defs()[static_cast<std::size_t>(
+              fOwner->fOpenChoice)];
+      for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
+        if (RowNode::optionBox(fBounds, o).contains(x, y)) {
+          return static_cast<int>(o);
+        }
+      }
+      return -1;
+    }
+
+    [[nodiscard]] int hotOption() const {
+      return this->optionAt(fOwner->fMouseX, fOwner->fMouseY);
+    }
+
+    SettingsPanel *fOwner;
+    int fDrawnOpen = -1;
+    int fDrawnHot = -1;
+  };
+
+  [[nodiscard]] RowNode *openRow() const {
+    if (fOpenChoice < 0 ||
+        static_cast<std::size_t>(fOpenChoice) >= fRowNodes.size()) {
+      return nullptr;
+    }
+    return fRowNodes[static_cast<std::size_t>(fOpenChoice)];
+  }
+
+  [[nodiscard]] skia::SkRect openListRect() const {
+    const RowNode *row = this->openRow();
+    return row != nullptr ? row->listRect() : skia::SkRect::MakeEmpty();
+  }
+
   // ---- the tree -----------------------------------------------------------
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
@@ -544,6 +649,7 @@ private:
     fDim = nullptr;
     fScroll = nullptr;
     fColumn = nullptr;
+    fChoiceList = nullptr;
     fRowNodes.assign(fSettings->defs().size(), nullptr);
     fSectionHeaders.fill(nullptr);
 
@@ -646,6 +752,10 @@ private:
     scroll->add(std::move(column));
     panel->add(std::move(scroll));
 
+    auto list = std::make_unique<ChoiceListNode>(this);
+    fChoiceList = list.get();
+    panel->add(std::move(list));
+
     auto hint = std::make_unique<nodes::Text>("Ctrl+O to close", 12.0f,
                                               skia::kWhite);
     hint->fAlpha = 0.5f;
@@ -698,6 +808,9 @@ private:
     }
     fOpenChoice = index;
     fTouched = true;
+    if (fChoiceList != nullptr) {
+      fChoiceList->invalidateLayout(); // it is placed from the open row
+    }
   }
 
   void markRow(std::size_t index) {
@@ -725,6 +838,7 @@ private:
   nodes::Box *fDim = nullptr;
   nodes::ScrollContainer *fScroll = nullptr;
   nodes::FillFlow *fColumn = nullptr;
+  ChoiceListNode *fChoiceList = nullptr;
   std::vector<RowNode *> fRowNodes;
   std::array<scene::Drawable *, 8> fSectionHeaders{};
 };
