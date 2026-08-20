@@ -105,6 +105,13 @@ private:
     return diffutil::smoothstep(a, std::acos(-1.0) * 40.0 / 180.0,
                                 std::acos(-1.0) * 140.0 / 180.0);
   }
+public:
+  static double repetition(const OsuDifficultyHitObject &c,
+                           const OsuDifficultyHitObject &p) {
+    return var(c, p);
+  }
+
+private:
   static double var(const OsuDifficultyHitObject &c,
                     const OsuDifficultyHitObject &p) {
     if (!c.fA || !p.fA)
@@ -211,6 +218,10 @@ public:
     double fAgility = 0.0;
     double fFlow = 0.0;
     double fStrain = 0.0;
+    double fAngle = -1.0;     // degrees, -1 when the object has none
+    double fLastAngle = -1.0; // the previous object's, same convention
+    double fRepetition = 1.0; // vectorAngleRepetition
+    double fJump = 0.0;       // lazy jump distance, normalised
   };
   struct Pk {
     double v, l;
@@ -313,9 +324,14 @@ public:
 
 private:
   void traceLast(const OsuDifficultyHitObject &c, double strain) {
-    fTrace.push_back({c.fStart, SnapAimEvaluator::Eval(c, fInc),
-                      AgilityEvaluator::eval(c),
-                      FlowAimEvaluator::Eval(c, fInc), strain});
+    constexpr double kDeg = 180.0 / std::numbers::pi;
+    const auto *p = c.prev(0);
+    fTrace.push_back(
+        {c.fStart, SnapAimEvaluator::Eval(c, fInc), AgilityEvaluator::eval(c),
+         FlowAimEvaluator::Eval(c, fInc), strain,
+         c.fA ? *c.fA * kDeg : -1.0,
+         (p != nullptr && p->fA) ? *p->fA * kDeg : -1.0,
+         (p != nullptr) ? SnapAimEvaluator::repetition(c, *p) : 1.0, c.fLJD});
   }
 
   double strainOf(const OsuDifficultyHitObject &c) {

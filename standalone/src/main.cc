@@ -288,10 +288,13 @@ int main(int argc, char **argv) {
                                  engine.maxAchievableCombo())
                   << std::format("  objects   {}\n", map.fObjects.size());
         for (const auto &point : aimTrace) {
-          std::cout << std::format("strain {:.1f} snap {:.10f} agility {:.10f}"
-                                   " flow {:.10f} total {:.10f}\n",
-                                   point.fTime, point.fSnap, point.fAgility,
-                                   point.fFlow, point.fStrain);
+          std::cout << std::format(
+              "strain {:.1f} snap {:.10f} agility {:.10f} flow {:.10f}"
+              " total {:.10f} angle {:.4f} last {:.4f} rep {:.6f}"
+              " jump {:.4f}\n",
+              point.fTime, point.fSnap, point.fAgility, point.fFlow,
+              point.fStrain, point.fAngle, point.fLastAngle,
+              point.fRepetition, point.fJump);
         }
       } catch (const std::exception &e) {
         std::cerr << target.filename().string() << ": " << e.what() << '\n';
