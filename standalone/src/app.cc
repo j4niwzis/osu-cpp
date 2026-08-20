@@ -63,6 +63,7 @@ public:
       : fMods(mods), fHeadless(headless), fAutoplay(autoplay),
         fReplayPath(std::move(replayPath)), fRecord(record),
         fSkin(std::move(skinPath)), fShowProfile(profile) {
+    fCliAutoplay = autoplay;
     if (set) {
       fSet = std::move(*set);
       fHasInitialSet = true;
@@ -85,7 +86,9 @@ private:
   std::optional<osu::Engine> fEngine;
   bool fHeadless = false;
   bool fAutoplay = false;
-  std::filesystem::path fReplayPath;
+  bool fCliAutoplay = false;      // --autoplay, which outlives a single play
+  std::filesystem::path fReplayPath;  // the file driving the current play
+  std::filesystem::path fPendingReplay; // requested for the play about to start
   bool fRecord = false;
   std::string fBeatmapFilename;
   std::vector<osu::InputEvent> fAutoplayEvents;
@@ -405,6 +408,9 @@ private:
           auto replayData = osu::decodeReplay(bytes);
           fAutoplayEvents = std::move(replayData.fEvents);
           fMods = replayData.fMods;
+          // The video exporter renders the recorded events; a watched replay
+          // is its own recording. saveReplay refuses to write it back out.
+          fRecordedEvents = fAutoplayEvents;
         }
       } else {
         fAutoplayEvents = osu::buildAutoplay(*fMap, fMods);
@@ -1011,7 +1017,14 @@ private:
       return;
     }
     if (fReplayListOpen) {
-      return; // the overlay owns the screen; the strip handled the press
+      // The strip handled anything over it; the actions below it are ours.
+      for (const auto &b : fMenuButtons) {
+        if (b.fRect.contains(x, y)) {
+          this->exportSelectedReplay();
+          return;
+        }
+      }
+      return;
     }
     if (this->settingsClick(x, y, true)) {
       return;
@@ -1338,6 +1351,11 @@ private:
     fPlayingSet = setIdx;
     fPlayingDiff = diffIdx;
     fLastSavedReplay.clear();
+    // Only a play that was asked for by watchReplay is driven from a file.
+    // Without this, everything after watching one replay would keep playing
+    // that replay back -- and, being "recorded", would be saved as a copy.
+    fReplayPath = std::exchange(fPendingReplay, {});
+    fAutoplay = fCliAutoplay || !fReplayPath.empty();
     fSet = *set; // active copy: gameplay reads audio/bg from here
     fMenuMusicForSet = -1;  // gameplay reloads the track from scratch
     fAudio.setLooping(false);
@@ -3389,6 +3407,45 @@ private:
                skia::colorSetARGB(220, 8, 6, 12));
     p.textCentered("replays", sw * 0.5f, 62.0f, 26.0f, skia::kWhite);
     this->drawScorePanelList(canvas, p, sw, sh, /*ownScore=*/false);
+
+    // The same action the results screen offers, for a replay off the disk.
+    fMenuButtons.clear();
+    if (this->selectedReplay() != nullptr) {
+      const float bw = std::min(260.0f, sw * 0.22f);
+      fMenuButtons.push_back({skia::SkRect::MakeXYWH((sw - bw) * 0.5f,
+                                                     sh - 92.0f, bw, 46.0f),
+                              "export video",
+                              skia::colorSetARGB(255, 170, 102, 255)});
+      this->drawMenuButton(canvas, fMenuButtons.back());
+    }
+  }
+
+  // Renders a saved replay to video: the exporter draws whatever gameplay
+  // state is loaded, so the map and the replay's events are brought in
+  // exactly as starting a playback would, without entering gameplay.
+  void exportSelectedReplay() {
+    const auto *replay = this->selectedReplay();
+    if (replay == nullptr) {
+      return;
+    }
+    auto set = this->setForBlocking(fSelSet);
+    if (!set || fSelDiff < 0 ||
+        fSelDiff >= static_cast<int>(set->fBeatmaps.size())) {
+      return;
+    }
+    fSet = *set;
+    fPlayingSet = fSelSet;
+    fPlayingDiff = fSelDiff;
+    fReplayPath = replay->fPath;
+    fAutoplay = true;
+    this->resetGameplayState();
+    this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(fSelDiff)]);
+    fAudio.stop();
+    fMenuMusicForSet = -1; // the menu loop restarts once the export is done
+    fReplayPath.clear();
+    fAutoplay = fCliAutoplay;
+    fReplayListOpen = false;
+    fExportDialog.show();
   }
 
   // The strip is live on the results screen and in the browser overlay.
@@ -3407,8 +3464,7 @@ private:
       return;
     }
     fReplayListOpen = false;
-    fReplayPath = path;
-    fAutoplay = true; // playback drives the engine from the recorded events
+    fPendingReplay = path; // startPlay picks it up and drives the engine
     this->startPlay(setIdx, diffIdx);
   }
 
@@ -5038,7 +5094,11 @@ private:
            fAutoplayEvents[fAutoplayIndex].fTime <= now) {
       const auto &ev = fAutoplayEvents[fAutoplayIndex];
       fEngine->submit(ev);
-      fRecordedEvents.push_back(ev);
+      if (fReplayPath.empty()) {
+        // Generated autoplay is worth recording; a replay being watched is
+        // already on disk.
+        fRecordedEvents.push_back(ev);
+      }
       if (ev.fAction == osu::InputAction::kMove) {
         fCursor = ev.fPos;
         fView.addTrailPoint(fCursor, ev.fTime);
@@ -5257,6 +5317,9 @@ private:
   void saveReplay() {
     if (fRecordedEvents.empty() || !fMap)
       return;
+    if (!fReplayPath.empty()) {
+      return; // watching a replay must not write it back out as a new one
+    }
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
     std::ostringstream nameStream;
