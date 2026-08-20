@@ -155,6 +155,11 @@ private:
   const char *fFullDamageReason = "start";
   bool fOverlayShown = false; // an overlay covered the screen last frame
   double fDamageLogWall = 0.0;
+  std::chrono::steady_clock::time_point fFrameStart{};
+  std::chrono::steady_clock::time_point fBlitStart{};
+  std::int64_t fCostDrawUs = 0, fCostBlitUs = 0, fCostSwapUs = 0;
+  int fCostFrames = 0;
+  double fCostLogWall = 0.0;
   std::vector<skia::SkIRect> fFrameClip;
   bool fFrameClipFull = true;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
@@ -1458,12 +1463,13 @@ private:
       }
       canvas->clipRegion(region);
     }
-    // The surface keeps what is not repainted, so what is repainted starts
-    // clean: a translucent overlay drawn over a region every frame -- the
-    // settings dim, for one -- would otherwise darken it a little more each
-    // time until it went black. Gameplay is exempt: it manages its own
-    // surface content and expects the previous frame to still be there.
-    if (fState != State::kPlaying) {
+    // The surface keeps what is not repainted, so a repainted region starts
+    // clean: a translucent overlay drawn over it every frame -- the settings
+    // dim, for one -- would otherwise darken it a little more each time until
+    // it went black. A full repaint needs no clearing, since every screen
+    // covers the screen with its background first, and gameplay is exempt
+    // either way: it manages its own surface content.
+    if (!fFrameClipFull && fState != State::kPlaying) {
       canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
     }
   }
@@ -1485,7 +1491,7 @@ private:
     }
     // Overlays are drawn while they slide in and out, and after that only
     // when something touches them -- which arrives as an event.
-    if (fSettingsPanel.animating() || fModSelect.animating()) {
+    if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
       return true;
     }
     if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
@@ -1521,6 +1527,7 @@ private:
       return;
     }
     fLastDrawWall = wallMs();
+    fFrameStart = std::chrono::steady_clock::now();
     if (fState == State::kPlaying) {
       this->damageAll("gameplay"); // a moving picture by definition
     }
@@ -1535,7 +1542,7 @@ private:
     // mark what they change beneath it.
     if (overlay != fOverlayShown) {
       this->damageAll("overlay appeared or went away");
-    } else if (fSettingsPanel.animating() || fModSelect.animating()) {
+    } else if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
       this->damageAll("overlay sliding");
     } else if (fExportDialog.open()) {
       this->damageAll("export dialog");
@@ -1622,6 +1629,7 @@ private:
   }
 
   void present() {
+    const auto frameStart = fFrameStart;
     // Overlays float above whatever screen is drawn.
     auto *canvas = fSurface->getCanvas();
     if (fModSelect.visible()) {
@@ -1648,6 +1656,7 @@ private:
     this->drawFpsCounter(canvas);
     canvas->restoreToCount(fFrameSave);
     fContext->flushAndSubmit(fSurface.get());
+    fBlitStart = std::chrono::steady_clock::now();
 
     // The window's back buffer is a different one each swap, so it always
     // takes the whole surface; the saving is in what was drawn into the
@@ -1660,7 +1669,42 @@ private:
       this->showDamage(window);
       fContext->flushAndSubmit(fWindowSurface.get());
     }
+    const auto beforeSwap = std::chrono::steady_clock::now();
     glfw::glfwSwapBuffers(fWindow);
+    this->reportFrameCost(frameStart, beforeSwap);
+  }
+
+  // Where a frame goes, once a second, under OSU_SHOW_DAMAGE: drawing into
+  // the surface, copying it to the window, and waiting for the swap. Guessing
+  // at which of the three got slower has not worked so far.
+  void reportFrameCost(std::chrono::steady_clock::time_point start,
+                       std::chrono::steady_clock::time_point beforeSwap) {
+    static const bool show = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
+    if (!show) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto us = [](auto from, auto to) {
+      return std::chrono::duration_cast<std::chrono::microseconds>(to - from)
+          .count();
+    };
+    fCostDrawUs += us(start, fBlitStart);
+    fCostBlitUs += us(fBlitStart, beforeSwap);
+    fCostSwapUs += us(beforeSwap, now);
+    ++fCostFrames;
+    if (wallMs() - fCostLogWall < 1000.0 || fCostFrames == 0) {
+      return;
+    }
+    std::println(std::cerr,
+                 "[frame] draw {:.2f} ms, blit {:.2f} ms, swap {:.2f} ms "
+                 "over {} frames",
+                 static_cast<double>(fCostDrawUs) / fCostFrames / 1000.0,
+                 static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
+                 static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0,
+                 fCostFrames);
+    fCostLogWall = wallMs();
+    fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
+    fCostFrames = 0;
   }
 
   // OSU_SHOW_DAMAGE=1 outlines what was repainted, which is the only way to

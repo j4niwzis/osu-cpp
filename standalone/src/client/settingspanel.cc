@@ -38,8 +38,12 @@ public:
   }
 
   // Still sliding: the only time an untouched panel needs frames.
-  [[nodiscard]] bool animating() const noexcept {
-    return fOpen ? fSlide < 0.999f : fSlide > 0.001f;
+  //
+  // Asked of the clock, not of fSlide. fSlide is only advanced while the
+  // panel draws, and it stops being drawn as soon as it is out of sight --
+  // leaving a value just above zero that made this answer "yes" for ever.
+  [[nodiscard]] bool animating(double nowMs) const noexcept {
+    return nowMs - fEnterWall < kTransitionMs;
   }
 
   [[nodiscard]] bool visible() const noexcept {
