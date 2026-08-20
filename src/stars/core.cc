@@ -76,6 +76,15 @@ inline double clockRate(ModSet mods) {
   return 1.0;
 }
 
+// Which calculator a difficulty object is being built for. The two share
+// almost all of their preprocessing -- lazy travel, jump distances, angles --
+// and differ in three places, so this is a mode rather than a second class.
+//
+//   kRework: what ppy/osu master computes today, with the reading skill.
+//   kRanked: what the servers compute, which is what a beatmap's listed star
+//            rating comes from.
+enum class DifficultyMode { kRework, kRanked };
+
 class OsuDifficultyHitObject {
 public:
   const std::vector<OsuDifficultyHitObject> *fAll = nullptr;
@@ -96,13 +105,16 @@ public:
   double fLTD = 0.0, fLTT = 0.0;
   std::optional<double> fA, fNVA;
   double fSCB = 1.0, fODv = 8.0, fCsR = 5.0;
+  DifficultyMode fMode = DifficultyMode::kRework;
   bool fHasLE = false;
   double fRad = 0.0;
   Vec2 fSliderSecondLastNestedPos{};
 
   OsuDifficultyHitObject(const HitObject &ho, const HitObject &lo, double cr,
                          const std::vector<OsuDifficultyHitObject> &all,
-                         int idx, const Beatmap &bm) {
+                         int idx, const Beatmap &bm,
+                         DifficultyMode mode = DifficultyMode::kRework)
+      : fMode(mode) {
     fAll = &all;
     fIdx = idx;
     fBase = &ho;
@@ -120,7 +132,10 @@ public:
     else
       fLEDT = fADT;
     fPreempt = osu::preemptTime(bm.fDiff.fAr) / cr;
-    fSCB = std::max(1.0, 1.0 + (30.0 - fRad) / 70.0);
+    // The ranked calculator divides by 40 where the rework divides by 70.
+    fSCB = std::max(1.0, 1.0 + (30.0 - fRad) /
+                                   (mode == DifficultyMode::kRanked ? 40.0
+                                                                    : 70.0));
     fODv = (79.5 - fHW / 2.0) / 6.0;
     fCsR = bm.fDiff.fCs;
     computeSlider(bm);
@@ -304,7 +319,9 @@ private:
       // times. Feeding the span count in here inflated the travel distance of
       // every repeat slider.
       const double repeats = static_cast<double>(std::max(0, cs->fRepeat - 1));
-      fTD = fLTD * std::max(1.0, std::pow(repeats, 0.3));
+      fTD = fMode == DifficultyMode::kRanked
+                ? fLTD * std::pow(1.0 + repeats / 2.5, 1.0 / 2.5)
+                : fLTD * std::max(1.0, std::pow(repeats, 0.3));
       fTT = std::max(fLTT / cr, static_cast<double>(kMDT));
     }
     fMJT = fADT;
@@ -334,6 +351,17 @@ private:
 
     const auto *lld = prev(1);
     if (lld && !std::holds_alternative<Spinner>(*lld->fBase)) {
+      // The ranked calculator measures the angle from where the objects are;
+      // the rework measures it from where the cursor is left, and lets the
+      // previous slider's head stand in for its own lazy end.
+      if (fMode == DifficultyMode::kRanked) {
+        const Vec2 last2CP = getEndPos(*lld);
+        const Vec2 v1 = last2CP - sp(*fLast, bm.fDiff.fCs);
+        const Vec2 v2 = sp(*fBase, bm.fDiff.fCs) - lc;
+        fA = std::abs(std::atan2(v1.fX * v2.fY - v1.fY * v2.fX,
+                                 v1.fX * v2.fX + v1.fY * v2.fY));
+        return;
+      }
       Vec2 lastCP = lc;
       if (ld && std::holds_alternative<Slider>(*ld->fBase) && ld->fTD > 0)
         lastCP = sp(*ld->fBase, bm.fDiff.fCs);
