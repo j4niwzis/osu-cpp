@@ -5398,6 +5398,11 @@ private:
       return;
     }
 
+    // The view still holds the play that was just watched -- its trail, its
+    // popups, its counters -- and an export starting at zero would draw them
+    // over its own first seconds. It keeps the background, which is what the
+    // screen behind the dialog is drawn from.
+    fView.reset();
     job->fEngine.emplace(*fMap, fMods);
     job->fEnd = fMap->lastObjectEndTime() + 1500.0;
     job->fStep = 1000.0 / static_cast<double>(job->fOpts.fFps);
