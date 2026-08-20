@@ -151,7 +151,7 @@ private:
   bool fDrawing = false;      // inside a frame: damage reported now is not
   int fFullRepaintsOwed = 0;  // buffers still holding an older screen
   int fBufferAge = -1;        // frames since this buffer last held a frame
-  skia::SkIRect fBlitBounds = skia::SkIRect::MakeEmpty(); // what to carry over
+  std::vector<skia::SkIRect> fBlitRegions; // what to carry over; empty = all
   bool fBufferAgeAssumed = false; // ...or what we were told to believe
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
   skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
@@ -1727,7 +1727,7 @@ private:
   // is the same pixels -- only the work outside the clip is skipped.
   void beginFrame() {
     fDrawing = true;
-    fBlitBounds = skia::SkIRect::MakeEmpty(); // empty means the whole window
+    fBlitRegions.clear(); // empty means the whole surface goes over
     // How old the contents of the buffer being drawn into are, from the
     // window system rather than from a constant of mine. -1 when nobody will
     // say, which is when the constants come back.
@@ -1839,7 +1839,7 @@ private:
     canvas->clipIRect(bounds);
     // Remembered for the blit: with the CPU renderer the frame has to be
     // carried into the window as pixels, and only this much of it is new.
-    fBlitBounds = bounds;
+    fBlitRegions.push_back(bounds);
     // What is repainted starts clean: the buffer holds an older frame, and
     // anything translucent drawn over it would otherwise stack up.
     if (fState != State::kPlaying) {
@@ -2238,12 +2238,15 @@ private:
   // Something drawn outside the frame's clip still has to be carried into the
   // window when the CPU renderer only carries over what it repainted.
   void includeInBlit(const skia::SkRect &rect) {
-    if (fBlitBounds.isEmpty()) {
+    if (fBlitRegions.empty()) {
       return; // the whole surface is going over anyway
     }
     skia::SkIRect area = rect.roundOut();
     area.outset(2, 2);
-    fBlitBounds.join(area);
+    if (!area.intersect(skia::SkIRect::MakeWH(fScreenW, fScreenH))) {
+      return;
+    }
+    fBlitRegions.push_back(area);
   }
 
   void present() {
@@ -2286,14 +2289,17 @@ private:
       // the blit follow the damage instead of being a whole window every
       // frame -- which it was, at a constant millisecond and a half.
       skia::SkPixmap pixels;
-      if (!fBlitBounds.isEmpty() && fRasterSurface->peekPixels(&pixels)) {
-        // Straight into the window's texture, one rectangle of it. Drawing a
-        // sub-rectangle of a snapshot does not promise to upload only that
-        // sub-rectangle -- writePixels is the call that means it.
-        skia::SkPixmap region;
-        if (pixels.extractSubset(&region, fBlitBounds)) {
-          fWindowSurface->writePixels(region, fBlitBounds.fLeft,
-                                      fBlitBounds.fTop);
+      if (!fBlitRegions.empty() && fRasterSurface->peekPixels(&pixels)) {
+        // Straight into the window's texture, one rectangle at a time.
+        // Separately rather than as one bounding box: the frame counter sits
+        // in a far corner, and a box around it and the middle of the screen
+        // is most of the screen -- which is how a blit of a tenth of a frame
+        // stayed as expensive as a blit of all of it.
+        for (const auto &area : fBlitRegions) {
+          skia::SkPixmap region;
+          if (pixels.extractSubset(&region, area)) {
+            fWindowSurface->writePixels(region, area.fLeft, area.fTop);
+          }
         }
       } else if (auto image = fRasterSurface->makeImageSnapshot()) {
         fWindowSurface->getCanvas()->drawImage(image.get(), 0.0f, 0.0f);
