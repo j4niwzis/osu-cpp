@@ -7,6 +7,15 @@ import client.util;
 export namespace client {
 namespace audio_client {
 
+// OpenAL Soft mixes every source into one buffer and runs an output limiter
+// over the sum. Sources at full gain add up past full scale in a hurry --
+// music at 0.8 plus two hitsounds at 1.0 is already 2.8 -- and the limiter
+// then ducks the whole mix, which is heard as the sound cutting out and
+// coming back. These leave it room: the settings sliders stay the
+// user-facing 0..1 scale and are folded into the gain here.
+inline constexpr float kMusicHeadroom = 0.75f;
+inline constexpr float kEffectHeadroom = 0.45f;
+
 // OpenAL reports failures out of band; a source that could not be generated
 // looks exactly like one that simply refuses to play.
 inline bool alFailed(const char *what) {

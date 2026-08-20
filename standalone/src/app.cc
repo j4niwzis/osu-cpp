@@ -209,6 +209,7 @@ private:
   long fPreviewId = -1;
   bool fPreviewPending = false;
   std::uint32_t fPreviewGeneration = 0; // stale fetches must not start playing
+  bool fMusicDucked = false;            // menu music paused for a preview
   std::vector<client::listing::Entry> fFound;
   // Transfers in flight, so progress can be polled without the view knowing
   // anything about HTTP.
@@ -451,7 +452,7 @@ private:
     fStartMs = glfw::glfwGetTime() * 1000.0;
     fClock.reset(fStartMs, 0.0);
     fLastClockSyncWall = std::numeric_limits<double>::lowest();
-    fAudio.setVolume(fSettings.value("master") * fSettings.value("music"));
+    fAudio.setVolume(this->musicGain());
     fAudio.play();
   }
 
@@ -977,6 +978,7 @@ private:
       }
       fPreview.stop();
       fPreviewId = -1;
+      this->restoreMusic();
       this->switchState(State::kSongSelect);
       return;
     }
@@ -1469,6 +1471,7 @@ private:
   void startPlay(int setIdx, int diffIdx) {
     fPreview.stop();
     fPreviewId = -1;
+    fMusicDucked = false; // gameplay takes the track over anyway
     if (setIdx < 0 || setIdx >= static_cast<int>(fLibrary.size())) {
       return;
     }
@@ -1726,7 +1729,9 @@ private:
     if (fMenuMusicForSet == fSelSet) {
       // The track is given a moment to start before its silence counts as
       // having ended; OpenAL reports a source as stopped until it does.
-      if (!fAudio.playing() && wallMs() - fMenuTrackWall > 1000.0) {
+      // Paused for a preview is not the same as finished.
+      if (!fAudio.playing() && !fMusicDucked &&
+          wallMs() - fMenuTrackWall > 1000.0) {
         this->nextMenuTrack();
       }
       return;
@@ -1768,7 +1773,7 @@ private:
           fAudio.adopt(std::move(*pcm));
           fAudio.setLooping(false); // the next track is chosen when it ends
           fMenuTrackWall = wallMs();
-          fAudio.setVolume(fSettings.value("master") * fSettings.value("music"));
+          fAudio.setVolume(this->musicGain());
           fAudio.play();
           // The analysis clock is anchored to the *old* track until reset.
           fMenuClock.reset(wallMs(), 0.0);
@@ -2684,6 +2689,7 @@ private:
     if (fPreviewId == id) {
       fPreview.stop();
       fPreviewId = -1;
+      this->restoreMusic();
       return;
     }
     fPreview.stop();
@@ -2691,6 +2697,12 @@ private:
     ++fPreviewGeneration; // whatever is in flight is no longer wanted
     const std::uint32_t generation = fPreviewGeneration;
     fPreviewPending = true;
+    // A preview replaces the menu music while it runs, as lazer's does;
+    // playing both at once doubles the level and the limiter clamps it.
+    if (!fMusicDucked && fAudio.playing()) {
+      fAudio.pause();
+      fMusicDucked = true;
+    }
     const std::string url = std::format("https://b.ppy.sh/preview/{}.mp3", id);
     std::println(std::cerr, "[preview] fetching {}", url);
     auto handle = std::make_shared<client::http::Handle>();
@@ -2717,13 +2729,19 @@ private:
                           return;
                         }
                         fPreview.setLooping(false);
-                        fPreview.setVolume(fSettings.value("master") *
-                                           fSettings.value("music"));
+                        fPreview.setVolume(this->musicGain());
                         fPreview.play();
                         fPreviewId = id;
                         std::println(std::cerr, "[preview] playing {} ({:.1f}s)",
                                      id, fPreview.durationSec());
                       });
+  }
+
+  void restoreMusic() {
+    if (fMusicDucked) {
+      fMusicDucked = false;
+      fAudio.resume();
+    }
   }
 
   // How far through the preview is, for the ring around the play button.
@@ -3738,12 +3756,20 @@ private:
   }
 
   void applyAudioSettings() {
-    const float master = fSettings.value("master");
-    fAudio.setVolume(master * fSettings.value("music"));
-    fPreview.setVolume(master * fSettings.value("music"));
+    fAudio.setVolume(this->musicGain());
+    fPreview.setVolume(this->musicGain());
     for (auto &[name, player] : fSamples) {
-      player.setVolume(master * fSettings.value("effect"));
+      player.setVolume(this->effectGain());
     }
+  }
+
+  [[nodiscard]] float musicGain() const {
+    return fSettings.value("master") * fSettings.value("music") *
+           client::kMusicHeadroom;
+  }
+  [[nodiscard]] float effectGain() const {
+    return fSettings.value("master") * fSettings.value("effect") *
+           client::kEffectHeadroom;
   }
 
   void applySettings() {
@@ -4708,6 +4734,7 @@ private:
     ctx.fLoading = fSearchPending;
     if (fPreviewId >= 0 && !fPreviewPending && !fPreview.playing()) {
       fPreviewId = -1; // the clip ran out; the button goes back to play
+      this->restoreMusic();
     }
     fListing.tick(wallMs());
     fListing.setPreview(fPreviewId, this->previewProgress());
@@ -5657,7 +5684,7 @@ private:
         auto &player = fSamples[key];
         if (!player.loaded()) {
           player.load(bytes, std::string(ext));
-          player.setVolume(fSettings.value("master") * fSettings.value("effect"));
+          player.setVolume(this->effectGain());
         }
         player.play();
         return;
@@ -5670,7 +5697,7 @@ private:
     auto &player = fSamples[path.string()];
     if (!player.loaded()) {
       player.load(path);
-      player.setVolume(fSettings.value("master") * fSettings.value("effect"));
+      player.setVolume(this->effectGain());
     }
     player.play();
   }
