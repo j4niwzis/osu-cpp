@@ -413,6 +413,9 @@ private:
   };
   std::vector<Angle> fVisualiserAngles; // fixed per bar count, not per frame
   int fVisualiserCount = 0;
+  // Reused between frames so building the batch allocates nothing.
+  std::vector<skia::SkPoint> fVisualiserPos;
+  std::vector<std::uint16_t> fVisualiserIdx;
   std::mt19937 fUiRng{0xC0FFEEu};
 
   [[nodiscard]] static float easeOutQuint(float t) {
@@ -1564,6 +1567,9 @@ private:
     }
     if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
       return true;
+    }
+    if (this->showingDamage()) {
+      return true; // its trails are cleaned by the frames that follow
     }
     const double now = wallMs();
     if (now <= fRedrawUntilWall) {
@@ -4268,8 +4274,6 @@ private:
     constexpr float kAmplitudeDeadZone = 1.0f / 600.0f;
     const auto count = static_cast<int>(bars.size());
 
-    // Nothing above the dead zone means nothing to draw at all, which is the
-    // usual case between tracks and during quiet passages.
     bool anyAudible = false;
     for (const float amp : bars) {
       if (amp >= kAmplitudeDeadZone) {
@@ -4293,20 +4297,18 @@ private:
 
     this->ensureVisualiserAngles(count, kRounds);
 
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
-    paint.setColor(skia::kWhite);
-    paint.setAlphaf(0.2f); // transparent_white
-    paint.setBlendMode(skia::SkBlendMode::kPlus);
-
-    // One path per round rather than one per bar. Two hundred bars over five
-    // rounds was a thousand antialiased draws a frame, each with its own
-    // paint setup and clip test, which is what made this the most expensive
-    // thing on screen. The rounds stay separate because they overlap, and
-    // overlapping is what makes them add up: inside a single path the
-    // overlap would be filled once instead of twice.
+    // One triangle batch for the whole visualiser.
+    //
+    // A draw per bar was a thousand of them a frame. Collecting them into a
+    // path per round was worse, not better: a path of two hundred disjoint
+    // quads is not convex, so Skia leaves its analytic path and builds a
+    // coverage mask over the union's bounding box -- the whole circle --
+    // once per round. Vertices avoid both: the geometry goes straight to the
+    // rasteriser, and because each triangle is blended as it is drawn, bars
+    // that overlap still add up, which is what the rounds are for.
+    fVisualiserPos.clear();
+    fVisualiserIdx.clear();
     for (int round = 0; round < kRounds; ++round) {
-      skia::SkPathBuilder builder;
       for (int i = 0; i < count; ++i) {
         const float amp = bars[static_cast<std::size_t>(i)];
         if (amp < kAmplitudeDeadZone) {
@@ -4316,20 +4318,41 @@ private:
             fVisualiserAngles[static_cast<std::size_t>(round * count + i)];
         const float bx = fLogoX + angle.fCos * logoRadius;
         const float by = fLogoY + angle.fSin * logoRadius;
-        // bottomOffset is perpendicular; amplitudeOffset is radial.
         const float ox = -angle.fSin * chord * 0.5f;
         const float oy = angle.fCos * chord * 0.5f;
         const float ax = angle.fCos * barLength * amp;
         const float ay = angle.fSin * barLength * amp;
 
-        builder.moveTo(bx - ox, by - oy);
-        builder.lineTo(bx - ox + ax, by - oy + ay);
-        builder.lineTo(bx + ox + ax, by + oy + ay);
-        builder.lineTo(bx + ox, by + oy);
-        builder.close();
+        const auto base = static_cast<std::uint16_t>(fVisualiserPos.size());
+        fVisualiserPos.push_back({bx - ox, by - oy});
+        fVisualiserPos.push_back({bx - ox + ax, by - oy + ay});
+        fVisualiserPos.push_back({bx + ox + ax, by + oy + ay});
+        fVisualiserPos.push_back({bx + ox, by + oy});
+        fVisualiserIdx.insert(
+            fVisualiserIdx.end(),
+            {base, static_cast<std::uint16_t>(base + 1),
+             static_cast<std::uint16_t>(base + 2), base,
+             static_cast<std::uint16_t>(base + 2),
+             static_cast<std::uint16_t>(base + 3)});
       }
-      canvas->drawPath(builder.detach(), paint);
     }
+    if (fVisualiserIdx.empty()) {
+      return;
+    }
+
+    auto verts = skia::SkVertices::MakeCopy(
+        skia::SkVertices::kTriangles_VertexMode,
+        static_cast<int>(fVisualiserPos.size()), fVisualiserPos.data(), nullptr,
+        nullptr, static_cast<int>(fVisualiserIdx.size()),
+        fVisualiserIdx.data());
+    if (!verts) {
+      return;
+    }
+    skia::SkPaint paint;
+    paint.setColor(skia::kWhite);
+    paint.setAlphaf(0.2f); // transparent_white
+    paint.setBlendMode(skia::SkBlendMode::kPlus);
+    canvas->drawVertices(verts, skia::SkBlendMode::kDst, paint);
   }
 
   // The bars sit at fixed angles; only their lengths change. Computing two
