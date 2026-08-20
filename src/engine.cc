@@ -87,6 +87,12 @@ public:
   [[nodiscard]] bool isTracking(std::size_t index) const noexcept {
     return index < fStates.size() && fStates[index].fTracking;
   }
+  // Health reached zero and the play is over. lazer stops counting anything
+  // after this: the judgement is still created, but the score processor sees
+  // FailedAtJudgement on it and returns without touching the score, the
+  // accuracy or the combo.
+  [[nodiscard]] bool failed() const noexcept { return fFailed; }
+
   [[nodiscard]] int spinnerRotations(std::size_t index) const noexcept {
     return index < fStates.size() ? fStates[index].fRotations : 0;
   }
@@ -168,6 +174,7 @@ private:
   double fDrainStart = 0.0;
   double fGameplayEnd = 0.0;
   double fLastDrainTime = 0.0;
+  bool fFailed = false;
   ComboResult fComboResult = ComboResult::kPerfect;
 
   [[nodiscard]] double objectEnd(std::size_t i) const noexcept {
@@ -327,6 +334,9 @@ private:
 
   void emit(std::size_t i, HitKind kind, Judgement j, bool hit, double delta) {
     fEvents.push_back({i, j, kind, delta});
+    if (fFailed) {
+      return; // judged, but it counts for nothing
+    }
     registerResult(fScore, kind, j, hit, fMods, fDiff.fHp);
     this->applyHealth(i, kind, j, hit);
   }
@@ -365,8 +375,18 @@ private:
       increase += comboBonusFor(fComboResult);
     }
 
-    if (fScore.fHealth >= 0.0) {
-      fScore.fHealth = std::min(1.0, fScore.fHealth + increase);
+    fScore.fHealth = std::min(1.0, fScore.fHealth + increase);
+    this->checkFailure();
+  }
+
+  // NoFail keeps the bar from ending the play; everything else does not.
+  void checkFailure() {
+    if (fFailed || hasMod(fMods, mod::kNoFail)) {
+      return;
+    }
+    if (fScore.fHealth <= 0.0) {
+      fScore.fHealth = 0.0;
+      fFailed = true;
     }
   }
 
@@ -387,8 +407,9 @@ private:
         elapsed -= overlap;
       }
     }
-    if (elapsed > 0.0 && fScore.fHealth >= 0.0) {
+    if (elapsed > 0.0 && !fFailed) {
       fScore.fHealth -= fDrainRate * elapsed;
+      this->checkFailure();
     }
     fLastDrainTime = time;
   }

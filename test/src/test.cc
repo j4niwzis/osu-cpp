@@ -327,6 +327,59 @@ TEST(Rules, LegacyRounding) {
   ASSERT_DOUBLE_EQ(preemptTime(10.0), 450.0);
 }
 
+// Checked against lazer's own ScoreProcessor and OsuHealthProcessor, driven
+// with the same sequence of judgements over a real beatmap: on a play of
+// nothing but greats the standardised score is exactly the million, and the
+// health bar ends full.
+TEST(Engine, PerfectPlayScoresTheMillion) {
+  auto bm = parseBeatmap(kTestBeatmap);
+  const auto result = runAutoplay(bm);
+  ASSERT_DOUBLE_EQ(result.fScore.accuracy(), 1.0);
+  ASSERT_EQ(result.fScore.fScore, 1000000u);
+  ASSERT_GT(result.fScore.fHealth, 0.0);
+}
+
+// Health is a drain as much as a set of increases, and the rate is solved for
+// rather than given: a perfect play should dip to the target and no lower.
+TEST(Rules, HealthIncreasesAndDrain) {
+  // OsuHealthProcessor's table, at HP 5.
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kBasic, judgement::Great{}, true,
+                                     5.0),
+                   0.03);
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kBasic, judgement::Good{}, true,
+                                     5.0),
+                   0.011);
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kBasic, judgement::Meh{}, true,
+                                     5.0),
+                   0.002);
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kBasic, judgement::Miss{}, false,
+                                     5.0),
+                   -0.125);
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kLargeTick, judgement::Great{},
+                                     true, 5.0, true),
+                   0.015);
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kSliderTail, judgement::Great{},
+                                     true, 5.0),
+                   0.02);
+  // A dropped tail is an IgnoreMiss and costs nothing.
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kSliderTail, judgement::Miss{},
+                                     false, 5.0),
+                   0.0);
+  // The miss penalty and the drain target both follow the drain rate.
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kBasic, judgement::Miss{}, false,
+                                     0.0),
+                   -0.03);
+  ASSERT_DOUBLE_EQ(healthIncreaseFor(HitKind::kBasic, judgement::Miss{}, false,
+                                     10.0),
+                   -0.2);
+  ASSERT_DOUBLE_EQ(targetMinimumHealth(0.0), 0.99);
+  ASSERT_DOUBLE_EQ(targetMinimumHealth(5.0), 0.9);
+  ASSERT_DOUBLE_EQ(targetMinimumHealth(10.0), 0.4);
+  ASSERT_DOUBLE_EQ(comboBonusFor(ComboResult::kPerfect), 0.07);
+  ASSERT_DOUBLE_EQ(comboBonusFor(ComboResult::kGood), 0.05);
+  ASSERT_DOUBLE_EQ(comboBonusFor(ComboResult::kNone), 0.03);
+}
+
 TEST(SliderBody, CuspDetection) {
   // The user's problematic 18-point slider with duplicate anchors.
   const std::vector<Vec2> ctrl{
