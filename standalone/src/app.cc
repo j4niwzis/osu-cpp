@@ -205,6 +205,11 @@ private:
   float fDownloadScroll = 0.0f;
   std::string fDownloadStatus = "Type a query and press Enter";
   std::vector<skia::SkRect> fFoundHits; // rebuilt every download frame
+  struct ReplayFile {
+    std::filesystem::path fPath;
+    std::string fLabel;
+    std::filesystem::file_time_type fTime;
+  };
   bool fReplayListOpen = false;
   std::vector<ReplayFile> fReplays;
   std::vector<skia::SkRect> fReplayHits;
@@ -3293,12 +3298,6 @@ private:
   // lazer surfaces past plays through the leaderboard beside song select and
   // replays them with the standard playback path. Here the saved .osr files
   // are listed in a panel; picking one starts the map with that replay.
-
-  struct ReplayFile {
-    std::filesystem::path fPath;
-    std::string fLabel;
-    std::filesystem::file_time_type fTime;
-  };
 
   void toggleReplayList() {
     fReplayListOpen = !fReplayListOpen;
