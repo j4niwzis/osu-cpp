@@ -4961,13 +4961,32 @@ private:
   [[nodiscard]] std::span<const float> stillBars() const {
     static const std::vector<float> kBars = [] {
       constexpr int kCount = 200;
-      std::vector<float> bars(kCount);
+      std::vector<float> bars(static_cast<std::size_t>(kCount));
+      // A spectrum does not undulate; it spikes. Neighbouring bins differ by
+      // a lot, the whole thing slopes down as the frequency rises, and a
+      // handful of partials stand well above the rest. So: a falling
+      // envelope, a hash per bin for the jumps, and a few peaks on top.
+      const auto hash01 = [](std::uint32_t x) {
+        x ^= x >> 16;
+        x *= 0x7feb352dU;
+        x ^= x >> 15;
+        x *= 0x846ca68bU;
+        x ^= x >> 16;
+        return static_cast<float>(x & 0xffffffU) /
+               static_cast<float>(0x1000000U);
+      };
       for (int i = 0; i < kCount; ++i) {
+        const auto index = static_cast<std::uint32_t>(i);
         const float t = static_cast<float>(i) / static_cast<float>(kCount);
-        const float wide = std::sin(t * 6.0f * std::numbers::pi_v<float>);
-        const float fine = std::sin(t * 23.0f * std::numbers::pi_v<float>);
-        bars[static_cast<std::size_t>(i)] =
-            0.10f + 0.045f * (1.0f + wide) + 0.02f * (1.0f + fine);
+        // Loud at the bass end, thin at the top, as music is.
+        const float envelope = 0.06f + 0.30f * std::pow(1.0f - t, 1.6f);
+        // Squared, so most bins sit low and the occasional one jumps.
+        const float jump = hash01(index * 2654435761U);
+        float amp = envelope * (0.25f + 1.35f * jump * jump);
+        if (hash01(index * 40503U + 17U) > 0.94f) {
+          amp *= 2.1f; // a partial standing out of the noise
+        }
+        bars[static_cast<std::size_t>(i)] = std::clamp(amp, 0.01f, 0.85f);
       }
       return bars;
     }();
