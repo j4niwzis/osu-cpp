@@ -53,7 +53,7 @@ public:
       wb *= std::min(wcv, wpv);
 
       // Back-and-forth nerf: if last2 and last objects are at the same position
-      if (pll && !std::holds_alternative<Spinner>(*pll->fBase)) {
+      if (pll) {
         Vec2 lPos = OsuDifficultyHitObject::sp(*pr.fBase, pr.fCsR);
         Vec2 l2Pos = OsuDifficultyHitObject::sp(*pll->fBase, pll->fCsR);
         double dist = (l2Pos - lPos).length();
@@ -211,6 +211,7 @@ public:
   double fSecP = 0, fSecB = 0, fSecE = 0;
   std::vector<Pk> fPks;
   std::vector<Q> fQ;
+  double fLenSum = 0;
   int fObjCount = 0;
 
   AimSkill(bool inc) : fInc(inc) {}
@@ -317,7 +318,23 @@ private:
     return diffutil::logistic(-7.27 * std::log(r));
   }
 
-  void save(double l) { fPks.push_back({fSecP, std::round(l)}); }
+  // VariableLengthStrainSkill.saveCurrentPeak: peaks are kept sorted by
+  // value, and the list is capped -- once the sections stored add up to more
+  // than 11/(1-decay) sections' worth of time, the weakest are dropped. On
+  // anything longer than about three quarters of a minute this changes the
+  // answer, so it is not optional.
+  void save(double l) {
+    const Pk peak{fSecP, std::round(l)};
+    auto pos = std::ranges::upper_bound(fPks, peak.v, std::greater<>{},
+                                        [](const Pk &p) { return p.v; });
+    fPks.insert(pos, peak);
+    fLenSum += peak.l;
+    constexpr double kMaxStored = 11.0 / (1.0 - kDW);
+    while (fLenSum > kMaxStored * kSL && !fPks.empty()) {
+      fLenSum -= fPks.back().l;
+      fPks.pop_back();
+    }
+  }
   void backfill(const OsuDifficultyHitObject &c) {
     while (c.fStart > fSecE) {
       save(fSecE - fSecB);

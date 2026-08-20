@@ -157,8 +157,9 @@ private:
 class ReadingSkill {
 public:
   void process(const OsuDifficultyHitObject &c) {
-    if (std::holds_alternative<Spinner>(*c.fBase))
-      return;
+    // Spinners are processed like anything else -- the evaluator returns zero
+    // for them, but the strain decays across them and they count towards the
+    // reduced-note window.
     fObjList.push_back({c.fStart, c.fADT});
     double d = std::pow(0.8, c.fRawDT / 1000.0);
     fCur *= d;

@@ -177,19 +177,10 @@ private:
     double rawStart = sl->fTime;
     double trackingEndTime =
         std::max(rawStart + rawDur + (-36.0), rawStart + rawDur / 2.0);
-    fLTT = trackingEndTime - rawStart;
     double spanDur = bm.sliderSpanDuration(*sl);
-    double endTimeMin = fLTT / spanDur;
-    if (!std::isfinite(endTimeMin))
-      endTimeMin = 0.0;
-    if (static_cast<int>(endTimeMin) % 2 >= 1)
-      endTimeMin = 1.0 - std::fmod(endTimeMin, 1.0);
-    else
-      endTimeMin = std::fmod(endTimeMin, 1.0);
     SliderPath path = SliderPath::from(*sl);
     Vec2 slStacked = stackedPosition(*sl, fCsR);
     Vec2 stackOff = slStacked - sl->fPos;
-    fLEP = path.positionAt(endTimeMin * path.length()) + stackOff;
     fHasLE = true;
     Vec2 cur = slStacked;
     double sf = kNR / fRad;
@@ -199,10 +190,20 @@ private:
     double tickDist = std::clamp(bm.sliderTickDistance(*sl), 0.0, pathLen);
     double minDistEnd = vel * 10.0;
 
-    std::vector<Vec2> nestedPositions;
-    nestedPositions.push_back(slStacked);
+    // The nested objects, with their times: the head, then every span's ticks
+    // and its repeat, then the tail. The times matter because of the rule
+    // below about a tick that falls after the tracking ends.
+    struct Nested {
+      Vec2 fPos;
+      double fTime = 0.0;
+      bool fRepeat = false;
+      bool fTick = false;
+    };
+    std::vector<Nested> nested;
+    nested.push_back({slStacked, rawStart, false, false});
 
     for (int span = 0; span < sl->fRepeat; ++span) {
+      const double spanStart = rawStart + span * spanDur;
       bool reversed = (span % 2 == 1);
       if (tickDist > 0) {
         for (double d = tickDist; d <= pathLen; d += tickDist) {
@@ -210,20 +211,55 @@ private:
             break;
           double progress = d / pathLen;
           double ratio = reversed ? 1.0 - progress : progress;
-          nestedPositions.push_back(path.positionAt(ratio * pathLen) +
-                                    stackOff);
+          nested.push_back({path.positionAt(ratio * pathLen) + stackOff,
+                            spanStart + ratio * spanDur, false, true});
         }
       }
       if (span < sl->fRepeat - 1) {
         double repeatProgress = (span + 1) % 2;
-        nestedPositions.push_back(path.positionAt(repeatProgress * pathLen) +
-                                  stackOff);
+        nested.push_back({path.positionAt(repeatProgress * pathLen) + stackOff,
+                          spanStart + spanDur, true, false});
       } else {
         double tailProgress = static_cast<double>(sl->fRepeat % 2);
-        nestedPositions.push_back(path.positionAt(tailProgress * pathLen) +
-                                  stackOff);
+        nested.push_back({path.positionAt(tailProgress * pathLen) + stackOff,
+                          rawStart + rawDur, false, false});
       }
     }
+
+    // OsuDifficultyHitObject.computeSliderCursorPosition: when the last real
+    // tick falls after tracking would have ended, tracking is extended to it
+    // and that tick is moved to the end of the list. lazer calls this "not
+    // correct from a difficulty calculation perspective" and keeps it for a
+    // zero diff against known output, so we keep it too.
+    auto lastTick = nested.end();
+    for (auto it = nested.begin(); it != nested.end(); ++it) {
+      if (it->fTick)
+        lastTick = it;
+    }
+    if (lastTick != nested.end() && lastTick->fTime > trackingEndTime) {
+      trackingEndTime = lastTick->fTime;
+      Nested moved = *lastTick;
+      nested.erase(lastTick);
+      nested.push_back(moved);
+    }
+
+    // The lazy end position starts as the path position at the moment
+    // tracking ends, and is replaced below by wherever the cursor actually
+    // ended up.
+    fLTT = trackingEndTime - rawStart;
+    double endTimeMin = fLTT / spanDur;
+    if (!std::isfinite(endTimeMin))
+      endTimeMin = 0.0;
+    if (static_cast<int>(endTimeMin) % 2 >= 1)
+      endTimeMin = 1.0 - std::fmod(endTimeMin, 1.0);
+    else
+      endTimeMin = std::fmod(endTimeMin, 1.0);
+    fLEP = path.positionAt(endTimeMin * path.length()) + stackOff;
+
+    std::vector<Vec2> nestedPositions;
+    nestedPositions.reserve(nested.size());
+    for (const auto &n : nested)
+      nestedPositions.push_back(n.fPos);
 
     if (nestedPositions.size() >= 2)
       fSliderSecondLastNestedPos = nestedPositions[nestedPositions.size() - 2];
@@ -231,7 +267,8 @@ private:
     for (std::size_t i = 1; i < nestedPositions.size(); ++i) {
       Vec2 mv = nestedPositions[i] - cur;
       double ml = sf * mv.length();
-      double req = kASR;
+      // A repeat asks for a tighter movement than a tick does.
+      double req = nested[i].fRepeat ? kNR : kASR;
       if (i == nestedPositions.size() - 1) {
         Vec2 lm = fLEP - cur;
         if (lm.length() < mv.length())

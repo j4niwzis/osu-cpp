@@ -43,8 +43,8 @@ public:
 class SpeedSkill {
 public:
   void process(const OsuDifficultyHitObject &c) {
-    if (std::holds_alternative<Spinner>(*c.fBase))
-      return;
+    // A spinner is processed like anything else: its evaluators return zero,
+    // but the strain still decays across it and the object still counts.
     double d = std::pow(0.3, c.fADT / 1000.0);
     fCur *= d;
     fCur += SpeedEvaluator::eval(c) * (1.0 - d) * 1.16;
