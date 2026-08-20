@@ -117,6 +117,12 @@ struct Entry {
   double fBpm = 0.0;
   long fPlayCount = 0, fFavouriteCount = 0;
   int fGenre = 0, fLanguage = 0; // osu! ids
+  std::string fCardCover, fFullCover; // covers.card@2x / covers.cover@2x
+  std::string fTags;
+  std::vector<int> fRatings; // the 1..10 histogram osu! returns
+  skia::Sp<skia::SkImage> fPageCover; // the big cover, fetched on demand
+  enum class Cover : std::uint8_t { kNone, kFetching, kReady, kFailed };
+  Cover fPageCoverSt = Cover::kNone;
   bool fVideo = false, fStoryboard = false, fNsfw = false, fSpotlight = false;
   bool fFeatured = false;  // track_id != null
   double fRating = 0.0;

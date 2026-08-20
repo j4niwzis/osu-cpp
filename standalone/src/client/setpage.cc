@@ -119,8 +119,10 @@ private:
     const float height = 250.0f;
     const skia::SkRect cover = skia::SkRect::MakeXYWH(0, 0, w, height);
     this->rect(cover, listing::kBackground5);
-    if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
-      this->imageFilled(e.fThumb.get(), cover);
+    if (e.fPageCoverSt == Entry::Cover::kReady && e.fPageCover) {
+      this->imageFilled(e.fPageCover.get(), cover);
+    } else if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
+      this->imageFilled(e.fThumb.get(), cover); // until the big one arrives
     }
     // coverGradient: black at the left, transparent at the right.
     for (int i = 0; i < 24; ++i) {
@@ -131,8 +133,35 @@ private:
 
     const float left = kHorizontalPadding;
     float y = kYPadding + 30.0f;
-    this->text(e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, left, y,
-               30.0f, listing::kContent1, true);
+    const std::string title =
+        e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode;
+    this->text(title, left, y, 30.0f, listing::kContent1, true);
+    // The badges lazer puts beside the title.
+    float badgeX = left + this->measure(title, 30.0f, true) + 10.0f;
+    const auto badge = [&](const char *label, skia::SkColor colour) {
+      const float w = this->measure(label, 10.0f, true) + 12.0f;
+      const skia::SkRect r =
+          skia::SkRect::MakeXYWH(badgeX, y - 12.0f, w, 16.0f);
+      this->rounded(r, 3.0f, colour);
+      this->text(label, badgeX + 6.0f, y - 1.0f, 10.0f,
+                 listing::kBackground6, true);
+      badgeX += w + 4.0f;
+    };
+    if (e.fVideo) {
+      badge("VIDEO", listing::kContent2);
+    }
+    if (e.fStoryboard) {
+      badge("STORYBOARD", listing::kContent2);
+    }
+    if (e.fNsfw) {
+      badge("EXPLICIT", skia::colorSetARGB(255, 255, 102, 102));
+    }
+    if (e.fSpotlight) {
+      badge("SPOTLIGHT", listing::kColour1);
+    }
+    if (e.fFeatured) {
+      badge("FEATURED ARTIST", skia::colorSetARGB(255, 255, 204, 102));
+    }
     y += 28.0f;
     this->text(e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, left, y,
                20.0f, listing::kContent1);
@@ -141,9 +170,16 @@ private:
     this->text(mapped, left, y, 14.0f, listing::kContent2);
     this->text(e.fCreator, left + this->measure(mapped, 14.0f, false), y, 14.0f,
                listing::kContent1, true);
+    const std::string status = e.fStatus.empty() ? "unknown" : e.fStatus;
+    const float pillW = this->measure(status, 11.0f, true) + 20.0f;
+    const skia::SkRect pill =
+        skia::SkRect::MakeXYWH(left, y + 8.0f, pillW, 18.0f);
+    this->rounded(pill, 9.0f, listing::kColour3);
+    this->textCentered(status, pill.centerX(), pill.fBottom - 5.0f, 11.0f,
+                       listing::kBackground6, true);
 
     // Buttons: the preview toggle is the square one, then download.
-    y += 20.0f;
+    y += 40.0f;
     const skia::SkRect play = skia::SkRect::MakeXYWH(left, y, kButtonsHeight,
                                                      kButtonsHeight);
     this->rounded(play, 6.0f, listing::kBackground3);
@@ -249,42 +285,82 @@ private:
     }
   }
 
-  // BasicStats and Info: the selected difficulty's numbers, then the set's
-  // metadata, over Background5.
+  // Info: the selected difficulty's numbers on the left, the metadata and the
+  // ratings histogram in the right column, over Background5.
   float drawInfo(const Entry &e, float w, float top) {
-    const float height = 300.0f;
+    const float height = 330.0f;
     this->rect(skia::SkRect::MakeXYWH(0, top, w, height), listing::kBackground5);
     const float left = kHorizontalPadding;
-    float y = top + kYPadding + 12.0f;
+    const float rightX = w - kHorizontalPadding - kRightWidth;
+    const float leftW = rightX - left - 30.0f;
+    float y = top + kYPadding + 8.0f;
 
+    // The difficulty name over its own stats, as the picker's caption.
     if (!e.fDiffs.empty()) {
       const auto &diff = e.fDiffs[static_cast<std::size_t>(fSelected)];
+      const std::string starText = std::format("{:.2f}", diff.fStars);
+      const float starW = this->measure(starText, 12.0f, true) + 26.0f;
+      const skia::SkRect star =
+          skia::SkRect::MakeXYWH(left, y - 13.0f, starW, 18.0f);
+      this->rounded(star, 9.0f, client::ui::starColor(diff.fStars));
+      this->circle(star.fLeft + 10.0f, star.centerY(), 4.0f,
+                   listing::kBackground6);
+      this->text(starText, star.fLeft + 18.0f, y, 12.0f,
+                 listing::kBackground6, true);
+      this->text(diff.fVersion, star.fRight + 8.0f, y, 16.0f,
+                 listing::kContent1, true);
+      y += 26.0f;
+
+      // BasicStats: a row of labelled numbers over their own strip.
+      const skia::SkRect strip =
+          skia::SkRect::MakeXYWH(left, y, leftW, 116.0f);
+      this->rounded(strip, 6.0f, listing::kBackground4);
       const struct {
         const char *fLabel;
         std::string fValue;
+        float fBar; // 0..1, drawn under the value like the difficulty bars
       } stats[] = {
-          {"Length", formatLength(diff.fLengthMs)},
-          {"BPM", std::format("{:.0f}", e.fBpm)},
-          {"Circle Size", std::format("{:.1f}", diff.fCs)},
-          {"HP Drain", std::format("{:.1f}", diff.fHp)},
-          {"Accuracy", std::format("{:.1f}", diff.fOd)},
-          {"Approach Rate", std::format("{:.1f}", diff.fAr)},
-          {"Star Rating", std::format("{:.2f}", diff.fStars)},
-          {"Max Combo", std::format("{}", diff.fMaxCombo)},
+          {"Length", formatLength(diff.fLengthMs), 0.0f},
+          {"BPM", std::format("{:.0f}", e.fBpm), 0.0f},
+          {"Max Combo", std::format("{}", diff.fMaxCombo), 0.0f},
+          {"Circle Size", std::format("{:.1f}", diff.fCs),
+           static_cast<float>(diff.fCs / 10.0)},
+          {"HP Drain", std::format("{:.1f}", diff.fHp),
+           static_cast<float>(diff.fHp / 10.0)},
+          {"Accuracy", std::format("{:.1f}", diff.fOd),
+           static_cast<float>(diff.fOd / 10.0)},
+          {"Approach Rate", std::format("{:.1f}", diff.fAr),
+           static_cast<float>(diff.fAr / 10.0)},
+          {"Star Rating", std::format("{:.2f}", diff.fStars),
+           static_cast<float>(std::min(1.0, diff.fStars / 10.0))},
       };
-      float x = left;
+      const float cellW = (leftW - 24.0f) / 4.0f;
+      float cx = left + 12.0f;
+      float cy = y + 26.0f;
+      int column = 0;
       for (const auto &stat : stats) {
-        this->text(stat.fLabel, x, y, 12.0f, listing::kContent2);
-        this->text(stat.fValue, x, y + 20.0f, 16.0f, listing::kContent1, true);
-        x += 150.0f;
-        if (x > w - kHorizontalPadding - 150.0f) {
-          x = left;
-          y += 44.0f;
+        this->text(stat.fLabel, cx, cy, 11.0f, listing::kContent2);
+        this->text(stat.fValue, cx, cy + 20.0f, 17.0f, listing::kContent1,
+                   true);
+        if (stat.fBar > 0.0f) {
+          const skia::SkRect bar =
+              skia::SkRect::MakeXYWH(cx, cy + 28.0f, cellW - 16.0f, 4.0f);
+          this->rounded(bar, 2.0f, listing::kBackground6);
+          this->rounded(skia::SkRect::MakeXYWH(bar.fLeft, bar.fTop,
+                                               bar.width() * stat.fBar, 4.0f),
+                        2.0f, listing::kColour1);
+        }
+        cx += cellW;
+        if (++column == 4) {
+          column = 0;
+          cx = left + 12.0f;
+          cy += 58.0f;
         }
       }
-      y += 60.0f;
+      y += 132.0f;
     }
 
+    // Metadata, the way Info's MetadataSection stacks it.
     const struct {
       const char *fLabel;
       std::string fValue;
@@ -292,15 +368,76 @@ private:
         {"Source", e.fSource.empty() ? "-" : e.fSource},
         {"Genre", listing::kGenreLabels[genreIndex(e.fGenre)]},
         {"Language", listing::kLanguageLabels[languageIndex(e.fLanguage)]},
-        {"Status", e.fStatus},
+        {"Tags", e.fTags.empty() ? "-" : e.fTags},
         {"Last updated", e.fUpdated},
     };
     for (const auto &row : meta) {
-      this->text(row.fLabel, left, y, 12.0f, listing::kContent2);
-      this->text(row.fValue, left + 120.0f, y, 13.0f, listing::kContent1);
-      y += 20.0f;
+      this->text(row.fLabel, left, y, 11.0f, listing::kContent2);
+      fCanvas->save();
+      fCanvas->clipIRect(skia::SkIRect::MakeXYWH(
+          static_cast<int>(left + 110.0f), static_cast<int>(y - 14.0f),
+          static_cast<int>(leftW - 110.0f), 20));
+      this->text(row.fValue, left + 110.0f, y, 13.0f, listing::kContent1);
+      fCanvas->restore();
+      y += 22.0f;
     }
+
+    this->drawRatings(e, rightX, top + kYPadding + 8.0f);
     return std::max(top + height, y + kYPadding);
+  }
+
+  // UserRatings: the 1..10 histogram with the positive share above it.
+  void drawRatings(const Entry &e, float x, float y) {
+    this->text("User Rating", x, y, 12.0f, listing::kContent2);
+    y += 14.0f;
+    std::vector<int> counts(10, 0);
+    // osu! returns eleven buckets, the first unused.
+    for (std::size_t i = 1; i < e.fRatings.size() && i <= 10; ++i) {
+      counts[i - 1] = e.fRatings[i];
+    }
+    const int negative = counts[0] + counts[1] + counts[2] + counts[3] +
+                         counts[4];
+    const int positive = counts[5] + counts[6] + counts[7] + counts[8] +
+                         counts[9];
+    const int total = negative + positive;
+
+    // The split bar: negative on the left, positive on the right.
+    const skia::SkRect bar = skia::SkRect::MakeXYWH(x, y, kRightWidth, 5.0f);
+    this->rounded(bar, 2.5f, skia::colorSetARGB(255, 255, 102, 102));
+    if (total > 0) {
+      const float share = static_cast<float>(positive) /
+                          static_cast<float>(total);
+      this->rounded(skia::SkRect::MakeXYWH(bar.fLeft + bar.width() *
+                                                          (1.0f - share),
+                                           bar.fTop, bar.width() * share, 5.0f),
+                    2.5f, listing::kColour1);
+    }
+    y += 16.0f;
+    this->text(std::format("{} negative", negative), x, y, 11.0f,
+               listing::kContent2);
+    const std::string pos = std::format("{} positive", positive);
+    this->text(pos, x + kRightWidth - this->measure(pos, 11.0f, false), y,
+               11.0f, listing::kContent2);
+    y += 12.0f;
+
+    // The histogram itself, tallest bucket filling the height.
+    const float graphH = 70.0f;
+    const float slot = kRightWidth / 10.0f;
+    const int peak = std::max(1, *std::ranges::max_element(counts));
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+      const float h = graphH * static_cast<float>(counts[i]) /
+                      static_cast<float>(peak);
+      const skia::SkRect column = skia::SkRect::MakeXYWH(
+          x + static_cast<float>(i) * slot + 2.0f, y + graphH - h,
+          slot - 4.0f, std::max(1.0f, h));
+      this->rounded(column, 2.0f, listing::kColour1, 0.8f);
+    }
+    y += graphH + 6.0f;
+    for (int i = 0; i < 10; ++i) {
+      this->textCentered(std::format("{}", i + 1),
+                         x + static_cast<float>(i) * slot + slot * 0.5f, y,
+                         9.0f, listing::kContent2);
+    }
   }
 
   [[nodiscard]] static std::string formatLength(double ms) {

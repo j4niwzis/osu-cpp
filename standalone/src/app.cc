@@ -207,6 +207,7 @@ private:
   client::AudioPlayer fPreview;
   long fPreviewId = -1;
   bool fPreviewPending = false;
+  std::uint32_t fPreviewGeneration = 0; // stale fetches must not start playing
   std::vector<client::listing::Entry> fFound;
   // Transfers in flight, so progress can be polled without the view knowing
   // anything about HTTP.
@@ -1123,6 +1124,7 @@ private:
       case client::listing::Listing::Action::kOpen:
         if (result.fIndex < fFound.size()) {
           fSetPage.show(fFound[result.fIndex]);
+          this->requestPageCover(result.fIndex);
         }
         break;
       case client::listing::Listing::Action::kPreview:
@@ -2557,6 +2559,30 @@ private:
       d.fUpdatedDate = dateStamp(getStr(*o, "last_updated"));
       d.fRankedDate = dateStamp(getStr(*o, "ranked_date"));
       d.fSource = getStr(*o, "source");
+      if (const bjson::value *covers = o->if_contains("covers")) {
+        if (const bjson::object *co = covers->if_object()) {
+          // card@2x for the cards, cover@2x for the set page: the sizes
+          // lazer's BeatmapSetCoverType picks for each.
+          d.fCardCover = getStr(*co, "card@2x");
+          if (d.fCardCover.empty()) {
+            d.fCardCover = getStr(*co, "card");
+          }
+          d.fFullCover = getStr(*co, "cover@2x");
+          if (d.fFullCover.empty()) {
+            d.fFullCover = getStr(*co, "cover");
+          }
+        }
+      }
+      if (const bjson::value *ratings = o->if_contains("ratings")) {
+        if (const bjson::array *ra = ratings->if_array()) {
+          for (const auto &v : *ra) {
+            d.fRatings.push_back(v.is_number()
+                                     ? static_cast<int>(v.to_number<double>())
+                                     : 0);
+          }
+        }
+      }
+      d.fTags = getStr(*o, "tags");
       d.fBpm = getNum(*o, "bpm");
       d.fRating = getNum(*o, "rating");
       d.fPlayCount = static_cast<long>(getNum(*o, "play_count"));
@@ -2625,6 +2651,7 @@ private:
   // serves for every set and plays it on its own source.
   void togglePreview(std::size_t idx) {
     if (idx >= fFound.size()) {
+      std::println(std::cerr, "[preview] no entry at {}", idx);
       return;
     }
     const long id = fFound[idx].fSetId;
@@ -2635,27 +2662,41 @@ private:
     }
     fPreview.stop();
     fPreviewId = -1;
-    if (fPreviewPending) {
-      return;
-    }
+    ++fPreviewGeneration; // whatever is in flight is no longer wanted
+    const std::uint32_t generation = fPreviewGeneration;
     fPreviewPending = true;
+    const std::string url = std::format("https://b.ppy.sh/preview/{}.mp3", id);
+    std::println(std::cerr, "[preview] fetching {}", url);
     auto handle = std::make_shared<client::http::Handle>();
-    client::http::get(std::format("https://b.ppy.sh/preview/{}.mp3", id),
-                      std::move(handle),
-                      [this, id](client::http::Response r) {
+    client::http::get(url, std::move(handle),
+                      [this, id, generation](client::http::Response r) {
+                        if (generation != fPreviewGeneration) {
+                          return; // superseded by a later click
+                        }
                         fPreviewPending = false;
                         if (!r.fOk || r.fBody.size() < 1024) {
+                          std::println(std::cerr,
+                                       "[preview] fetch failed: {} ({} bytes) {}",
+                                       r.fStatus, r.fBody.size(), r.fError);
+                          this->notify("preview unavailable",
+                                       skia::colorSetARGB(255, 255, 110, 110));
                           return;
                         }
                         const std::vector<std::uint8_t> bytes(r.fBody.begin(),
                                                               r.fBody.end());
                         if (!fPreview.load(bytes, ".mp3")) {
+                          std::println(std::cerr,
+                                       "[preview] decode failed ({} bytes)",
+                                       bytes.size());
                           return;
                         }
+                        fPreview.setLooping(false);
                         fPreview.setVolume(fSettings.value("master") *
                                            fSettings.value("music"));
                         fPreview.play();
                         fPreviewId = id;
+                        std::println(std::cerr, "[preview] playing {} ({:.1f}s)",
+                                     id, fPreview.durationSec());
                       });
   }
 
@@ -2666,6 +2707,43 @@ private:
       return 0.0f;
     }
     return static_cast<float>(fPreview.positionSec() / duration);
+  }
+
+  // The page shows covers.cover@2x (1920x360), not the card crop.
+  void requestPageCover(std::size_t idx) {
+    if (idx >= fFound.size()) {
+      return;
+    }
+    auto &d = fFound[idx];
+    if (d.fPageCoverSt != client::listing::Entry::Cover::kNone) {
+      return;
+    }
+    d.fPageCoverSt = client::listing::Entry::Cover::kFetching;
+    const long id = d.fSetId;
+    const std::string url =
+        d.fFullCover.empty()
+            ? std::format("https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg",
+                          id)
+            : d.fFullCover;
+    auto handle = std::make_shared<client::http::Handle>();
+    client::http::get(url, std::move(handle),
+                      [this, id](client::http::Response r) {
+                        for (auto &e : fFound) {
+                          if (e.fSetId != id) {
+                            continue;
+                          }
+                          if (r.fOk && r.fBody.size() > 256) {
+                            const std::vector<std::uint8_t> bytes(
+                                r.fBody.begin(), r.fBody.end());
+                            e.fPageCover = loadImage(bytes);
+                          }
+                          e.fPageCoverSt =
+                              e.fPageCover
+                                  ? client::listing::Entry::Cover::kReady
+                                  : client::listing::Entry::Cover::kFailed;
+                          break;
+                        }
+                      });
   }
 
   void requestThumb(std::size_t idx) {
@@ -2687,10 +2765,14 @@ private:
     }
     d.fThumbSt = client::listing::Entry::Thumb::kFetching;
     const long id = d.fSetId;
+    const std::string url =
+        d.fCardCover.empty()
+            ? std::format("https://assets.ppy.sh/beatmaps/{}/covers/card@2x.jpg",
+                          id)
+            : d.fCardCover;
     auto handle = std::make_shared<client::http::Handle>();
     client::http::get(
-        std::format("https://assets.ppy.sh/beatmaps/{}/covers/card.jpg", id),
-        std::move(handle), [this, id](client::http::Response r) {
+        url, std::move(handle), [this, id](client::http::Response r) {
           for (auto &e : fFound) {
             if (e.fSetId != id) {
               continue;
@@ -4598,6 +4680,9 @@ private:
     ctx.fDtMs = fUiDt;
     ctx.fEntries = fFound;
     ctx.fLoading = fSearchPending;
+    if (fPreviewId >= 0 && !fPreviewPending && !fPreview.playing()) {
+      fPreviewId = -1; // the clip ran out; the button goes back to play
+    }
     fListing.tick(wallMs());
     fListing.setPreview(fPreviewId, this->previewProgress());
     fListing.draw(ctx);
