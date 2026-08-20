@@ -2290,13 +2290,15 @@ private:
           // counter sits in a far corner, and a box containing it and the
           // middle of the screen is most of the screen.
           for (const auto &area : fBlitRegions) {
-            // No recorder, no mipmaps: a straight copy of the rectangle.
-            auto piece = image->makeSubset(nullptr, area, {});
-            if (piece) {
-              windowCanvas->drawImage(piece.get(),
-                                      static_cast<float>(area.fLeft),
-                                      static_cast<float>(area.fTop));
-            }
+            // Drawn as a rectangle of the frame rather than cut out of it
+            // first: makeSubset is free to answer nothing -- a null image is
+            // not an error, it is a "not like this" -- and a blit that
+            // quietly does nothing is a window that stops updating while the
+            // client goes on drawing into a surface nobody is reading.
+            const skia::SkRect piece = skia::SkRect::Make(area);
+            windowCanvas->drawImageRect(
+                image.get(), piece, piece, skia::SkSamplingOptions(), nullptr,
+                skia::SkCanvas::kStrict_SrcRectConstraint);
           }
         }
       }
