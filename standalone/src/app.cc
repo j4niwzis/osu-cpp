@@ -415,6 +415,7 @@ private:
   int fVisualiserCount = 0;
   // Reused between frames so building the batch allocates nothing.
   std::vector<skia::SkPoint> fVisualiserPos;
+  std::vector<skia::SkColor> fVisualiserCol;
   std::vector<std::uint16_t> fVisualiserIdx;
   std::mt19937 fUiRng{0xC0FFEEu};
 
@@ -4306,7 +4307,13 @@ private:
     // once per round. Vertices avoid both: the geometry goes straight to the
     // rasteriser, and because each triangle is blended as it is drawn, bars
     // that overlap still add up, which is what the rounds are for.
+    // transparent_white at the core, the same colour with no alpha at the
+    // feather's rim, so the edge fades instead of stepping.
+    constexpr skia::SkColor kBarColor = skia::colorSetARGB(51, 255, 255, 255);
+    constexpr skia::SkColor kBarEdgeColor =
+        skia::colorSetARGB(0, 255, 255, 255);
     fVisualiserPos.clear();
+    fVisualiserCol.clear();
     fVisualiserIdx.clear();
     for (int round = 0; round < kRounds; ++round) {
       for (int i = 0; i < count; ++i) {
@@ -4323,17 +4330,51 @@ private:
         const float ax = angle.fCos * barLength * amp;
         const float ay = angle.fSin * barLength * amp;
 
+        // The bar, and a ring around it that fades to nothing. Vertices
+        // carry no per-edge antialiasing, so the edge is made by geometry:
+        // one pixel of feather, transparent at its outer rim, which is the
+        // same trick the cursor trail uses.
+        constexpr float kFeather = 1.0f;
+        const float fx = angle.fCos * kFeather;
+        const float fy = angle.fSin * kFeather;
+        const float px = -angle.fSin * kFeather;
+        const float py = angle.fCos * kFeather;
+
         const auto base = static_cast<std::uint16_t>(fVisualiserPos.size());
-        fVisualiserPos.push_back({bx - ox, by - oy});
-        fVisualiserPos.push_back({bx - ox + ax, by - oy + ay});
-        fVisualiserPos.push_back({bx + ox + ax, by + oy + ay});
-        fVisualiserPos.push_back({bx + ox, by + oy});
+        // Core, then the same four corners pushed out by the feather.
+        const skia::SkPoint core[4] = {{bx - ox, by - oy},
+                                       {bx - ox + ax, by - oy + ay},
+                                       {bx + ox + ax, by + oy + ay},
+                                       {bx + ox, by + oy}};
+        const skia::SkPoint outer[4] = {
+            {core[0].fX - px - fx, core[0].fY - py - fy},
+            {core[1].fX - px + fx, core[1].fY - py + fy},
+            {core[2].fX + px + fx, core[2].fY + py + fy},
+            {core[3].fX + px - fx, core[3].fY + py - fy}};
+        for (const auto &point : core) {
+          fVisualiserPos.push_back(point);
+          fVisualiserCol.push_back(kBarColor);
+        }
+        for (const auto &point : outer) {
+          fVisualiserPos.push_back(point);
+          fVisualiserCol.push_back(kBarEdgeColor);
+        }
+
+        const auto c0 = base;
+        const auto o0 = static_cast<std::uint16_t>(base + 4);
         fVisualiserIdx.insert(
             fVisualiserIdx.end(),
-            {base, static_cast<std::uint16_t>(base + 1),
-             static_cast<std::uint16_t>(base + 2), base,
-             static_cast<std::uint16_t>(base + 2),
-             static_cast<std::uint16_t>(base + 3)});
+            {c0, static_cast<std::uint16_t>(c0 + 1),
+             static_cast<std::uint16_t>(c0 + 2), c0,
+             static_cast<std::uint16_t>(c0 + 2),
+             static_cast<std::uint16_t>(c0 + 3)});
+        for (std::uint16_t edge = 0; edge < 4; ++edge) {
+          const auto a = static_cast<std::uint16_t>(c0 + edge);
+          const auto b = static_cast<std::uint16_t>(c0 + (edge + 1) % 4);
+          const auto oa = static_cast<std::uint16_t>(o0 + edge);
+          const auto ob = static_cast<std::uint16_t>(o0 + (edge + 1) % 4);
+          fVisualiserIdx.insert(fVisualiserIdx.end(), {a, b, oa, oa, b, ob});
+        }
       }
     }
     if (fVisualiserIdx.empty()) {
@@ -4343,15 +4384,15 @@ private:
     auto verts = skia::SkVertices::MakeCopy(
         skia::SkVertices::kTriangles_VertexMode,
         static_cast<int>(fVisualiserPos.size()), fVisualiserPos.data(), nullptr,
-        nullptr, static_cast<int>(fVisualiserIdx.size()),
+        fVisualiserCol.data(), static_cast<int>(fVisualiserIdx.size()),
         fVisualiserIdx.data());
     if (!verts) {
       return;
     }
     skia::SkPaint paint;
-    paint.setColor(skia::kWhite);
-    paint.setAlphaf(0.2f); // transparent_white
     paint.setBlendMode(skia::SkBlendMode::kPlus);
+    // kDst keeps the interpolated vertex colours; the paint only says how
+    // the result meets what is already there.
     canvas->drawVertices(verts, skia::SkBlendMode::kDst, paint);
   }
 
