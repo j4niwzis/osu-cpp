@@ -65,6 +65,80 @@ public:
   void scroll(float delta, float screenH) {
     fScroll = std::clamp(fScroll - delta * 60.0f, 0.0f,
                          std::max(0.0f, fContentHeight - screenH * 0.6f));
+    fTouched = true;
+  }
+
+  // Something in the panel was clicked or dragged: whatever it did, the panel
+  // is drawing something different next frame.
+  void touched() noexcept { fTouched = true; }
+
+  // What has to be repainted for the panel, worked out before anything is
+  // drawn. Empty means it is on screen and showing exactly what it showed
+  // last frame -- which is what an open settings panel does almost all of the
+  // time, and what used to cost a repaint of the whole screen per frame.
+  [[nodiscard]] skia::SkRect update(const Frame &frame) {
+    if (!this->visible()) {
+      fTouched = false;
+      return skia::SkRect::MakeEmpty();
+    }
+    const float sw = static_cast<float>(frame.fScreenW);
+    const float sh = static_cast<float>(frame.fScreenH);
+    if (this->animating(frame.fNowMs)) {
+      // Sliding: the dim over the screen changes with it, so this is one of
+      // the few honest whole-screen repaints.
+      fTouched = false;
+      return skia::SkRect::MakeXYWH(0.0f, 0.0f, sw, sh);
+    }
+
+    skia::SkRect out = skia::SkRect::MakeEmpty();
+    const auto join = [&out](const skia::SkRect &rect) {
+      if (out.isEmpty()) {
+        out = rect;
+      } else {
+        out.join(rect);
+      }
+    };
+
+    // The sidebar's section indicator eases in and out, and its labels tint
+    // under the pointer.
+    bool indicatorMoving = false;
+    for (const float grow : fGrow) {
+      if (grow > 0.001f && grow < 0.999f) {
+        indicatorMoving = true;
+        break;
+      }
+    }
+    int hotSidebar = -1;
+    for (std::size_t i = 0; i < fSidebarHits.size(); ++i) {
+      if (fSidebarHits[i].contains(frame.fMouseX, frame.fMouseY)) {
+        hotSidebar = static_cast<int>(i);
+        break;
+      }
+    }
+    if (indicatorMoving || hotSidebar != fHotSidebar) {
+      fHotSidebar = hotSidebar;
+      join(skia::SkRect::MakeXYWH(0.0f, 0.0f, kSidebarWidth, sh));
+    }
+
+    // An option list highlights whatever the pointer is over; nothing else in
+    // the panel responds to hover at all.
+    int hotOption = -1;
+    for (std::size_t i = 0; i < fChoiceOptionHits.size(); ++i) {
+      if (fChoiceOptionHits[i].fRect.contains(frame.fMouseX, frame.fMouseY)) {
+        hotOption = static_cast<int>(i);
+        break;
+      }
+    }
+    if (hotOption != fHotOption) {
+      fHotOption = hotOption;
+      fTouched = true;
+    }
+
+    if (fTouched || std::abs(fScrollAnim - fScroll) > 0.05f) {
+      join(skia::SkRect::MakeXYWH(kSidebarWidth, 0.0f, kPanelWidth, sh));
+    }
+    fTouched = false;
+    return out;
   }
 
   void draw(skia::SkCanvas *canvas, skia::SkFont &font, Settings &settings,
@@ -346,6 +420,9 @@ private:
   float fScrollAnim = 0.0f;
   float fContentHeight = 0.0f;
   int fDragging = -1;
+  bool fTouched = true;   // something changed that the panel has to redraw
+  int fHotSidebar = -1;   // section label under the pointer
+  int fHotOption = -1;    // option in an open list under the pointer
   std::vector<Row> fRows;
   std::vector<Row> fRestoreHits;
   std::vector<skia::SkRect> fSidebarHits;

@@ -1684,6 +1684,15 @@ private:
   // frame begins, so it is a reason to draw rather than a note about what to
   // repaint next time.
   void updateScreens() {
+    // The settings panel floats over whatever screen is up, and the screen
+    // underneath has no idea it is there. It says what it repaints -- a
+    // sidebar whose indicator is easing, an option list following the
+    // pointer, the column while it scrolls -- and says nothing at all while
+    // it is open and untouched, which is most of the time.
+    if (fSettingsPanel.visible()) {
+      this->damage(fSettingsPanel.update(
+          {fScreenW, fScreenH, fMouseX, fMouseY, wallMs(), fUiDt}));
+    }
     if (fState == State::kDownload) {
       this->updateDownload();
     } else if (fState == State::kSongSelect) {
@@ -1709,8 +1718,10 @@ private:
     }
     // Anything drawn over the screen repaints whole and does not report a
     // region, so it cannot be skipped on the strength of the screen's silence.
-    if (fSettingsPanel.visible() || fModSelect.visible() || fReplayListOpen ||
-        fConfirmDelete || fExportDialog.open()) {
+    // The settings panel reports its own regions, so it does not stop a frame
+    // from being skipped. The rest do not, and cannot be skipped over.
+    if (fModSelect.visible() || fReplayListOpen || fConfirmDelete ||
+        fExportDialog.open()) {
       return false;
     }
     // A preview still being fetched has nothing on screen to show for it
@@ -1979,16 +1990,9 @@ private:
       this->damageAll("mod select");
     }
     if (fSettingsPanel.visible()) {
+      // What it repaints was worked out before the frame began, by the panel
+      // itself; here it is only drawn.
       this->drawSettings(canvas);
-      // Scrolling, hovering and dragging happen inside this strip, and the
-      // screen underneath has no idea it is there. A panel nobody is touching
-      // does not change, so marking it every frame would repaint half the
-      // screen for nothing.
-      const float stripWidth = fSettingsPanel.occupiedWidth() + 4.0f;
-      if (fSettingsPanel.animating(wallMs()) || fMouseX <= stripWidth) {
-        this->damage(skia::SkRect::MakeXYWH(0.0f, 0.0f, stripWidth,
-                                            static_cast<float>(fScreenH)));
-      }
     }
     if (fReplayListOpen) {
       this->drawReplayList(canvas);
@@ -4735,6 +4739,7 @@ private:
   }
 
   bool settingsClick(float x, float y, bool pressed) {
+    fSettingsPanel.touched(); // whatever it hit, the panel draws it next frame
     const auto hit = fSettingsPanel.click(x, y, pressed, fSettings);
     if (hit == client::SettingsPanel::Hit::kChanged) {
       this->applySettings();
@@ -4746,6 +4751,7 @@ private:
   }
 
   void dragSetting(float x) {
+    fSettingsPanel.touched();
     if (fSettingsPanel.drag(x, fSettings)) {
       this->applyAudioSettings(); // cheap part only while dragging
     }
