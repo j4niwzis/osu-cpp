@@ -422,6 +422,7 @@ private:
   int fHotResultButton = -1; // which action the pointer is on
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
   int fHotReplayPanel = -1;
+  float fDrawnPanelScroll = 0.0f; // where the strip was when it was last drawn
   // Defined further down, next to the code that steps it; a unique_ptr only
   // needs the type complete where it is destroyed, which is the end of this
   // class.
@@ -987,10 +988,10 @@ private:
         fFilterDirty = true;
         break;
       }
-      // Only where nothing else is listening. Song select and the beatmap
-      // browser have a search box that is always focused, and a size typed
-      // into a dialog is worth less than a filter that stops working.
-      if (fExportDialog.open() && fState == State::kResults) {
+      // The dialog is the frontmost thing while it is up, so it takes what is
+      // typed -- and it closes when the screen changes, which is what stopped
+      // it from eating a filter's letters from another screen.
+      if (fExportDialog.open()) {
         fExportDialog.typeInSize(static_cast<char>(ev.fA));
         break;
       }
@@ -1041,10 +1042,9 @@ private:
     if (key == glfw::kKeyLeftControl || key == glfw::kKeyRightControl) {
       return;
     }
-    // Backspace belongs to the dialog only where nothing else wants it: the
-    // filter and the beatmap search are both edited with it.
-    if (fExportDialog.open() && fState == State::kResults &&
-        action == glfw::kPress && key == glfw::kKeyBackspace) {
+    // Backspace edits the size while the dialog is up, for the same reason.
+    if (fExportDialog.open() && action == glfw::kPress &&
+        key == glfw::kKeyBackspace) {
       fExportDialog.backspaceSize();
       return;
     }
@@ -1545,9 +1545,7 @@ private:
     this->oweFrames(4);
     // A dialog belongs to the screen it was opened on; carried to another one
     // it would go on taking the keys typed at that screen's search box.
-    if (fState == State::kResults && st != State::kResults) {
-      fExportDialog.close();
-    }
+    fExportDialog.close();
     // Coming out of a play: the map's track ran to its end while it was being
     // played, and silence after it is not a track that finished on its own.
     // Loading it again for the same selection is what makes finishing a play
@@ -2355,8 +2353,13 @@ private:
       // Same: the strip of panels glides when another replay is chosen, and
       // the pointer picks out the one under it. Neither happening means
       // nothing to repaint.
-      if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
-        this->damageAll("replay browser gliding");
+      if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f ||
+          fPanelScroll != fDrawnPanelScroll) {
+        // Gliding to a chosen panel, or dragged: a drag sets the position
+        // outright rather than easing towards it, so comparing against the
+        // target says nothing and the strip looked frozen under the pointer.
+        fDrawnPanelScroll = fPanelScroll;
+        this->damageAll("replay browser moving");
       } else {
         // The panels are the only thing in it that answers the pointer, and
         // the client knows where they are: the band they occupy is the answer
@@ -6789,10 +6792,13 @@ private:
       fHotResultButton = hot;
       this->damage(skia::SkRect::MakeXYWH(0.0f, sh - 100.0f, sw, 100.0f));
     }
-    // The strip of panels glides when another score is chosen, and the whole
-    // of it moves while it does.
-    if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
-      this->damageAll("results strip gliding");
+    // The strip of panels moves when another score is chosen and while it is
+    // dragged; a drag sets the position outright, so the target says nothing
+    // about it.
+    if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f ||
+        fPanelScroll != fDrawnPanelScroll) {
+      fDrawnPanelScroll = fPanelScroll;
+      this->damageAll("results strip moving");
     }
   }
 
