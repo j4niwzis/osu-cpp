@@ -148,6 +148,7 @@ private:
   // is clipped to (taken from that accumulator when the frame starts).
   skia::SkIRect fDamage = skia::SkIRect::MakeEmpty();
   bool fFullDamage = true;
+  bool fOverlayShown = false; // an overlay covered the screen last frame
   skia::SkIRect fFrameClip = skia::SkIRect::MakeEmpty();
   bool fFrameClipFull = true;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
@@ -1460,6 +1461,16 @@ private:
     if (fState == State::kPlaying) {
       this->damageAll(); // a moving picture by definition
     }
+    // Overlays are drawn after the screen, over most of it, and none of them
+    // declares a region -- so while one is up, and on the frame it goes away,
+    // the screen underneath cannot be trusted to have marked enough.
+    const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
+                         fExportDialog.open() || fReplayListOpen ||
+                         fConfirmDelete || fSetPage.open();
+    if (overlay || overlay != fOverlayShown) {
+      this->damageAll();
+    }
+    fOverlayShown = overlay;
     this->beginFrame();
     switch (fState) {
     case State::kMainMenu:
