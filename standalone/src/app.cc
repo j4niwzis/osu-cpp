@@ -4439,40 +4439,55 @@ private:
   // Judgements are set in a heavy geometric display face. osu! and webosu-2
   // use Venera, which is a commercial typeface, so the client ships
   // Montserrat ExtraBold instead (SIL OFL 1.1, see assets/fonts/OFL.txt).
-  // Installed copy first, then the source tree, then anything suitable the
-  // system offers.
   [[nodiscard]] skia::SkFont loadDisplayFont(float size) {
+    constexpr const char *kFile = "Montserrat-ExtraBold.ttf";
     std::vector<std::filesystem::path> candidates;
+
+    // Beside the executable's install prefix: resolving through /proc/self/exe
+    // works no matter what the working directory is.
+    std::error_code ec;
+    const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec && !exe.empty()) {
+      const auto prefix = exe.parent_path().parent_path(); // .../bin/x -> ...
+      candidates.push_back(prefix / "share" / "osu_client" / "fonts" / kFile);
+      candidates.push_back(exe.parent_path() / "fonts" / kFile);
+    }
 #ifdef OSU_CLIENT_DATADIR
     candidates.emplace_back(std::filesystem::path(OSU_CLIENT_DATADIR) /
-                            "fonts" / "Montserrat-ExtraBold.ttf");
+                            "fonts" / kFile);
 #endif
 #ifdef OSU_CLIENT_SOURCE_ASSETS
     candidates.emplace_back(std::filesystem::path(OSU_CLIENT_SOURCE_ASSETS) /
-                            "fonts" / "Montserrat-ExtraBold.ttf");
+                            "fonts" / kFile);
 #endif
-    // Alongside the executable, for a portable copy.
-    candidates.emplace_back(std::filesystem::path("assets") / "fonts" /
-                            "Montserrat-ExtraBold.ttf");
-    candidates.emplace_back(std::filesystem::path("fonts") /
-                            "Montserrat-ExtraBold.ttf");
+    candidates.emplace_back(std::filesystem::path("assets") / "fonts" / kFile);
+    candidates.emplace_back(std::filesystem::path("fonts") / kFile);
 
     for (const auto &path : candidates) {
-      std::error_code ec;
-      if (!std::filesystem::exists(path, ec)) {
+      std::error_code exists;
+      if (!std::filesystem::exists(path, exists)) {
+        std::println(std::cerr, "[ui] display font: not at {}", path.string());
         continue;
       }
       auto data = skia::SkData::MakeFromFileName(path.c_str());
       if (!data || data->isEmpty()) {
+        std::println(std::cerr, "[ui] display font: cannot read {}",
+                     path.string());
         continue;
       }
       // The factory takes a span of datas, not a single one.
       std::array<skia::Sp<skia::SkData>, 1> datas{std::move(data)};
       auto mgr = skia::SkFontMgr_New_Custom_Data(datas);
-      if (!mgr) {
+      if (!mgr || mgr->countFamilies() == 0) {
+        std::println(std::cerr, "[ui] display font: {} has no families",
+                     path.string());
         continue;
       }
-      if (auto face = mgr->matchFamilyStyle(nullptr, skia::SkFontStyle())) {
+      auto face = mgr->matchFamilyStyle(nullptr, skia::SkFontStyle());
+      if (!face) {
+        face = mgr->createStyleSet(0)->createTypeface(0);
+      }
+      if (face) {
         skia::SkString name;
         face->getFamilyName(&name);
         std::println(std::cerr, "[ui] judgement font: \"{}\" from {}",
@@ -4506,8 +4521,8 @@ private:
     }
 
     std::println(std::cerr,
-                 "[ui] bundled display font missing; judgements fall back to "
-                 "the UI font");
+                 "[ui] no display font found; judgements fall back to the UI "
+                 "font");
     return this->loadFont(size);
   }
 
