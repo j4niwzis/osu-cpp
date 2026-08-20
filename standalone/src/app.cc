@@ -1802,28 +1802,10 @@ private:
     // Clipped to one rectangle rather than to a region of several: a region
     // takes Skia off its analytic clip path and onto clip masks, which are
     // paid per draw call and cost more than the pixels they save.
-    if (!this->partialRedraw() || this->blitRegionFull()) {
+    if (!this->partialRedraw() || this->historyShorterThan(this->drawReach())) {
       return;
     }
-    // How far back to repaint. With an age of N the buffer holds the frame
-    // from N swaps ago, so everything damaged since then -- N entries of the
-    // history, this frame included -- has to be painted again. Without an
-    // age, the whole history, which is the old guess with margin in it.
-    const std::size_t reach =
-        fBufferAge > 0 ? static_cast<std::size_t>(fBufferAge)
-                       : fBlitHistory.size();
-    skia::SkIRect bounds = skia::SkIRect::MakeEmpty();
-    std::size_t seen = 0;
-    for (auto frame = fBlitHistory.rbegin();
-         frame != fBlitHistory.rend() && seen < reach; ++frame, ++seen) {
-      for (const auto &area : *frame) {
-        if (bounds.isEmpty()) {
-          bounds = area;
-        } else {
-          bounds.join(area);
-        }
-      }
-    }
+    const skia::SkIRect bounds = this->damageOver(this->drawReach());
     if (bounds.isEmpty()) {
       return;
     }
@@ -1837,9 +1819,14 @@ private:
       return;
     }
     canvas->clipIRect(bounds);
-    // Remembered for the blit: with the CPU renderer the frame has to be
-    // carried into the window as pixels, and only this much of it is new.
-    fBlitRegions.push_back(bounds);
+    // Remembered for the blit, which is a different question with a different
+    // answer: what the window is missing rather than what this surface is.
+    if (!this->historyShorterThan(this->windowReach())) {
+      const skia::SkIRect carry = this->damageOver(this->windowReach());
+      if (!carry.isEmpty()) {
+        fBlitRegions.push_back(carry);
+      }
+    }
     // What is repainted starts clean: the buffer holds an older frame, and
     // anything translucent drawn over it would otherwise stack up.
     if (fState != State::kPlaying) {
@@ -2420,14 +2407,29 @@ private:
   // six has six frames of history to be told about.
   static constexpr std::size_t kBlitHistoryDepth = 8;
 
-  [[nodiscard]] bool blitRegionFull() const {
+  // How far back a repaint has to reach, and how far back the window does.
+  // Two questions that look like one until the CPU renderer is on: there the
+  // surface being drawn into is ours and persists, holding the last complete
+  // frame whatever the driver does with its own buffers, so drawing reaches
+  // back exactly one frame. The window is however many buffers deep the
+  // driver keeps, which is what buffer age answers -- and what the assumption
+  // guesses at when it will not.
+  [[nodiscard]] std::size_t windowReach() const {
+    return fBufferAge > 0 ? static_cast<std::size_t>(fBufferAge)
+                          : kSwapChainDepth;
+  }
+
+  [[nodiscard]] std::size_t drawReach() const {
+    return fDrewOnRaster ? 1 : this->windowReach();
+  }
+
+  // Whether the history says enough about that many frames back.
+  [[nodiscard]] bool historyShorterThan(std::size_t reach) const {
     if (fBufferAge == 0) {
       return true; // the window system says the contents are undefined
     }
-    const std::size_t reach =
-        fBufferAge > 0 ? static_cast<std::size_t>(fBufferAge) : kSwapChainDepth;
     if (fBlitHistory.size() < reach) {
-      return true; // not enough history yet to know what this buffer holds
+      return true;
     }
     std::size_t seen = 0;
     for (auto frame = fBlitHistory.rbegin();
@@ -2437,6 +2439,22 @@ private:
       }
     }
     return false;
+  }
+
+  [[nodiscard]] skia::SkIRect damageOver(std::size_t reach) const {
+    skia::SkIRect bounds = skia::SkIRect::MakeEmpty();
+    std::size_t seen = 0;
+    for (auto frame = fBlitHistory.rbegin();
+         frame != fBlitHistory.rend() && seen < reach; ++frame, ++seen) {
+      for (const auto &area : *frame) {
+        if (bounds.isEmpty()) {
+          bounds = area;
+        } else {
+          bounds.join(area);
+        }
+      }
+    }
+    return bounds;
   }
 
   void rememberBlitRegion() {
