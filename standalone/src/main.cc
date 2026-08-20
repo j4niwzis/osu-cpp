@@ -264,29 +264,31 @@ int main(int argc, char **argv) {
         }
         const std::string text((std::istreambuf_iterator<char>(in)),
                                std::istreambuf_iterator<char>());
-        osu::Beatmap map = osu::loadBeatmap(text);
-        // CalculateTimed: the rating of the map as it stands at a moment,
-        // which is the same as the rating of the map cut off there.
+        const osu::Beatmap map = osu::loadBeatmap(text);
+        std::vector<osu::stars::AimSkill::TracePoint> aimTrace;
+        const osu::StarRating rating = osu::calculateStars(
+            map, mods, dumpAim ? &aimTrace : nullptr, until);
+        // The combo and object counts are of the part that was processed,
+        // which is what the timed tests assert.
+        osu::Beatmap counted = map;
         if (std::isfinite(until)) {
           std::size_t keep = 0;
-          while (keep < map.fObjects.size() &&
-                 osu::startTime(map.fObjects[keep]) <= until) {
+          while (keep < counted.fObjects.size() &&
+                 osu::startTime(counted.fObjects[keep]) <= until) {
             ++keep;
           }
-          map.fObjects.resize(keep);
-          map.fSliderPaths.resize(keep);
+          counted.fObjects.resize(keep);
+          counted.fSliderPaths.resize(keep);
         }
-        std::vector<osu::stars::AimSkill::TracePoint> aimTrace;
-        const osu::StarRating rating =
-            osu::calculateStars(map, mods, dumpAim ? &aimTrace : nullptr);
-        const osu::Engine engine(map, mods);
+        const std::size_t processed = counted.fObjects.size();
+        const osu::Engine engine(counted, mods);
         std::cout << std::format("{}\n", target.filename().string())
                   << std::format("  stars     {:.13f}\n", rating.fTotal)
                   << std::format("  aim       {:.13f}\n", rating.fAim)
                   << std::format("  speed     {:.13f}\n", rating.fSpeed)
                   << std::format("  max combo {}\n",
                                  engine.maxAchievableCombo())
-                  << std::format("  objects   {}\n", map.fObjects.size());
+                  << std::format("  objects   {}\n", processed);
         if (dumpAim) {
           // The geometry behind those numbers: what each slider's path came
           // out as, which is the other half of any disagreement about aim.

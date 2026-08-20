@@ -16,9 +16,16 @@ export namespace osu {
 
 // `aimTrace`, when given, is filled with the per-object aim terms: the
 // series behind the aim value, for comparing against lazer's own.
+// `untilTime`, when finite, stops the skills after the objects up to that
+// moment -- but the difficulty objects are still built from the whole map, so
+// each of them still has a next object to look at. That is what
+// DifficultyCalculator.CalculateTimed does, and the reading evaluator cares:
+// it measures the density ahead of an object, and an object with nothing
+// ahead of it reads as denser than it is.
 [[nodiscard]] inline StarRating
 calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
-               std::vector<stars::AimSkill::TracePoint> *aimTrace = nullptr) {
+               std::vector<stars::AimSkill::TracePoint> *aimTrace = nullptr,
+               double untilTime = std::numeric_limits<double>::infinity()) {
   using namespace stars;
   if (bm.fObjects.size() < 2)
     return {};
@@ -34,7 +41,12 @@ calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
   AimSkill aimSkill(true);
   SpeedSkill spdSkill;
   ReadingSkill rdSkill;
+  const double limit = std::isfinite(untilTime) ? untilTime / rate
+                                                : std::numeric_limits<double>::infinity();
   for (auto &o : objs) {
+    if (o.fStart > limit) {
+      break;
+    }
     aimSkill.process(o);
     spdSkill.process(o);
     rdSkill.process(o);
