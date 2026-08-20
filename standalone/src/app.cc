@@ -29,6 +29,7 @@ import client.settingspanel;
 import client.overlays;
 import client.filtercontrol;
 import client.listing;
+import client.carousel;
 import client.setpage;
 import client.scene;
 import client.nodes;
@@ -229,8 +230,8 @@ private:
   bool fLibraryLoaded = false;
   int fSelSet = 0;
   int fSelDiff = 0;
-  float fCarouselScroll = 0.0f;
-  bool fUserScrolled = false;
+  client::carousel::Carousel fCarousel;
+  std::vector<client::carousel::Row> fRows; // what the carousel lays out
   int fBackgroundForSet = -1;
   int fMenuMusicForSet = -1; // set whose audio is playing under the menus
   double fMenuTrackWall = 0.0; // when it started, so its end can be told
@@ -238,12 +239,6 @@ private:
   std::filesystem::path fMapsDir;
   std::filesystem::path fThumbDir;
   std::filesystem::path fReplayDir;
-  struct CarouselHit {
-    skia::SkRect fRect;
-    int fSetIdx;
-    int fDiffIdx; // -1 => set header
-  };
-  std::vector<CarouselHit> fCarouselHits; // rebuilt every song-select frame
   std::mutex fDropMutex;                  // guards fDropped
   std::vector<std::string> fDropped;      // files dropped onto the window
   skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
@@ -336,9 +331,15 @@ private:
   double fStateEnterWall = 0.0;
   double fUiPrevWall = 0.0;
   double fUiDt = 16.0;         // ms, clamped
-  float fScrollAnim = 0.0f;    // smoothed carousel scroll
-  float fPopAnim = 1.0f;       // selected row pop-out progress
-  int fPrevSelKey = -1;
+  // What the parts of song select that are still drawn immediately last drew,
+  // so they can say when it changes rather than repainting on every frame.
+  bool fFilterPointerIn = false;
+  bool fFooterPointerIn = false;
+  bool fFilterCaret = false;
+  bool fDrawnOptionsOpen = false;
+  bool fDrawnEmpty = false;
+  std::size_t fDrawnVisibleCount = 0;
+  std::int64_t fWedgeKey = -1;
 
   // ---- Main menu button system (port of lazer's ButtonSystem) ----------
   //
@@ -849,8 +850,7 @@ private:
       if (fState == State::kSongSelect) {
         // Free scrolling, like lazer's carousel: the wheel moves the view,
         // the selection stays put until the user picks something else.
-        fCarouselScroll -= ev.fX * 90.0f;
-        fUserScrolled = true;
+        fCarousel.scroll(ev.fX);
       } else if (fState == State::kDownload) {
         if (fSetPage.open()) {
           fSetPage.scroll(ev.fX);
@@ -1216,19 +1216,17 @@ private:
       if (this->optionsClick(x, y)) {
         return;
       }
-      for (const auto &hit : fCarouselHits) {
-        if (hit.fRect.contains(x, y)) {
-          if (hit.fDiffIdx < 0) {
-            fSelSet = hit.fSetIdx;
-            fSelDiff = 0;
-          } else if (fSelSet == hit.fSetIdx && fSelDiff == hit.fDiffIdx) {
-            this->startPlay(hit.fSetIdx, hit.fDiffIdx); // second click plays
-          } else {
-            fSelSet = hit.fSetIdx;
-            fSelDiff = hit.fDiffIdx;
-          }
-          return;
+      if (const auto hit = fCarousel.click(x, y); hit.fHit) {
+        if (hit.fDiff < 0) {
+          fSelSet = hit.fSet;
+          fSelDiff = 0;
+        } else if (fSelSet == hit.fSet && fSelDiff == hit.fDiff) {
+          this->startPlay(hit.fSet, hit.fDiff); // second click plays
+        } else {
+          fSelSet = hit.fSet;
+          fSelDiff = hit.fDiff;
         }
+        return;
       }
       break;
     case State::kDownload: {
@@ -1463,6 +1461,25 @@ private:
     fRedrawUntilWall = std::max(fRedrawUntilWall, wallMs() + durationMs);
   }
 
+  // A widget that is still drawn immediately reports the strip it covers:
+  // while the pointer is inside it -- and on the frame it leaves, or the
+  // hover it was drawing stays behind -- and whenever what it shows changed.
+  void damageStrip(const skia::SkRect &strip, bool &pointerWasIn,
+                   bool contentChanged) {
+    const bool inside = strip.contains(fMouseX, fMouseY);
+    if (inside || pointerWasIn || contentChanged) {
+      this->damage(strip);
+    }
+    pointerWasIn = inside;
+  }
+
+  // A text caret is shown for 600 ms of every 1000; this is when it next
+  // changes, which is when a frame is next worth drawing for it.
+  [[nodiscard]] static double nextCaretFlip(double nowMs) {
+    const double phase = std::fmod(nowMs, 1000.0);
+    return nowMs + (phase < 600.0 ? 600.0 - phase : 1000.0 - phase);
+  }
+
   // Promises a number of frames. Two is the useful minimum: the first lets
   // whatever moved react and mark what it touched, the second paints that.
   // This is what an event or an eased value owes -- rather than a blanket
@@ -1668,6 +1685,14 @@ private:
   void updateScreens() {
     if (fState == State::kDownload) {
       this->updateDownload();
+    } else if (fState == State::kSongSelect) {
+      this->updateSongSelect();
+    }
+    // A transition dims the whole screen, so a frame drawn during one has to
+    // repaint whole: clipped to a region, everything outside it would stay
+    // undimmed.
+    if (this->screenFade() < 1.0f) {
+      this->damageAll("screen fade");
     }
   }
 
@@ -1678,7 +1703,7 @@ private:
     if (fFullDamage || !fDamage.empty() || fFullRepaintsOwed > 0) {
       return false;
     }
-    if (fState != State::kDownload) {
+    if (fState != State::kDownload && fState != State::kSongSelect) {
       return false; // the screens still drawn immediately cannot answer
     }
     // Anything drawn over the screen repaints whole and does not report a
@@ -1729,6 +1754,9 @@ private:
     // one thing they cannot express as damage in advance.
     if (fState == State::kDownload &&
         (fListing.animating() || fSetPage.animating())) {
+      return true;
+    }
+    if (fState == State::kSongSelect && fCarousel.animating()) {
       return true;
     }
     const double now = wallMs();
@@ -1830,6 +1858,7 @@ private:
     case State::kMainMenu:
     case State::kResults:
     case State::kDownload:
+    case State::kSongSelect:
       break; // these mark what they change: the listing does it per node
     case State::kPlaying:
       this->damageAll("gameplay"); // a moving picture by definition
@@ -1861,7 +1890,6 @@ private:
       this->frameMainMenu();
       break;
     case State::kSongSelect:
-      this->refreshReplayFilter();
       this->frameSongSelect();
       break;
     case State::kDownload:
@@ -2555,8 +2583,7 @@ private:
         ++idx; // the gap left by the one being skipped closes over it
       }
       fSelSet = fVisible[idx];
-      fSelDiff = 0;
-      fUserScrolled = false; // let the carousel follow the new selection
+      fSelDiff = 0; // the carousel follows the selection on its own
       fMenuTrackWall = wallMs();
       return;
     }
@@ -5025,39 +5052,26 @@ private:
     this->startPlay(setIdx, diffIdx);
   }
 
-  // ---- Song select (port of lazer's carousel geometry) ------------------
+  // ---- Song select ------------------------------------------------------
   //
-  // Numbers from osu.Game/Screens/Select: CarouselItem.DEFAULT_HEIGHT = 45 for
-  // difficulty panels, PanelBeatmapSet.HEIGHT = 45 * 1.6 for set panels,
-  // Panel.CORNER_RADIUS = 10, active_x_offset = 25 (doubled for unselected
-  // difficulty panels, quadrupled for unselected sets, plus another 25 when
-  // not keyboard-selected), transitions 400 ms OutQuint. The horizontal curve
-  // is Carousel.offsetX: (3 - sqrt(9 - dist^2)) * halfHeight.
-  [[nodiscard]] static float carouselOffsetX(float dist, float halfHeight) {
-    constexpr float kCircleRadius = 3.0f;
-    const float discriminant =
-        std::max(0.0f, kCircleRadius * kCircleRadius - dist * dist);
-    return (kCircleRadius - std::sqrt(discriminant)) * halfHeight;
-  }
+  // The carousel is a scene tree in client.carousel: it decides where panels
+  // are, which of them exist, and what has to be repainted. The wedge, the
+  // filter control and the footer are still drawn immediately, and each says
+  // which strip of the screen it covers and when what it shows changed.
 
-  void frameSongSelect() {
+  void updateSongSelect() {
 #ifdef __EMSCRIPTEN__
     if (!fLibraryLoaded) {
       if (detail::gMapsSynced.load(std::memory_order_acquire)) {
         this->initLibrary();
       } else {
-        auto *canvas = fSurface->getCanvas();
-        canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
-        this->drawTextCentered(canvas, "Syncing local storage...",
-                               static_cast<float>(fScreenW) * 0.5f,
-                               static_cast<float>(fScreenH) * 0.5f, 24.0f,
-                               skia::kWhite, 0.8f);
-        this->present();
+        this->damageAll("waiting on local storage");
         return;
       }
     }
 #endif
-    auto *canvas = fSurface->getCanvas();
+    this->refreshReplayFilter();
+    this->rebuildVisible();
 
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
       // setFor() is asynchronous: only mark the background as up to date once
@@ -5068,12 +5082,98 @@ private:
         this->requestBackground(fSelSet, set);
       }
     }
+
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+
+    if (fVisible.empty() != fDrawnEmpty) {
+      fDrawnEmpty = fVisible.empty();
+      this->damageAll("song select has nothing to list");
+    }
+
+    // The rows of the list: every set, and the difficulties of the one that
+    // is open. Data, not drawables -- the carousel makes a panel only for
+    // what is actually within the viewport.
+    fRows.clear();
+    for (const int si : fVisible) {
+      fRows.push_back({si, -1});
+      if (si != fSelSet) {
+        continue;
+      }
+      const auto &infos = this->infosFor(si);
+      fSelDiff = std::clamp(fSelDiff, 0,
+                            std::max(0, static_cast<int>(infos.size()) - 1));
+      for (int di = 0; di < static_cast<int>(infos.size()); ++di) {
+        fRows.push_back({si, di});
+      }
+    }
+
+    client::carousel::Carousel::Ctx ctx;
+    ctx.fWidth = sw;
+    ctx.fHeight = sh;
+    ctx.fTop = client::FilterControl::kHeight + 8.0f;
+    ctx.fBottom = sh - 62.0f;
+    ctx.fMouseX = fMouseX;
+    ctx.fMouseY = fMouseY;
+    ctx.fNowMs = wallMs();
+    ctx.fDtMs = fUiDt;
+    ctx.fRows = fRows;
+    ctx.fSelectedSet = fSelSet;
+    ctx.fSelectedDiff = fSelDiff;
+    fCarousel.update(ctx);
+    this->damage(fCarousel.takeDamage());
+
+    // The filter control has a caret on the same clock as the listing's, and
+    // it is the only thing up there that moves without being touched.
+    const bool caret = std::fmod(wallMs(), 1000.0) < 600.0;
+    const bool filterChanged =
+        caret != fFilterCaret || fVisible.size() != fDrawnVisibleCount;
+    fFilterCaret = caret;
+    fDrawnVisibleCount = fVisible.size();
+    this->damageStrip(
+        skia::SkRect::MakeXYWH(0.0f, 0.0f, sw, client::FilterControl::kHeight),
+        fFilterPointerIn, filterChanged);
+    this->wakeAt(nextCaretFlip(wallMs()));
+
+    // The options popover grows out of the footer, so while it is up the
+    // strip the footer reports is the one that includes it.
+    const bool optionsChanged = fOptionsOpen != fDrawnOptionsOpen;
+    fDrawnOptionsOpen = fOptionsOpen;
+    this->damageStrip(
+        skia::SkRect::MakeLTRB(0.0f, sh - (fOptionsOpen ? 320.0f : 60.0f), sw,
+                               sh),
+        fFooterPointerIn, optionsChanged);
+
+    // The wedge is the selection written out: it changes when the selection
+    // does, or when a mod changes what the numbers on it say.
+    const std::int64_t wedgeKey =
+        (static_cast<std::int64_t>(fSelSet) << 24) ^
+        (static_cast<std::int64_t>(fSelDiff) << 8) ^
+        static_cast<std::int64_t>(static_cast<std::uint32_t>(fMods));
+    if (wedgeKey != fWedgeKey) {
+      fWedgeKey = wedgeKey;
+      this->damage(skia::SkRect::MakeXYWH(
+          0.0f, 32.0f, std::min(560.0f, sw * 0.44f) + 22.0f, 168.0f));
+    }
+  }
+
+  void frameSongSelect() {
+    auto *canvas = fSurface->getCanvas();
+#ifdef __EMSCRIPTEN__
+    if (!fLibraryLoaded) {
+      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
+      this->drawTextCentered(canvas, "Syncing local storage...",
+                             static_cast<float>(fScreenW) * 0.5f,
+                             static_cast<float>(fScreenH) * 0.5f, 24.0f,
+                             skia::kWhite, 0.8f);
+      this->present();
+      return;
+    }
+#endif
     this->drawScreenBackground(canvas);
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
-    fCarouselHits.clear();
-    this->rebuildVisible();
 
     if (fVisible.empty()) {
       const bool filtered = !fFilter.text().empty();
@@ -5087,6 +5187,7 @@ private:
           sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
       this->drawFilterControl(canvas);
       this->drawSelectFooter(canvas);
+      this->drawScreenFadeIn(canvas);
       this->present();
       return;
     }
@@ -5094,100 +5195,14 @@ private:
     // ---- Left: the info wedge (lazer's BeatmapTitleWedge area).
     const auto &selInfos = this->infosFor(fSelSet);
     if (!selInfos.empty()) {
-      fSelDiff = std::clamp(fSelDiff, 0, static_cast<int>(selInfos.size()) - 1);
       this->drawInfoWedge(canvas, selInfos,
-                          selInfos[static_cast<std::size_t>(fSelDiff)]);
+                          selInfos[static_cast<std::size_t>(std::clamp(
+                              fSelDiff, 0,
+                              static_cast<int>(selInfos.size()) - 1))]);
     }
 
-    // ---- Right: the carousel.
-    const float uiScale = std::clamp(sh / 900.0f, 0.8f, 1.6f);
-    const float setH = 45.0f * 1.6f * uiScale;  // PanelBeatmapSet.HEIGHT
-    const float diffH = 45.0f * uiScale;        // CarouselItem.DEFAULT_HEIGHT
-    const float gap = 5.0f * uiScale;
-    const float corner = 10.0f * uiScale;       // Panel.CORNER_RADIUS
-    const float activeX = 25.0f * uiScale;      // active_x_offset
-    const float panelW = std::min(680.0f * uiScale, sw * 0.52f);
-    const float carLeft = sw - panelW - 20.0f * uiScale;
-    const float halfHeight = sh * 0.5f;
-    // The filter control occupies the top of the screen; the carousel starts
-    // below it, as lazer's does.
-    const float carTop = client::FilterControl::kHeight + 8.0f;
-
-    float total = 0.0f;
-    float selCentre = 0.0f;
-    for (const int si : fVisible) {
-      if (si == fSelSet) {
-        selCentre = total + setH +
-                    (static_cast<float>(fSelDiff) + 0.5f) * (diffH + gap);
-      }
-      total += setH + gap;
-      if (si == fSelSet) {
-        total += static_cast<float>(this->infosFor(si).size()) * (diffH + gap);
-      }
-    }
-
-    const int selKey = fSelSet * 1024 + fSelDiff;
-    if (selKey != fPrevSelKey) {
-      fPrevSelKey = selKey;
-      fPopAnim = 0.0f;
-      fCarouselScroll = selCentre - halfHeight;
-      fUserScrolled = false;
-    }
-    fCarouselScroll = std::clamp(fCarouselScroll, -halfHeight * 0.5f,
-                                 std::max(0.0f, total - halfHeight * 0.5f));
-    fScrollAnim = this->approach(fScrollAnim, fCarouselScroll, 120.0f);
-    fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 400.0f);
-    if (fPopAnim < 1.0f) {
-      this->oweFrames(2); // this one runs on a clock rather than on easing
-    }
-    const float pop = easeOutQuint(fPopAnim);
-
-    canvas->save();
-    canvas->clipIRect(skia::SkIRect::MakeXYWH(
-        0, static_cast<int>(carTop), fScreenW,
-        std::max(0, fScreenH - static_cast<int>(carTop) - 62)));
-    float y = carTop - fScrollAnim;
-    for (const int si : fVisible) {
-      const auto &infos = this->infosFor(si);
-      const bool expanded = si == fSelSet;
-
-      if (y + setH >= carTop - setH && y <= sh) {
-        const float dist = std::abs(1.0f - (y + setH * 0.5f) / halfHeight);
-        float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
-        if (!expanded) {
-          x += activeX * 4.0f;
-        }
-        x += activeX * (1.0f - (expanded ? pop : 0.0f));
-
-        const skia::SkRect rect = skia::SkRect::MakeXYWH(x, y, panelW, setH);
-        this->drawSetPanel(canvas, rect, si, infos, expanded, corner);
-        fCarouselHits.push_back({rect, si, -1});
-      }
-      y += setH + gap;
-
-      if (!expanded) {
-        continue;
-      }
-      for (int di = 0; di < static_cast<int>(infos.size()); ++di) {
-        const bool selected = di == fSelDiff;
-        if (y + diffH >= carTop - diffH && y <= sh) {
-          const float dist = std::abs(1.0f - (y + diffH * 0.5f) / halfHeight);
-          float x = carLeft + carouselOffsetX(dist, halfHeight) + corner;
-          if (!selected) {
-            x += activeX * 2.0f;
-          }
-          x += activeX * (1.0f - (selected ? pop : 0.0f));
-
-          const skia::SkRect rect = skia::SkRect::MakeXYWH(x, y, panelW, diffH);
-          this->drawDiffPanel(canvas, rect,
-                              infos[static_cast<std::size_t>(di)], selected,
-                              corner);
-          fCarouselHits.push_back({rect, si, di});
-        }
-        y += diffH + gap;
-      }
-    }
-    canvas->restore();
+    // ---- Right: the carousel, which masks itself to its own viewport.
+    fCarousel.render(canvas);
 
     this->drawFilterControl(canvas);
     this->drawSelectFooter(canvas);
@@ -5242,8 +5257,7 @@ private:
   // time the panel is drawn and kept with the entry.
   void drawSetPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
                     int setIndex, const std::vector<osu::BeatmapInfo> &infos,
-                    bool expanded, float corner) {
-    const bool hover = rect.contains(fMouseX, fMouseY);
+                    bool expanded, bool hover, float corner) {
     this->fillRounded(canvas, rect, corner,
                       expanded ? skia::colorSetARGB(255, 66, 48, 74)
                       : hover  ? skia::colorSetARGB(255, 52, 42, 60)
@@ -5463,9 +5477,8 @@ private:
   }
 
   void drawDiffPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
-                     const osu::BeatmapInfo &info, bool selected,
+                     const osu::BeatmapInfo &info, bool selected, bool hover,
                      float corner) {
-    const bool hover = rect.contains(fMouseX, fMouseY);
     this->fillRounded(canvas, rect, corner,
                       selected ? skia::colorSetARGB(255, 74, 56, 84)
                       : hover  ? skia::colorSetARGB(255, 48, 39, 56)
@@ -6514,6 +6527,22 @@ private:
     }
     fContext = skia::MakeGL(std::move(interface));
     client::nodes::CachedContainer::setContext(fContext.get());
+    // The carousel owns where a panel is and when it has to be repainted; the
+    // client still owns what one looks like, and hands it over here.
+    fCarousel.setPainter([this](skia::SkCanvas *canvas,
+                                const skia::SkRect &rect,
+                                const client::carousel::Row &row, bool selected,
+                                bool hovered, float corner) {
+      const auto &infos = this->infosFor(row.fSet);
+      if (row.fDiff < 0) {
+        this->drawSetPanel(canvas, rect, row.fSet, infos, selected, hovered,
+                           corner);
+      } else if (row.fDiff < static_cast<int>(infos.size())) {
+        this->drawDiffPanel(canvas, rect,
+                            infos[static_cast<std::size_t>(row.fDiff)],
+                            selected, hovered, corner);
+      }
+    });
     return static_cast<bool>(fContext);
   }
 
