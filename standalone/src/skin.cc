@@ -347,6 +347,22 @@ public:
     }
   }
 
+  // Moves the precomputed bodies out of GPU memory, once, after they have
+  // been computed there. The shapes are built with SkSL, which a software GL
+  // stack JITs better than a CPU rasteriser draws, but drawing the result on
+  // a CPU canvas would read it back every frame -- so it is read back here
+  // instead, at load.
+  void flattenBodiesToRaster(skia::GrDirectContext *grContext) {
+    for (auto &[key, body] : fPrecomputedBodies) {
+      if (!body.image || !body.image->isTextureBacked()) {
+        continue;
+      }
+      if (auto raster = body.image->makeRasterImage(grContext)) {
+        body.image = std::move(raster);
+      }
+    }
+  }
+
   void drawSlider(skia::SkCanvas *canvas, const osu::Slider &s,
                   std::size_t index, const osu::SliderPath &path,
                   double spanDuration, double tickDistance, double now,

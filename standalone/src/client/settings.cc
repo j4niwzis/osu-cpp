@@ -8,7 +8,7 @@ export namespace client {
 // The settings model, mirroring how osu!lazer organises them: one flat list
 // of items, each belonging to a section, rendered as a single scrolling
 // column with the sidebar scrolling to a section rather than swapping pages.
-enum class SettingKind : std::uint8_t { kSlider, kToggle };
+enum class SettingKind : std::uint8_t { kSlider, kToggle, kChoice };
 
 struct SettingDef {
   int fSection = 0;
@@ -20,6 +20,8 @@ struct SettingDef {
   float fStep = 0.0f;   // 0 = continuous
   float fDefault = 0.0f;
   std::string fSuffix;  // "%", " ms", "x", ""
+  // For kChoice: what the value indexes. Clicking the row steps through it.
+  std::vector<std::string> fOptions;
 };
 
 class Settings {
@@ -47,8 +49,11 @@ public:
                1.0f, 0.0f, 1.0f, ""});
     this->add({1, "fps", "Show FPS counter", SettingKind::kToggle, 0.0f, 1.0f,
                0.0f, 0.0f, ""});
-    this->add({1, "software", "Software renderer (CPU rasteriser)",
-               SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 0.0f, ""});
+    // A list rather than a switch: there is no reason to assume these two
+    // are the only renderers this client will ever have.
+    this->add({1, "renderer", "Renderer", SettingKind::kChoice, 0.0f, 1.0f,
+               1.0f, 0.0f, "",
+               {"GPU (OpenGL)", "CPU (Skia raster)"}});
     // Section 2: Gameplay
     this->add({2, "cursorsize", "Cursor size", SettingKind::kSlider, 0.5f,
                2.0f, 0.01f, 1.0f, "x"});
@@ -76,6 +81,24 @@ public:
 
   [[nodiscard]] bool flag(std::string_view key) const {
     return this->value(key) >= 0.5f;
+  }
+
+  [[nodiscard]] int choice(std::string_view key) const {
+    return static_cast<int>(this->value(key) + 0.5f);
+  }
+
+  // Steps a choice on, wrapping: the row has no room for two arrows.
+  void cycle(std::size_t index) {
+    if (index >= fDefs.size()) {
+      return;
+    }
+    const auto &def = fDefs[index];
+    if (def.fOptions.empty()) {
+      return;
+    }
+    const int next = (this->choice(def.fKey) + 1) %
+                     static_cast<int>(def.fOptions.size());
+    fValues[def.fKey] = static_cast<float>(next);
   }
 
   [[nodiscard]] float valueAt(std::size_t index) const {

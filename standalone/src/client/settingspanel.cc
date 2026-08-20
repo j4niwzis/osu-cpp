@@ -165,6 +165,18 @@ public:
         p.textClipped(settings.displayValue(i), row.fRight - 76.0f, y, 76.0f,
                       13.0f, skia::kWhite, fade * 0.75f);
         y += 44.0f + kItemSpacing;
+      } else if (d.fKind == SettingKind::kChoice) {
+        // The current option, in a pill the whole row steps through.
+        const auto index = static_cast<std::size_t>(settings.choice(d.fKey));
+        const std::string &option =
+            index < d.fOptions.size() ? d.fOptions[index] : d.fOptions.front();
+        const float width = p.measure(option, 13.0f) + 24.0f;
+        const skia::SkRect pill = skia::SkRect::MakeXYWH(
+            row.fRight - width, y - 13.0f, width, 24.0f);
+        p.fillRounded(pill, 12.0f, skia::colorSetARGB(255, 58, 48, 70));
+        p.textClipped(option, pill.fLeft + 12.0f, y + 4.0f, width - 24.0f,
+                      13.0f, skia::kWhite, fade);
+        y += 30.0f + kItemSpacing;
       } else {
         const bool on = settings.flag(d.fKey);
         const skia::SkRect box =
@@ -245,6 +257,10 @@ public:
       const auto idx = static_cast<std::size_t>(row.fIndex);
       if (settings.defs()[idx].fKind == SettingKind::kToggle) {
         settings.toggle(idx);
+        return Hit::kChanged;
+      }
+      if (settings.defs()[idx].fKind == SettingKind::kChoice) {
+        settings.cycle(idx);
         return Hit::kChanged;
       }
       fDragging = row.fIndex;

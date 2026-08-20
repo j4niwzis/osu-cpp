@@ -170,7 +170,7 @@ private:
   const bool fPartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
-  std::int64_t fLastSwapUs = 0; // how long the last swap blocked for
+  std::int64_t fLastSwapUs = 0; // reported by the frame breakdown
   double fFpsPrevWall = 0.0;
   double fFpsFrameMs = 0.0;
   double fFpsDamageWall = 0.0;
@@ -463,6 +463,12 @@ private:
     this->loadComboInfo();
     fSkin.setComboColors(fMap->fComboColors);
     fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get());
+    if (fSettings.choice("renderer") == 1) {
+      // Built on the GPU either way, since that is what SkSL is for; moved
+      // into memory now so the CPU rasteriser does not read them back on
+      // every frame that draws a slider.
+      fSkin.flattenBodiesToRaster(fContext.get());
+    }
     if (fAutoplay) {
       if (!fReplayPath.empty()) {
         std::ifstream file(fReplayPath, std::ios::binary);
@@ -1358,19 +1364,15 @@ private:
     if (fSwapInterval <= 0 || fRefreshHz <= 0) {
       return;
     }
-    // If the swap itself blocks, the driver is honouring the interval and
-    // there is nothing to pace: doing it anyway would idle twice per frame.
-    // This matters most where it hurts most -- a software rasteriser spreads
-    // its work over the machine's cores, and a loop of ours that spins
-    // waiting for a deadline takes one of them away from it.
+    // Paced unconditionally. Asking first whether the swap had blocked meant
+    // the answer changed from frame to frame -- one slow frame blocked, so
+    // the fast one after it was left unpaced, and the rate ran away in
+    // exactly the screens where frames vary in cost. When the driver does
+    // honour the interval the deadline has already passed and this returns
+    // without sleeping, which costs nothing.
     using clock = std::chrono::steady_clock;
     const auto period = std::chrono::nanoseconds(
         static_cast<std::int64_t>(1'000'000'000.0 / fRefreshHz));
-    if (fLastSwapUs * 1000 > period.count() / 4) {
-      fNextFrame = clock::now() + period;
-      return;
-    }
-
     const auto now = clock::now();
     if (fNextFrame.time_since_epoch().count() == 0 ||
         now > fNextFrame + period * 4) {
@@ -1582,8 +1584,10 @@ private:
 
     // The renderer is chosen per frame, because only the UI screens may use
     // the CPU one: gameplay draws precomputed GPU textures.
-    const bool software = fSettings.flag("software") && fRasterSurface &&
-                          fState != State::kPlaying && fState != State::kPaused;
+    // Gameplay draws on the CPU as well when asked to: the slider bodies it
+    // needs were computed on the GPU and flattened into memory once, at load,
+    // so nothing is read back per frame.
+    const bool software = fSettings.choice("renderer") == 1 && fRasterSurface;
     if (software != fDrewOnRaster) {
       this->damageAll("renderer changed");
     }
@@ -1710,7 +1714,7 @@ private:
     // corner furthest from everything else, so its rectangle is what makes
     // the frame's bounding box cover the screen. The number is smoothed
     // anyway and reads the same either way.
-    if (now - fFpsDamageWall > 250.0) {
+    if (now - fFpsDamageWall > 120.0) {
       fFpsDamageWall = now;
       this->damage(box);
     }
@@ -6339,9 +6343,13 @@ private:
     // are precomputed once into textures through SkSL, which llvmpipe's JIT
     // handles better than a CPU rasteriser would, and drawing those textures
     // into a raster canvas would mean reading them back every frame.
+    // Same colour space as the window, or the pixels get encoded twice on
+    // the way over and the whole frame comes out lighter.
     fRasterSurface = skia::Raster(skia::SkImageInfo::Make(
         fScreenW, fScreenH, skia::kRGBA_8888_SkColorType,
-        skia::kPremul_SkAlphaType));
+        skia::kPremul_SkAlphaType,
+        fWindowSurface ? fWindowSurface->imageInfo().refColorSpace()
+                       : nullptr));
     fBlitHistory.clear();
     this->damageAll("resize");
     fView.invalidate();
