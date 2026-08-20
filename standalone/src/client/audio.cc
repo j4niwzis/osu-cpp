@@ -54,6 +54,55 @@ inline AudioContext &audioContext() {
   return ctx;
 }
 
+// The container, from the bytes rather than the file name. osu! serves its
+// track previews as Ogg Vorbis under a .mp3 URL, and beatmap archives are
+// full of .mp3 files that are really Ogg or WAV, so the extension is only a
+// fallback for formats without a recognisable magic number.
+[[nodiscard]] inline std::string_view
+sniffAudioExtension(std::span<const std::uint8_t> data,
+                    std::string_view fallback) {
+  if (data.size() >= 4) {
+    if (data[0] == 'O' && data[1] == 'g' && data[2] == 'g' && data[3] == 'S') {
+      return ".ogg";
+    }
+    if (data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F') {
+      return ".wav";
+    }
+    if (data[0] == 'f' && data[1] == 'L' && data[2] == 'a' && data[3] == 'C') {
+      return ".flac";
+    }
+  }
+  if (data.size() >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
+    return ".mp3";
+  }
+  // MPEG frame sync: eleven set bits.
+  if (data.size() >= 2 && data[0] == 0xff && (data[1] & 0xe0) == 0xe0) {
+    return ".mp3";
+  }
+  return fallback;
+}
+
+// Decodes with the decoder the bytes call for, and if that comes up empty,
+// with the other one -- the two libraries cover disjoint formats.
+[[nodiscard]] inline std::vector<std::int16_t>
+decodePcm(std::span<const std::uint8_t> data, std::string_view ext, int &rate,
+          int &channels) {
+  const std::string_view actual = sniffAudioExtension(data, ext);
+  std::vector<std::int16_t> samples;
+  if (actual == ".mp3") {
+    samples = audio::decode_mp3_memory(data, rate, channels);
+    if (samples.empty()) {
+      samples = audio::decode_sndfile_memory(data, rate, channels);
+    }
+  } else {
+    samples = audio::decode_sndfile_memory(data, rate, channels);
+    if (samples.empty()) {
+      samples = audio::decode_mp3_memory(data, rate, channels);
+    }
+  }
+  return samples;
+}
+
 // Decoded PCM handed between the loader thread and the UI thread: decoding
 // is pure computation and must not sit in a frame, while the OpenAL upload
 // has to happen where the context is current.
@@ -68,11 +117,7 @@ struct DecodedAudio {
   DecodedAudio out;
   out.fRate = 44100;
   out.fChannels = 2;
-  if (ext == ".mp3") {
-    out.fSamples = audio::decode_mp3_memory(data, out.fRate, out.fChannels);
-  } else {
-    out.fSamples = audio::decode_sndfile_memory(data, out.fRate, out.fChannels);
-  }
+  out.fSamples = decodePcm(data, ext, out.fRate, out.fChannels);
   return out;
 }
 
@@ -96,13 +141,7 @@ public:
 
     int rate = 44100;
     int channels = 2;
-    std::vector<std::int16_t> samples;
-
-    if (ext == ".mp3")
-      samples = audio::decode_mp3_memory(data, rate, channels);
-    else
-      samples = audio::decode_sndfile_memory(data, rate, channels);
-
+    const auto samples = decodePcm(data, ext, rate, channels);
     if (samples.empty())
       return false;
 
@@ -259,13 +298,7 @@ public:
 
     int rate = 44100;
     int channels = 2;
-    std::vector<std::int16_t> samples;
-
-    if (ext == ".mp3")
-      samples = audio::decode_mp3_memory(data, rate, channels);
-    else
-      samples = audio::decode_sndfile_memory(data, rate, channels);
-
+    const auto samples = decodePcm(data, ext, rate, channels);
     if (samples.empty())
       return false;
 
