@@ -2388,7 +2388,7 @@ private:
 
   void drawScreenBackground(skia::SkCanvas *canvas) {
     if (fView.hasBackground()) {
-      fView.drawBackground(this->gameplayCtx(canvas));
+      fView.drawBackground(this->gameplayCtx(canvas), canvas);
     } else {
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
@@ -2643,7 +2643,7 @@ private:
     fMenuDim = this->approach(fMenuDim, dimTarget, 220.0f);
 
     if (fView.hasBackground()) {
-      fView.drawBackground(this->gameplayCtx(canvas));
+      fView.drawBackground(this->gameplayCtx(canvas), canvas);
       if (fMenuDim < 0.999f) {
         skia::SkPaint dim;
         dim.setColor(skia::colorSetARGB(
@@ -3350,7 +3350,7 @@ private:
     const float halfHeight = sh * 0.5f;
     // The filter control occupies the top of the screen; the carousel starts
     // below it, as lazer's does.
-    const float carTop = kFilterHeight + 8.0f;
+    const float carTop = client::FilterControl::kHeight + 8.0f;
 
     float total = 0.0f;
     float selCentre = 0.0f;
@@ -3446,7 +3446,7 @@ private:
       fFilter.endDrag();
       return false;
     }
-    const bool used = fFilter.click(x, y);
+    const bool used = fFilter.click(x, y, pressed);
     if (fFilter.takeDirty()) {
       this->onFilterChanged();
     }
@@ -4498,10 +4498,6 @@ private:
     return {c.fX + (raw.fX - c.fX) * s, c.fY + (raw.fY - c.fY) * s};
   }
 
-
-
-
-  [[nodiscard]] static std::pair<const char *, skia::SkColor>
 
 
 
