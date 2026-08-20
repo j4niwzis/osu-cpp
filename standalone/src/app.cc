@@ -5747,6 +5747,119 @@ private:
     return skia::SkFont();
   }
 
+
+  // Playfield placement for the current screen size. Split out so the video
+  // exporter can re-derive it for its offscreen resolution.
+  void layoutForScreen() {
+    // Match webosu-2: playfield occupies 80% of the limiting screen dimension.
+    constexpr float kPlayfieldSize = 0.8f;
+    const float sx =
+        static_cast<float>(fScreenW) / static_cast<float>(osu::kPlayfieldWidth);
+    const float sy = static_cast<float>(fScreenH) /
+                     static_cast<float>(osu::kPlayfieldHeight);
+    fScale = kPlayfieldSize * std::min(sx, sy);
+    fOffsetX =
+        (fScreenW - static_cast<float>(osu::kPlayfieldWidth) * fScale) * 0.5f;
+    fOffsetY =
+        (fScreenH - static_cast<float>(osu::kPlayfieldHeight) * fScale) * 0.5f;
+  }
+
+  void resize(int w, int h) {
+    // Called on the render thread with framebuffer dimensions delivered by
+    // the resize event (or the pre-thread snapshot); querying GLFW here is
+    // not allowed off the main thread.
+    fScreenW = w;
+    fScreenH = h;
+    this->layoutForScreen();
+
+    skia::GrGLFramebufferInfo info;
+    info.fFBOID = 0;
+    info.fFormat = skia::kGlRgba8;
+    skia::GrBackendRenderTarget target =
+        skia::MakeGL(fScreenW, fScreenH, 0, 0, info);
+    fSurface = skia::WrapBackendRenderTarget(
+        fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
+        skia::kRGBA_8888_SkColorType, nullptr, nullptr);
+    fView.invalidate();
+    fView.preScaleBackground(this->gameplayCtx(nullptr));
+  }
+
+  void toggleFullscreen() {
+    if (fWindow == nullptr)
+      return;
+#ifndef __EMSCRIPTEN__
+    fFullscreen = !fFullscreen;
+    if (fFullscreen) {
+      const auto monitor = glfw::glfwGetPrimaryMonitor();
+      const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
+      glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
+                                 mode->height, mode->refreshRate);
+    } else {
+      glfw::glfwSetWindowMonitor(fWindow, nullptr, fWindowedX, fWindowedY,
+                                 fWindowedW, fWindowedH, 0);
+    }
+#endif
+  }
+
+  void shutdown() {
+    fAudio.stop();
+    fSurface.reset();
+    fContext.reset();
+    if (fWindow != nullptr) {
+      glfw::glfwDestroyWindow(fWindow);
+      fWindow = nullptr;
+    }
+    glfw::glfwTerminate();
+  }
+
+  [[nodiscard]] double nowMs() {
+#ifdef __EMSCRIPTEN__
+    return glfw::glfwGetTime() * 1000.0 - fStartMs;
+#else
+    // The audio device is consulted at most every kClockSyncIntervalMs;
+    // between syncs the game clock extrapolates from the wall clock. This
+    // removes blocking OpenAL round-trips (mixer mutex, PipeWire latency
+    // probes) from the hot path: they used to cost whole milliseconds per
+    // call, several calls per frame. It also makes the timeline seamless
+    // when the music ends: extrapolation simply continues from the last
+    // anchor instead of jumping to an unrelated wall-clock epoch.
+    const double wall = wallMs();
+    if (wall - fLastClockSyncWall >= kClockSyncIntervalMs) {
+      fLastClockSyncWall = wall;
+      if (fAudio.playing()) {
+        fClock.sync(wall, fAudio.positionSec() * 1000.0);
+      }
+    }
+    return fClock.sample(wall);
+#endif
+  }
+
+  [[nodiscard]] bool shouldStop(double now) const {
+    return fEngine->finished() && now > fMap->lastObjectEndTime() + 1000.0;
+  }
+
+
+  void submitAutoplay(double now) {
+    if (!fAutoplay) {
+      return; // the player is driving
+    }
+    while (fAutoplayIndex < fAutoplayEvents.size() &&
+           fAutoplayEvents[fAutoplayIndex].fTime <= now) {
+      const auto &ev = fAutoplayEvents[fAutoplayIndex];
+      fEngine->submit(ev);
+      if (fReplayPath.empty()) {
+        // Generated autoplay is worth recording; a replay being watched is
+        // already on disk.
+        fRecordedEvents.push_back(ev);
+      }
+      if (ev.fAction == osu::InputAction::kMove) {
+        fCursor = ev.fPos;
+        fView.addTrailPoint(fCursor, ev.fTime);
+      }
+      ++fAutoplayIndex;
+    }
+  }
+
   void playHitsounds(double now) {
     const auto &events = fEngine->events();
     while (fPlayedEvents < events.size()) {
