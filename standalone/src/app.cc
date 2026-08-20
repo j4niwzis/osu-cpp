@@ -1872,9 +1872,14 @@ private:
     if (fFullDamage || !fDamage.empty() || fFullRepaintsOwed > 0) {
       return false;
     }
-    if (fState != State::kDownload && fState != State::kSongSelect &&
-        fState != State::kMainMenu) {
-      return false; // the screens still drawn immediately cannot answer
+    if (fState != State::kDownload && fState != State::kSongSelect) {
+      // The screens still drawn immediately cannot answer this. Their state
+      // advances while they draw -- an eased hover, a logo settling -- so a
+      // frame skipped for want of damage is a frame in which nothing moves,
+      // which produces no damage, which skips the next one. The main menu
+      // froze exactly that way. A screen may only be skipped once it settles
+      // in an update pass that runs whether or not the frame is drawn.
+      return false;
     }
     // Anything drawn over the screen repaints whole and does not report a
     // region, so it cannot be skipped on the strength of the screen's silence.
