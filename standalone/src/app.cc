@@ -1903,11 +1903,14 @@ private:
     if (fState == State::kPlaying || fState == State::kResults) {
       return true; // a moving picture, and a screen that counts up
     }
-    if (fState == State::kMainMenu) {
-      // The logo tracks the music and the triangles drift; with both of those
-      // switched off the menu is a still picture, and a still picture is
-      // drawn when something touches it and not otherwise.
-      return fSettings.flag("visualiser") || fSettings.flag("menutriangles");
+    // The logo tracks the music and the triangles drift, and either is a
+    // reason to keep drawing. Neither is a reason to stop: everything below
+    // -- an event, a panel sliding, something that marked itself -- still
+    // applies, and returning an answer here rather than a reason took the
+    // whole menu out of the conversation.
+    if (fState == State::kMainMenu &&
+        (fSettings.flag("visualiser") || fSettings.flag("menutriangles"))) {
+      return true;
     }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
       return true; // triangles drift inside the buttons, as lazer's do
