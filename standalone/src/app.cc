@@ -3437,7 +3437,8 @@ private:
   // view it filters and reacts when the criteria change.
 
   void drawFilterControl(skia::SkCanvas *canvas) {
-    fFilter.draw(canvas, fFont, fScreenW, fMouseX, fMouseY, fVisible.size());
+    fFilter.draw(canvas, fFont, fScreenW, fMouseX, fMouseY, fVisible.size(),
+                 wallMs());
   }
 
   bool filterClick(float x, float y, bool pressed) {

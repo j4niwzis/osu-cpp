@@ -759,6 +759,7 @@ public:
                       j);
   }
 
+  [[nodiscard]] static std::pair<const char *, skia::SkColor>
   popupInfo(const osu::Judgement &j) {
     const auto [label, rgb] = osu::judgementInfo(j);
     return {label, skia::colorSetARGB(255, rgb[0], rgb[1], rgb[2])};

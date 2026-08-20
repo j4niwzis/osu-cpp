@@ -82,7 +82,8 @@ public:
   }
 
   void draw(skia::SkCanvas *canvas, skia::SkFont &font, int screenW,
-            float mouseX, float mouseY, std::size_t visibleCount) {
+            float mouseX, float mouseY, std::size_t visibleCount,
+            double nowMs) {
     fMouseX = mouseX;
     fMouseY = mouseY;
     const ui::Painter p(canvas, font);
@@ -118,7 +119,7 @@ public:
                         fFilterText.empty() ? skia::colorSetARGB(255, 70, 58, 88)
                                             : ui::kAccent,
                         2.0f);
-    const bool caret = std::fmod(wallMs(), 1000.0) < 600.0;
+    const bool caret = std::fmod(nowMs, 1000.0) < 600.0;
     if (fFilterText.empty()) {
       p.textClipped("type to search", fSearchBoxRect.fLeft + 12.0f,
                             fSearchBoxRect.centerY() + 5.0f,
@@ -178,7 +179,6 @@ public:
     const float t0 = fDiffRangeMin / kDiffRangeCap;
     const float t1 = fDiffRangeMax / kDiffRangeCap;
     p.fillRounded(
-        canvas,
         skia::SkRect::MakeLTRB(track.fLeft + track.width() * t0, track.fTop,
                                track.fLeft + track.width() * t1, track.fBottom),
         3.0f, ui::kAccent);
