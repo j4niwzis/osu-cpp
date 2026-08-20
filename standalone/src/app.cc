@@ -30,6 +30,8 @@ import client.overlays;
 import client.filtercontrol;
 import client.listing;
 import client.setpage;
+import client.scene;
+import client.nodes;
 import client.gameplayview;
 import client.mods;
 import client.video;
@@ -202,7 +204,9 @@ private:
   bool fOptionsOpen = false;
   std::vector<skia::SkRect> fOptionHits;
   bool fConfirmDelete = false; // the deletion dialog is up
-  std::vector<skia::SkRect> fConfirmHits;
+  // Built as a scene tree rather than drawn by hand: the first screen on the
+  // retained renderer, and the pattern the rest follow.
+  std::unique_ptr<client::scene::Drawable> fConfirmScene;
 
   // Download screen (mirror search + .osz fetch).
   client::listing::Listing fListing;
@@ -600,6 +604,7 @@ private:
 
     this->loadFonts();
     fFont = this->loadFont(20.0f);
+    client::nodes::Text::setFont(&fFont);
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
@@ -662,6 +667,7 @@ private:
 
     this->loadFonts();
     fFont = this->loadFont(20.0f);
+    client::nodes::Text::setFont(&fFont);
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
@@ -821,6 +827,7 @@ private:
     if (action == glfw::kPress && key == glfw::kKeyEscape) {
       if (fConfirmDelete) {
         fConfirmDelete = false;
+        fConfirmScene.reset();
         return;
       }
       if (fExportDialog.open()) {
@@ -4867,76 +4874,137 @@ private:
     if (fSelSet < 0 || fSelSet >= static_cast<int>(fLibrary.size())) {
       return;
     }
+    const auto &infos = this->infosFor(fSelSet);
+    if (infos.empty()) {
+      return;
+    }
     fConfirmDelete = true;
+    fConfirmScene = this->buildDeleteDialog(infos);
+  }
+
+  // The dialog as a tree: a dimmed backdrop, a panel anchored to the centre,
+  // a vertical flow of text, and two buttons in a horizontal one. No
+  // coordinates are computed here -- anchors and flows place everything, and
+  // the panel fades and rises into place with transforms.
+  [[nodiscard]] std::unique_ptr<client::scene::Drawable>
+  buildDeleteDialog(const std::vector<osu::BeatmapInfo> &infos) {
+    namespace scene = client::scene;
+    namespace nodes = client::nodes;
+
+    auto root = std::make_unique<nodes::Box>(skia::colorSetARGB(200, 8, 6, 12));
+    root->fRelativeSizeAxes = scene::Axes::kBoth;
+    root->fWidth = 1.0f;
+    root->fHeight = 1.0f;
+
+    auto panel = std::make_unique<nodes::Box>(client::ui::kBackground5);
+    panel->fWidth = 560.0f;
+    panel->fHeight = 240.0f;
+    panel->fAnchor = scene::Anchor::kCentre;
+    panel->fOrigin = scene::Anchor::kCentre;
+    panel->fCornerRadius = 12.0f;
+    panel->fPadding = scene::Margin::all(20.0f);
+    panel->fAlpha = 0.0f;
+    panel->fY = 20.0f;
+    panel->fadeTo(1.0f, 200.0, scene::Easing::kOutQuint);
+    panel->moveToY(0.0f, 400.0, scene::Easing::kOutQuint);
+
+    auto column = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kVertical);
+    column->fRelativeSizeAxes = scene::Axes::kX;
+    column->fWidth = 1.0f;
+    column->fAutoSizeAxes = scene::Axes::kY;
+    column->setSpacing(0.0f, 8.0f);
+
+    const auto &meta = infos.front().fMeta;
+    const std::string title = std::format(
+        "{} - {}",
+        meta.fArtistUnicode.empty() ? meta.fArtist : meta.fArtistUnicode,
+        meta.fTitleUnicode.empty() ? meta.fTitle : meta.fTitleUnicode);
+
+    const auto line = [&](std::string text, float size, skia::SkColor colour,
+                          bool bold, float alpha) {
+      auto node = std::make_unique<nodes::Text>(std::move(text), size, colour,
+                                                bold);
+      node->fAnchor = scene::Anchor::kTopCentre;
+      node->fOrigin = scene::Anchor::kTopCentre;
+      node->setMaxWidth(520.0f);
+      node->fAlpha = alpha;
+      return node;
+    };
+    column->add(line("Confirm deletion of", 16.0f, skia::kWhite, false, 0.75f));
+    column->add(line(title, 20.0f, skia::kWhite, true, 1.0f));
+    column->add(line(std::format("{} difficulties will be removed from disk",
+                                 infos.size()),
+                     13.0f, skia::kWhite, false, 0.6f));
+    panel->add(std::move(column));
+
+    auto buttons = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kHorizontal);
+    buttons->fAutoSizeAxes = scene::Axes::kBoth;
+    buttons->fAnchor = scene::Anchor::kBottomCentre;
+    buttons->fOrigin = scene::Anchor::kBottomCentre;
+    buttons->setSpacing(20.0f, 0.0f);
+    buttons->fWrap = false;
+    buttons->add(this->dialogButton("Yes. Totally. Delete it.",
+                                    skia::colorSetARGB(255, 255, 110, 110),
+                                    [this] {
+                                      fConfirmDelete = false;
+                                      fConfirmScene.reset();
+                                      this->deleteSelectedBeatmap();
+                                    }));
+    buttons->add(this->dialogButton("Cancel", client::ui::kAccent2, [this] {
+      fConfirmDelete = false;
+      fConfirmScene.reset();
+    }));
+    panel->add(std::move(buttons));
+
+    root->add(std::move(panel));
+    return root;
+  }
+
+  [[nodiscard]] std::unique_ptr<client::scene::Drawable>
+  dialogButton(std::string label, skia::SkColor accent,
+               std::function<void()> action) {
+    namespace scene = client::scene;
+    namespace nodes = client::nodes;
+
+    auto button = std::make_unique<nodes::Clickable>(std::move(action));
+    button->fWidth = 240.0f;
+    button->fHeight = 46.0f;
+
+    auto background = std::make_unique<nodes::Box>(client::ui::kCardBg);
+    background->fRelativeSizeAxes = scene::Axes::kBoth;
+    background->fWidth = 1.0f;
+    background->fHeight = 1.0f;
+    background->fCornerRadius = 10.0f;
+    button->add(std::move(background));
+
+    auto text = std::make_unique<nodes::Text>(std::move(label), 15.0f, accent,
+                                              false);
+    text->fAnchor = scene::Anchor::kCentre;
+    text->fOrigin = scene::Anchor::kCentre;
+    button->add(std::move(text));
+    return button;
   }
 
   void drawDeleteConfirmation(skia::SkCanvas *canvas) {
-    fConfirmHits.clear();
-    if (!fConfirmDelete) {
+    if (!fConfirmDelete || !fConfirmScene) {
       return;
     }
-    const auto &infos = this->infosFor(fSelSet);
-    if (infos.empty()) {
-      fConfirmDelete = false;
-      return;
-    }
-    const client::ui::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(200, 8, 6, 12));
-
-    const float w = std::min(560.0f, sw - 80.0f);
-    const skia::SkRect box =
-        skia::SkRect::MakeXYWH((sw - w) * 0.5f, sh * 0.5f - 110.0f, w, 220.0f);
-    p.fillRounded(box, 12.0f, client::ui::kBackground5);
-    p.textCentered("Confirm deletion of", box.centerX(), box.fTop + 46.0f,
-                   16.0f, skia::kWhite, 0.75f);
-    const auto &meta = infos.front().fMeta;
-    p.textCenteredClipped(
-        std::format("{} - {}",
-                    meta.fArtistUnicode.empty() ? meta.fArtist
-                                                : meta.fArtistUnicode,
-                    meta.fTitleUnicode.empty() ? meta.fTitle
-                                               : meta.fTitleUnicode),
-        box.centerX(), box.fTop + 78.0f, w - 40.0f, 20.0f, skia::kWhite);
-    p.textCentered(std::format("{} difficulties will be removed from disk",
-                               infos.size()),
-                   box.centerX(), box.fTop + 106.0f, 13.0f, skia::kWhite,
-                   0.6f);
-
-    const char *labels[] = {"Yes. Totally. Delete it.", "Cancel"};
-    const skia::SkColor accents[] = {skia::colorSetARGB(255, 255, 110, 110),
-                                     client::ui::kAccent2};
-    const float bw = (w - 60.0f) * 0.5f;
-    for (int i = 0; i < 2; ++i) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(
-          box.fLeft + 20.0f + static_cast<float>(i) * (bw + 20.0f),
-          box.fBottom - 66.0f, bw, 46.0f);
-      const bool hover = r.contains(fMouseX, fMouseY);
-      p.fillRounded(r, 10.0f, hover ? client::ui::kCardSel : client::ui::kCardBg);
-      p.strokeRounded(r, 10.0f, accents[i], hover ? 3.0f : 2.0f);
-      p.textCentered(labels[i], r.centerX(), r.centerY() + 6.0f, 15.0f,
-                     hover ? accents[i] : skia::kWhite);
-      fConfirmHits.push_back(r);
-    }
+    const skia::SkRect screen = skia::SkRect::MakeWH(
+        static_cast<float>(fScreenW), static_cast<float>(fScreenH));
+    fConfirmScene->updateTree(wallMs());
+    fConfirmScene->layout(screen);
+    fConfirmScene->setHover(fMouseX, fMouseY);
+    fConfirmScene->draw(canvas);
   }
 
   bool confirmDeleteClick(float x, float y) {
-    if (!fConfirmDelete) {
+    if (!fConfirmDelete || !fConfirmScene) {
       return false;
     }
-    for (std::size_t i = 0; i < fConfirmHits.size(); ++i) {
-      if (!fConfirmHits[i].contains(x, y)) {
-        continue;
-      }
-      fConfirmDelete = false;
-      if (i == 0) {
-        this->deleteSelectedBeatmap();
-      }
-      return true;
-    }
-    return true; // the dialog is modal
+    fConfirmScene->click(x, y);
+    return true; // the dialog is modal either way
   }
 
   // Removes the archive and everything the client remembers about it.
