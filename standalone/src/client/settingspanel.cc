@@ -121,6 +121,15 @@ public:
       fShell->fAlpha = fade;
     }
 
+    // Half a screen of nothing after the last row: the column used to be
+    // scrollable well past its end, and a flow that stops exactly at its last
+    // child does not.
+    const float tail = sh * 0.5f;
+    if (fColumn != nullptr && fColumn->fPadding.fBottom != tail) {
+      fColumn->fPadding.fBottom = tail;
+      fColumn->invalidateLayout();
+    }
+
     const skia::SkRect screen = skia::SkRect::MakeWH(sw, sh);
     fScene->updateTree(frame.fNowMs);
     fScene->layoutIfNeeded(screen);
@@ -558,8 +567,12 @@ private:
     shell->fHeight = 1.0f;
     fShell = shell.get();
 
+    // The alpha goes on the drawable, not into the colour: a Box paints its
+    // colour and then sets the alpha it was given, so an alpha carried in the
+    // colour is thrown away and the panel comes out opaque.
     auto sidebar =
-        std::make_unique<nodes::Box>(skia::colorSetARGB(252, 23, 19, 30));
+        std::make_unique<nodes::Box>(skia::colorSetARGB(255, 23, 19, 30));
+    sidebar->fAlpha = 252.0f / 255.0f;
     sidebar->fRelativeSizeAxes = scene::Axes::kY;
     sidebar->fWidth = kSidebarWidth;
     sidebar->fHeight = 1.0f;
@@ -577,7 +590,8 @@ private:
     shell->add(std::move(sidebar));
 
     auto panel =
-        std::make_unique<nodes::Box>(skia::colorSetARGB(250, 31, 25, 40));
+        std::make_unique<nodes::Box>(skia::colorSetARGB(255, 31, 25, 40));
+    panel->fAlpha = 250.0f / 255.0f;
     panel->fRelativeSizeAxes = scene::Axes::kY;
     panel->fWidth = kPanelWidth;
     panel->fHeight = 1.0f;

@@ -1983,7 +1983,13 @@ private:
     const float sh = static_cast<float>(fScreenH);
     const skia::SkRect box =
         skia::SkRect::MakeXYWH(sw - 92.0f, sh - 52.0f, 80.0f, 42.0f);
-    p.fillRounded(box, 6.0f, skia::colorSetARGB(150, 8, 6, 12));
+    // Drawn after the clip is lifted, straight into a buffer that is several
+    // frames old, so a translucent background lets the numbers that were
+    // there before show through and pile up. Partial redraw is the mode where
+    // that happens, and the mode where this has to be opaque.
+    p.fillRounded(box, 6.0f,
+                  skia::colorSetARGB(this->partialRedraw() ? 255 : 150, 8, 6,
+                                     12));
     p.textCentered(std::format("{:.0f} fps", std::round(1000.0 / fFpsFrameMs)),
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
@@ -5318,6 +5324,14 @@ private:
       // 0.5 alpha over the left 40%, easing to 0.2 by the right edge.
       this->drawPanelVeil(canvas, rect);
       canvas->restore();
+    }
+    // The hover tint above is the panel's own colour, which artwork covers
+    // completely -- so on any set with a cover, hovering changed nothing that
+    // could be seen while still costing the repaint. This sits over the
+    // artwork instead, so the highlight exists on every panel or on none.
+    if (hover && !expanded) {
+      this->fillRounded(canvas, rect, corner,
+                        skia::colorSetARGB(28, 255, 255, 255));
     }
     if (expanded) {
       this->strokeRounded(canvas, rect, corner, kAccent, 2.0f);
