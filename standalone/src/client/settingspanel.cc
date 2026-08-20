@@ -31,6 +31,12 @@ public:
 
   [[nodiscard]] bool open() const noexcept { return fOpen; }
   [[nodiscard]] float slide() const noexcept { return fSlide; }
+  // The strip it occupies on screen, which is what has to be repainted when
+  // anything inside it changes.
+  [[nodiscard]] float occupiedWidth() const noexcept {
+    return (kSidebarWidth + kPanelWidth) * fSlide;
+  }
+
   // Still sliding: the only time an untouched panel needs frames.
   [[nodiscard]] bool animating() const noexcept {
     return fOpen ? fSlide < 0.999f : fSlide > 0.001f;

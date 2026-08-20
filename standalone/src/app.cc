@@ -1429,10 +1429,8 @@ private:
     if (fState == State::kPlaying || fState == State::kResults) {
       return true; // a moving picture, and a screen that counts up
     }
-    // The menu's logo tracks the music -- unless something is covering it.
-    if (fState == State::kMainMenu && !fSettingsPanel.visible() &&
-        !fModSelect.visible()) {
-      return true;
+    if (fState == State::kMainMenu) {
+      return true; // the logo keeps tracking the music behind anything
     }
     if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
       return true; // progress that is being watched
@@ -1572,6 +1570,7 @@ private:
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
                    box.fBottom - 8.0f, 12.0f, skia::kWhite, 0.7f);
+    this->damage(box);
   }
 
   void present() {
@@ -1579,12 +1578,19 @@ private:
     auto *canvas = fSurface->getCanvas();
     if (fModSelect.visible()) {
       this->drawModSelect(canvas);
+      this->damageAll(); // it covers the middle of the screen, columns and all
     }
     if (fSettingsPanel.visible()) {
       this->drawSettings(canvas);
+      // Scrolling, hovering and dragging all happen inside this strip, and
+      // the screen underneath has no idea it is there.
+      this->damage(skia::SkRect::MakeXYWH(
+          0.0f, 0.0f, fSettingsPanel.occupiedWidth() + 4.0f,
+          static_cast<float>(fScreenH)));
     }
     if (fReplayListOpen) {
       this->drawReplayList(canvas);
+      this->damageAll(); // a full-screen overlay with a scrolling strip in it
     }
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
