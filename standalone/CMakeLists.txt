@@ -6,6 +6,8 @@ set(CMAKE_CXX_MODULE_STD ON)
 
 project(osu_client LANGUAGES CXX)
 
+include(GNUInstallDirs)
+
 # ---- Options ----
 
 option(ENABLE_TEST_COVERAGE "Enable test coverage" OFF)
@@ -93,6 +95,13 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 26)
 
+# Where the bundled assets end up, so the client can find them when installed
+# and when run straight from the build tree.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+  OSU_CLIENT_DATADIR="${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/osu_client"
+  OSU_CLIENT_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+)
+
 # ---- Link ----
 
 if(EMSCRIPTEN_BUILD)
@@ -153,10 +162,15 @@ endif()
 
 # ---- Install rules ----
 
-include(GNUInstallDirs)
 
 install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# Bundled display face for judgement text (SIL OFL 1.1; see assets/fonts/OFL.txt).
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/osu_client/fonts
+  FILES_MATCHING PATTERN "*.ttf" PATTERN "OFL.txt"
 )
 
 # ---- Add osu_clientTests ----

@@ -4436,19 +4436,56 @@ private:
     return static_cast<bool>(fContext);
   }
 
-  // Judgements are set in a heavy geometric display face -- Venera in osu!
-  // and webosu-2. That one is a commercial typeface, so look for a
-  // freely-licensed equivalent (all of these ship under the OFL) and fall
-  // back to the UI font when none is installed.
+  // Judgements are set in a heavy geometric display face. osu! and webosu-2
+  // use Venera, which is a commercial typeface, so the client ships
+  // Montserrat ExtraBold instead (SIL OFL 1.1, see assets/fonts/OFL.txt).
+  // Installed copy first, then the source tree, then anything suitable the
+  // system offers.
   [[nodiscard]] skia::SkFont loadDisplayFont(float size) {
-    static constexpr std::array<const char *, 8> kFamilies = {
+    std::vector<std::filesystem::path> candidates;
+#ifdef OSU_CLIENT_DATADIR
+    candidates.emplace_back(std::filesystem::path(OSU_CLIENT_DATADIR) /
+                            "fonts" / "Montserrat-ExtraBold.ttf");
+#endif
+#ifdef OSU_CLIENT_SOURCE_ASSETS
+    candidates.emplace_back(std::filesystem::path(OSU_CLIENT_SOURCE_ASSETS) /
+                            "fonts" / "Montserrat-ExtraBold.ttf");
+#endif
+    // Alongside the executable, for a portable copy.
+    candidates.emplace_back(std::filesystem::path("assets") / "fonts" /
+                            "Montserrat-ExtraBold.ttf");
+    candidates.emplace_back(std::filesystem::path("fonts") /
+                            "Montserrat-ExtraBold.ttf");
+
+    for (const auto &path : candidates) {
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec)) {
+        continue;
+      }
+      auto data = skia::SkData::MakeFromFileName(path.c_str());
+      if (!data || data->isEmpty()) {
+        continue;
+      }
+      auto mgr = skia::SkFontMgr_New_Custom_Data(std::move(data));
+      if (!mgr) {
+        continue;
+      }
+      if (auto face = mgr->matchFamilyStyle(nullptr, skia::SkFontStyle())) {
+        skia::SkString name;
+        face->getFamilyName(&name);
+        std::println(std::cerr, "[ui] judgement font: \"{}\" from {}",
+                     name.c_str(), path.string());
+        return skia::SkFont(std::move(face), size);
+      }
+    }
+
+    // System fallbacks, in case the bundled copy went missing.
+    static constexpr std::array<const char *, 6> kFamilies = {
         "Montserrat ExtraBold", "Montserrat Bold", "Poppins Bold",
-        "Archivo Black",        "Anton",           "Oswald Bold",
-        "DejaVu Sans Bold",     "Noto Sans Bold"};
-    static constexpr std::array<const char *, 6> kDirs = {
-        "/usr/share/fonts/montserrat", "/usr/share/fonts/poppins",
-        "/usr/share/fonts/TTF",        "/usr/share/fonts/ttf-dejavu",
-        "/usr/share/fonts/noto",       "/usr/share/fonts"};
+        "Archivo Black",        "Anton",           "DejaVu Sans Bold"};
+    static constexpr std::array<const char *, 4> kDirs = {
+        "/usr/share/fonts/montserrat", "/usr/share/fonts/TTF",
+        "/usr/share/fonts/ttf-dejavu", "/usr/share/fonts"};
     for (const char *dir : kDirs) {
       if (!std::filesystem::is_directory(dir)) {
         continue;
@@ -4459,26 +4496,16 @@ private:
       }
       for (const char *family : kFamilies) {
         if (auto face = mgr->matchFamilyStyle(family, skia::SkFontStyle())) {
-          skia::SkString name;
-          face->getFamilyName(&name);
-          std::println(std::cerr, "[ui] judgement font: \"{}\" from {}",
-                       name.c_str(), dir);
+          std::println(std::cerr, "[ui] judgement font: {} from {}", family,
+                       dir);
           return skia::SkFont(std::move(face), size);
         }
       }
-      // Nothing by name: take whatever bold face the directory offers.
-      if (auto face = mgr->matchFamilyStyle(
-              nullptr, skia::SkFontStyle::Bold())) {
-        skia::SkString name;
-        face->getFamilyName(&name);
-        std::println(std::cerr, "[ui] judgement font (bold fallback): \"{}\"",
-                     name.c_str());
-        return skia::SkFont(std::move(face), size);
-      }
     }
+
     std::println(std::cerr,
-                 "[ui] no display font found; judgements use the UI font "
-                 "(install ttf-montserrat or ttf-dejavu for a closer match)");
+                 "[ui] bundled display font missing; judgements fall back to "
+                 "the UI font");
     return this->loadFont(size);
   }
 
