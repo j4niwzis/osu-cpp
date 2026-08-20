@@ -38,6 +38,26 @@ public:
   static constexpr float kDiffRangeCap = 10.0f;
 
   [[nodiscard]] const std::string &text() const noexcept { return fFilterText; }
+
+  // Where the control actually is. It is a wedge anchored to the top right --
+  // it does not span the width of the screen, and a client that repaints
+  // regions was repainting the title wedge on the far left along with it.
+  [[nodiscard]] static skia::SkRect bounds(int screenW) {
+    const float sw = static_cast<float>(screenW);
+    const float panelW = std::min(760.0f, sw * 0.56f);
+    return skia::SkRect::MakeLTRB(sw - panelW, 0.0f, sw, kHeight);
+  }
+
+  // The search box within it: the caret and the set count are the only things
+  // up here that change without being touched, and both are inside this.
+  [[nodiscard]] const skia::SkRect &searchBox() const noexcept {
+    return fSearchBoxRect;
+  }
+
+  // A caret is only drawn where there is text to put it after.
+  [[nodiscard]] bool caretShown(double nowMs) const {
+    return !fFilterText.empty() && std::fmod(nowMs, 1000.0) < 600.0;
+  }
   [[nodiscard]] SortMode sortMode() const noexcept { return fSortMode; }
   [[nodiscard]] GroupMode groupMode() const noexcept { return fGroupMode; }
   [[nodiscard]] float rangeMin() const noexcept { return fDiffRangeMin; }

@@ -339,6 +339,7 @@ private:
   bool fDrawnOptionsOpen = false;
   bool fDrawnEmpty = false;
   std::size_t fDrawnVisibleCount = 0;
+  std::string fDrawnFilterText;
   std::int64_t fWedgeKey = -1;
 
   // ---- Main menu button system (port of lazer's ButtonSystem) ----------
@@ -5123,17 +5124,25 @@ private:
     fCarousel.update(ctx);
     this->damage(fCarousel.takeDamage());
 
-    // The filter control has a caret on the same clock as the listing's, and
-    // it is the only thing up there that moves without being touched.
-    const bool caret = std::fmod(wallMs(), 1000.0) < 600.0;
-    const bool filterChanged =
-        caret != fFilterCaret || fVisible.size() != fDrawnVisibleCount;
-    fFilterCaret = caret;
-    fDrawnVisibleCount = fVisible.size();
-    this->damageStrip(
-        skia::SkRect::MakeXYWH(0.0f, 0.0f, sw, client::FilterControl::kHeight),
-        fFilterPointerIn, filterChanged);
-    this->wakeAt(nextCaretFlip(wallMs()));
+    // The filter control is a wedge in the top right, not a band across the
+    // screen: reporting the band was repainting the title wedge on the far
+    // left with it, twice a second, for a caret.
+    this->damageStrip(client::FilterControl::bounds(fScreenW), fFilterPointerIn,
+                      false);
+    // The caret and the set count are inside the search box, which is what
+    // gets repainted for them -- and the caret only exists while there is
+    // text to put it after, so an empty filter asks for nothing at all.
+    const bool caret = fFilter.caretShown(wallMs());
+    if (caret != fFilterCaret || fVisible.size() != fDrawnVisibleCount ||
+        fFilter.text() != fDrawnFilterText) {
+      fFilterCaret = caret;
+      fDrawnVisibleCount = fVisible.size();
+      fDrawnFilterText = fFilter.text();
+      this->damage(fFilter.searchBox());
+    }
+    if (!fFilter.text().empty()) {
+      this->wakeAt(nextCaretFlip(wallMs()));
+    }
 
     // The options popover grows out of the footer, so while it is up the
     // strip the footer reports is the one that includes it.
