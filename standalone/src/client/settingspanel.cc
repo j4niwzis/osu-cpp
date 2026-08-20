@@ -291,6 +291,25 @@ private:
                                     content.width(), 6.0f);
     }
 
+    // Where the open list goes: under the control, one row per option, in
+    // screen coordinates, for the overlay that draws it.
+    [[nodiscard]] skia::SkRect listRect() const {
+      const ui::Painter measurer(nullptr, *fOwner->fFont);
+      const skia::SkRect box = this->choiceBox(measurer);
+      const auto &def = fOwner->fSettings->defs()[fIndex];
+      const float height =
+          static_cast<float>(def.fOptions.size()) * 26.0f + 4.0f;
+      return skia::SkRect::MakeXYWH(box.fLeft, box.fBottom + 4.0f, box.width(),
+                                    height);
+    }
+
+    [[nodiscard]] static skia::SkRect optionBox(const skia::SkRect &list,
+                                                std::size_t option) {
+      return skia::SkRect::MakeXYWH(
+          list.fLeft, list.fTop + 2.0f + static_cast<float>(option) * 26.0f,
+          list.width(), 24.0f);
+    }
+
   protected:
     void measure(const skia::SkRect &) override {
       const auto &def = fOwner->fSettings->defs()[fIndex];
@@ -439,25 +458,6 @@ private:
       const skia::SkRect content = this->contentRect();
       return skia::SkRect::MakeXYWH(content.fRight - width,
                                     fBounds.fTop + 3.0f, width, 24.0f);
-    }
-
-    // Where the open list goes: under the control, one row per option, in
-    // screen coordinates, for the overlay that draws it.
-    [[nodiscard]] skia::SkRect listRect() const {
-      const ui::Painter measurer(nullptr, *fOwner->fFont);
-      const skia::SkRect box = this->choiceBox(measurer);
-      const auto &def = fOwner->fSettings->defs()[fIndex];
-      const float height =
-          static_cast<float>(def.fOptions.size()) * 26.0f + 4.0f;
-      return skia::SkRect::MakeXYWH(box.fLeft, box.fBottom + 4.0f, box.width(),
-                                    height);
-    }
-
-    [[nodiscard]] static skia::SkRect optionBox(const skia::SkRect &list,
-                                                std::size_t option) {
-      return skia::SkRect::MakeXYWH(
-          list.fLeft, list.fTop + 2.0f + static_cast<float>(option) * 26.0f,
-          list.width(), 24.0f);
     }
 
     SettingsPanel *fOwner;
