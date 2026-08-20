@@ -88,6 +88,15 @@ public:
   [[nodiscard]] int spinnerRotations(std::size_t index) const noexcept {
     return index < fStates.size() ? fStates[index].fRotations : 0;
   }
+  // Every object plus everything nested under it: the combo a perfect play
+  // ends on, and the same number the server reports for a beatmap.
+  [[nodiscard]] int maxAchievableCombo() const noexcept {
+    int total = 0;
+    for (const auto &state : fStates) {
+      total += 1 + static_cast<int>(state.fNested.size());
+    }
+    return total;
+  }
 
   // Submit an input event. Events must be submitted in non-decreasing time
   // order.

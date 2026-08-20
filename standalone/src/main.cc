@@ -111,6 +111,8 @@ void printUsage(std::string_view program) {
       << "  --replay <path>    Play a saved .osr replay file\n"
       << "  --record           Record input events and save to .osr after "
          "play\n"
+      << "  --stars            Print the star rating of the beatmap and "
+         "exit\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"
@@ -130,6 +132,7 @@ int main(int argc, char **argv) {
   bool autoplay = false;
   bool record = false;
   bool profile = false;
+  bool starsOnly = false;
   osu::ModSet mods = osu::mod::kNone;
 
   for (std::size_t i = 0; i < args.size(); ++i) {
@@ -147,6 +150,8 @@ int main(int argc, char **argv) {
       record = true;
     } else if (arg == "--profile") {
       profile = true;
+    } else if (arg == "--stars") {
+      starsOnly = true;
     } else if (arg == "--dt") {
       mods |= osu::mod::kDoubleTime;
     } else if (arg == "--ht") {
@@ -197,6 +202,38 @@ int main(int argc, char **argv) {
     }
     if (skinPath.empty()) {
       skinPath = std::filesystem::path{"skin"};
+    }
+  }
+
+  // Difficulty only: parse the map, print what the algorithm makes of it,
+  // and exit. Nothing is opened and no cache is consulted, so this is what
+  // the code in front of you computes rather than what was computed once.
+  if (starsOnly) {
+    if (beatmapPath.empty()) {
+      std::cerr << "Error: --stars requires a beatmap\n";
+      return 1;
+    }
+    try {
+      std::ifstream in(beatmapPath, std::ios::binary);
+      if (!in) {
+        std::cerr << "Error: cannot read " << beatmapPath.string() << '\n';
+        return 1;
+      }
+      const std::string text((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+      const osu::Beatmap map = osu::loadBeatmap(text);
+      const osu::StarRating rating = osu::calculateStars(map, mods);
+      const osu::Engine engine(map, mods);
+      std::cout << std::format("{}\n", beatmapPath.filename().string())
+                << std::format("  stars     {:.13f}\n", rating.fTotal)
+                << std::format("  aim       {:.13f}\n", rating.fAim)
+                << std::format("  speed     {:.13f}\n", rating.fSpeed)
+                << std::format("  max combo {}\n", engine.maxAchievableCombo())
+                << std::format("  objects   {}\n", map.fObjects.size());
+      return 0;
+    } catch (const std::exception &e) {
+      std::cerr << "Error: " << e.what() << '\n';
+      return 1;
     }
   }
 
