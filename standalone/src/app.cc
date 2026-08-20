@@ -270,6 +270,7 @@ private:
   // Transfers in flight, so progress can be polled without the view knowing
   // anything about HTTP.
   std::map<long, std::shared_ptr<client::http::Handle>> fTransfers;
+  std::vector<std::uint8_t> fEntryStates; // what each card last drew as its own
   bool fSearchPending = false;
   int fSearchOffset = 0;        // how much of the current search is loaded
   std::uint32_t fSearchGeneration = 0; // results from older queries are dropped
@@ -1673,11 +1674,9 @@ private:
         fConfirmDelete || fExportDialog.open()) {
       return false;
     }
-    // Live status the tree reads straight out of the client rather than
-    // holding as state of its own, so it cannot mark it as changed: a
-    // download's progress bar, the preview's ring, the loading spinner.
-    if (fPreviewId >= 0 || fSearchPending || fPreviewPending ||
-        !fTransfers.empty()) {
+    // A preview still being fetched has nothing on screen to show for it
+    // yet; once it plays, the ring marks the card it is on.
+    if (fPreviewPending) {
       return false;
     }
     // Things the screen draws that live on a clock rather than on damage.
@@ -3649,7 +3648,7 @@ private:
             }
             // The card draws the image out of the entry, so it cannot notice
             // this by itself: one card is marked, rather than the screen.
-            fListing.coverArrived(static_cast<int>(i));
+            fListing.entryChanged(static_cast<int>(i));
             break;
           }
         });
@@ -5832,10 +5831,31 @@ private:
   // answer to "is this frame worth drawing".
   void updateDownload() {
     // Progress lives on the transfer handles; the view just reads a float.
-    for (auto &e : fFound) {
+    // A card whose number moved says so, which is what keeps a download from
+    // being worth the whole screen on every frame of it.
+    for (std::size_t i = 0; i < fFound.size(); ++i) {
+      auto &e = fFound[i];
       const auto it = fTransfers.find(e.fSetId);
       if (it != fTransfers.end() && it->second) {
-        e.fProgress = it->second->fProgress.load(std::memory_order_relaxed);
+        const float progress =
+            it->second->fProgress.load(std::memory_order_relaxed);
+        if (progress != e.fProgress) {
+          e.fProgress = progress;
+          fListing.entryChanged(static_cast<int>(i));
+        }
+      }
+    }
+    // A card also draws its own state -- idle, fetching, done, failed -- out
+    // of the entry, and that is written from a dozen places: a transfer
+    // starting, one finishing, an import marking everything already owned.
+    // Comparing it here catches all of them, including the ones written after
+    // this was, which a call at each site would not.
+    fEntryStates.resize(fFound.size(), 0xFF);
+    for (std::size_t i = 0; i < fFound.size(); ++i) {
+      const auto state = static_cast<std::uint8_t>(fFound[i].fSt);
+      if (fEntryStates[i] != state) {
+        fEntryStates[i] = state;
+        fListing.entryChanged(static_cast<int>(i));
       }
     }
     client::listing::Listing::Ctx ctx;

@@ -296,20 +296,39 @@ public:
   };
 
   // Which set the preview is playing, and how far through it is.
+  // The play button's ring is the only thing a preview moves, so the card it
+  // is on is what gets marked. "A preview is playing" used to be worth the
+  // whole screen, every frame, for the length of the clip.
   void setPreview(long setId, float progress) {
+    if (setId != fPreviewId || progress != fPreviewProgress) {
+      this->setChanged(fPreviewId); // where it was playing
+      this->setChanged(setId);      // where it plays now
+    }
     fPreviewId = setId;
     fPreviewProgress = progress;
   }
 
-  // A cover finished loading. The card reads the image straight out of the
-  // entry, so it has no way of noticing by itself -- and now that a frame is
-  // only drawn when something says it changed, not noticing means the cover
-  // never appears. Marking the one card is what keeps that from meaning a
-  // full repaint per cover, of which there are fifty.
-  void coverArrived(int entry) {
+  // Something the card draws out of its entry changed under it -- a cover
+  // that finished loading, another percent of a download. The card reads
+  // those straight out of the entry, so it cannot notice by itself, and now
+  // that frames only happen when something says it changed, not noticing
+  // means never appearing. One card, not the screen: there are fifty covers.
+  void entryChanged(int entry) {
     for (const auto &card : fCards) {
       if (card.first == entry && card.second != nullptr) {
         card.second->markDamaged();
+        return;
+      }
+    }
+  }
+
+  void setChanged(long setId) {
+    if (setId < 0) {
+      return;
+    }
+    for (std::size_t i = 0; i < fEntries.size(); ++i) {
+      if (fEntries[i].fSetId == setId) {
+        this->entryChanged(static_cast<int>(i));
         return;
       }
     }
@@ -372,6 +391,11 @@ public:
     fMouseX = ctx.fMouseX;
     fMouseY = ctx.fMouseY;
     fEntries = ctx.fEntries;
+    if (ctx.fLoading != fLoading && fScene) {
+      // "searching..." replaces "nothing matches", and the placeholder is
+      // drawn out of this rather than held as state of its own.
+      fScene->markDamaged();
+    }
     fLoading = ctx.fLoading;
     // Filtering and sorting the results is O(n log n) with string comparisons
     // in it, and on almost every frame it arrives at the answer it arrived at

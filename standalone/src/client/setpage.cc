@@ -217,6 +217,12 @@ public:
       fRebuilt = true;
     }
     if (fPreviewGlyph != nullptr) {
+      // The ring around the play button is the only thing a preview moves on
+      // this page, so it is the only thing that has to be repainted for it.
+      if (fPreviewGlyph->fPlaying != ctx.fPreviewPlaying ||
+          fPreviewGlyph->fProgress != ctx.fPreviewProgress) {
+        fPreviewGlyph->markDamaged();
+      }
       fPreviewGlyph->fPlaying = ctx.fPreviewPlaying;
       fPreviewGlyph->fProgress = ctx.fPreviewProgress;
     }
