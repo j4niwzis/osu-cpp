@@ -5318,6 +5318,8 @@ private:
     int fSavedH = 0;
     std::vector<std::uint8_t> fPixels; // one frame, reused
     bool fReadFailed = false;          // said once, not once per frame
+    std::size_t fJudged = 0;           // judgements handed to the view
+    int fCombo = 0;
   };
 
   // Said in both places: the dialog is where it belongs, and the log is where
@@ -5342,11 +5344,42 @@ private:
     job->fOpts.fWidth = preset.fWidth;
     job->fOpts.fHeight = preset.fHeight;
     job->fOpts.fFps = 60;
-    // Beside the library rather than inside it: ~/.local/share/osu_client,
-    // which is the directory that holds maps/ and the caches. Said in full in
-    // the log, since "saved replay-....mp4" does not answer "saved where".
+    // Into the working directory, named for what it is: the replay it came
+    // from when there is one, the difficulty otherwise, and the size it was
+    // rendered at. Two exports of the same play at different sizes are two
+    // files rather than one overwriting the other.
+    const std::string stem =
+        !fReplayPath.empty()
+            ? fReplayPath.stem().string()
+            : std::filesystem::path(fBeatmapFilename).stem().string();
+    std::string safe;
+    for (const char c : stem) {
+      const bool awkward = static_cast<unsigned char>(c) < 0x20 || c == '/' ||
+                           c == '\\' || c == ':';
+      safe.push_back(awkward ? '_' : c);
+    }
+    std::error_code cwdError;
+    const auto here = std::filesystem::current_path(cwdError);
     job->fOpts.fOutput =
-        fMapsDir.parent_path() / std::format("replay-{}.mp4", fBeatmapFilename);
+        (cwdError ? fMapsDir.parent_path() : here) /
+        std::format("{}-{}x{}.mp4", safe, preset.fWidth, preset.fHeight);
+
+    // Written out before the encoder is started: ffmpeg is told about its
+    // inputs once, when it is launched, and an audio path handed over
+    // afterwards reached nobody -- which is why the videos had no sound.
+    if (!fMap->fMeta.fAudioFilename.empty()) {
+      const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
+      if (!bytes.empty()) {
+        std::error_code ec;
+        const auto audioPath = std::filesystem::temp_directory_path(ec) /
+                               fMap->fMeta.fAudioFilename;
+        std::ofstream out(audioPath, std::ios::binary);
+        out.write(reinterpret_cast<const char *>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        out.close();
+        job->fOpts.fAudio = audioPath;
+      }
+    }
     std::println(std::cerr, "[export] writing {}",
                  job->fOpts.fOutput.string());
 
@@ -5402,11 +5435,33 @@ private:
         job.fEngine->submit(fRecordedEvents[job.fEvent]);
         if (fRecordedEvents[job.fEvent].fAction == osu::InputAction::kMove) {
           fCursor = fRecordedEvents[job.fEvent].fPos;
+          fView.addTrailPoint(fCursor, fRecordedEvents[job.fEvent].fTime);
         }
         ++job.fEvent;
       }
       job.fEngine->advance(job.fTime);
       fEngine.emplace(*job.fEngine); // the view draws the state it is handed
+      // The popups -- great, good, miss -- and the combo are not drawn by the
+      // engine: the client hands them to the view as the play produces them.
+      // An export that only advanced the engine produced a video with none of
+      // them in it.
+      const auto &events = job.fEngine->events();
+      while (job.fJudged < events.size()) {
+        const auto &judged = events[job.fJudged++];
+        const auto pos = this->objectPosition(judged.fIndex);
+        const bool counts =
+            !std::holds_alternative<osu::judgement::Miss>(judged.fResult) &&
+            judged.fIndex < fComboInfo.fIndices.size();
+        fView.addJudgement(judged.fResult, judged.fIndex, pos, job.fTime,
+                           counts ? fComboInfo.fIndices[judged.fIndex] : 0,
+                           counts);
+        if (std::holds_alternative<osu::judgement::Miss>(judged.fResult)) {
+          job.fCombo = 0;
+        } else {
+          ++job.fCombo;
+        }
+        fView.setCombo(job.fCombo);
+      }
       fView.render(this->gameplayCtx(fSurface->getCanvas()), job.fTime);
       fContext->flushAndSubmit(fSurface.get());
       // Read straight off the surface into a buffer the job keeps: a
@@ -5461,21 +5516,8 @@ private:
       return;
     }
 
-    // The mux is ffmpeg, which is a process and a wait: it does not touch the
-    // GPU, so it goes to the loader thread rather than holding this one.
-    std::filesystem::path audioPath;
-    if (!fMap->fMeta.fAudioFilename.empty()) {
-      const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
-      if (!bytes.empty()) {
-        std::error_code ec;
-        audioPath = std::filesystem::temp_directory_path(ec) /
-                    fMap->fMeta.fAudioFilename;
-        std::ofstream out(audioPath, std::ios::binary);
-        out.write(reinterpret_cast<const char *>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-      }
-    }
-    job.fOpts.fAudio = audioPath;
+    // Closing the encoder is a wait on a process: it touches no GL, so it
+    // goes to the loader thread rather than holding this one.
     if (job.fSaved) {
       fEngine.emplace(*job.fSaved);
     } else {
