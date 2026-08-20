@@ -3765,11 +3765,11 @@ private:
 
   [[nodiscard]] float musicGain() const {
     return fSettings.value("master") * fSettings.value("music") *
-           client::kMusicHeadroom;
+           audio_client::kMusicHeadroom;
   }
   [[nodiscard]] float effectGain() const {
     return fSettings.value("master") * fSettings.value("effect") *
-           client::kEffectHeadroom;
+           audio_client::kEffectHeadroom;
   }
 
   void applySettings() {
