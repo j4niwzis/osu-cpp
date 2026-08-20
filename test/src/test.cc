@@ -100,9 +100,15 @@ TEST(Curves, PerfectArc) {
 }
 
 TEST(Rules, WindowsAndMods) {
-  ASSERT_DOUBLE_EQ(windowGreat(5.0), 50.0);
-  ASSERT_DOUBLE_EQ(windowGood(5.0), 100.0);
-  ASSERT_DOUBLE_EQ(windowMeh(5.0), 150.0);
+  // Legacy windows: the value floored to a whole millisecond, less half of
+  // one. Checked against lazer's own HitWindowGreat, which is twice this.
+  ASSERT_DOUBLE_EQ(windowGreat(5.0), 49.5);
+  ASSERT_DOUBLE_EQ(windowGood(5.0), 99.5);
+  ASSERT_DOUBLE_EQ(windowMeh(5.0), 149.5);
+  ASSERT_DOUBLE_EQ(windowGreat(7.0), 37.5);   // lazer: HitWindowGreat 75
+  ASSERT_DOUBLE_EQ(windowGreat(9.0), 25.5);   // 51
+  ASSERT_DOUBLE_EQ(windowGreat(9.6), 21.5);   // 43
+  ASSERT_DOUBLE_EQ(windowGreat(3.0), 61.5);   // 123
 
   Difficulty d{5.0, 5.0, 5.0, 5.0};
   auto dt = applyMods(d, mod::kDoubleTime);
@@ -169,27 +175,143 @@ TEST(Rules, JudgementInfo) {
   ASSERT_EQ(rgb[2], 255);
 }
 
-TEST(Stars, LazerTestBeatmaps) {
-  struct Case {
-    const char *file;
-    double expected;
-    double tol;
+// The numbers below come from running lazer's own difficulty calculator --
+// ppy.osu.Game 2026.730.0, which carries the reworked skills -- over these
+// four beatmaps, which are ppy's own diffcalc test cases. They are not the
+// values in lazer's test file: those were generated at a slightly older
+// commit and differ from what its current code produces by about a
+// millionth. These are what the code produces today.
+//
+// The tolerances are relative and tight on purpose. Every one of these
+// agreed to eight or nine digits when it was written, and anything that
+// moves them further than a millionth is a change in behaviour worth
+// looking at rather than noise: what is left between us is double against
+// lazer's single precision positions, and the last ulp of exp, log, pow and
+// atan2, which no two runtimes agree on anyway.
+struct StarCase {
+  const char *fFile;
+  double fStars;
+  double fAim;
+  double fSpeed;
+  double fReading;
+  int fCombo;
+  double fAimTolerance; // relative
+};
+
+inline Beatmap loadTestBeatmap(const char *file) {
+  std::ifstream ifs(file);
+  EXPECT_TRUE(ifs.is_open()) << "Can't open " << file;
+  std::stringstream buf;
+  buf << ifs.rdbuf();
+  return parseBeatmap(buf.str());
+}
+
+TEST(Stars, MatchesLazer) {
+  const StarCase cases[] = {
+      {"test/data/diffcalc-test.osu", 6.5243230054515, 3.8093990088670,
+       1.5647105745091, 1.7803497292117, 239, 1e-6},
+      {"test/data/zero-length-sliders.osu", 1.3280410795791, 0.8047199090814,
+       0.1463710443218, 0.0, 54, 1e-6},
+      {"test/data/very-fast-slider.osu", 0.4086732514770, 0.0,
+       0.2479040043017, 0.0, 4, 1e-6},
+      // The aim on this one is still out by a lot in relative terms -- 0.0029
+      // against 0.0016 -- on a beatmap of four stacked circles and one
+      // multi-segment slider under a NaN timing point. In absolute terms it
+      // moves the star rating by a hundred-millionth, so it is pinned loosely
+      // and left as a known deviation rather than papered over.
+      {"test/data/nan-slider.osu", 0.8705817579435, 0.0016034639251,
+       0.5279682051204, 0.0615058614521, 6, 1.0},
   };
-  const Case cases[] = {
-      {"test/data/diffcalc-test.osu", 6.524317, 0.15},
-      {"test/data/zero-length-sliders.osu", 1.328041, 10.0},
-      {"test/data/very-fast-slider.osu", 0.408673, 10.0},
-      {"test/data/nan-slider.osu", 0.870582, 10.0},
-  };
-  for (auto [file, expected, tol] : cases) {
-    std::ifstream ifs(file);
-    ASSERT_TRUE(ifs.is_open()) << "Can't open " << file;
-    std::stringstream buf;
-    buf << ifs.rdbuf();
-    auto bm = parseBeatmap(buf.str());
-    auto stars = calculateStars(bm);
-    ASSERT_NEAR(stars.fTotal, expected, tol);
+
+  for (const auto &c : cases) {
+    const Beatmap bm = loadTestBeatmap(c.fFile);
+    const StarRating stars = calculateStars(bm);
+    const Engine engine(bm);
+
+    EXPECT_NEAR(stars.fTotal, c.fStars, c.fStars * 1e-6) << c.fFile;
+    EXPECT_NEAR(stars.fSpeed, c.fSpeed, std::max(c.fSpeed, 1.0) * 1e-6)
+        << c.fFile;
+    EXPECT_NEAR(stars.fReading, c.fReading, std::max(c.fReading, 1.0) * 1e-6)
+        << c.fFile;
+    EXPECT_NEAR(stars.fAim, c.fAim, std::max(c.fAim, 1e-3) * c.fAimTolerance)
+        << c.fFile;
+    EXPECT_EQ(engine.maxAchievableCombo(), c.fCombo) << c.fFile;
   }
+}
+
+TEST(Stars, MatchesLazerWithDoubleTime) {
+  const StarCase cases[] = {
+      {"test/data/diffcalc-test.osu", 9.4677694877984, 5.5930033565508,
+       2.1913401312275, 2.1998562282900, 239, 1e-6},
+      {"test/data/zero-length-sliders.osu", 1.6856612715619, 1.0212972657136,
+       0.1916589040296, 0.0, 54, 1e-6},
+      {"test/data/very-fast-slider.osu", 0.5358847318657, 0.0,
+       0.3250713629863, 0.0, 4, 1e-6},
+  };
+
+  for (const auto &c : cases) {
+    const Beatmap bm = loadTestBeatmap(c.fFile);
+    const StarRating stars = calculateStars(bm, mod::kDoubleTime);
+    EXPECT_NEAR(stars.fTotal, c.fStars, c.fStars * 1e-6) << c.fFile;
+    EXPECT_NEAR(stars.fSpeed, c.fSpeed, std::max(c.fSpeed, 1.0) * 1e-6)
+        << c.fFile;
+    EXPECT_NEAR(stars.fReading, c.fReading, std::max(c.fReading, 1.0) * 1e-6)
+        << c.fFile;
+    EXPECT_NEAR(stars.fAim, c.fAim, std::max(c.fAim, 1e-3) * c.fAimTolerance)
+        << c.fFile;
+  }
+}
+
+// CalculateTimed: the rating of the map as it stands partway through. The
+// difficulty objects are still built from the whole beatmap -- the reading
+// evaluator looks ahead, and an object with nothing after it reads as denser
+// than it is -- so only the skills stop early. Values from lazer's own
+// CalculateTimed on the same beatmap.
+TEST(Stars, MatchesLazerPartway) {
+  const Beatmap bm = loadTestBeatmap("test/data/diffcalc-test.osu");
+  struct Point {
+    double fUntil;
+    double fStars;
+    double fAim;
+    double fReading;
+  };
+  const Point points[] = {
+      {2000.0, 0.3577563175471, 0.1192003954766, 0.0},
+      {17000.0, 5.6685465406782, 3.2929877493005, 1.5333896824701},
+      {61500.0, 6.5240565852554, 3.8093052195745, 1.7803493437573},
+  };
+  for (const auto &p : points) {
+    const StarRating stars =
+        calculateStars(bm, mod::kNone, nullptr, p.fUntil);
+    EXPECT_NEAR(stars.fTotal, p.fStars, p.fStars * 1e-6) << p.fUntil;
+    EXPECT_NEAR(stars.fAim, p.fAim, p.fAim * 1e-6) << p.fUntil;
+    EXPECT_NEAR(stars.fReading, p.fReading, std::max(p.fReading, 1.0) * 1e-6)
+        << p.fUntil;
+  }
+}
+
+// The three pieces of rounding that osu! inherited from stable, each checked
+// against a value lazer printed for a beatmap that uses it.
+TEST(Rules, LegacyRounding) {
+  // Object radius: 64 times a scale that carries the gamefield rounding
+  // allowance of 1.00041.
+  ASSERT_NEAR(circleRadius(3.0), 40.97679138183594, 1e-9);
+  ASSERT_NEAR(circleRadius(4.0), 36.49495315551758, 1e-9);
+  ASSERT_NEAR(circleRadius(3.4), 39.18405532836914, 1e-9);
+
+  // A stack step is that scale times 6.4 in each axis, so adjacent notes in
+  // a stack sit 7.0710678 normalised units apart at CS 4.
+  const Vec2 step = stackOffset(1, 4.0);
+  ASSERT_NEAR(step.length() * 50.0 / circleRadius(4.0), 7.0710678118654755,
+              1e-9);
+
+  // TimePreempt, floored -- and floored after the approach rate has been
+  // through single precision, which is why 9.6 gives 509 and not 510.
+  ASSERT_DOUBLE_EQ(preemptTime(4.5), 1260.0);
+  ASSERT_DOUBLE_EQ(preemptTime(8.3), 704.0);
+  ASSERT_DOUBLE_EQ(preemptTime(9.3), 554.0);
+  ASSERT_DOUBLE_EQ(preemptTime(9.6), 509.0);
+  ASSERT_DOUBLE_EQ(preemptTime(10.0), 450.0);
 }
 
 TEST(SliderBody, CuspDetection) {
