@@ -95,6 +95,9 @@ inline constexpr int kKeyUp = GLFW_KEY_UP;
 inline constexpr int kKeyDown = GLFW_KEY_DOWN;
 inline constexpr int kKeyLeft = GLFW_KEY_LEFT;
 inline constexpr int kKeyRight = GLFW_KEY_RIGHT;
+inline constexpr int kKeyDelete = GLFW_KEY_DELETE;
+inline constexpr int kKeyPageUp = GLFW_KEY_PAGE_UP;
+inline constexpr int kKeyPageDown = GLFW_KEY_PAGE_DOWN;
 
 inline constexpr int kMouseButtonLeft = GLFW_MOUSE_BUTTON_LEFT;
 inline constexpr int kMouseButtonRight = GLFW_MOUSE_BUTTON_RIGHT;

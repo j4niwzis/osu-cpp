@@ -319,6 +319,15 @@ public:
   [[nodiscard]] const Filters &filters() const { return fFilters; }
   [[nodiscard]] std::span<const int> visible() const { return fVisible; }
 
+  // The query is edited through the client, which types into the string the
+  // box reads. The box has no way of noticing that, and a client that only
+  // draws what says it changed would never show the letter that was typed.
+  void queryEdited() {
+    if (fSearchBox != nullptr) {
+      fSearchBox->markDamaged();
+    }
+  }
+
   void scroll(float ticks) { fScrollTicks += ticks; }
   void scrollToStart() { fScrollToStart = true; }
 
@@ -410,6 +419,13 @@ public:
       fScrollTicks = 0.0f;
       fScene->layoutIfNeeded(screen);
     }
+    // After the layout: whether the box is on screen is a fact about where
+    // it ended up, and on the frame a tree is built there is no answer yet.
+    if (fSearchBox != nullptr) {
+      fTextBoxBounds = fSearchBox->box();
+      fCaretLive = skia::SkRect::Intersects(fTextBoxBounds, screen);
+      fSearchBox->tickCaret(ctx.fNowMs, fCaretLive);
+    }
     fScene->setHover(ctx.fMouseX, ctx.fMouseY);
     if (fScroll != nullptr) {
       fScrollCurrent = fScroll->current();
@@ -442,8 +458,13 @@ public:
   }
 
   // When the picture changes next without anybody touching it: the caret is
-  // shown for 600 ms of every 1000. Everything else here waits for an event.
-  [[nodiscard]] static double nextChangeWall(double nowMs) {
+  // shown for 600 ms of every 1000. Zero when there is no such moment --
+  // nothing else here changes on a clock, and a caret that is scrolled off
+  // the screen does not either.
+  [[nodiscard]] double nextChangeWall(double nowMs) const {
+    if (!fCaretLive) {
+      return 0.0;
+    }
     const double phase = std::fmod(nowMs, 1000.0);
     return nowMs + (phase < 600.0 ? 600.0 - phase : 1000.0 - phase);
   }
@@ -467,19 +488,23 @@ private:
       fHeight = 40.0f;
     }
 
-  protected:
+    [[nodiscard]] const skia::SkRect &box() const { return fBounds; }
+
     // The caret is the one thing on this screen that changes without being
     // touched. It marks the box when it flips, so the frame that follows
     // repaints the box and nothing else -- and so that the frames in between
-    // are not drawn at all.
-    void update(double nowMs) override {
-      const bool shown = std::fmod(nowMs, 1000.0) < 600.0;
+    // are not drawn at all. Off screen it does not blink: a caret nobody can
+    // see is not worth a frame, and asking for one anyway was the whole
+    // point of not asking for frames.
+    void tickCaret(double nowMs, bool onScreen) {
+      const bool shown = onScreen && std::fmod(nowMs, 1000.0) < 600.0;
       if (shown != fCaretShown) {
         fCaretShown = shown;
         this->markDamaged();
       }
     }
 
+  protected:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       auto &font = *fOwner->fFont;
       paint::rounded(canvas, fBounds, 5.0f, kBackground4, alpha);
@@ -512,7 +537,6 @@ private:
                                            18.0f),
                     kContent1, alpha * 0.8f);
       }
-      fOwner->fTextBoxBounds = fBounds;
     }
 
   private:
@@ -1193,6 +1217,7 @@ private:
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
     fScroll = nullptr;
+    fSearchBox = nullptr;
     fCards.clear();
 
     auto root = std::make_unique<nodes::Box>(kBackground6);
@@ -1228,7 +1253,9 @@ private:
     panelColumn->fWidth = 1.0f;
     panelColumn->fAutoSizeAxes = scene::Axes::kY;
     panelColumn->setSpacing(0.0f, 20.0f);
-    panelColumn->add(std::make_unique<SearchBoxNode>(this));
+    auto searchBox = std::make_unique<SearchBoxNode>(this);
+    fSearchBox = searchBox.get();
+    panelColumn->add(std::move(searchBox));
 
     // The filter rows, indented 10 and spaced 5, in lazer's order.
     auto rows =
@@ -1336,6 +1363,12 @@ private:
   }
 
   void activateFilter(Kind kind, int value) {
+    // A filter changes what a row draws whether or not it changes what the
+    // results are, and the rows draw their state out of the filters rather
+    // than holding it. Cheap to mark the tree here: this happens on a click.
+    if (fScene) {
+      fScene->markDamaged();
+    }
     const auto index = static_cast<std::size_t>(value);
     switch (kind) {
     case Kind::kGeneral:
@@ -1531,6 +1564,8 @@ private:
   std::uint64_t fShape = 0;
   bool fRebuilt = false;
   bool fTicking = false; // something in the tree is waiting on the clock
+  bool fCaretLive = false; // the search box is on screen, so it blinks
+  SearchBoxNode *fSearchBox = nullptr;
   std::uint64_t fVisibleShape = 0;
   nodes::ScrollContainer *fScroll = nullptr; // owned by the tree
   float fScrollTicks = 0.0f;

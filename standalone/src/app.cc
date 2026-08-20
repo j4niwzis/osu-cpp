@@ -603,8 +603,9 @@ private:
             self->toggleFullscreen();
             return;
           }
-          if (action == glfw::kRepeat)
-            return; // key auto-repeat is meaningless for gameplay
+          // Auto-repeat is carried through rather than dropped here: it is
+          // meaningless for gameplay and necessary for a held backspace, and
+          // only the consumer knows which of the two it is looking at.
           self->enqueue({App::wallMs(), EventType::kKey, key, action,
                          static_cast<float>(mods)});
         });
@@ -872,6 +873,7 @@ private:
         }
         this->appendUtf8(fListing.filters().fQuery,
                          static_cast<std::uint32_t>(ev.fA));
+        fListing.queryEdited();
         fListing.scrollToStart(); // onTypingStarted
       }
       break;
@@ -884,9 +886,26 @@ private:
     }
   }
 
+  // A held key repeats where repeating is what the key means -- deleting a
+  // character, stepping through a list -- and not where a second press would
+  // undo the first. Gameplay is not in either group: a key held down is one
+  // press there, however long it is held.
+  [[nodiscard]] static bool repeatable(int key) {
+    return key == glfw::kKeyBackspace || key == glfw::kKeyDelete ||
+           key == glfw::kKeyLeft || key == glfw::kKeyRight ||
+           key == glfw::kKeyUp || key == glfw::kKeyDown ||
+           key == glfw::kKeyPageUp || key == glfw::kKeyPageDown;
+  }
+
   void applyKey(const Event &ev) {
     const int key = ev.fA;
-    const int action = ev.fB;
+    int action = ev.fB;
+    if (action == glfw::kRepeat) {
+      if (fState == State::kPlaying || !repeatable(key)) {
+        return;
+      }
+      action = glfw::kPress; // a repeat is a press to everything that repeats
+    }
     // GLFW reports the modifier state with every key event; tracking press
     // and release of the control keys separately loses sync whenever focus
     // changes while held.
@@ -1086,6 +1105,7 @@ private:
     }
     if (key == glfw::kKeyBackspace) {
       this->popUtf8(fListing.filters().fQuery);
+      fListing.queryEdited();
     }
   }
 
@@ -5864,8 +5884,15 @@ private:
       this->fetchPage();
     }
     // The caret blinks on a clock of its own. Rather than keeping frames
-    // coming so the moment is not missed, the screen says when the moment is.
-    this->wakeAt(fListing.nextChangeWall(wallMs()));
+    // coming so the moment is not missed, the screen says when the moment is
+    // -- and says nothing when there is no such moment: no caret on screen,
+    // or the beatmap page covering the listing it belongs to.
+    if (!fSetPage.open()) {
+      const double wake = fListing.nextChangeWall(wallMs());
+      if (wake > 0.0) {
+        this->wakeAt(wake);
+      }
+    }
   }
 
   void frameDownload() {
