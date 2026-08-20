@@ -24,6 +24,7 @@ import client.filter;
 import client.loader;
 import client.ui;
 import client.settings;
+import client.settingspanel;
 import client.mods;
 import client.video;
 import bjson;
@@ -312,22 +313,7 @@ private:
   // the single continuous column of sections, and highlights whichever
   // section the scroll is currently in.
   client::Settings fSettings;
-  bool fSettingsOpen = false;
-  float fSettingsSlide = 0.0f;
-  double fSettingsEnterWall = 0.0;
-  float fSettingsScroll = 0.0f;      // pixels
-  float fSettingsScrollAnim = 0.0f;  // eased
-  float fSettingsContentHeight = 0.0f;
-  int fDraggingSetting = -1;
-  struct SettingRow {
-    skia::SkRect fRect;
-    int fIndex;
-  };
-  std::vector<SettingRow> fSettingRows;
-  std::vector<SettingRow> fRestoreHits;
-  std::vector<skia::SkRect> fSidebarHits;
-  std::vector<float> fSectionOffsets;   // scroll offset of each section header
-  std::array<float, 4> fSidebarGrow{};
+  client::SettingsPanel fSettingsPanel;
   float fAppliedDim = 0.7f;
 
   // ---- Mod select (ModSelectOverlay) ------------------------------------
@@ -360,9 +346,7 @@ private:
   std::mt19937 fUiRng{0xC0FFEEu};
 
   [[nodiscard]] static float easeOutQuint(float t) {
-    t = std::clamp(t, 0.0f, 1.0f);
-    const float u = 1.0f - t;
-    return 1.0f - u * u * u * u * u;
+    return client::ui::outQuint(t);
   }
 
   [[nodiscard]] float screenFade() const {
@@ -384,12 +368,12 @@ private:
                      p);
   }
 
-  // Lazer-ish palette.
-  static constexpr skia::SkColor kAccent = skia::colorSetARGB(255, 255, 102, 170);
-  static constexpr skia::SkColor kAccent2 = skia::colorSetARGB(255, 102, 204, 255);
-  static constexpr skia::SkColor kCardBg = skia::colorSetARGB(255, 42, 36, 48);
-  static constexpr skia::SkColor kCardSel = skia::colorSetARGB(255, 64, 48, 70);
-  static constexpr skia::SkColor kPanelBg = skia::colorSetARGB(215, 22, 18, 28);
+  // Palette lives in client.ui; these are aliases so call sites stay short.
+  static constexpr auto kAccent = client::ui::kAccent;
+  static constexpr auto kAccent2 = client::ui::kAccent2;
+  static constexpr auto kCardBg = client::ui::kCardBg;
+  static constexpr auto kCardSel = client::ui::kCardSel;
+  static constexpr auto kPanelBg = client::ui::kPanelBg;
 
   // Timing
   double fStartMs = 0.0;
@@ -781,7 +765,7 @@ private:
     case EventType::kCursorMove:
       fMouseX = ev.fX;
       fMouseY = ev.fY;
-      if (fDraggingSetting >= 0) {
+      if (fSettingsPanel.dragging()) {
         this->dragSetting(ev.fX);
       }
       if (fDraggingRange >= 0) {
@@ -794,7 +778,7 @@ private:
       }
       break;
     case EventType::kScroll:
-      if (fSettingsOpen) {
+      if (fSettingsPanel.open()) {
         this->scrollSettings(ev.fX);
         break;
       }
@@ -853,7 +837,7 @@ private:
         fExportOpen = false;
         return;
       }
-      if (fSettingsOpen) {
+      if (fSettingsPanel.open()) {
         this->closeSettings();
         return;
       }
@@ -1278,7 +1262,7 @@ private:
     if (fModsOpen || fModsSlide > 0.002f) {
       this->drawModSelect(canvas);
     }
-    if (fSettingsOpen || fSettingsSlide > 0.002f) {
+    if (fSettingsPanel.visible()) {
       this->drawSettings(canvas);
     }
     if (fExportOpen) {
@@ -2465,63 +2449,30 @@ private:
 
   void fillRounded(skia::SkCanvas *canvas, const skia::SkRect &rect,
                    float radius, skia::SkColor color) {
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    canvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
+    client::ui::Painter(canvas, fFont).fillRounded(rect, radius, color);
   }
 
   void strokeRounded(skia::SkCanvas *canvas, const skia::SkRect &rect,
                      float radius, skia::SkColor color, float width) {
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setStyle(skia::kStrokeStyle);
-    p.setStrokeWidth(width);
-    canvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
+    client::ui::Painter(canvas, fFont).strokeRounded(rect, radius, color, width);
   }
 
   void drawTextClipped(skia::SkCanvas *canvas, const std::string &text,
                        float x, float y, float maxW, float size,
                        skia::SkColor color, float alpha = 1.0f) {
-    fFont.setSize(size);
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    canvas->save();
-    canvas->clipIRect(skia::SkIRect::MakeXYWH(
-        static_cast<int>(x), static_cast<int>(y - size * 1.2f),
-        static_cast<int>(maxW), static_cast<int>(size * 1.8f)));
-    canvas->drawString(text.c_str(), x, y, fFont, p);
-    canvas->restore();
+    client::ui::Painter(canvas, fFont)
+        .textClipped(text, x, y, maxW, size, color, alpha);
   }
 
   void drawTextCentered(skia::SkCanvas *canvas, const std::string &text,
                         float cx, float y, float size, skia::SkColor color,
                         float alpha = 1.0f) {
-    fFont.setSize(size);
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    const float w =
-        fFont.measureText(text.c_str(), text.size(), skia::SkTextEncoding::kUTF8);
-    canvas->drawString(text.c_str(), cx - w * 0.5f, y, fFont, p);
+    client::ui::Painter(canvas, fFont)
+        .textCentered(text, cx, y, size, color, alpha);
   }
 
   [[nodiscard]] static skia::SkColor starColor(double stars) {
-    if (stars < 2.0)
-      return skia::colorSetARGB(255, 102, 204, 102);
-    if (stars < 2.7)
-      return skia::colorSetARGB(255, 102, 204, 255);
-    if (stars < 4.0)
-      return skia::colorSetARGB(255, 255, 204, 102);
-    if (stars < 5.3)
-      return skia::colorSetARGB(255, 255, 102, 170);
-    if (stars < 6.5)
-      return skia::colorSetARGB(255, 170, 102, 255);
-    return skia::colorSetARGB(255, 90, 90, 110);
+    return client::ui::starColor(stars);
   }
 
   void drawScreenBackground(skia::SkCanvas *canvas) {
@@ -2585,10 +2536,8 @@ private:
     fMenuState = st;
   }
 
-  // Frame-rate independent easing toward a target (tau in milliseconds).
   [[nodiscard]] float approach(float current, float target, float tauMs) const {
-    const float a = 1.0f - std::exp(-static_cast<float>(fUiDt) / tauMs);
-    return current + (target - current) * a;
+    return client::ui::approach(current, target, tauMs, fUiDt);
   }
 
   void menuTrigger(MenuBtn &b) {
@@ -3209,256 +3158,51 @@ private:
   // ---- Song select ------------------------------------------------------
 
   // ---- Settings overlay ---------------------------------------------------
+  //
+  // The panel itself lives in client.settingspanel; this only bridges it to
+  // the app's input and to applying the values.
 
   void toggleSettings() {
-    fSettingsOpen = !fSettingsOpen;
-    fSettingsEnterWall = wallMs();
-    if (!fSettingsOpen) {
+    fSettingsPanel.toggle(wallMs());
+    if (!fSettingsPanel.open()) {
       fSettings.save();
       this->applySettings();
     }
   }
 
   void closeSettings() {
-    if (fSettingsOpen) {
-      fSettingsOpen = false;
-      fSettingsEnterWall = wallMs();
+    if (fSettingsPanel.open()) {
+      fSettingsPanel.close(wallMs());
       fSettings.save();
       this->applySettings();
     }
   }
 
-  static constexpr float kSidebarWidth = 170.0f;  // EXPANDED_WIDTH
-  static constexpr float kPanelWidth = 400.0f;    // PANEL_WIDTH
-  static constexpr float kContentMargins = 20.0f; // CONTENT_MARGINS
-  static constexpr float kItemSpacing = 14.0f;    // ITEM_SPACING
-  static constexpr float kSidebarItemHeight = 46.0f;
-  static constexpr float kTransitionMs = 600.0f;  // TRANSITION_LENGTH
-
   void drawSettings(skia::SkCanvas *canvas) {
-    const float progress =
-        static_cast<float>((wallMs() - fSettingsEnterWall) / kTransitionMs);
-    const float eased = client::ui::outQuint(std::clamp(progress, 0.0f, 1.0f));
-    fSettingsSlide = fSettingsOpen ? eased : 1.0f - eased;
-    if (!fSettingsOpen && fSettingsSlide <= 0.001f) {
-      fSettingRows.clear();
-      fSidebarHits.clear();
-      fRestoreHits.clear();
-      return;
-    }
-
-    const client::ui::Painter p(canvas, fFont);
-    const float sh = static_cast<float>(fScreenH);
-    const float sw = static_cast<float>(fScreenW);
-    const float full = kSidebarWidth + kPanelWidth;
-    const float x0 = -full * (1.0f - fSettingsSlide);
-    const float fade = std::min(1.0f, fSettingsSlide * 2.0f);
-
-    fSettingRows.clear();
-    fSidebarHits.clear();
-    fRestoreHits.clear();
-    fSectionOffsets.assign(client::Settings::kSections.size(), 0.0f);
-
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 110.0f), 0,
-                                  0, 0));
-    p.fillRect(skia::SkRect::MakeXYWH(x0, 0.0f, kSidebarWidth, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 252.0f), 23,
-                                  19, 30));
-
-    // ---- Content column, one continuous scroll of every section.
-    const float px = x0 + kSidebarWidth;
-    p.fillRect(skia::SkRect::MakeXYWH(px, 0.0f, kPanelWidth, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(fade * 250.0f), 31,
-                                  25, 40));
-
-    p.textClipped("settings", px + kContentMargins, 56.0f,
-                  kPanelWidth - kContentMargins * 2, 30.0f, skia::kWhite, fade);
-    p.textClipped("change the way osu! behaves", px + kContentMargins, 78.0f,
-                  kPanelWidth - kContentMargins * 2, 13.0f, skia::kWhite,
-                  fade * 0.6f);
-
-    constexpr float kTop = 110.0f;
-    fSettingsScrollAnim = client::ui::approach(fSettingsScrollAnim,
-                                               fSettingsScroll, 110.0f, fUiDt);
-
-    canvas->save();
-    canvas->clipIRect(skia::SkIRect::MakeXYWH(static_cast<int>(px),
-                                              static_cast<int>(kTop),
-                                              static_cast<int>(kPanelWidth),
-                                              static_cast<int>(sh - kTop)));
-    const auto &defs = fSettings.defs();
-    float y = kTop + 24.0f - fSettingsScrollAnim;
-    int lastSection = -1;
-    int currentSection = 0;
-    for (std::size_t i = 0; i < defs.size(); ++i) {
-      const auto &d = defs[i];
-      if (d.fSection != lastSection) {
-        lastSection = d.fSection;
-        fSectionOffsets[static_cast<std::size_t>(d.fSection)] =
-            y - kTop - 24.0f + fSettingsScrollAnim;
-        p.textClipped(client::Settings::kSections[static_cast<std::size_t>(
-                          d.fSection)],
-                      px + kContentMargins, y, kPanelWidth - kContentMargins * 2,
-                      22.0f, client::ui::kAccent, fade);
-        y += 34.0f;
-      }
-      if (y - kTop + fSettingsScrollAnim <= sh) {
-        // The section the top of the viewport currently sits in drives the
-        // sidebar highlight, as lazer's SectionsContainer does.
-        if (y < kTop + 80.0f) {
-          currentSection = d.fSection;
-        }
-      }
-
-      const skia::SkRect row =
-          skia::SkRect::MakeXYWH(px + kContentMargins, y - 16.0f,
-                                 kPanelWidth - kContentMargins * 2, 44.0f);
-      fSettingRows.push_back({row, static_cast<int>(i)});
-
-      if (fSettings.isModified(i)) {
-        p.fillRounded(skia::SkRect::MakeXYWH(row.fLeft - 12.0f, row.fTop + 4.0f,
-                                             4.0f, row.height() - 8.0f),
-                      2.0f, client::ui::kAccent);
-        fRestoreHits.push_back(
-            {skia::SkRect::MakeXYWH(row.fLeft - 18.0f, row.fTop, 16.0f,
-                                    row.height()),
-             static_cast<int>(i)});
-      }
-
-      p.textClipped(d.fLabel, row.fLeft, y, row.width() * 0.62f, 14.0f,
-                    skia::kWhite, fade * 0.95f);
-
-      if (d.fKind == client::SettingKind::kSlider) {
-        const float t = (fSettings.value(d.fKey) - d.fMin) / (d.fMax - d.fMin);
-        const skia::SkRect track =
-            skia::SkRect::MakeXYWH(row.fLeft, y + 14.0f, row.width(), 6.0f);
-        p.fillRounded(track, 3.0f, skia::colorSetARGB(255, 58, 48, 70));
-        p.fillRounded(skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
-                                             track.width() * t, track.height()),
-                      3.0f, client::ui::kAccent);
-        p.circle(track.fLeft + track.width() * t, track.centerY(), 7.0f,
-                 skia::kWhite, fade);
-        p.textClipped(fSettings.displayValue(i), row.fRight - 76.0f, y, 76.0f,
-                      13.0f, skia::kWhite, fade * 0.75f);
-        y += 44.0f + kItemSpacing;
-      } else {
-        const bool on = fSettings.flag(d.fKey);
-        const skia::SkRect box =
-            skia::SkRect::MakeXYWH(row.fRight - 46.0f, y - 12.0f, 40.0f, 22.0f);
-        p.fillRounded(box, 11.0f,
-                      on ? client::ui::kAccent
-                         : skia::colorSetARGB(255, 58, 48, 70));
-        p.circle(on ? box.fRight - 11.0f : box.fLeft + 11.0f, box.centerY(),
-                 8.0f, skia::kWhite, fade);
-        y += 30.0f + kItemSpacing;
-      }
-    }
-    fSettingsContentHeight = y - kTop + fSettingsScrollAnim;
-    canvas->restore();
-
-    // ---- Sidebar entries, drawn after so the highlight reflects the scroll.
-    float sy = 70.0f;
-    for (std::size_t i = 0; i < client::Settings::kSections.size(); ++i) {
-      const skia::SkRect r =
-          skia::SkRect::MakeXYWH(x0, sy, kSidebarWidth, kSidebarItemHeight);
-      fSidebarHits.push_back(r);
-      const bool active = static_cast<int>(i) == currentSection;
-      const bool hover = r.contains(fMouseX, fMouseY);
-
-      float &grow = fSidebarGrow[i];
-      grow = client::ui::approach(grow, active ? 1.0f : 0.0f, 90.0f, fUiDt);
-      const float indicatorH = 4.0f + 14.0f * client::ui::outElasticHalf(grow);
-      if (grow > 0.01f) {
-        p.fillRounded(skia::SkRect::MakeXYWH(r.fLeft + 6.0f,
-                                             r.centerY() - indicatorH * 0.5f,
-                                             4.0f, indicatorH),
-                      2.0f, skia::kWhite);
-      }
-      const skia::SkColor tint =
-          active ? skia::kWhite
-                 : (hover ? skia::colorSetARGB(255, 200, 195, 210)
-                          : skia::colorSetARGB(255, 153, 153, 153));
-      p.textClipped(client::Settings::kSectionIcons[i], r.fLeft + 26.0f,
-                    r.centerY() + 7.0f, 24.0f, 18.0f, tint, fade);
-      p.textClipped(client::Settings::kSections[i], r.fLeft + 56.0f,
-                    r.centerY() + 6.0f, kSidebarWidth - 66.0f, 15.0f, tint,
-                    fade);
-      sy += kSidebarItemHeight + 5.0f;
-    }
-
-    p.textClipped("Ctrl+O to close", px + kContentMargins, sh - 24.0f,
-                  kPanelWidth - kContentMargins * 2, 12.0f, skia::kWhite,
-                  fade * 0.5f);
+    fSettingsPanel.draw(canvas, fFont, fSettings,
+                        {fScreenW, fScreenH, fMouseX, fMouseY, wallMs(),
+                         fUiDt});
   }
 
   bool settingsClick(float x, float y, bool pressed) {
-    if (fSettingsSlide < 0.5f) {
-      return false;
-    }
-    if (!pressed) {
-      if (fDraggingSetting >= 0) {
-        fDraggingSetting = -1;
+    const auto hit = fSettingsPanel.click(x, y, pressed, fSettings);
+    if (hit == client::SettingsPanel::Hit::kChanged) {
+      this->applySettings();
+      if (!pressed || !fSettingsPanel.dragging()) {
         fSettings.save();
-        this->applySettings();
-      }
-      return true;
-    }
-    for (const auto &hit : fRestoreHits) {
-      if (hit.fRect.contains(x, y)) {
-        fSettings.restoreDefault(static_cast<std::size_t>(hit.fIndex));
-        this->applySettings();
-        return true;
       }
     }
-    // Sidebar scrolls the column to that section instead of switching pages.
-    for (std::size_t i = 0; i < fSidebarHits.size(); ++i) {
-      if (fSidebarHits[i].contains(x, y)) {
-        if (i < fSectionOffsets.size()) {
-          fSettingsScroll = fSectionOffsets[i];
-        }
-        return true;
-      }
-    }
-    for (const auto &row : fSettingRows) {
-      if (!row.fRect.contains(x, y)) {
-        continue;
-      }
-      const auto idx = static_cast<std::size_t>(row.fIndex);
-      if (fSettings.defs()[idx].fKind == client::SettingKind::kToggle) {
-        fSettings.toggle(idx);
-        this->applySettings();
-        fSettings.save();
-      } else {
-        fDraggingSetting = row.fIndex;
-        this->dragSetting(x);
-      }
-      return true;
-    }
-    return x < kSidebarWidth + kPanelWidth;
+    return hit != client::SettingsPanel::Hit::kNone;
   }
 
   void dragSetting(float x) {
-    if (fDraggingSetting < 0) {
-      return;
-    }
-    for (const auto &row : fSettingRows) {
-      if (row.fIndex != fDraggingSetting) {
-        continue;
-      }
-      fSettings.setFromFraction(
-          static_cast<std::size_t>(row.fIndex),
-          (x - row.fRect.fLeft) / row.fRect.width());
-      this->applyAudioSettings();
-      return;
+    if (fSettingsPanel.drag(x, fSettings)) {
+      this->applyAudioSettings(); // cheap part only while dragging
     }
   }
 
   void scrollSettings(float delta) {
-    fSettingsScroll = std::clamp(fSettingsScroll - delta * 60.0f, 0.0f,
-                                 std::max(0.0f, fSettingsContentHeight -
-                                                    static_cast<float>(fScreenH) *
-                                                        0.6f));
+    fSettingsPanel.scroll(delta, static_cast<float>(fScreenH));
   }
 
   void applyAudioSettings() {
@@ -3501,7 +3245,6 @@ private:
 
   void toggleMods() {
     fModsOpen = !fModsOpen;
-    fSettingsEnterWall = wallMs();
   }
 
   void drawModSelect(skia::SkCanvas *canvas) {
