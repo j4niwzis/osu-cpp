@@ -735,6 +735,12 @@ public:
       paint.setAntiAlias(true);
       paint.setColor(color);
       paint.setAlphaf(static_cast<float>(alpha));
+      // webosu-2 renders these in Venera, a heavy display face. The bundled
+      // UI font is far lighter, so thicken the glyphs with a stroke of the
+      // same colour rather than leaving them looking spindly.
+      paint.setStyle(skia::kStrokeAndFillStyle);
+      paint.setStrokeWidth(fontSize * 0.10f);
+      paint.setStrokeJoin(skia::kRoundJoin);
 
       canvas->save();
       canvas->translate(x, y);

@@ -150,6 +150,11 @@ inline constexpr Style kStrokeStyle = ::SkPaint::Style::kStroke_Style;
 inline constexpr Style kStrokeAndFillStyle =
     ::SkPaint::Style::kStrokeAndFill_Style;
 
+using Join = ::SkPaint::Join;
+inline constexpr Join kMiterJoin = ::SkPaint::Join::kMiter_Join;
+inline constexpr Join kRoundJoin = ::SkPaint::Join::kRound_Join;
+inline constexpr Join kBevelJoin = ::SkPaint::Join::kBevel_Join;
+
 using Cap = ::SkPaint::Cap;
 inline constexpr Cap kButtCap = ::SkPaint::Cap::kButt_Cap;
 inline constexpr Cap kRoundCap = ::SkPaint::Cap::kRound_Cap;

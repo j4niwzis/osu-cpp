@@ -176,12 +176,12 @@ private:
   std::vector<CarouselHit> fCarouselHits; // rebuilt every song-select frame
   std::mutex fDropMutex;                  // guards fDropped
   std::vector<std::string> fDropped;      // files dropped onto the window
-  skia::SkRect fDownloadsChip = skia::SkRect::MakeEmpty(); // bottom-bar button
-  skia::SkRect fImportChip = skia::SkRect::MakeEmpty();    // footer button
   skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
-  skia::SkRect fSettingsChip = skia::SkRect::MakeEmpty();  // footer button
   skia::SkRect fModsChip = skia::SkRect::MakeEmpty();      // footer button
-  skia::SkRect fReplaysChip = skia::SkRect::MakeEmpty();   // footer button
+  skia::SkRect fOptionsChip = skia::SkRect::MakeEmpty();   // footer button
+  skia::SkRect fBackChip = skia::SkRect::MakeEmpty();      // footer back
+  bool fOptionsOpen = false;
+  std::vector<skia::SkRect> fOptionHits;
 
   // Download screen (mirror search + .osz fetch).
   struct DownloadEntry {
@@ -982,28 +982,7 @@ private:
       if (this->filterClick(x, y, true)) {
         return;
       }
-      if (fDownloadsChip.contains(x, y)) {
-        this->openDownloads();
-        return;
-      }
-      if (fImportChip.contains(x, y)) {
-        this->importOsz();
-        return;
-      }
-      if (fSettingsChip.contains(x, y)) {
-        this->toggleSettings();
-        return;
-      }
-      if (fModsChip.contains(x, y)) {
-        this->toggleMods();
-        return;
-      }
-      if (fReplaysChip.contains(x, y)) {
-        this->toggleReplayList();
-        return;
-      }
-      if (fRandomChip.contains(x, y)) {
-        this->selectRandom();
+      if (this->optionsClick(x, y)) {
         return;
       }
       for (const auto &hit : fCarouselHits) {
@@ -3917,43 +3896,118 @@ private:
     }
   }
 
-  // lazer's song select footer: a row of pill buttons along the bottom.
+  // SongSelect.CreateFooterButtons gives exactly three: Mods, Random and
+  // Options; Options opens a popover with the per-beatmap actions. The back
+  // button sits on the left, as ScreenBackButton does.
   void drawSelectFooter(skia::SkCanvas *canvas) {
+    const client::ui::Painter p(canvas, fFont);
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
-    skia::SkPaint bar;
-    bar.setColor(kPanelBg);
-    canvas->drawRect(skia::SkRect::MakeXYWH(0.0f, sh - 62.0f, sw, 62.0f), bar);
+    constexpr float kFooterHeight = 60.0f;
+    p.fillRect(skia::SkRect::MakeXYWH(0.0f, sh - kFooterHeight, sw,
+                                      kFooterHeight),
+               client::ui::kBackground5);
+
+    // Back button, bottom-left.
+    fBackChip = skia::SkRect::MakeXYWH(24.0f, sh - 46.0f, 100.0f, 34.0f);
+    const bool backHover = fBackChip.contains(fMouseX, fMouseY);
+    p.fillRounded(fBackChip, 17.0f,
+                  backHover ? client::ui::kCardSel : client::ui::kCardBg);
+    p.textCentered("back", fBackChip.centerX(), fBackChip.centerY() + 5.0f,
+                   14.0f, skia::kWhite, 0.9f);
 
     struct FooterBtn {
       const char *fLabel;
       skia::SkColor fColor;
       skia::SkRect *fHit;
     };
-    // lazer's song select footer: mods first, then the rest.
     const FooterBtn btns[] = {
-        {"mods", kAccent, &fModsChip},
-        {"replays", skia::colorSetARGB(255, 170, 102, 255), &fReplaysChip},
+        {"mods", client::ui::kAccent, &fModsChip},
         {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
-        {"import", skia::colorSetARGB(255, 238, 170, 0), &fImportChip},
-        {"browse", skia::colorSetARGB(255, 165, 204, 0), &fDownloadsChip},
-        {"settings", skia::colorSetARGB(255, 140, 140, 155), &fSettingsChip},
+        {"options", skia::colorSetARGB(255, 170, 102, 255), &fOptionsChip},
     };
-    float x = 24.0f;
+    const float bw = 140.0f;
+    const float gap = 10.0f;
+    float x = (sw - (bw * 3.0f + gap * 2.0f)) * 0.5f;
     for (const auto &b : btns) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(x, sh - 50.0f, 120.0f, 38.0f);
+      const skia::SkRect r =
+          skia::SkRect::MakeXYWH(x, sh - 48.0f, bw, 36.0f);
       *b.fHit = r;
       const bool hover = r.contains(fMouseX, fMouseY);
-      this->fillRounded(canvas, r, 19.0f, hover ? kCardSel : kCardBg);
-      this->strokeRounded(canvas, r, 19.0f, b.fColor, hover ? 2.0f : 1.0f);
-      this->drawTextCentered(canvas, b.fLabel, r.centerX(), r.centerY() + 5.0f,
-                             14.0f, hover ? b.fColor : skia::kWhite);
-      x += 128.0f;
+      p.fillRounded(r, 18.0f,
+                    hover ? client::ui::kCardSel : client::ui::kCardBg);
+      p.strokeRounded(r, 18.0f, b.fColor, hover ? 2.0f : 1.0f);
+      p.textCentered(b.fLabel, r.centerX(), r.centerY() + 5.0f, 14.0f,
+                     hover ? b.fColor : skia::kWhite);
+      x += bw + gap;
     }
-    this->drawTextCentered(
-        canvas,
-        "Enter play   F1 browse   F2 random   F5 import   Ctrl+O settings",
-        sw * 0.72f, sh - 24.0f, 14.0f, skia::kWhite, 0.7f);
+
+    this->drawOptionsPopover(p, sw, sh);
+  }
+
+  // FooterButtonOptions.Popover: the per-beatmap actions that do not deserve
+  // their own footer slot.
+  void drawOptionsPopover(const client::ui::Painter &p, float sw, float sh) {
+    fOptionHits.clear();
+    if (!fOptionsOpen) {
+      return;
+    }
+    static constexpr std::array<const char *, 4> kItems = {
+        "import .osz", "browse beatmaps", "replays", "settings"};
+    const float w = 220.0f;
+    const float itemH = 38.0f;
+    const float h = itemH * static_cast<float>(kItems.size()) + 12.0f;
+    const skia::SkRect box = skia::SkRect::MakeXYWH(
+        fOptionsChip.centerX() - w * 0.5f, sh - 60.0f - h - 8.0f, w, h);
+    p.fillRounded(box, 10.0f, client::ui::kBackground4);
+    p.strokeRounded(box, 10.0f, skia::colorSetARGB(255, 170, 102, 255), 2.0f);
+    for (std::size_t i = 0; i < kItems.size(); ++i) {
+      const skia::SkRect r = skia::SkRect::MakeXYWH(
+          box.fLeft + 6.0f, box.fTop + 6.0f + static_cast<float>(i) * itemH,
+          w - 12.0f, itemH);
+      fOptionHits.push_back(r);
+      if (r.contains(fMouseX, fMouseY)) {
+        p.fillRounded(r, 8.0f, client::ui::kCardSel);
+      }
+      p.textClipped(kItems[i], r.fLeft + 14.0f, r.centerY() + 5.0f,
+                    r.width() - 28.0f, 14.0f, skia::kWhite, 0.95f);
+    }
+  }
+
+  bool optionsClick(float x, float y) {
+    if (fOptionsOpen) {
+      for (std::size_t i = 0; i < fOptionHits.size(); ++i) {
+        if (!fOptionHits[i].contains(x, y)) {
+          continue;
+        }
+        fOptionsOpen = false;
+        switch (i) {
+        case 0: this->importOsz(); break;
+        case 1: this->openDownloads(); break;
+        case 2: this->toggleReplayList(); break;
+        default: this->toggleSettings(); break;
+        }
+        return true;
+      }
+      fOptionsOpen = false;
+    }
+    if (fOptionsChip.contains(x, y)) {
+      fOptionsOpen = !fOptionsOpen;
+      return true;
+    }
+    if (fModsChip.contains(x, y)) {
+      this->toggleMods();
+      return true;
+    }
+    if (fRandomChip.contains(x, y)) {
+      this->selectRandom();
+      return true;
+    }
+    if (fBackChip.contains(x, y)) {
+      this->switchState(State::kMainMenu);
+      return true;
+    }
+    return false;
   }
 
   void drawBottomBar(skia::SkCanvas *canvas, const std::string &hint) {
@@ -4161,9 +4215,10 @@ private:
 
   // ---- Results ----------------------------------------------------------
 
-  // lazer's ResultsScreen: the beatmap line across the top, a wide score
-  // panel with the grade badge on the left, the score and accuracy stacked
-  // beside it, and the judgement counts in a row underneath.
+  // ResultsScreen / ExpandedPanelMiddleContent, in order down the panel:
+  // beatmap metadata, the AccuracyCircle, the total score counter, the
+  // difficulty line, then the statistics rows. ScorePanel.EXPANDED_WIDTH is
+  // 360 and the circle sits in a 230px band, which sets the proportions.
   void frameResults() {
     fView.invalidate();
     auto *canvas = fSurface->getCanvas();
@@ -4173,104 +4228,196 @@ private:
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     const auto &sc = fResult.fScore;
-
-    // Dim the artwork the way the results screen does.
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(150, 10, 8, 14));
+               skia::colorSetARGB(160, 10, 8, 14));
 
-    // ---- Beatmap line.
+    // The panel keeps lazer's proportions, scaled to the window.
+    const float panelW = std::min(520.0f, sw * 0.42f);
+    const float scale = panelW / 360.0f; // EXPANDED_WIDTH
+    const float panelH = std::min(sh - 140.0f, 620.0f * scale);
+    const skia::SkRect panel = skia::SkRect::MakeXYWH(
+        (sw - panelW) * 0.5f, (sh - panelH) * 0.5f - 20.0f, panelW, panelH);
+    p.fillRounded(panel, 20.0f, client::ui::kBackground5);
+
+    float y = panel.fTop + 34.0f * scale;
+
+    // ---- Metadata.
     if (fMap) {
       const auto &m = fMap->fMeta;
-      const std::string title =
-          (m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode) + " - " +
-          (m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode);
-      p.textCentered(title, sw * 0.5f, 56.0f, 26.0f, skia::kWhite);
-      p.textCentered(std::format("[{}]   mapped by {}", m.fVersion, m.fCreator),
-                     sw * 0.5f, 82.0f, 15.0f, skia::kWhite, 0.7f);
+      p.textCentered(m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode,
+                     panel.centerX(), y, 20.0f * scale, skia::kWhite);
+      y += 24.0f * scale;
+      p.textCentered(m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode,
+                     panel.centerX(), y, 14.0f * scale, skia::kWhite, 0.8f);
+      y += 34.0f * scale;
     }
 
-    // ---- Score panel.
-    const float panelW = std::min(980.0f, sw * 0.82f);
-    const float panelH = 260.0f;
-    const skia::SkRect panel = skia::SkRect::MakeXYWH(
-        (sw - panelW) * 0.5f, sh * 0.22f, panelW, panelH);
-    p.fillRounded(panel, 16.0f, client::ui::kBackground5);
+    // ---- AccuracyCircle: a ring whose graded segments are the rank
+    // thresholds, with the achieved accuracy drawn over them and the rank
+    // badge in the middle.
+    const float circleR = 108.0f * scale;
+    const float cy = y + circleR;
+    this->drawAccuracyCircle(canvas, panel.centerX(), cy, circleR,
+                             sc.accuracy());
+    y = cy + circleR + 28.0f * scale;
 
-    // Grade badge.
-    const float gx = panel.fLeft + 130.0f;
-    const float gy = panel.centerY();
-    p.circle(gx, gy, 86.0f, client::ui::kAccent, 0.16f);
-    p.textCentered(fResult.fGrade, gx, gy + 30.0f, 84.0f, client::ui::kAccent);
-
-    // Score and accuracy, counting up over the first second.
+    // ---- Total score, counting up as TotalScoreCounter does.
     const float countUp = client::ui::outQuint(
         static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
     const auto shown =
         static_cast<std::uint64_t>(static_cast<double>(sc.fScore) * countUp);
-    p.textClipped(std::format("{:010}", shown), panel.fLeft + 250.0f,
-                  panel.fTop + 92.0f, panelW - 280.0f, 46.0f, skia::kWhite);
-    p.textClipped(std::format("{:.2f}%", sc.accuracy() * 100.0),
-                  panel.fLeft + 250.0f, panel.fTop + 140.0f, 220.0f, 26.0f,
-                  client::ui::kAccent2);
-    p.textClipped(std::format("{}x  /  {}x", sc.fMaxCombo, sc.fMaxCombo),
-                  panel.fLeft + 470.0f, panel.fTop + 140.0f, 220.0f, 26.0f,
-                  skia::kWhite, 0.85f);
-    p.textClipped("accuracy", panel.fLeft + 250.0f, panel.fTop + 162.0f, 120.0f,
-                  12.0f, skia::kWhite, 0.5f);
-    p.textClipped("max combo", panel.fLeft + 470.0f, panel.fTop + 162.0f,
-                  120.0f, 12.0f, skia::kWhite, 0.5f);
+    p.textCentered(std::format("{:07}", shown), panel.centerX(), y,
+                   44.0f * scale, skia::kWhite);
+    y += 26.0f * scale;
 
-    // Judgement counts along the bottom of the panel.
-    struct Row {
+    // ---- Difficulty line: star rating chip, difficulty name, mods.
+    if (fPlayingSet >= 0) {
+      const auto &infos = this->infosFor(fPlayingSet);
+      if (fPlayingDiff >= 0 &&
+          fPlayingDiff < static_cast<int>(infos.size())) {
+        const auto &info = infos[static_cast<std::size_t>(fPlayingDiff)];
+        const skia::SkRect chip = skia::SkRect::MakeXYWH(
+            panel.centerX() - 90.0f * scale, y - 11.0f * scale, 62.0f * scale,
+            22.0f * scale);
+        p.fillRounded(chip, 11.0f * scale,
+                      client::ui::starColor(info.fStars));
+        p.textCentered(std::format("{:.2f}", info.fStars), chip.centerX(),
+                       chip.centerY() + 5.0f * scale, 12.0f * scale,
+                       skia::colorSetARGB(255, 20, 16, 26));
+        p.textClipped(info.fMeta.fVersion, chip.fRight + 10.0f * scale,
+                      y + 5.0f * scale, 150.0f * scale, 14.0f * scale,
+                      skia::kWhite, 0.9f);
+      }
+      y += 26.0f * scale;
+      p.textCentered(std::format("mapped by {}",
+                                 fMap ? fMap->fMeta.fCreator : std::string{}),
+                     panel.centerX(), y, 12.0f * scale, skia::kWhite, 0.7f);
+      y += 30.0f * scale;
+    }
+
+    // ---- Statistics: the top row carries the judgement counts, the bottom
+    // row combo / accuracy, as the two GridContainers do.
+    struct Stat {
       const char *fLabel;
-      int fCount;
+      std::string fValue;
       skia::SkColor fColor;
     };
-    const Row rows[] = {
-        {"300", sc.fGreat, client::ui::kGreat},
-        {"100", sc.fGood, client::ui::kGood},
-        {"50", sc.fMeh, client::ui::kMeh},
-        {"miss", sc.fMiss, client::ui::kMiss},
+    const Stat top[] = {
+        {"300", std::format("{}", sc.fGreat), client::ui::kGreat},
+        {"100", std::format("{}", sc.fGood), client::ui::kGood},
+        {"50", std::format("{}", sc.fMeh), client::ui::kMeh},
+        {"miss", std::format("{}", sc.fMiss), client::ui::kMiss},
     };
-    float cx = panel.fLeft + 250.0f;
-    for (const auto &row : rows) {
-      p.textClipped(row.fLabel, cx, panel.fBottom - 46.0f, 90.0f, 15.0f,
-                    row.fColor);
-      p.textClipped(std::format("{}", row.fCount), cx, panel.fBottom - 22.0f,
-                    90.0f, 22.0f, skia::kWhite);
-      cx += 110.0f;
+    const float cellW = (panelW - 40.0f * scale) / 4.0f;
+    float cx = panel.fLeft + 20.0f * scale;
+    for (const auto &st : top) {
+      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
+                     st.fColor);
+      p.textCentered(st.fValue, cx + cellW * 0.5f, y + 22.0f * scale,
+                     20.0f * scale, skia::kWhite);
+      cx += cellW;
     }
-    p.textClipped(std::format("hit error {:+.1f} ms", fResult.fMean),
-                  panel.fRight - 220.0f, panel.fBottom - 46.0f, 200.0f, 13.0f,
-                  skia::kWhite, 0.7f);
-    p.textClipped(std::format("unstable rate {:.0f}", fResult.fUr),
-                  panel.fRight - 220.0f, panel.fBottom - 22.0f, 200.0f, 13.0f,
-                  skia::kWhite, 0.7f);
+    y += 48.0f * scale;
 
-    // ---- Buttons.
+    const Stat bottom[] = {
+        {"combo", std::format("{}x", sc.fMaxCombo), skia::kWhite},
+        {"accuracy", std::format("{:.2f}%", sc.accuracy() * 100.0),
+         skia::kWhite},
+        {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite},
+        {"UR", std::format("{:.0f}", fResult.fUr), skia::kWhite},
+    };
+    cx = panel.fLeft + 20.0f * scale;
+    for (const auto &st : bottom) {
+      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
+                     skia::kWhite, 0.55f);
+      p.textCentered(st.fValue, cx + cellW * 0.5f, y + 20.0f * scale,
+                     16.0f * scale, st.fColor);
+      cx += cellW;
+    }
+
+    // ---- Actions, below the panel.
     fMenuButtons.clear();
-    const float bw = std::min(300.0f, sw * 0.26f);
-    const float bh = 52.0f;
-    const float by = panel.fBottom + 40.0f;
-    const float gap = 16.0f;
-    const float total = bw * 3.0f + gap * 2.0f;
-    float bx = (sw - total) * 0.5f;
+    const float bw = std::min(260.0f, sw * 0.22f);
+    const float bh = 46.0f;
+    const float gap = 14.0f;
+    float bx = (sw - (bw * 3.0f + gap * 2.0f)) * 0.5f;
     const char *labels[] = {"retry", "back to song select", "export video"};
     const skia::SkColor accents[] = {skia::colorSetARGB(255, 255, 204, 102),
                                      client::ui::kAccent2,
                                      skia::colorSetARGB(255, 170, 102, 255)};
     for (int i = 0; i < 3; ++i) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(bx, by, bw, bh);
+      const skia::SkRect r =
+          skia::SkRect::MakeXYWH(bx, panel.fBottom + 24.0f, bw, bh);
       fMenuButtons.push_back({r, labels[i], accents[i]});
       this->drawMenuButton(canvas, fMenuButtons.back());
       bx += bw + gap;
     }
 
-    this->drawBottomBar(canvas,
-                        "Enter retry    Esc back to song select    "
-                        "replays are saved automatically");
     this->drawScreenFadeIn(canvas);
     this->present();
+  }
+
+  // AccuracyCircle: a grey backing ring, the graded arcs (D/C/B/A/S/SS at
+  // their accuracy cutoffs), the achieved accuracy drawn over them, and the
+  // rank letter in the middle. Cutoffs are lazer's standard ones.
+  void drawAccuracyCircle(skia::SkCanvas *canvas, float cx, float cy, float r,
+                          double accuracy) {
+    const client::ui::Painter p(canvas, fFont);
+    const float thickness = r * 0.2f; // accuracy_circle_radius
+    const skia::SkRect bounds =
+        skia::SkRect::MakeXYWH(cx - r, cy - r, r * 2.0f, r * 2.0f);
+
+    skia::SkPaint arc;
+    arc.setAntiAlias(true);
+    arc.setStyle(skia::kStrokeStyle);
+    arc.setStrokeWidth(thickness);
+    arc.setStrokeCap(skia::kButtCap);
+
+    // Backing ring, OsuColour.Gray(47).
+    arc.setColor(skia::colorSetARGB(255, 47, 47, 47));
+    canvas->drawArc(bounds, -90.0f, 360.0f, false, arc);
+
+    // Graded segments: each rank owns the span from its cutoff to the next.
+    struct Grade {
+      double fFrom, fTo;
+      skia::SkColor fColor;
+    };
+    const Grade grades[] = {
+        {0.0, 0.60, skia::colorSetARGB(255, 0xff, 0x54, 0x5a)},   // D
+        {0.60, 0.70, skia::colorSetARGB(255, 0xff, 0xa0, 0x55)},  // C
+        {0.70, 0.80, skia::colorSetARGB(255, 0xff, 0xdd, 0x55)},  // B
+        {0.80, 0.90, skia::colorSetARGB(255, 0x88, 0xdd, 0x20)},  // A
+        {0.90, 0.95, skia::colorSetARGB(255, 0x02, 0xb8, 0xd7)},  // S
+        {0.95, 1.00, skia::colorSetARGB(255, 0xde, 0x31, 0xae)},  // SS
+    };
+    skia::SkPaint graded;
+    graded.setAntiAlias(true);
+    graded.setStyle(skia::kStrokeStyle);
+    graded.setStrokeWidth(thickness * 0.45f);
+    graded.setStrokeCap(skia::kButtCap);
+    const float gradedR = r - thickness * 0.78f;
+    const skia::SkRect gradedBounds = skia::SkRect::MakeXYWH(
+        cx - gradedR, cy - gradedR, gradedR * 2.0f, gradedR * 2.0f);
+    for (const auto &g : grades) {
+      graded.setColor(g.fColor);
+      const float from = -90.0f + static_cast<float>(g.fFrom) * 360.0f;
+      const float sweep = static_cast<float>(g.fTo - g.fFrom) * 360.0f - 1.5f;
+      canvas->drawArc(gradedBounds, from, sweep, false, graded);
+    }
+
+    // Achieved accuracy, animated in with the panel.
+    const float progress = client::ui::outQuint(static_cast<float>(
+        (wallMs() - fStateEnterWall) / 1400.0));
+    arc.setColor(skia::kWhite);
+    canvas->drawArc(bounds, -90.0f,
+                    static_cast<float>(accuracy) * 360.0f * progress, false,
+                    arc);
+
+    // Rank badge in the middle.
+    p.textCentered(fResult.fGrade, cx, cy + r * 0.28f, r * 0.72f,
+                   client::ui::kAccent);
+    p.textCentered(std::format("{:.2f}%", accuracy * 100.0), cx,
+                   cy + r * 0.62f, r * 0.16f, skia::kWhite, 0.85f);
   }
 
   bool initSkia() {
