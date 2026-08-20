@@ -427,7 +427,6 @@ public:
 
     const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
     fTicking = false; // nodes counting out a delay set this again below
-    fExpandedCard = nullptr; // a card with its list open says so below
     fScene->updateTree(ctx.fNowMs);
     fScene->layoutIfNeeded(screen);
     if (fRebuilt) {
@@ -921,8 +920,14 @@ private:
       }
       fExpanded = client::ui::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
                                        kTransitionMs / 5.0f, dt);
+      // Which card owns the dropdown outlives the pass that decides it: a
+      // card asks whether the dropdown under it is hovered, and clearing this
+      // before the passes ran meant the answer was always no -- so moving the
+      // pointer onto the list closed the list.
       if (fExpanded > 0.01f) {
         fOwner->fExpandedCard = this;
+      } else if (fOwner->fExpandedCard == this) {
+        fOwner->fExpandedCard = nullptr;
       }
       if (fExpand != previousExpand) {
         this->markDamaged(); // the buttons on the right widen with the hover
