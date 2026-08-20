@@ -228,13 +228,12 @@ TEST(Stars, MatchesLazer) {
        0.1463710443218, 0.0, 54, 1e-6},
       {"test/data/very-fast-slider.osu", 0.4086732514770, 0.0,
        0.2479040043017, 0.0, 4, 1e-6},
-      // The aim on this one is still out by a lot in relative terms -- 0.0029
-      // against 0.0016 -- on a beatmap of four stacked circles and one
-      // multi-segment slider under a NaN timing point. In absolute terms it
-      // moves the star rating by a hundred-millionth, so it is pinned loosely
-      // and left as a known deviation rather than papered over.
+      // Four circles stacked on one spot and a multi-segment slider under a
+      // NaN timing point. The aim here is a thousandth of a star, so a
+      // looser relative tolerance: at that size the last digits are noise
+      // even when everything agrees.
       {"test/data/nan-slider.osu", 0.8705817579435, 0.0016034639251,
-       0.5279682051204, 0.0615058614521, 6, 1.0},
+       0.5279682051204, 0.0615058614521, 6, 1e-4},
   };
 
   for (const auto &c : cases) {
