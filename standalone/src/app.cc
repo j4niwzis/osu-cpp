@@ -598,6 +598,7 @@ private:
       return 1;
     }
 
+    this->loadFonts();
     fFont = this->loadFont(20.0f);
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
@@ -659,6 +660,7 @@ private:
       return;
     }
 
+    this->loadFonts();
     fFont = this->loadFont(20.0f);
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
@@ -5601,48 +5603,44 @@ private:
   // Judgements are set in a heavy geometric display face. osu! and webosu-2
   // use Venera, which is a commercial typeface, so the client ships
   // Montserrat ExtraBold instead (SIL OFL 1.1, see assets/fonts/OFL.txt).
-  [[nodiscard]] skia::SkFont loadDisplayFont(float size) {
-    constexpr const char *kFile = "Montserrat-ExtraBold.ttf";
+  // Where a bundled asset can be: beside the install prefix, at the configured
+  // data dir, in the source tree, or next to the working directory.
+  [[nodiscard]] std::vector<std::filesystem::path>
+  assetCandidates(const std::string &name) const {
     std::vector<std::filesystem::path> candidates;
-
-    // Beside the executable's install prefix: resolving through /proc/self/exe
-    // works no matter what the working directory is.
     std::error_code ec;
     const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
     if (!ec && !exe.empty()) {
       const auto prefix = exe.parent_path().parent_path(); // .../bin/x -> ...
-      candidates.push_back(prefix / "share" / "osu_client" / "fonts" / kFile);
-      candidates.push_back(exe.parent_path() / "fonts" / kFile);
+      candidates.push_back(prefix / "share" / "osu_client" / "fonts" / name);
+      candidates.push_back(exe.parent_path() / "fonts" / name);
     }
 #ifdef OSU_CLIENT_DATADIR
     candidates.emplace_back(std::filesystem::path(OSU_CLIENT_DATADIR) /
-                            "fonts" / kFile);
+                            "fonts" / name);
 #endif
 #ifdef OSU_CLIENT_SOURCE_ASSETS
     candidates.emplace_back(std::filesystem::path(OSU_CLIENT_SOURCE_ASSETS) /
-                            "fonts" / kFile);
+                            "fonts" / name);
 #endif
-    candidates.emplace_back(std::filesystem::path("assets") / "fonts" / kFile);
-    candidates.emplace_back(std::filesystem::path("fonts") / kFile);
+    candidates.emplace_back(std::filesystem::path("assets") / "fonts" / name);
+    candidates.emplace_back(std::filesystem::path("fonts") / name);
+    return candidates;
+  }
 
-    for (const auto &path : candidates) {
-      std::error_code exists;
-      if (!std::filesystem::exists(path, exists)) {
-        std::println(std::cerr, "[ui] display font: not at {}", path.string());
+  [[nodiscard]] skia::Sp<skia::SkTypeface> loadTypeface(const std::string &name) {
+    for (const auto &path : this->assetCandidates(name)) {
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec)) {
         continue;
       }
       auto data = skia::SkData::MakeFromFileName(path.c_str());
       if (!data || data->isEmpty()) {
-        std::println(std::cerr, "[ui] display font: cannot read {}",
-                     path.string());
         continue;
       }
-      // The factory takes a span of datas, not a single one.
       std::array<skia::Sp<skia::SkData>, 1> datas{std::move(data)};
       auto mgr = skia::SkFontMgr_New_Custom_Data(datas);
       if (!mgr || mgr->countFamilies() == 0) {
-        std::println(std::cerr, "[ui] display font: {} has no families",
-                     path.string());
         continue;
       }
       auto face = mgr->matchFamilyStyle(nullptr, skia::SkFontStyle());
@@ -5650,38 +5648,66 @@ private:
         face = mgr->createStyleSet(0)->createTypeface(0);
       }
       if (face) {
-        skia::SkString name;
-        face->getFamilyName(&name);
-        std::println(std::cerr, "[ui] judgement font: \"{}\" from {}",
-                     name.c_str(), path.string());
-        return skia::SkFont(std::move(face), size);
+        skia::SkString family;
+        face->getFamilyName(&family);
+        std::println(std::cerr, "[ui] font \"{}\" from {}", family.c_str(),
+                     path.string());
+        return face;
       }
     }
+    std::println(std::cerr, "[ui] font missing: {}", name);
+    return nullptr;
+  }
 
-    // System fallbacks, in case the bundled copy went missing.
-    static constexpr std::array<const char *, 6> kFamilies = {
-        "Montserrat ExtraBold", "Montserrat Bold", "Poppins Bold",
-        "Archivo Black",        "Anton",           "DejaVu Sans Bold"};
-    static constexpr std::array<const char *, 4> kDirs = {
-        "/usr/share/fonts/montserrat", "/usr/share/fonts/TTF",
-        "/usr/share/fonts/ttf-dejavu", "/usr/share/fonts"};
-    for (const char *dir : kDirs) {
-      if (!std::filesystem::is_directory(dir)) {
+  // Everything the client draws with ships with it: Latin, Cyrillic and Greek
+  // from Inter, Japanese and Korean from Noto Sans, icons from Font Awesome.
+  // Any other font dropped into the same directory joins the fallback chain,
+  // which is how Chinese or anything else can be added without a rebuild.
+  void loadFonts() {
+    auto &stack = client::ui::fonts();
+    auto primary = this->loadTypeface("Inter.ttf");
+    stack.setPrimary(primary);
+
+    for (const char *name :
+         {"NotoSansJP.ttf", "NotoSansKR.ttf", "FontAwesome-Solid.ttf"}) {
+      stack.addFallback(this->loadTypeface(name));
+    }
+    this->loadExtraFonts();
+
+    std::println(std::cerr, "[ui] {} fallback fonts loaded",
+                 stack.fallbackCount());
+  }
+
+  // Fonts the build does not know about, taken from the same directory.
+  void loadExtraFonts() {
+    static constexpr std::array<const char *, 4> kKnown = {
+        "Inter.ttf", "NotoSansJP.ttf", "NotoSansKR.ttf",
+        "FontAwesome-Solid.ttf"};
+    for (const auto &dir : this->assetCandidates("")) {
+      std::error_code ec;
+      if (!std::filesystem::is_directory(dir, ec)) {
         continue;
       }
-      auto mgr = skia::SkFontMgr_New_Custom_Directory(dir);
-      if (!mgr) {
-        continue;
-      }
-      for (const char *family : kFamilies) {
-        if (auto face = mgr->matchFamilyStyle(family, skia::SkFontStyle())) {
-          std::println(std::cerr, "[ui] judgement font: {} from {}", family,
-                       dir);
-          return skia::SkFont(std::move(face), size);
+      for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+        const auto ext = entry.path().extension().string();
+        if (ext != ".ttf" && ext != ".otf" && ext != ".ttc") {
+          continue;
         }
+        const auto name = entry.path().filename().string();
+        if (std::ranges::find(kKnown, name) != kKnown.end() ||
+            name == "Montserrat-ExtraBold.ttf") {
+          continue;
+        }
+        client::ui::fonts().addFallback(this->loadTypeface(name));
       }
+      return; // the first directory that exists is the one in use
     }
+  }
 
+  [[nodiscard]] skia::SkFont loadDisplayFont(float size) {
+    if (auto face = this->loadTypeface("Montserrat-ExtraBold.ttf")) {
+      return skia::SkFont(std::move(face), size);
+    }
     std::println(std::cerr,
                  "[ui] no display font found; judgements fall back to the UI "
                  "font");
@@ -5689,203 +5715,36 @@ private:
   }
 
   [[nodiscard]] skia::SkFont loadFont(float size) {
-    const std::vector<std::filesystem::path> files{
-        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/ttf-dejavu/DejaVuSans.ttf", // Alpine
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-    };
-
-    const std::vector<std::filesystem::path> dirs{
-        "/usr/share/fonts/noto",
-        "/usr/share/fonts/ttf-dejavu", // Alpine's dejavu package path
-        "/usr/share/fonts/dejavu",
-        "/usr/share/fonts/truetype/dejavu",
-        "/usr/share/fonts/TTF",
-        "/usr/share/fonts/liberation",
-        "/usr/share/fonts/ttf-liberation",
-        "/usr/share/fonts",
-    };
-
-    for (const auto &dir : dirs) {
-      if (!std::filesystem::is_directory(dir))
+    if (const auto &primary = client::ui::fonts().primary()) {
+      return skia::SkFont(primary, size);
+    }
+    // Only reached if the bundled fonts did not install; better a system face
+    // than no text at all.
+    for (const char *dir :
+         {"/usr/share/fonts/noto", "/usr/share/fonts/ttf-dejavu",
+          "/usr/share/fonts/TTF", "/usr/share/fonts"}) {
+      if (!std::filesystem::is_directory(dir)) {
         continue;
-      auto mgr = skia::SkFontMgr_New_Custom_Directory(dir.c_str());
-      if (!mgr)
+      }
+      auto mgr = skia::SkFontMgr_New_Custom_Directory(dir);
+      if (!mgr || mgr->countFamilies() == 0) {
         continue;
+      }
       auto face = mgr->matchFamilyStyle("Noto Sans", skia::SkFontStyle());
-      if (!face)
+      if (!face) {
         face = mgr->matchFamilyStyle("DejaVu Sans", skia::SkFontStyle());
-      if (!face)
-        face = mgr->matchFamilyStyle(nullptr, skia::SkFontStyle());
+      }
+      if (!face) {
+        face = mgr->createStyleSet(0)->createTypeface(0);
+      }
       if (face) {
-        skia::SkString family;
-        face->getFamilyName(&family);
-        std::println(std::cerr, "[ui] font: \"{}\" from {}", family.c_str(),
-                     dir.string());
+        std::println(std::cerr, "[ui] falling back to a system font from {}",
+                     dir);
         return skia::SkFont(std::move(face), size);
       }
     }
-
-    auto rootMgr = skia::SkFontMgr_New_Custom_Directory("/usr/share/fonts");
-    if (rootMgr) {
-      for (const auto &path : files) {
-        if (!std::filesystem::exists(path))
-          continue;
-        auto stream = skia::SkStream::MakeFromFile(path.c_str());
-        if (!stream)
-          continue;
-        auto face = rootMgr->makeFromStream(std::move(stream));
-        if (face)
-          return skia::SkFont(std::move(face), size);
-      }
-    }
-
-    for (const auto &path : files) {
-      if (!std::filesystem::exists(path))
-        continue;
-      auto data = skia::SkData::MakeFromFileName(path.c_str());
-      if (!data || data->isEmpty())
-        continue;
-      std::vector<skia::Sp<skia::SkData>> fonts;
-      fonts.push_back(std::move(data));
-      auto dataMgr = skia::SkFontMgr_New_Custom_Data(fonts);
-      if (!dataMgr)
-        continue;
-      auto face = dataMgr->matchFamilyStyle(nullptr, skia::SkFontStyle());
-      if (face)
-        return skia::SkFont(std::move(face), size);
-      const int families = dataMgr->countFamilies();
-      for (int i = 0; i < families; ++i) {
-        auto set = dataMgr->createStyleSet(i);
-        if (!set)
-          continue;
-        for (int j = 0; j < set->count(); ++j) {
-          face = set->createTypeface(j);
-          if (face)
-            return skia::SkFont(std::move(face), size);
-        }
-      }
-    }
-
-    std::println(std::cerr,
-                 "[ui] font: NONE FOUND - text will not render. Install "
-                 "font-noto or ttf-dejavu (apk add font-noto ttf-dejavu).");
-    return skia::SkFont(nullptr, size);
-  }
-
-  // Playfield placement for the current screen size. Split out so the video
-  // exporter can re-derive it for its offscreen resolution.
-  void layoutForScreen() {
-    // Match webosu-2: playfield occupies 80% of the limiting screen dimension.
-    constexpr float kPlayfieldSize = 0.8f;
-    const float sx =
-        static_cast<float>(fScreenW) / static_cast<float>(osu::kPlayfieldWidth);
-    const float sy = static_cast<float>(fScreenH) /
-                     static_cast<float>(osu::kPlayfieldHeight);
-    fScale = kPlayfieldSize * std::min(sx, sy);
-    fOffsetX =
-        (fScreenW - static_cast<float>(osu::kPlayfieldWidth) * fScale) * 0.5f;
-    fOffsetY =
-        (fScreenH - static_cast<float>(osu::kPlayfieldHeight) * fScale) * 0.5f;
-  }
-
-  void resize(int w, int h) {
-    // Called on the render thread with framebuffer dimensions delivered by
-    // the resize event (or the pre-thread snapshot); querying GLFW here is
-    // not allowed off the main thread.
-    fScreenW = w;
-    fScreenH = h;
-    this->layoutForScreen();
-
-    skia::GrGLFramebufferInfo info;
-    info.fFBOID = 0;
-    info.fFormat = skia::kGlRgba8;
-    skia::GrBackendRenderTarget target =
-        skia::MakeGL(fScreenW, fScreenH, 0, 0, info);
-    fSurface = skia::WrapBackendRenderTarget(
-        fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
-        skia::kRGBA_8888_SkColorType, nullptr, nullptr);
-    fView.invalidate();
-    fView.preScaleBackground(this->gameplayCtx(nullptr));
-  }
-
-  void toggleFullscreen() {
-    if (fWindow == nullptr)
-      return;
-#ifndef __EMSCRIPTEN__
-    fFullscreen = !fFullscreen;
-    if (fFullscreen) {
-      const auto monitor = glfw::glfwGetPrimaryMonitor();
-      const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-      glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
-                                 mode->height, mode->refreshRate);
-    } else {
-      glfw::glfwSetWindowMonitor(fWindow, nullptr, fWindowedX, fWindowedY,
-                                 fWindowedW, fWindowedH, 0);
-    }
-#endif
-  }
-
-  void shutdown() {
-    fAudio.stop();
-    fSurface.reset();
-    fContext.reset();
-    if (fWindow != nullptr) {
-      glfw::glfwDestroyWindow(fWindow);
-      fWindow = nullptr;
-    }
-    glfw::glfwTerminate();
-  }
-
-  [[nodiscard]] double nowMs() {
-#ifdef __EMSCRIPTEN__
-    return glfw::glfwGetTime() * 1000.0 - fStartMs;
-#else
-    // The audio device is consulted at most every kClockSyncIntervalMs;
-    // between syncs the game clock extrapolates from the wall clock. This
-    // removes blocking OpenAL round-trips (mixer mutex, PipeWire latency
-    // probes) from the hot path: they used to cost whole milliseconds per
-    // call, several calls per frame. It also makes the timeline seamless
-    // when the music ends: extrapolation simply continues from the last
-    // anchor instead of jumping to an unrelated wall-clock epoch.
-    const double wall = wallMs();
-    if (wall - fLastClockSyncWall >= kClockSyncIntervalMs) {
-      fLastClockSyncWall = wall;
-      if (fAudio.playing()) {
-        fClock.sync(wall, fAudio.positionSec() * 1000.0);
-      }
-    }
-    return fClock.sample(wall);
-#endif
-  }
-
-  [[nodiscard]] bool shouldStop(double now) const {
-    return fEngine->finished() && now > fMap->lastObjectEndTime() + 1000.0;
-  }
-
-
-  void submitAutoplay(double now) {
-    if (!fAutoplay) {
-      return; // the player is driving
-    }
-    while (fAutoplayIndex < fAutoplayEvents.size() &&
-           fAutoplayEvents[fAutoplayIndex].fTime <= now) {
-      const auto &ev = fAutoplayEvents[fAutoplayIndex];
-      fEngine->submit(ev);
-      if (fReplayPath.empty()) {
-        // Generated autoplay is worth recording; a replay being watched is
-        // already on disk.
-        fRecordedEvents.push_back(ev);
-      }
-      if (ev.fAction == osu::InputAction::kMove) {
-        fCursor = ev.fPos;
-        fView.addTrailPoint(fCursor, ev.fTime);
-      }
-      ++fAutoplayIndex;
-    }
+    std::println(std::cerr, "[ui] no font found at all");
+    return skia::SkFont();
   }
 
   void playHitsounds(double now) {

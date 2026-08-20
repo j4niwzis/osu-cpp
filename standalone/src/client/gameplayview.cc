@@ -533,7 +533,8 @@ public:
         std::format("{}/{}", std::max(0, c.fEngine->spinnerRotations(index)),
                     static_cast<int>(std::ceil(
                         osu::spinnerRequiredRotations(s.fEnd - s.fTime, od))));
-    canvas->drawString(label.c_str(), cx, cy + 6.0f / c.fScale, (*c.fFont), textPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, label, cx,
+                             cy + 6.0f / c.fScale, textPaint);
   }
 
   void updateCursorTrail(const Ctx &c, double now) {
@@ -829,7 +830,7 @@ public:
     (*c.fFont).setSize(48.0f);
     const std::string comboText =
         std::format("{:.0f}x", std::max(0.0, fDisplayCombo));
-    canvas->drawString(comboText.c_str(), 20.0f, 60.0f, (*c.fFont), fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, comboText, 20.0f, 60.0f, fHudPaint);
 
     // Score, accuracy, grade (top-center).
     (*c.fFont).setSize(22.0f);
@@ -837,14 +838,14 @@ public:
         std::format("{:.0f}  {:.2f}%  {}", fDisplayScore,
                     std::clamp(fDisplayAccuracy, 0.0, 1.0) * 100.0,
                     osu::gradeString(osu::computeGrade(score)));
-    canvas->drawString(statsText.c_str(), 20.0f, 90.0f, (*c.fFont), fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, statsText, 20.0f, 90.0f, fHudPaint);
 
     // Difficulty / mods (top-right).
     (*c.fFont).setSize(16.0f);
     const std::string diffText = std::format(
         "CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f} {}", c.fMap->fDiff.fCs,
         c.fMap->fDiff.fAr, c.fMap->fDiff.fOd, c.fMap->fDiff.fHp, c.fEngine->mods());
-    canvas->drawString(diffText.c_str(), 20.0f, 115.0f, (*c.fFont), fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, diffText, 20.0f, 115.0f, fHudPaint);
 
     // Health bar (top).
     this->drawHealthBar(c, canvas, 0.0f, 0.0f, sw, 14.0f, now);
@@ -854,14 +855,14 @@ public:
     const std::string countsText =
         std::format("Great {}  Good {}  Meh {}  Miss {}", score.fGreat,
                     score.fGood, score.fMeh, score.fMiss);
-    canvas->drawString(countsText.c_str(), 20.0f, 140.0f, (*c.fFont), fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, countsText, 20.0f, 140.0f, fHudPaint);
 
     // Progress time.
     (*c.fFont).setSize(14.0f);
     fHudPaint.setAlphaf(0.7f);
     const std::string timeText = std::format("{:.1f}s", now / 1000.0);
-    canvas->drawString(timeText.c_str(), sw - 80.0f, sh - 20.0f, (*c.fFont),
-                       fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, timeText, sw - 80.0f,
+                             sh - 20.0f, fHudPaint);
 
     if (c.fShowProfile) {
       double avgAdv = 0.0, avgRender = 0.0, avgFlush = 0.0, avgSwap = 0.0;
@@ -891,13 +892,13 @@ public:
       const std::string profText =
           std::format("adv {:.0f}  rend {:.0f}  flush {:.0f}  swap {:.0f} us",
                       avgAdv, avgRender, avgFlush, avgSwap);
-      canvas->drawString(profText.c_str(), sw - 240.0f, sh - 60.0f, (*c.fFont),
-                         fHudPaint);
+      client::ui::fonts().draw(canvas, *c.fFont, profText, sw - 240.0f,
+                               sh - 60.0f, fHudPaint);
       const std::string subText =
           std::format("follow {:.0f}  objs {:.0f}  rest {:.0f}  hud {:.0f} us",
                       avgFollow, avgObjs, avgRest, avgHud);
-      canvas->drawString(subText.c_str(), sw - 240.0f, sh - 75.0f, (*c.fFont),
-                         fHudPaint);
+      client::ui::fonts().draw(canvas, *c.fFont, subText, sw - 240.0f,
+                               sh - 75.0f, fHudPaint);
     }
   }
 

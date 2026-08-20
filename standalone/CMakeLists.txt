@@ -167,10 +167,15 @@ install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# Bundled display face for judgement text (SIL OFL 1.1; see assets/fonts/OFL.txt).
+# Every face the client draws with travels with it: the UI font, the CJK
+# fallbacks, the icon font and the display face for judgements, each under
+# SIL OFL 1.1 (the licences sit beside them). Nothing is taken from the
+# system, and any extra font dropped in here joins the fallback chain.
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/
   DESTINATION ${CMAKE_INSTALL_DATADIR}/osu_client/fonts
-  FILES_MATCHING PATTERN "*.ttf" PATTERN "OFL.txt"
+  FILES_MATCHING
+    PATTERN "*.ttf" PATTERN "*.otf" PATTERN "*.ttc"
+    PATTERN "OFL*.txt" PATTERN "LICENSE*.txt"
 )
 
 # ---- Add osu_clientTests ----

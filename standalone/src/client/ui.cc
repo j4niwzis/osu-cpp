@@ -66,6 +66,168 @@ inline constexpr skia::SkColor kMiss = skia::colorSetARGB(255, 237, 17, 33);
   return current + (target - current) * a;
 }
 
+// ---- Text with fallback ---------------------------------------------------
+//
+// Skia draws a string with exactly one typeface: a codepoint the typeface
+// does not have becomes a box. Beatmap metadata is full of Japanese, Korean
+// and the odd bit of everything else, so text is split into runs by which of
+// the loaded faces can render it, and each run is drawn with that face.
+//
+// The stack is filled once at startup from the fonts shipped beside the
+// binary; nothing is taken from the system. Lookups happen on the render
+// thread only, which is what lets the coverage cache go unlocked.
+class FontStack {
+public:
+  void setPrimary(skia::Sp<skia::SkTypeface> face) {
+    fPrimary = std::move(face);
+    fCoverage.clear();
+  }
+  void addFallback(skia::Sp<skia::SkTypeface> face) {
+    if (face) {
+      fFallbacks.push_back(std::move(face));
+      fCoverage.clear();
+    }
+  }
+  [[nodiscard]] const skia::Sp<skia::SkTypeface> &primary() const noexcept {
+    return fPrimary;
+  }
+  [[nodiscard]] std::size_t fallbackCount() const noexcept {
+    return fFallbacks.size();
+  }
+
+  [[nodiscard]] float measure(const skia::SkFont &font,
+                              std::string_view text) const {
+    float width = 0.0f;
+    this->forEachRun(font, text,
+                     [&](const skia::SkFont &runFont, std::string_view run) {
+                       width += runFont.measureText(
+                           run.data(), run.size(), skia::SkTextEncoding::kUTF8);
+                     });
+    return width;
+  }
+
+  void draw(skia::SkCanvas *canvas, const skia::SkFont &font,
+            std::string_view text, float x, float y,
+            const skia::SkPaint &paint) const {
+    this->forEachRun(font, text,
+                     [&](const skia::SkFont &runFont, std::string_view run) {
+                       canvas->drawSimpleText(run.data(), run.size(),
+                                              skia::SkTextEncoding::kUTF8, x, y,
+                                              runFont, paint);
+                       x += runFont.measureText(run.data(), run.size(),
+                                                skia::SkTextEncoding::kUTF8);
+                     });
+  }
+
+private:
+  // -1 is the font the caller handed in; anything else indexes fFallbacks.
+  [[nodiscard]] int faceFor(std::int32_t codepoint,
+                            const skia::SkTypeface *base) const {
+    if (base != nullptr && base->unicharToGlyph(codepoint) != 0) {
+      return -1;
+    }
+    const auto cached = fCoverage.find(codepoint);
+    if (cached != fCoverage.end()) {
+      return cached->second;
+    }
+    int found = -1;
+    for (std::size_t i = 0; i < fFallbacks.size(); ++i) {
+      if (fFallbacks[i]->unicharToGlyph(codepoint) != 0) {
+        found = static_cast<int>(i);
+        break;
+      }
+    }
+    fCoverage.emplace(codepoint, found);
+    return found;
+  }
+
+  // Splits the text where the face has to change and hands each piece over.
+  template <typename Fn>
+  void forEachRun(const skia::SkFont &font, std::string_view text,
+                  Fn &&fn) const {
+    if (text.empty()) {
+      return;
+    }
+    const skia::SkTypeface *base = font.getTypeface();
+    std::size_t runStart = 0;
+    int runFace = 0;
+    bool haveRun = false;
+    std::size_t i = 0;
+    while (i < text.size()) {
+      const std::size_t start = i;
+      const std::int32_t cp = decodeUtf8(text, i);
+      const int face = this->faceFor(cp, base);
+      if (!haveRun) {
+        runStart = start;
+        runFace = face;
+        haveRun = true;
+        continue;
+      }
+      if (face != runFace) {
+        fn(this->fontFor(font, runFace),
+           text.substr(runStart, start - runStart));
+        runStart = start;
+        runFace = face;
+      }
+    }
+    if (haveRun) {
+      fn(this->fontFor(font, runFace), text.substr(runStart));
+    }
+  }
+
+  [[nodiscard]] skia::SkFont fontFor(const skia::SkFont &font,
+                                     int face) const {
+    if (face < 0 || face >= static_cast<int>(fFallbacks.size())) {
+      return font;
+    }
+    skia::SkFont out = font;
+    out.setTypeface(fFallbacks[static_cast<std::size_t>(face)]);
+    return out;
+  }
+
+  // Returns the codepoint at `i` and advances past it. Malformed input is
+  // consumed a byte at a time so this always terminates.
+  [[nodiscard]] static std::int32_t decodeUtf8(std::string_view text,
+                                               std::size_t &i) {
+    const auto byte = static_cast<unsigned char>(text[i]);
+    int extra = 0;
+    std::int32_t cp = byte;
+    if (byte >= 0xf0) {
+      extra = 3;
+      cp = byte & 0x07;
+    } else if (byte >= 0xe0) {
+      extra = 2;
+      cp = byte & 0x0f;
+    } else if (byte >= 0xc0) {
+      extra = 1;
+      cp = byte & 0x1f;
+    }
+    if (i + static_cast<std::size_t>(extra) >= text.size()) {
+      ++i;
+      return byte;
+    }
+    for (int n = 0; n < extra; ++n) {
+      const auto cont = static_cast<unsigned char>(text[i + 1 + static_cast<std::size_t>(n)]);
+      if ((cont & 0xc0) != 0x80) {
+        ++i;
+        return byte;
+      }
+      cp = (cp << 6) | (cont & 0x3f);
+    }
+    i += static_cast<std::size_t>(extra) + 1;
+    return cp;
+  }
+
+  skia::Sp<skia::SkTypeface> fPrimary;
+  std::vector<skia::Sp<skia::SkTypeface>> fFallbacks;
+  mutable std::unordered_map<std::int32_t, int> fCoverage;
+};
+
+inline FontStack &fonts() {
+  static FontStack stack;
+  return stack;
+}
+
 // ---- Drawing helpers -----------------------------------------------------
 //
 // A thin wrapper around the canvas and the shared font, so screens do not
@@ -115,8 +277,7 @@ public:
 
   [[nodiscard]] float measure(const std::string &text, float size) const {
     fFont->setSize(size);
-    return fFont->measureText(text.c_str(), text.size(),
-                              skia::SkTextEncoding::kUTF8);
+    return fonts().measure(*fFont, text);
   }
 
   void text(const std::string &str, float x, float y, float size,
@@ -126,7 +287,7 @@ public:
     p.setAntiAlias(true);
     p.setColor(color);
     p.setAlphaf(alpha);
-    fCanvas->drawString(str.c_str(), x, y, *fFont, p);
+    fonts().draw(fCanvas, *fFont, str, x, y, p);
   }
 
   void textClipped(const std::string &str, float x, float y, float maxW,
@@ -166,8 +327,8 @@ public:
     shadow.setAntiAlias(true);
     shadow.setColor(skia::colorSetARGB(255, 0, 0, 0));
     shadow.setAlphaf(alpha * 0.45f);
-    fCanvas->drawString(str.c_str(), cx - w * 0.5f + size * 0.045f,
-                        y + size * 0.05f, *fFont, shadow);
+    fonts().draw(fCanvas, *fFont, str, cx - w * 0.5f + size * 0.045f,
+                 y + size * 0.05f, shadow);
     this->text(str, cx - w * 0.5f, y, size, color, alpha);
   }
 

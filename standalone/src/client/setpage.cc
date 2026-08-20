@@ -506,8 +506,7 @@ private:
   [[nodiscard]] float measure(const std::string &s, float size, bool bold) {
     fFont->setSize(size);
     fFont->setEmbolden(bold);
-    const float w =
-        fFont->measureText(s.c_str(), s.size(), skia::SkTextEncoding::kUTF8);
+    const float w = client::ui::fonts().measure(*fFont, s);
     fFont->setEmbolden(false);
     return w;
   }
@@ -519,7 +518,7 @@ private:
     p.setAntiAlias(true);
     p.setColor(color);
     p.setAlphaf(alpha);
-    fCanvas->drawString(s.c_str(), x, y, *fFont, p);
+    client::ui::fonts().draw(fCanvas, *fFont, s, x, y, p);
     fFont->setEmbolden(false);
   }
   void textCentered(const std::string &s, float cx, float y, float size,
