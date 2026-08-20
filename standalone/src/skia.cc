@@ -17,6 +17,7 @@ module;
 #include <skia/core/SkFontArguments.h>
 #include <skia/core/SkFontStyle.h>
 #include <skia/core/SkImage.h>
+#include <skia/core/SkMatrix.h>
 #include <skia/core/SkPaint.h>
 #include <skia/core/SkPath.h>
 #include <skia/core/SkPathBuilder.h>
@@ -79,6 +80,7 @@ using ::SkPath;
 using ::SkPathBuilder;
 using ::SkPoint;
 using ::SkRect;
+using ::SkMatrix;
 using ::SkRRect;
 using ::SkRuntimeEffect;
 using ::SkRuntimeEffectBuilder;

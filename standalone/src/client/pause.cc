@@ -5,6 +5,7 @@ import skia;
 import client.ui;
 import client.scene;
 import client.nodes;
+import client.triangles;
 
 // osu!lazer's PauseOverlay, which is a GameplayMenuOverlay: black over the
 // frozen game at 0.75, "paused" in yellow above a column of DialogButtons,
@@ -152,12 +153,15 @@ private:
       fRelativeSizeAxes = scene::Axes::kX;
       fWidth = 1.0f;
       fHeight = kButtonHeight;
+      fTriangles.setVelocity(0.7f); // DialogButton's TrianglesV2
     }
 
   protected:
     void update(double nowMs) override {
       const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
       fLastMs = nowMs;
+      fDt = dt;
+      this->markDamaged(); // the triangles are always moving
       // Hovering selects, as GameplayMenuOverlay.Button does on mouse move.
       if (fHovered && fOwner->fSelected != static_cast<int>(fIndex)) {
         fOwner->fSelected = static_cast<int>(fIndex);
@@ -184,7 +188,19 @@ private:
         this->fillSheared(canvas, this->inflated(bar, 1.08f), fColour,
                           alpha * 0.35f * eased);
       }
-      this->fillSheared(canvas, bar, fColour, alpha);
+      const skia::SkPath shape = shearedBar(bar);
+      skia::SkPaint fill;
+      fill.setAntiAlias(true);
+      fill.setColor(fColour);
+      fill.setAlphaf(alpha);
+      const int saved = canvas->save();
+      canvas->clipPath(shape, true);
+      canvas->drawPath(shape, fill);
+      // TrianglesV2 inside the colour, at a tenth alpha, additive, drifting
+      // up at 0.7 -- and upright, because lazer un-shears them against the
+      // container they sit in.
+      fTriangles.draw(canvas, bar, fDt, alpha * 0.1f, skia::SkBlendMode::kPlus);
+      canvas->restoreToCount(saved);
 
       // The label: 28 bold, white, spreading to 1.4 of letter spacing and
       // scaling to 1.02 when this is the one that is selected.
@@ -213,6 +229,20 @@ private:
                                     rect.fRight + dx, rect.fBottom + dy);
     }
 
+    // The bar as lazer draws it: a rounded rectangle with the shear applied
+    // to the whole thing, corners included, about its own middle.
+    [[nodiscard]] static skia::SkPath shearedBar(const skia::SkRect &rect) {
+      skia::SkPathBuilder builder;
+      builder.addRRect(skia::SkRRect::MakeRectXY(rect, kCorner, kCorner));
+      skia::SkPath path = builder.detach();
+      skia::SkMatrix matrix =
+          skia::SkMatrix::Translate(rect.centerX(), rect.centerY());
+      matrix.preSkew(-kShear, 0.0f);
+      matrix.preTranslate(-rect.centerX(), -rect.centerY());
+      path.transform(matrix);
+      return path;
+    }
+
     // A rectangle sheared by OsuGame.SHEAR: the top edge leads, the bottom
     // trails, which is the shape every button in lazer has.
     void fillSheared(skia::SkCanvas *canvas, const skia::SkRect &rect,
@@ -237,6 +267,8 @@ private:
     skia::SkColor fColour;
     float fGrow = 0.0f;
     double fLastMs = 0.0;
+    double fDt = 16.0;
+    client::triangles::Field fTriangles;
   };
 
   // The three lines under the buttons: retries, how far through the map the

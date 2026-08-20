@@ -1809,6 +1809,9 @@ private:
     if (fState == State::kMainMenu) {
       return true; // the logo keeps tracking the music behind anything
     }
+    if (fState == State::kPaused) {
+      return true; // triangles drift inside the buttons, as lazer's do
+    }
     if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
       return true; // progress that is being watched
     }
