@@ -331,10 +331,14 @@ private:
       double angle = calcAngle(sp(*fBase, bm.fDiff.fCs), lastCP, last2CP);
       double sliderA =
           this->calcSliderAngle(*ld, last2CP, bm.fDiff.fCs);
+      // NormalisedVectorAngle is assigned whatever atan2 gives, including
+      // for a zero vector -- which happens whenever the cursor is already
+      // where the next object is, as it is when a slider is followed by
+      // another at the same place. Leaving it unset instead made
+      // vectorAngleRepetition count nothing for those objects, so its nerf
+      // came out as no nerf at all.
       Vec2 v = sp(*fBase, bm.fDiff.fCs) - lastCP;
-      fNVA = (std::abs(v.fX) > 1e-10 || std::abs(v.fY) > 1e-10)
-                 ? std::optional(std::atan2(std::abs(v.fY), std::abs(v.fX)))
-                 : std::nullopt;
+      fNVA = std::atan2(std::abs(v.fY), std::abs(v.fX));
       fA = std::min(angle, sliderA);
     }
   }
