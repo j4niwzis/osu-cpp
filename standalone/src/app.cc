@@ -422,6 +422,7 @@ private:
   int fHotResultButton = -1; // which action the pointer is on
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
   int fHotReplayPanel = -1;
+  std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
   bool fPointerWasInDialog = false;
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
@@ -2110,6 +2111,11 @@ private:
       // and emscripten implements the sleep as a spin, which is worse than
       // the frame we are trying not to draw.
       return;
+    }
+    // A video being rendered gets a slice of each frame rather than all of
+    // them; the client stays answerable while it runs.
+    if (fExportJob) {
+      this->stepExportVideo();
     }
     // Screens built as a scene tree settle before anything is drawn: the
     // pointer lands where it lands, values ease, the layout is redone, and
@@ -5277,70 +5283,125 @@ private:
 
   // Re-renders the replay offscreen at the chosen resolution by driving a
   // fresh engine from the recorded events, then hands the frames to ffmpeg.
+  // Rendering a replay to video is minutes of work at sixty frames a second
+  // of map time. It used to be a loop: the client stopped answering for the
+  // length of it, the dialog showing "rendering..." was the last thing drawn
+  // before the window went unresponsive, and there was no way to tell a slow
+  // export from a hung one. It is a job with a step now, and the step is
+  // bounded by a slice of wall clock, so the client keeps drawing and the
+  // dialog keeps counting.
+  struct ExportJob {
+    // Shared rather than held: the mux at the end outlives the job, on
+    // another thread.
+    std::shared_ptr<client::VideoExporter> fExporter =
+        std::make_shared<client::VideoExporter>();
+    client::VideoOptions fOpts;
+    skia::Sp<skia::SkSurface> fSurface;
+    std::optional<osu::Engine> fEngine;
+    std::optional<osu::Engine> fSaved; // the client's own, put back after
+    double fTime = 0.0;
+    double fEnd = 0.0;
+    double fStep = 1000.0 / 60.0;
+    std::size_t fEvent = 0;
+    int fSavedW = 0;
+    int fSavedH = 0;
+  };
+
   void exportReplayVideo() {
+    if (fExportJob) {
+      return; // one at a time
+    }
     if (!fMap || fRecordedEvents.empty()) {
       fExportDialog.setStatus("nothing to export");
       return;
     }
     const auto preset = client::kVideoPresets[static_cast<std::size_t>(
         fExportDialog.preset())];
-    client::VideoOptions opts;
-    opts.fWidth = preset.fWidth;
-    opts.fHeight = preset.fHeight;
-    opts.fFps = 60;
-    opts.fOutput =
+    auto job = std::make_unique<ExportJob>();
+    job->fOpts.fWidth = preset.fWidth;
+    job->fOpts.fHeight = preset.fHeight;
+    job->fOpts.fFps = 60;
+    job->fOpts.fOutput =
         fMapsDir.parent_path() / std::format("replay-{}.mp4", fBeatmapFilename);
 
-    client::VideoExporter exporter;
-    if (!exporter.begin(opts)) {
-      fExportDialog.setStatus(exporter.error());
+    if (!job->fExporter->begin(job->fOpts)) {
+      fExportDialog.setStatus(job->fExporter->error());
       return;
     }
 
-    auto surface = skia::RenderTarget(
+    job->fSurface = skia::RenderTarget(
         fContext.get(), skia::kNo,
-        skia::SkImageInfo::Make(opts.fWidth, opts.fHeight,
+        skia::SkImageInfo::Make(job->fOpts.fWidth, job->fOpts.fHeight,
                                 skia::kRGBA_8888_SkColorType,
                                 skia::kPremul_SkAlphaType));
-    if (!surface) {
+    if (!job->fSurface) {
       fExportDialog.setStatus("cannot create the offscreen surface");
       return;
     }
 
-    const int savedW = fScreenW;
-    const int savedH = fScreenH;
+    job->fEngine.emplace(*fMap, fMods);
+    job->fEnd = fMap->lastObjectEndTime() + 1500.0;
+    job->fStep = 1000.0 / static_cast<double>(job->fOpts.fFps);
+    job->fSaved = fEngine;
+    fExportDialog.setStatus("rendering 0%");
+    fExportJob = std::move(job);
+  }
+
+  // One slice of the export, bounded by wall clock rather than by frame
+  // count: a big preset on a slow renderer would otherwise take the slice
+  // apart. Twenty milliseconds keeps the client at something like fifty
+  // frames a second while it works.
+  void stepExportVideo() {
+    if (!fExportJob) {
+      return;
+    }
+    ExportJob &job = *fExportJob;
+    const auto sliceStart = std::chrono::steady_clock::now();
+
+    job.fSavedW = fScreenW;
+    job.fSavedH = fScreenH;
     auto savedSurface = fSurface;
-    fSurface = surface;
-    fScreenW = opts.fWidth;
-    fScreenH = opts.fHeight;
+    fSurface = job.fSurface;
+    fScreenW = job.fOpts.fWidth;
+    fScreenH = job.fOpts.fHeight;
     this->layoutForScreen();
 
-    osu::Engine engine(*fMap, fMods);
-    const double end = fMap->lastObjectEndTime() + 1500.0;
-    const double step = 1000.0 / static_cast<double>(opts.fFps);
-    std::size_t evt = 0;
-    fExportDialog.setStatus("rendering...");
-
-    for (double t = 0.0; t <= end; t += step) {
-      while (evt < fRecordedEvents.size() && fRecordedEvents[evt].fTime <= t) {
-        engine.submit(fRecordedEvents[evt]);
-        if (fRecordedEvents[evt].fAction == osu::InputAction::kMove) {
-          fCursor = fRecordedEvents[evt].fPos;
+    while (job.fTime <= job.fEnd) {
+      while (job.fEvent < fRecordedEvents.size() &&
+             fRecordedEvents[job.fEvent].fTime <= job.fTime) {
+        job.fEngine->submit(fRecordedEvents[job.fEvent]);
+        if (fRecordedEvents[job.fEvent].fAction == osu::InputAction::kMove) {
+          fCursor = fRecordedEvents[job.fEvent].fPos;
         }
-        ++evt;
+        ++job.fEvent;
       }
-      engine.advance(t);
-      fEngine.emplace(engine);
-      fView.render(this->gameplayCtx(fSurface->getCanvas()), t);
+      job.fEngine->advance(job.fTime);
+      fEngine = job.fEngine; // the view draws the state it is handed
+      fView.render(this->gameplayCtx(fSurface->getCanvas()), job.fTime);
       fContext->flushAndSubmit(fSurface.get());
-      exporter.addFrame(fSurface->makeImageSnapshot());
+      job.fExporter->addFrame(fSurface->makeImageSnapshot());
+      job.fTime += job.fStep;
+
+      const auto spent = std::chrono::steady_clock::now() - sliceStart;
+      if (spent > std::chrono::milliseconds(20)) {
+        break;
+      }
     }
 
     fSurface = savedSurface;
-    fScreenW = savedW;
-    fScreenH = savedH;
+    fScreenW = job.fSavedW;
+    fScreenH = job.fSavedH;
     this->layoutForScreen();
 
+    if (job.fTime <= job.fEnd) {
+      const int percent = static_cast<int>(
+          std::clamp(job.fTime / std::max(1.0, job.fEnd), 0.0, 1.0) * 100.0);
+      fExportDialog.setStatus(std::format("rendering {}%", percent));
+      return;
+    }
+
+    // The mux is ffmpeg, which is a process and a wait: it does not touch the
+    // GPU, so it goes to the loader thread rather than holding this one.
     std::filesystem::path audioPath;
     if (!fMap->fMeta.fAudioFilename.empty()) {
       const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
@@ -5353,12 +5414,25 @@ private:
                   static_cast<std::streamsize>(bytes.size()));
       }
     }
-    opts.fAudio = audioPath;
+    job.fOpts.fAudio = audioPath;
+    fEngine = job.fSaved;
+    fExportDialog.setStatus("encoding...");
 
-    fExportDialog.setStatus(
-        exporter.finish()
-            ? std::format("saved {}", opts.fOutput.filename().string())
-            : exporter.error());
+    auto finished = std::make_shared<std::pair<bool, std::string>>();
+    auto exporter = job.fExporter;
+    const std::string name = job.fOpts.fOutput.filename().string();
+    fExportJob.reset();
+    fLoader.submit(
+        0xE0DEull,
+        [exporter, finished] {
+          finished->first = exporter->finish();
+          finished->second = exporter->error();
+        },
+        [this, finished, name] {
+          fExportDialog.setStatus(finished->first
+                                      ? std::format("saved {}", name)
+                                      : finished->second);
+        });
   }
 
   // ---- Replay browser ------------------------------------------------------
