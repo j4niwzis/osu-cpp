@@ -113,6 +113,7 @@ void printUsage(std::string_view program) {
          "play\n"
       << "  --stars            Print the star rating of the beatmap and "
          "exit\n"
+      << "  --until <ms>       With --stars, only objects up to this time\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"
@@ -133,6 +134,7 @@ int main(int argc, char **argv) {
   bool record = false;
   bool profile = false;
   bool starsOnly = false;
+  double until = std::numeric_limits<double>::infinity();
   osu::ModSet mods = osu::mod::kNone;
 
   for (std::size_t i = 0; i < args.size(); ++i) {
@@ -164,6 +166,8 @@ int main(int argc, char **argv) {
       mods |= osu::mod::kHardRock;
     } else if (arg == "--ez") {
       mods |= osu::mod::kEasy;
+    } else if (arg == "--until" && i + 1 < args.size()) {
+      until = std::stod(std::string(args[++i]));
     } else if (arg == "--beatmap" && i + 1 < args.size()) {
       beatmapPath = args[++i];
     } else if (arg == "--skin" && i + 1 < args.size()) {
@@ -173,7 +177,8 @@ int main(int argc, char **argv) {
       autoplay = true;
     } else if (!arg.starts_with('-')) {
       beatmapPath = arg;
-    } else if (arg == "--beatmap" || arg == "--skin" || arg == "--replay") {
+    } else if (arg == "--beatmap" || arg == "--skin" || arg == "--replay" ||
+               arg == "--until") {
       std::cerr << "Error: " << arg << " needs a path after it\n";
       printUsage(argc > 0 ? argv[0] : "osu_client");
       return 1;
@@ -254,7 +259,18 @@ int main(int argc, char **argv) {
         }
         const std::string text((std::istreambuf_iterator<char>(in)),
                                std::istreambuf_iterator<char>());
-        const osu::Beatmap map = osu::loadBeatmap(text);
+        osu::Beatmap map = osu::loadBeatmap(text);
+        // CalculateTimed: the rating of the map as it stands at a moment,
+        // which is the same as the rating of the map cut off there.
+        if (std::isfinite(until)) {
+          std::size_t keep = 0;
+          while (keep < map.fObjects.size() &&
+                 osu::startTime(map.fObjects[keep]) <= until) {
+            ++keep;
+          }
+          map.fObjects.resize(keep);
+          map.fSliderPaths.resize(keep);
+        }
         const osu::StarRating rating = osu::calculateStars(map, mods);
         const osu::Engine engine(map, mods);
         std::cout << std::format("{}\n", target.filename().string())

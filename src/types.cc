@@ -207,6 +207,9 @@ struct TimingPoint {
   int fSampleIndex = 0;
   int fVolume = 100;
   bool fKiai = false;
+  // LegacyDifficultyControlPoint.GenerateTicks: false under a green line
+  // whose beat length is NaN, which is how a mapper turns slider ticks off.
+  bool fGenerateTicks = true;
 
   [[nodiscard]] constexpr bool inherited() const noexcept {
     return fBeatLength < 0.0;

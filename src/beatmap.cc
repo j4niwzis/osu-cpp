@@ -70,7 +70,29 @@ public:
     return vel > 0.0 ? s.fPixelLength / vel : 0.0;
   }
 
+  // The green line in effect, which is what says whether ticks happen.
+  [[nodiscard]] const TimingPoint *activeInherited(double t) const noexcept {
+    const TimingPoint *best = nullptr;
+    for (const auto &tp : fTiming) {
+      if (tp.inherited() && tp.fTime <= t &&
+          (best == nullptr || tp.fTime >= best->fTime)) {
+        best = &tp;
+      }
+    }
+    return best;
+  }
+
+  [[nodiscard]] bool sliderGeneratesTicks(double t) const noexcept {
+    const TimingPoint *point = this->activeInherited(t);
+    return point == nullptr || point->fGenerateTicks;
+  }
+
   [[nodiscard]] double sliderTickDistance(const Slider &s) const noexcept {
+    if (!this->sliderGeneratesTicks(s.fTime)) {
+      // Slider.TickDistance is positive infinity when ticks are off, which
+      // every loop over "every tick distance along the path" then skips.
+      return std::numeric_limits<double>::infinity();
+    }
     const double vel = this->sliderVelocityAt(s.fTime);
     const TimingPoint *active = this->activeTiming(s.fTime);
     const double beatLength = active ? active->fBeatLength : 500.0;
@@ -540,8 +562,20 @@ inline Beatmap parseBeatmap(std::string_view text) {
         tp.fSampleIndex = detail::toInt(fields[4]);
       if (fields.size() > 5)
         tp.fVolume = detail::toInt(fields[5], 100);
-      if (fields.size() > 6 && detail::toInt(fields[6], 1) == 0 &&
-          tp.fBeatLength > 0) {
+      const bool uninherited =
+          fields.size() > 6 ? detail::toInt(fields[6], 1) != 0 : true;
+      if (std::isnan(tp.fBeatLength)) {
+        // "NaN" in the beat length field. lazer compares it against zero to
+        // decide the speed multiplier -- and every comparison with NaN is
+        // false, so the multiplier is 1 -- and switches slider ticks off for
+        // everything under it. A NaN red line cannot define a beat at all, so
+        // it is dropped.
+        if (uninherited) {
+          break;
+        }
+        tp.fBeatLength = -100.0;
+        tp.fGenerateTicks = false;
+      } else if (!uninherited && tp.fBeatLength > 0) {
         tp.fBeatLength = -100.0;
       }
       if (fields.size() > 7)
