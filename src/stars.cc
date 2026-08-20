@@ -14,11 +14,11 @@ export import :reading;
 
 export namespace osu {
 
-// `aimTrace`, when given, is filled with the per-object aim strain: the
+// `aimTrace`, when given, is filled with the per-object aim terms: the
 // series behind the aim value, for comparing against lazer's own.
 [[nodiscard]] inline StarRating
 calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
-               std::vector<std::pair<double, double>> *aimTrace = nullptr) {
+               std::vector<stars::AimSkill::TracePoint> *aimTrace = nullptr) {
   using namespace stars;
   if (bm.fObjects.size() < 2)
     return {};

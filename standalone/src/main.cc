@@ -276,7 +276,7 @@ int main(int argc, char **argv) {
           map.fObjects.resize(keep);
           map.fSliderPaths.resize(keep);
         }
-        std::vector<std::pair<double, double>> aimTrace;
+        std::vector<osu::stars::AimSkill::TracePoint> aimTrace;
         const osu::StarRating rating =
             osu::calculateStars(map, mods, dumpAim ? &aimTrace : nullptr);
         const osu::Engine engine(map, mods);
@@ -287,8 +287,11 @@ int main(int argc, char **argv) {
                   << std::format("  max combo {}\n",
                                  engine.maxAchievableCombo())
                   << std::format("  objects   {}\n", map.fObjects.size());
-        for (const auto &[time, strain] : aimTrace) {
-          std::cout << std::format("strain {:.1f} {:.13f}\n", time, strain);
+        for (const auto &point : aimTrace) {
+          std::cout << std::format("strain {:.1f} snap {:.10f} agility {:.10f}"
+                                   " flow {:.10f} total {:.10f}\n",
+                                   point.fTime, point.fSnap, point.fAgility,
+                                   point.fFlow, point.fStrain);
         }
       } catch (const std::exception &e) {
         std::cerr << target.filename().string() << ": " << e.what() << '\n';

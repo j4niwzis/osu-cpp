@@ -213,16 +213,21 @@ public:
   std::vector<Q> fQ;
   double fLenSum = 0;
   int fObjCount = 0;
-  std::vector<std::pair<double, double>> fTrace;
+  std::vector<TracePoint> fTrace;
 
   AimSkill(bool inc) : fInc(inc) {}
 
   // Per-object strain, kept for diagnostics: this is the series the section
   // machinery is fed, and comparing it against lazer's is the only way to
   // tell an evaluator's mistake from an aggregation one.
-  [[nodiscard]] std::span<const std::pair<double, double>> trace() const {
-    return fTrace;
-  }
+  struct TracePoint {
+    double fTime = 0.0;
+    double fSnap = 0.0;
+    double fAgility = 0.0;
+    double fFlow = 0.0;
+    double fStrain = 0.0;
+  };
+  [[nodiscard]] std::span<const TracePoint> trace() const { return fTrace; }
 
   void process(const OsuDifficultyHitObject &c) {
     ++fObjCount;
@@ -230,12 +235,12 @@ public:
       fSecB = c.fStart;
       fSecE = fSecB + kSL;
       fSecP = strainOf(c);
-      fTrace.emplace_back(c.fStart, fSecP);
+      this->traceLast(c, fSecP);
       return;
     }
     backfill(c);
     double s = strainOf(c);
-    fTrace.emplace_back(c.fStart, s);
+    this->traceLast(c, s);
     if (s > fSecP) {
       fQ.clear();
       // The section that just ended is as long as the time spent in it, not
@@ -307,6 +312,12 @@ public:
   }
 
 private:
+  void traceLast(const OsuDifficultyHitObject &c, double strain) {
+    fTrace.push_back({c.fStart, SnapAimEvaluator::Eval(c, fInc),
+                      AgilityEvaluator::eval(c),
+                      FlowAimEvaluator::Eval(c, fInc), strain});
+  }
+
   double strainOf(const OsuDifficultyHitObject &c) {
     double d = std::pow(0.2, c.fADT / 1000.0);
     fCur *= d;
