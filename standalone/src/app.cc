@@ -584,13 +584,6 @@ private:
     int fsh = EM_ASM_INT({ return Module.canvas.height; });
     fWindow = glfw::glfwCreateWindow(fsw, fsh, "osu_client", nullptr, nullptr);
 #else
-    glfw::glfwWindowHint(glfw::kClientApi, glfw::kOpenGLApi);
-    glfw::glfwWindowHint(glfw::kContextVersionMajor, 4);
-    glfw::glfwWindowHint(glfw::kContextVersionMinor, 1);
-    glfw::glfwWindowHint(glfw::kOpenGLProfile, glfw::kOpenGLCoreProfile);
-    glfw::glfwWindowHint(glfw::kOpenGLForwardCompat, glfw::kTrue);
-    glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
-
     const auto monitor = glfw::glfwGetPrimaryMonitor();
     const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
     fScreenW = mode->width;
@@ -599,8 +592,47 @@ private:
       fRefreshHz = mode->refreshRate;
     }
 
-    fWindow = glfw::glfwCreateWindow(fScreenW, fScreenH, "osu_client", monitor,
-                                     nullptr);
+    // Desktop GL first, then GLES: a phone or a tablet running a Linux the
+    // client can otherwise be built for has drivers that only speak GLES,
+    // often through EGL only. Skia's Ganesh backend is happy with either --
+    // GrGLMakeNativeInterface picks up whichever one is current -- so the
+    // difference is entirely in how the context is asked for.
+    struct ContextChoice {
+      const char *fName;
+      int fApi;
+      int fMajor;
+      int fMinor;
+      int fProfile;
+      int fCreation;
+    };
+    const ContextChoice choices[] = {
+        {"gl 4.1 core", glfw::kOpenGLApi, 4, 1, glfw::kOpenGLCoreProfile,
+         glfw::kNativeContextApi},
+        {"gl 3.0", glfw::kOpenGLApi, 3, 0, glfw::kOpenGLAnyProfile,
+         glfw::kNativeContextApi},
+        {"gles 3.0", glfw::kOpenGLEsApi, 3, 0, glfw::kOpenGLAnyProfile,
+         glfw::kEglContextApi},
+        {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,
+         glfw::kEglContextApi},
+    };
+    for (const auto &choice : choices) {
+      glfw::glfwWindowHint(glfw::kClientApi, choice.fApi);
+      glfw::glfwWindowHint(glfw::kContextVersionMajor, choice.fMajor);
+      glfw::glfwWindowHint(glfw::kContextVersionMinor, choice.fMinor);
+      glfw::glfwWindowHint(glfw::kOpenGLProfile, choice.fProfile);
+      glfw::glfwWindowHint(glfw::kOpenGLForwardCompat,
+                           choice.fApi == glfw::kOpenGLApi && choice.fMajor >= 3
+                               ? glfw::kTrue
+                               : glfw::kFalse);
+      glfw::glfwWindowHint(glfw::kContextCreationApi, choice.fCreation);
+      glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
+      fWindow = glfw::glfwCreateWindow(fScreenW, fScreenH, "osu_client",
+                                       monitor, nullptr);
+      if (fWindow != nullptr) {
+        std::println(std::cerr, "[gfx] context: {}", choice.fName);
+        break;
+      }
+    }
 #endif
     if (fWindow == nullptr) {
       glfw::glfwTerminate();
