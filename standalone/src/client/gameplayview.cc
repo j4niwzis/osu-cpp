@@ -65,7 +65,6 @@ public:
   static constexpr double kCursorTrailLifetime = 140.0;
   static constexpr std::size_t kCursorTrailMax = 40;
   static constexpr double kFadeLifetime = 250.0;
-  static constexpr std::size_t kFpsSampleCount = 120;
   static constexpr std::size_t kProfileCount = 60;
 
 
@@ -97,9 +96,6 @@ public:
     fDisplayCombo = 0.0;
     fDisplayAccuracy = 1.0;
     fLastHudTime = 0.0;
-    fFrameTimeIdx = 0;
-    fFrameTimeCount = 0;
-    fLastFrameTime = 0.0;
     fFirstFrame = true;
     fCombo = 0;
   }
@@ -128,9 +124,6 @@ public:
   }
   [[nodiscard]] const skia::Sp<skia::SkImage> &background() const noexcept {
     return fBackgroundScaled;
-  }
-  [[nodiscard]] std::span<const double> frameTimes() const noexcept {
-    return {fFrameTimes.data(), fFrameTimeCount};
   }
   [[nodiscard]] ProfileFrame &profileSlot() noexcept {
     return fProfile[fProfileIdx];
@@ -207,14 +200,6 @@ public:
     using clock = std::chrono::steady_clock;
     auto rt0 = clock::now();
 
-    if (fLastFrameTime > 0.0 && fLastFrameTime < now) {
-      const double ft = now - fLastFrameTime;
-      fFrameTimes[fFrameTimeIdx] = ft;
-      fFrameTimeIdx = (fFrameTimeIdx + 1) % kFpsSampleCount;
-      if (fFrameTimeCount < kFpsSampleCount)
-        ++fFrameTimeCount;
-    }
-    fLastFrameTime = now;
 
     const double ar = c.fEngine->clockRate() > 0.0
                           ? c.fMap->fDiff.fAr * c.fEngine->clockRate()
@@ -978,10 +963,6 @@ private:
   double fLastHudTime = 0.0;
   int fCombo = 0;
 
-  std::array<double, kFpsSampleCount> fFrameTimes{};
-  std::size_t fFrameTimeIdx = 0;
-  std::size_t fFrameTimeCount = 0;
-  double fLastFrameTime = 0.0;
 
   std::array<ProfileFrame, kProfileCount> fProfile{};
   std::size_t fProfileIdx = 0;

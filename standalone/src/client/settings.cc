@@ -93,8 +93,7 @@ public:
     return static_cast<int>(this->value(key) + 0.5f);
   }
 
-  // Steps a choice on, wrapping: the row has no room for two arrows.
-  void cycle(std::size_t index) {
+  void setChoice(std::size_t index, int option) {
     if (index >= fDefs.size()) {
       return;
     }
@@ -102,9 +101,8 @@ public:
     if (def.fOptions.empty()) {
       return;
     }
-    const int next = (this->choice(def.fKey) + 1) %
-                     static_cast<int>(def.fOptions.size());
-    fValues[def.fKey] = static_cast<float>(next);
+    fValues[def.fKey] = static_cast<float>(std::clamp(
+        option, 0, static_cast<int>(def.fOptions.size()) - 1));
   }
 
   [[nodiscard]] float valueAt(std::size_t index) const {

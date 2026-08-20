@@ -160,6 +160,7 @@ private:
   std::chrono::steady_clock::time_point fFrameStart{};
   std::chrono::steady_clock::time_point fBlitStart{};
   std::int64_t fCostDrawUs = 0, fCostBlitUs = 0, fCostSwapUs = 0;
+  std::int64_t fCostClipArea = 0; // pixels the frames were allowed to touch
   int fCostFrames = 0;
   double fCostLogWall = 0.0;
   std::vector<skia::SkIRect> fFrameClip;
@@ -172,6 +173,7 @@ private:
   const bool fForcePartialRedraw =
       std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
+  std::vector<skia::SkIRect> fOverlayTrail; // outlines waiting to be cleaned
 
   [[nodiscard]] bool partialRedraw() const {
     return fForcePartialRedraw || fSettings.flag("partial");
@@ -1718,14 +1720,6 @@ private:
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
                    box.fBottom - 8.0f, 12.0f, skia::kWhite, 0.7f);
-    // Marked a few times a second rather than every frame: it sits in the
-    // corner furthest from everything else, so its rectangle is what makes
-    // the frame's bounding box cover the screen. The number is smoothed
-    // anyway and reads the same either way.
-    if (now - fFpsDamageWall > 120.0) {
-      fFpsDamageWall = now;
-      this->damage(box);
-    }
   }
 
   void present() {
@@ -1757,9 +1751,12 @@ private:
     }
     this->drawDeleteConfirmation(canvas);
     this->drawToast(canvas);
-    this->drawFpsCounter(canvas);
     this->showDamage(canvas);
     canvas->restoreToCount(fFrameSave);
+    // Drawn after the clip is lifted: a small thing in the far corner that
+    // changes every frame, so clipping to it would drag the repainted region
+    // across the whole screen, and clipping it away would freeze it.
+    this->drawFpsCounter(canvas);
     fBlitStart = std::chrono::steady_clock::now();
     if (fDrewOnRaster && fWindowSurface) {
       // The CPU frame lives in main memory; the window wants it as pixels.
@@ -1795,21 +1792,28 @@ private:
     fCostDrawUs += us(start, fBlitStart);
     fCostBlitUs += us(fBlitStart, beforeSwap);
     fCostSwapUs += us(beforeSwap, now);
+    for (const auto &rect : fFrameClip) {
+      fCostClipArea += static_cast<std::int64_t>(rect.width()) * rect.height();
+    }
     ++fCostFrames;
     if (wallMs() - fCostLogWall < 1000.0 || fCostFrames == 0) {
       return;
     }
     std::println(std::cerr,
                  "[frame] record {:.2f} ms, raster {:.2f} ms, swap {:.2f} "
-                 "ms over {} frames{}",
+                 "ms over {} frames, {:.0f}% of the screen repainted{}",
                  static_cast<double>(fCostDrawUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0,
                  fCostFrames,
+                 100.0 * static_cast<double>(fCostClipArea) /
+                     std::max<double>(1.0, static_cast<double>(fCostFrames) *
+                                               fScreenW * fScreenH),
                  std::string(fDrewOnRaster ? " [cpu]" : " [gpu]") +
                      (this->partialRedraw() ? " (partial redraw)" : ""));
     fCostLogWall = wallMs();
     fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
+    fCostClipArea = 0;
     fCostFrames = 0;
   }
 
@@ -1860,10 +1864,17 @@ private:
                                   : skia::colorSetARGB(255, 255, 0, 255));
     for (const auto &rect : fFrameClip) {
       canvas->drawRect(skia::SkRect::Make(rect), paint);
-      // The outline lands in a back buffer that comes round again; without
-      // marking it, an old rectangle stays on screen next to the current one.
-      this->damage(skia::SkRect::Make(rect));
     }
+    // The outline lands in a back buffer that comes round again, so the
+    // rectangles it drew last time have to be repainted over. They are added
+    // exactly as they were: feeding them back through damage() would grow
+    // them by its margin every frame, which is what made them creep outwards.
+    for (const auto &rect : fOverlayTrail) {
+      if (!fFullDamage) {
+        fDamage.push_back(rect);
+      }
+    }
+    fOverlayTrail = fFrameClip;
     if (fFrameClipFull && wallMs() - fDamageLogWall > 1000.0) {
       fDamageLogWall = wallMs();
       std::println(std::cerr, "[damage] full repaint: {}", fFullDamageReason);

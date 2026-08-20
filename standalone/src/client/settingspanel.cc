@@ -77,6 +77,8 @@ public:
     fRows.clear();
     fRestoreHits.clear();
     fSidebarHits.clear();
+    fChoiceHits.clear();
+    fChoiceOptionHits.clear();
     if (!fOpen && fSlide <= 0.001f) {
       return;
     }
@@ -166,17 +168,46 @@ public:
                       13.0f, skia::kWhite, fade * 0.75f);
         y += 44.0f + kItemSpacing;
       } else if (d.fKind == SettingKind::kChoice) {
-        // The current option, in a pill the whole row steps through.
         const auto index = static_cast<std::size_t>(settings.choice(d.fKey));
         const std::string &option =
             index < d.fOptions.size() ? d.fOptions[index] : d.fOptions.front();
-        const float width = p.measure(option, 13.0f) + 24.0f;
-        const skia::SkRect pill = skia::SkRect::MakeXYWH(
+        // Widest option, so the control does not resize as it is used.
+        float width = 0.0f;
+        for (const auto &candidate : d.fOptions) {
+          width = std::max(width, p.measure(candidate, 13.0f));
+        }
+        width += 40.0f;
+        const skia::SkRect box = skia::SkRect::MakeXYWH(
             row.fRight - width, y - 13.0f, width, 24.0f);
-        p.fillRounded(pill, 12.0f, skia::colorSetARGB(255, 58, 48, 70));
-        p.textClipped(option, pill.fLeft + 12.0f, y + 4.0f, width - 24.0f,
+        const bool open = fOpenChoice == static_cast<int>(i);
+        p.fillRounded(box, 6.0f,
+                      open ? ui::kAccent : skia::colorSetARGB(255, 58, 48, 70));
+        p.textClipped(option, box.fLeft + 12.0f, y + 4.0f, width - 32.0f,
                       13.0f, skia::kWhite, fade);
+        // The chevron, so it reads as something that opens.
+        p.textClipped(open ? "^" : "v", box.fRight - 18.0f, y + 4.0f, 12.0f,
+                      12.0f, skia::kWhite, fade * 0.8f);
+        fChoiceHits.push_back({box, static_cast<int>(i)});
         y += 30.0f + kItemSpacing;
+
+        if (open) {
+          // The list, under the control, one row per option.
+          for (std::size_t o = 0; o < d.fOptions.size(); ++o) {
+            const skia::SkRect item = skia::SkRect::MakeXYWH(
+                box.fLeft, y - 13.0f, width, 24.0f);
+            const bool hovered = item.contains(frame.fMouseX, frame.fMouseY);
+            p.fillRounded(item, 6.0f,
+                          hovered ? ui::kCardSel
+                                  : skia::colorSetARGB(255, 44, 36, 54));
+            p.textClipped(d.fOptions[o], item.fLeft + 12.0f, y + 4.0f,
+                          width - 24.0f, 13.0f, skia::kWhite,
+                          fade * (o == index ? 1.0f : 0.8f));
+            fChoiceOptionHits.push_back(
+                {item, static_cast<int>(i), static_cast<int>(o)});
+            y += 26.0f;
+          }
+          y += kItemSpacing;
+        }
       } else {
         const bool on = settings.flag(d.fKey);
         const skia::SkRect box =
@@ -250,6 +281,24 @@ public:
         return Hit::kSwallowed;
       }
     }
+    // The open list first: its rows sit over whatever is beneath them.
+    for (const auto &option : fChoiceOptionHits) {
+      if (option.fRect.contains(x, y)) {
+        settings.setChoice(static_cast<std::size_t>(option.fIndex),
+                           option.fOption);
+        fOpenChoice = -1;
+        return Hit::kChanged;
+      }
+    }
+    for (const auto &choice : fChoiceHits) {
+      if (choice.fRect.contains(x, y)) {
+        fOpenChoice = fOpenChoice == choice.fIndex ? -1 : choice.fIndex;
+        return Hit::kSwallowed;
+      }
+    }
+    if (fOpenChoice >= 0) {
+      fOpenChoice = -1; // a click anywhere else closes it
+    }
     for (const auto &row : fRows) {
       if (!row.fRect.contains(x, y)) {
         continue;
@@ -259,10 +308,7 @@ public:
         settings.toggle(idx);
         return Hit::kChanged;
       }
-      if (settings.defs()[idx].fKind == SettingKind::kChoice) {
-        settings.cycle(idx);
-        return Hit::kChanged;
-      }
+
       fDragging = row.fIndex;
       this->drag(x, settings);
       return Hit::kChanged;
@@ -303,6 +349,18 @@ private:
   std::vector<Row> fRows;
   std::vector<Row> fRestoreHits;
   std::vector<skia::SkRect> fSidebarHits;
+  struct ChoiceHit {
+    skia::SkRect fRect;
+    int fIndex;
+  };
+  struct ChoiceOptionHit {
+    skia::SkRect fRect;
+    int fIndex;
+    int fOption;
+  };
+  std::vector<ChoiceHit> fChoiceHits;
+  std::vector<ChoiceOptionHit> fChoiceOptionHits;
+  int fOpenChoice = -1; // which choice has its list open
   std::vector<float> fSectionOffsets;
   std::array<float, 8> fGrow{};
 };
