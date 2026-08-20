@@ -233,6 +233,70 @@ public:
   }
   [[nodiscard]] int preset() const noexcept { return fPreset; }
 
+  // A size typed in rather than picked. Zero when the field is empty or does
+  // not parse, which is when the presets are used instead.
+  [[nodiscard]] std::pair<int, int> customSize() const {
+    const auto cross = fCustom.find('x');
+    if (cross == std::string::npos) {
+      return {0, 0};
+    }
+    int width = 0;
+    int height = 0;
+    const auto toNumber = [](std::string_view text) {
+      int value = 0;
+      for (const char c : text) {
+        if (c < '0' || c > '9' || value > 20000) {
+          return 0;
+        }
+        value = value * 10 + (c - '0');
+      }
+      return value;
+    };
+    width = toNumber(std::string_view(fCustom).substr(0, cross));
+    height = toNumber(std::string_view(fCustom).substr(cross + 1));
+    // Even numbers, since the encoders want them; and something a codec will
+    // actually accept at the top end.
+    if (width < 64 || height < 64 || width > 7680 || height > 4320) {
+      return {0, 0};
+    }
+    return {width & ~1, height & ~1};
+  }
+
+  // Digits and the cross between them; anything else is ignored, which is
+  // simpler than explaining it afterwards.
+  void typeInSize(char c) {
+    if ((c >= '0' && c <= '9') || c == 'x' || c == 'X') {
+      if (fCustom.size() < 12) {
+        fCustom.push_back(c == 'X' ? 'x' : c);
+        fCustomEdited = true;
+      }
+    }
+  }
+
+  void backspaceSize() {
+    if (!fCustom.empty()) {
+      fCustom.pop_back();
+      fCustomEdited = true;
+    }
+  }
+
+  // Which of its pieces the pointer is on, so a client repainting regions can
+  // repaint when that changes rather than while the pointer is anywhere near.
+  [[nodiscard]] int hotElement(float x, float y) const {
+    for (std::size_t i = 0; i < fHits.size(); ++i) {
+      if (fHits[i].contains(x, y)) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+
+  [[nodiscard]] bool takeEdited() noexcept {
+    const bool edited = fCustomEdited;
+    fCustomEdited = false;
+    return edited;
+  }
+
   void draw(skia::SkCanvas *canvas, skia::SkFont &font, int screenW,
             int screenH, float mouseX, float mouseY) {
     fHits.clear();
@@ -270,6 +334,21 @@ public:
                             : skia::kWhite);
     }
 
+    // Or a size typed in. Empty, it says what it is for; filled, it is what
+    // gets rendered, and the presets above stop being the answer.
+    const skia::SkRect custom = skia::SkRect::MakeXYWH(
+        box.fLeft + 40.0f, box.fTop + 152.0f, w - 80.0f, 32.0f);
+    fHits.push_back(custom);
+    const auto [customWidth, customHeight] = this->customSize();
+    const bool usingCustom = customWidth > 0;
+    p.fillRounded(custom, 8.0f, usingCustom ? ui::kAccent : ui::kCardBg);
+    p.textCentered(fCustom.empty() ? "or type a size, like 2560x1440"
+                                   : fCustom,
+                   custom.centerX(), custom.centerY() + 5.0f, 14.0f,
+                   usingCustom ? skia::colorSetARGB(255, 24, 18, 30)
+                               : skia::kWhite,
+                   fCustom.empty() ? 0.5f : 1.0f);
+
     const skia::SkRect go = skia::SkRect::MakeXYWH(box.centerX() - 110.0f,
                                                    box.fBottom - 92.0f, 220.0f,
                                                    44.0f);
@@ -296,7 +375,12 @@ public:
       }
       if (i < kVideoPresets.size()) {
         fPreset = static_cast<int>(i);
+        fCustom.clear(); // picking one is the way to stop using a typed size
+        fCustomEdited = true;
         return false;
+      }
+      if (i == kVideoPresets.size()) {
+        return false; // the size field: clicking it does nothing but focus
       }
       return true;
     }
@@ -306,6 +390,8 @@ public:
 private:
   bool fOpen = false;
   int fPreset = 1; // 1080p
+  std::string fCustom;
+  bool fCustomEdited = false;
   std::string fStatus;
   bool fStatusChanged = true;
   std::vector<skia::SkRect> fHits;

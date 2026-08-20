@@ -427,7 +427,7 @@ private:
   // class.
   struct ExportJob;
   std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
-  bool fPointerWasInDialog = false;
+  int fHotDialogPiece = -1; // which piece of the export dialog is under it
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
@@ -987,6 +987,10 @@ private:
         fFilterDirty = true;
         break;
       }
+      if (fExportDialog.open()) {
+        fExportDialog.typeInSize(static_cast<char>(ev.fA));
+        break;
+      }
       if (fState == State::kDownload) {
         if (fSwallowChar || fSetPage.open()) {
           fSwallowChar = false;
@@ -1034,6 +1038,13 @@ private:
     if (key == glfw::kKeyLeftControl || key == glfw::kKeyRightControl) {
       return;
     }
+    // The export dialog takes the keys while it is up: a size is typed into
+    // it, and backspace belongs to that rather than to the screen behind.
+    if (fExportDialog.open() && action == glfw::kPress &&
+        key == glfw::kKeyBackspace) {
+      fExportDialog.backspaceSize();
+      return;
+    }
     if (action == glfw::kPress && key == glfw::kKeyO && ctrl) {
       this->toggleSettings();
       return;
@@ -1048,6 +1059,7 @@ private:
         fExportDialog.close();
         return;
       }
+
       if (fReplayListOpen) {
         fReplayListOpen = false;
         return;
@@ -1443,6 +1455,7 @@ private:
         this->quitToSelect();
       } else {
         fExportDialog.show();
+        fReplayListOpen = false; // one overlay at a time
       }
     }
   }
@@ -1907,13 +1920,13 @@ private:
       // The box itself is repainted for the pointer, whose buttons light up.
       const skia::SkRect box =
           client::ExportDialog::bounds(fScreenW, fScreenH);
-      const bool inside = box.contains(fMouseX, fMouseY);
-      if (inside || fPointerWasInDialog) {
+      const int hot = fExportDialog.hotElement(fMouseX, fMouseY);
+      if (hot != fHotDialogPiece || fExportDialog.takeEdited()) {
+        fHotDialogPiece = hot;
         this->damage(box);
       } else if (fExportDialog.takeStatusChanged()) {
         this->damage(client::ExportDialog::statusBounds(fScreenW, fScreenH));
       }
-      fPointerWasInDialog = inside;
     }
     fOverlayShown = overlay;
   }
@@ -1940,11 +1953,12 @@ private:
     // region, so it cannot be skipped on the strength of the screen's silence.
     // The settings panel reports its own regions, so it does not stop a frame
     // from being skipped. The rest do not, and cannot be skipped over.
-    // The export dialog reports its own box and its own status line, so it
-    // does not stop a frame from being skipped. A frame drawn for it with
-    // nothing marked would repaint the window -- which is what moving the
-    // pointer outside the dialog used to do.
-    if (fModSelect.visible() || fReplayListOpen || fConfirmDelete) {
+    // Every overlay reports its own regions now -- the dialog its box and its
+    // status line, the mod select its chips, the replay browser its band, the
+    // delete confirmation its tree. A frame drawn for one of them with
+    // nothing marked repaints the whole window, which is what a pointer
+    // resting inside any of them used to cost.
+    if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
       return false;
     }
     // A preview still being fetched has nothing on screen to show for it
@@ -5345,9 +5359,11 @@ private:
     }
     const auto preset = client::kVideoPresets[static_cast<std::size_t>(
         fExportDialog.preset())];
+    // A size typed into the dialog wins over the one picked from the row.
+    const auto [typedWidth, typedHeight] = fExportDialog.customSize();
     auto job = std::make_unique<ExportJob>();
-    job->fOpts.fWidth = preset.fWidth;
-    job->fOpts.fHeight = preset.fHeight;
+    job->fOpts.fWidth = typedWidth > 0 ? typedWidth : preset.fWidth;
+    job->fOpts.fHeight = typedHeight > 0 ? typedHeight : preset.fHeight;
     job->fOpts.fFps = 60;
 
     // Into the working directory, named for what it is: the replay it came
@@ -5368,7 +5384,8 @@ private:
     const auto here = std::filesystem::current_path(cwdError);
     job->fOpts.fOutput =
         (cwdError ? fMapsDir.parent_path() : here) /
-        std::format("{}-{}x{}.mp4", safe, preset.fWidth, preset.fHeight);
+        std::format("{}-{}x{}.mp4", safe, job->fOpts.fWidth,
+                    job->fOpts.fHeight);
 
     // Written out before the encoder is started: it is told about its inputs
     // once, when it is launched, and an audio path handed over afterwards
