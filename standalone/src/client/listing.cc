@@ -338,6 +338,11 @@ public:
   [[nodiscard]] const Filters &filters() const { return fFilters; }
   [[nodiscard]] std::span<const int> visible() const { return fVisible; }
 
+  // The subset of those that a reader can actually get to without waiting:
+  // fetching a cover for the four hundredth card of a list nobody has
+  // scrolled is bandwidth, a decode, and a texture, spent on nothing.
+  [[nodiscard]] std::span<const int> onScreen() const { return fOnScreen; }
+
   // The query is edited through the client, which types into the string the
   // box reads. The box has no way of noticing that, and a client that only
   // draws what says it changed would never show the letter that was typed.
@@ -442,6 +447,20 @@ public:
       fScene->scroll(ctx.fMouseX, ctx.fMouseY, fScrollTicks);
       fScrollTicks = 0.0f;
       fScene->layoutIfNeeded(screen);
+    }
+    // Which cards are within reach of the viewport, for a caller deciding
+    // what is worth fetching a cover for. A screen's worth of margin above
+    // and below, so scrolling arrives at cards that already have one.
+    fOnScreen.clear();
+    {
+      skia::SkRect reach = screen;
+      reach.outset(0.0f, screen.height());
+      for (const auto &card : fCards) {
+        if (card.second != nullptr &&
+            skia::SkRect::Intersects(card.second->box(), reach)) {
+          fOnScreen.push_back(card.first);
+        }
+      }
     }
     // After the layout: whether the box is on screen is a fact about where
     // it ended up, and on the frame a tree is built there is no answer yet.
@@ -846,6 +865,8 @@ private:
     CardNode(Listing *owner, int entry) : fOwner(owner), fEntry(entry) {
       fWidth = kCardWidth;
     }
+
+    [[nodiscard]] const skia::SkRect &box() const { return fBounds; }
 
   protected:
     void measure(const skia::SkRect &) override {
@@ -1589,6 +1610,7 @@ private:
   bool fRebuilt = false;
   bool fTicking = false; // something in the tree is waiting on the clock
   bool fCaretLive = false; // the search box is on screen, so it blinks
+  std::vector<int> fOnScreen; // entries whose cards are within reach
   SearchBoxNode *fSearchBox = nullptr;
   std::uint64_t fVisibleShape = 0;
   nodes::ScrollContainer *fScroll = nullptr; // owned by the tree

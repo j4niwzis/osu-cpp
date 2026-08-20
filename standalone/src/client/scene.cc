@@ -369,12 +369,35 @@ public:
   // Where this drawable is, and where it was: a drawable that moved damages
   // both, or it leaves a copy of itself behind.
   void markDamaged() {
-    Drawable *root = this;
-    while (root->fParent != nullptr) {
-      root = root->fParent;
+    this->damageUpwards(fBounds);
+    this->damageUpwards(fDrawnBounds);
+  }
+
+  // A rectangle is only worth repainting where it can be seen. On the way up
+  // to the root, every masking ancestor clips it -- a scroll container is one
+  // -- and a hidden ancestor drops it outright. What is left is what the root
+  // is told about, and a card scrolled out of the list is left with nothing:
+  // it changed, and changing where nobody can see it is not a reason to draw
+  // a frame.
+  void damageUpwards(skia::SkRect rect) {
+    if (rect.isEmpty()) {
+      return;
     }
-    root->joinDamage(fBounds);
-    root->joinDamage(fDrawnBounds);
+    Drawable *node = this;
+    while (node->fParent != nullptr) {
+      node = node->fParent;
+      // The drawable's own visibility is deliberately not tested: hiding one
+      // is a change, and the frame that hides it has to repaint where it was.
+      if (!node->fVisible || node->fAlpha <= 0.001f) {
+        return;
+      }
+      if (node->fMasking && !rect.intersect(node->fBounds)) {
+        return;
+      }
+    }
+    if (node->fBounds.isEmpty() || rect.intersect(node->fBounds)) {
+      node->joinDamage(rect);
+    }
   }
 
   // What has to be repainted for this tree, and forgets it.

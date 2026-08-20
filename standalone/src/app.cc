@@ -5931,8 +5931,10 @@ private:
       fSetPage.update(page);
       this->damage(fSetPage.takeDamage());
     }
-    // Covers are only fetched for what is on screen.
-    for (const int idx : fListing.visible()) {
+    // Covers are only fetched for what is on screen, which the listing knows
+    // and the client did not: this used to walk every result that passed the
+    // filters, on screen or four hundred cards below it.
+    for (const int idx : fListing.onScreen()) {
       this->requestThumb(static_cast<std::size_t>(idx));
     }
     // Scrolling near the end pages the next batch in, as the overlay's
