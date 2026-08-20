@@ -354,6 +354,7 @@ private:
 
   // Font
   skia::SkFont fFont;
+  skia::SkFont fDisplayFont;
 
 
 
@@ -547,6 +548,7 @@ private:
     }
 
     fFont = this->loadFont(20.0f);
+    fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
     // Persistent library at /maps (IDBFS). The initial syncfs is async; the
@@ -604,6 +606,7 @@ private:
     }
 
     fFont = this->loadFont(20.0f);
+    fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
     this->initLibrary();
@@ -1100,9 +1103,10 @@ private:
       return;
     }
     fEngine->submit(ev);
-    if (fRecord) {
-      fRecordedEvents.push_back(ev);
-    }
+    // Always record: the events are a few bytes each, and the autosave
+    // setting decides afterwards whether they are kept. Gating the recording
+    // itself on --record meant automatic replays were always empty.
+    fRecordedEvents.push_back(ev);
   }
 
   [[nodiscard]] static const char *stateName(State st) {
@@ -1234,6 +1238,7 @@ private:
     c.fSkin = &fSkin;
     c.fCombo = &fComboInfo;
     c.fFont = &fFont;
+    c.fDisplayFont = &fDisplayFont;
     c.fScale = fScale;
     c.fOffsetX = fOffsetX;
     c.fOffsetY = fOffsetY;
@@ -1318,8 +1323,10 @@ private:
     this->printResult();
     // Replays are kept by default (the setting can turn it off), so a good
     // run is never lost because the flag was not passed.
-    if (fRecord || fSettings.flag("savereplay")) {
+    // Watching a replay must not write it back out again.
+    if (fReplayPath.empty() && (fRecord || fSettings.flag("savereplay"))) {
       this->saveReplay();
+      this->scanReplays(); // so the browser lists it immediately
     }
     this->switchState(State::kResults);
     fView.invalidate();
@@ -4429,6 +4436,52 @@ private:
     return static_cast<bool>(fContext);
   }
 
+  // Judgements are set in a heavy geometric display face -- Venera in osu!
+  // and webosu-2. That one is a commercial typeface, so look for a
+  // freely-licensed equivalent (all of these ship under the OFL) and fall
+  // back to the UI font when none is installed.
+  [[nodiscard]] skia::SkFont loadDisplayFont(float size) {
+    static constexpr std::array<const char *, 8> kFamilies = {
+        "Montserrat ExtraBold", "Montserrat Bold", "Poppins Bold",
+        "Archivo Black",        "Anton",           "Oswald Bold",
+        "DejaVu Sans Bold",     "Noto Sans Bold"};
+    static constexpr std::array<const char *, 6> kDirs = {
+        "/usr/share/fonts/montserrat", "/usr/share/fonts/poppins",
+        "/usr/share/fonts/TTF",        "/usr/share/fonts/ttf-dejavu",
+        "/usr/share/fonts/noto",       "/usr/share/fonts"};
+    for (const char *dir : kDirs) {
+      if (!std::filesystem::is_directory(dir)) {
+        continue;
+      }
+      auto mgr = skia::SkFontMgr_New_Custom_Directory(dir);
+      if (!mgr) {
+        continue;
+      }
+      for (const char *family : kFamilies) {
+        if (auto face = mgr->matchFamilyStyle(family, skia::SkFontStyle())) {
+          skia::SkString name;
+          face->getFamilyName(&name);
+          std::println(std::cerr, "[ui] judgement font: \"{}\" from {}",
+                       name.c_str(), dir);
+          return skia::SkFont(std::move(face), size);
+        }
+      }
+      // Nothing by name: take whatever bold face the directory offers.
+      if (auto face = mgr->matchFamilyStyle(
+              nullptr, skia::SkFontStyle::Bold())) {
+        skia::SkString name;
+        face->getFamilyName(&name);
+        std::println(std::cerr, "[ui] judgement font (bold fallback): \"{}\"",
+                     name.c_str());
+        return skia::SkFont(std::move(face), size);
+      }
+    }
+    std::println(std::cerr,
+                 "[ui] no display font found; judgements use the UI font "
+                 "(install ttf-montserrat or ttf-dejavu for a closer match)");
+    return this->loadFont(size);
+  }
+
   [[nodiscard]] skia::SkFont loadFont(float size) {
     const std::vector<std::filesystem::path> files{
         "/usr/share/fonts/noto/NotoSans-Regular.ttf",
@@ -4613,8 +4666,7 @@ private:
            fAutoplayEvents[fAutoplayIndex].fTime <= now) {
       const auto &ev = fAutoplayEvents[fAutoplayIndex];
       fEngine->submit(ev);
-      if (fRecord)
-        fRecordedEvents.push_back(ev);
+      fRecordedEvents.push_back(ev);
       if (ev.fAction == osu::InputAction::kMove) {
         fCursor = ev.fPos;
         fView.addTrailPoint(fCursor, ev.fTime);
@@ -4846,7 +4898,7 @@ private:
     std::ofstream out(outPath, std::ios::binary);
     for (std::uint8_t b : replayBytes)
       out.put(static_cast<char>(b));
-    std::println("Saved replay to {}", outPath.string());
+    std::println(std::cerr, "[replay] saved {}", outPath.string());
   }
 
   [[nodiscard]] osu::Vec2 toPlayfield(float sx, float sy) const {

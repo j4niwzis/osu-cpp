@@ -23,6 +23,7 @@ public:
     Skin *fSkin = nullptr;
     const osu::ComboInfo *fCombo = nullptr;
     skia::SkFont *fFont = nullptr;
+    skia::SkFont *fDisplayFont = nullptr; // heavy face for judgements
     float fScale = 1.0f;
     float fOffsetX = 0.0f;
     float fOffsetY = 0.0f;
@@ -716,7 +717,8 @@ public:
 
       // webosu-2 scales the text 0.85 horizontally against 1.0 vertically.
       const float fontSize = static_cast<float>(20.0 * hitSpriteScale);
-      c.fFont->setSize(fontSize);
+      skia::SkFont &font = c.fDisplayFont ? *c.fDisplayFont : *c.fFont;
+      font.setSize(fontSize);
       const float letterSpacing =
           spacing * static_cast<float>(hitSpriteScale) * 0.01f * fontSize;
 
@@ -724,7 +726,7 @@ public:
       const std::string str(text);
       float total = 0.0f;
       for (std::size_t k = 0; k < str.size(); ++k) {
-        total += c.fFont->measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) *
+        total += font.measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) *
                  0.85f;
         if (k + 1 < str.size()) {
           total += letterSpacing;
@@ -739,7 +741,7 @@ public:
       // UI font is far lighter, so thicken the glyphs with a stroke of the
       // same colour rather than leaving them looking spindly.
       paint.setStyle(skia::kStrokeAndFillStyle);
-      paint.setStrokeWidth(fontSize * 0.10f);
+      paint.setStrokeWidth(fontSize * (c.fDisplayFont ? 0.03f : 0.10f));
       paint.setStrokeJoin(skia::kRoundJoin);
 
       canvas->save();
@@ -751,8 +753,8 @@ public:
       float pen = -total / 0.85f * 0.5f;
       for (std::size_t k = 0; k < str.size(); ++k) {
         canvas->drawSimpleText(&str[k], 1, skia::SkTextEncoding::kUTF8, pen,
-                               0.0f, *c.fFont, paint);
-        pen += c.fFont->measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) +
+                               0.0f, font, paint);
+        pen += font.measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) +
                letterSpacing / 0.85f;
       }
       canvas->restore();
