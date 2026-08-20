@@ -230,11 +230,19 @@ inline std::string readString(std::span<const std::uint8_t> &data) {
   return s;
 }
 
+// The replay payload is LZMA1 in the alone format -- five bytes of
+// properties, eight of uncompressed size, then the stream -- because that is
+// what an .osr holds and what every other reader of one expects. This wrote
+// .xz here before, which liblzma was happy to produce and nothing else in the
+// world would open.
 inline std::vector<std::uint8_t>
 lzmaCompress(std::span<const std::uint8_t> input) {
   std::vector<std::uint8_t> out(input.size() + input.size() / 3 + 128);
   lzma::lzma_stream strm = lzma::kStreamInit;
-  if (lzma::lzma_easy_encoder(&strm, 6, lzma::kCheckCrc32) != lzma::kOk)
+  lzma::lzma_options_lzma options{};
+  if (lzma::lzma_lzma_preset(&options, lzma::kPresetDefault))
+    return {};
+  if (lzma::lzma_alone_encoder(&strm, &options) != lzma::kOk)
     return {};
   strm.next_in = input.data();
   strm.avail_in = input.size();
@@ -247,6 +255,16 @@ lzmaCompress(std::span<const std::uint8_t> input) {
   }
   out.resize(strm.total_out);
   lzma::lzma_end(&strm);
+  // liblzma streams, so it writes "size unknown" and an end marker. Every
+  // decoder copes with that, but the ones that read a length and stop cope
+  // better, and the length is known here.
+  if (out.size() >= 13) {
+    auto size = static_cast<std::uint64_t>(input.size());
+    for (int i = 0; i < 8; ++i) {
+      out[5 + static_cast<std::size_t>(i)] =
+          static_cast<std::uint8_t>((size >> (8 * i)) & 0xFF);
+    }
+  }
   return out;
 }
 
@@ -254,7 +272,9 @@ inline std::vector<std::uint8_t>
 lzmaDecompress(std::span<const std::uint8_t> input) {
   std::vector<std::uint8_t> out(1024 * 1024);
   lzma::lzma_stream strm = lzma::kStreamInit;
-  if (lzma::lzma_stream_decoder(
+  // Auto rather than alone: real replays and the ones this wrote before the
+  // format was fixed both open.
+  if (lzma::lzma_auto_decoder(
           &strm, std::numeric_limits<std::uint64_t>::max(), 0) != lzma::kOk)
     return {};
   strm.next_in = input.data();
@@ -281,19 +301,29 @@ lzmaDecompress(std::span<const std::uint8_t> input) {
   return out;
 }
 
+// Frames are "since the last one", not "since the start": the first field of
+// an .osr frame is a delta. Writing absolute times here produced files that
+// only this reader could make sense of, since anything else accumulates them.
+//
+// The last frame is the format's odd one out -- time -12345 carrying the
+// score's random seed in the key field -- and readers skip it by its negative
+// time.
 inline std::vector<std::uint8_t>
-encodeReplayData(std::span<const InputEvent> events) {
+encodeReplayData(std::span<const InputEvent> events, std::int32_t seed = 0) {
   std::string s;
   int keys = 0;
+  std::int64_t last = 0;
   for (const auto &ev : events) {
     if (ev.fAction == InputAction::kPress)
       keys |= 5;
     else if (ev.fAction == InputAction::kRelease)
       keys &= ~5;
-    s +=
-        std::format("{}|{:.7f}|{:.7f}|{},", static_cast<std::int64_t>(ev.fTime),
-                    ev.fPos.fX, ev.fPos.fY, keys);
+    const auto now = static_cast<std::int64_t>(ev.fTime);
+    s += std::format("{}|{:.7f}|{:.7f}|{},", now - last, ev.fPos.fX,
+                     ev.fPos.fY, keys);
+    last = now;
   }
+  s += std::format("-12345|0|0|{},", seed);
   if (!s.empty())
     s.pop_back();
   return std::vector<std::uint8_t>(s.begin(), s.end());
@@ -302,7 +332,12 @@ encodeReplayData(std::span<const InputEvent> events) {
 inline std::vector<InputEvent> decodeReplayData(std::string_view replayStr) {
   std::vector<InputEvent> events;
   int keys = 0;
+  std::int64_t now = 0;
   std::size_t pos = 0;
+  // Replays this wrote before the format was fixed carry absolute times and
+  // no seed frame; everything osu! has written since 2013 carries deltas and
+  // ends with one. That frame is the only thing that tells the two apart.
+  const bool deltas = replayStr.find("-12345|") != std::string_view::npos;
   while (pos < replayStr.size()) {
     std::size_t s1 = replayStr.find('|', pos);
     if (s1 == std::string::npos)
@@ -317,15 +352,40 @@ inline std::vector<InputEvent> decodeReplayData(std::string_view replayStr) {
     if (s4 == std::string::npos)
       s4 = replayStr.size();
 
-    auto ts = static_cast<double>(
-        std::stoll(std::string(replayStr.substr(pos, s1 - pos))));
+    const auto delta =
+        std::stoll(std::string(replayStr.substr(pos, s1 - pos)));
     double x = std::stod(std::string(replayStr.substr(s1 + 1, s2 - s1 - 1)));
     double y = std::stod(std::string(replayStr.substr(s2 + 1, s3 - s2 - 1)));
     int newKeys = std::stoi(std::string(replayStr.substr(s3 + 1, s4 - s3 - 1)));
 
-    if ((keys & 5) == 0 && (newKeys & 5) != 0)
-      events.push_back({ts, {x, y}, InputAction::kPress});
-    else if ((keys & 5) != 0 && (newKeys & 5) == 0)
+    // -12345 is the seed frame, and stable also writes a couple of frames at
+    // -1 before the map starts. Neither is input.
+    if (delta == -12345) {
+      pos = s4 + 1;
+      continue;
+    }
+    now = deltas ? now + delta : delta;
+    const auto ts = static_cast<double>(now);
+    if (now < 0) {
+      keys = newKeys;
+      pos = s4 + 1;
+      continue;
+    }
+
+    // Two logical buttons out of the four bits: K1 is written together with
+    // M1 and K2 with M2, so 5 is "left" and 10 is "right". A press of either
+    // is a press -- a stream alternating between them is two taps, not one
+    // held key -- and only letting go of both is a release.
+    const bool leftWas = (keys & 5) != 0;
+    const bool rightWas = (keys & 10) != 0;
+    const bool leftNow = (newKeys & 5) != 0;
+    const bool rightNow = (newKeys & 10) != 0;
+    const int pressed = (leftNow && !leftWas ? 1 : 0) +
+                        (rightNow && !rightWas ? 1 : 0);
+    if (pressed > 0) {
+      for (int k = 0; k < pressed; ++k)
+        events.push_back({ts, {x, y}, InputAction::kPress});
+    } else if ((leftWas || rightWas) && !leftNow && !rightNow)
       events.push_back({ts, {x, y}, InputAction::kRelease});
     else
       events.push_back({ts, {x, y}, InputAction::kMove});
