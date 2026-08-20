@@ -328,18 +328,23 @@ public:
     fFilters.fDescending = true;
   }
 
-  void tick(double nowMs) { fBlink = nowMs; }
-
   void draw(const Ctx &ctx) {
     fFont = ctx.fFont;
     fMouseX = ctx.fMouseX;
     fMouseY = ctx.fMouseY;
     fEntries = ctx.fEntries;
     fLoading = ctx.fLoading;
-    this->rebuildVisible(ctx.fEntries);
+    // Filtering and sorting the results is O(n log n) with string comparisons
+    // in it, and on almost every frame it arrives at the answer it arrived at
+    // last frame. It is redone when what it depends on changes.
+    const std::uint64_t visible = this->visibleShape(ctx.fEntries);
+    if (visible != fVisibleShape) {
+      fVisibleShape = visible;
+      this->rebuildVisible(ctx.fEntries);
+    }
 
     // The tree is rebuilt when what it shows changes, and reused otherwise.
-    const std::string shape = this->treeShape(ctx);
+    const std::uint64_t shape = this->treeShape(ctx);
     if (!fScene || shape != fShape) {
       // A page arriving changes the shape, but not where the reader is: the
       // offset is carried over to the tree that replaces this one.
@@ -390,6 +395,20 @@ public:
     return fTextBoxBounds.contains(x, y);
   }
 
+  // Whether anything in the tree is still moving. Eased values announce
+  // themselves through client::ui::approach; transforms do not, so they are
+  // asked directly.
+  [[nodiscard]] bool animating() const {
+    return fScene && fScene->animatingTree();
+  }
+
+  // When the picture changes next without anybody touching it: the caret is
+  // shown for 600 ms of every 1000. Everything else here waits for an event.
+  [[nodiscard]] static double nextChangeWall(double nowMs) {
+    const double phase = std::fmod(nowMs, 1000.0);
+    return nowMs + (phase < 600.0 ? 600.0 - phase : 1000.0 - phase);
+  }
+
 private:
   // What a clickable filter stands for. Rows and the sort bar report their
   // hits in these terms, and the owner turns them into state changes.
@@ -410,6 +429,18 @@ private:
     }
 
   protected:
+    // The caret is the one thing on this screen that changes without being
+    // touched. It marks the box when it flips, so the frame that follows
+    // repaints the box and nothing else -- and so that the frames in between
+    // are not drawn at all.
+    void update(double nowMs) override {
+      const bool shown = std::fmod(nowMs, 1000.0) < 600.0;
+      if (shown != fCaretShown) {
+        fCaretShown = shown;
+        this->markDamaged();
+      }
+    }
+
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       auto &font = *fOwner->fFont;
       paint::rounded(canvas, fBounds, 5.0f, kBackground4, alpha);
@@ -434,7 +465,7 @@ private:
                            fBounds.centerY() + 6.0f, fBounds.width() - 44.0f,
                            16.0f, kContent1, false, alpha);
       }
-      if (std::fmod(fOwner->fBlink, 1000.0) < 600.0) {
+      if (fCaretShown) {
         const float cx = fBounds.fLeft + 32.0f +
                          paint::measure(font, query, 16.0f, false) + 2.0f;
         paint::rect(canvas,
@@ -447,6 +478,7 @@ private:
 
   private:
     Listing *fOwner;
+    bool fCaretShown = false;
   };
 
   // BeatmapSearchFilterRow: a 100px label column beside a wrapping tab flow.
@@ -1168,17 +1200,26 @@ private:
 
   // What the tree is built from: rebuilt when any of this changes, reused
   // when none of it does.
-  [[nodiscard]] std::string treeShape(const Ctx &ctx) const {
-    std::string shape = std::format(
-        "{}x{}|{}|{}|{}|{}|", static_cast<int>(ctx.fWidth),
-        static_cast<int>(ctx.fHeight), static_cast<int>(fFilters.fCardSize),
-        static_cast<int>(fFilters.fSort), fFilters.fDescending ? 1 : 0,
-        fVisible.size());
+  // A number rather than a string: this is compared on every frame, and
+  // formatting one set id per card each time was work spent to conclude that
+  // nothing had changed.
+  [[nodiscard]] std::uint64_t treeShape(const Ctx &ctx) const {
+    std::uint64_t hash = 1469598103934665603ULL; // FNV-1a
+    const auto mix = [&hash](std::uint64_t value) {
+      hash ^= value;
+      hash *= 1099511628211ULL;
+    };
+    mix(static_cast<std::uint64_t>(ctx.fWidth));
+    mix(static_cast<std::uint64_t>(ctx.fHeight));
+    mix(static_cast<std::uint64_t>(fFilters.fCardSize));
+    mix(static_cast<std::uint64_t>(fFilters.fSort));
+    mix(fFilters.fDescending ? 1 : 0);
+    mix(fVisible.size());
     for (const int idx : fVisible) {
-      shape += std::to_string(ctx.fEntries[static_cast<std::size_t>(idx)].fSetId);
-      shape.push_back(',');
+      mix(static_cast<std::uint64_t>(
+          ctx.fEntries[static_cast<std::size_t>(idx)].fSetId));
     }
-    return shape;
+    return hash;
   }
 
   // ---- filters -------------------------------------------------------------
@@ -1277,6 +1318,32 @@ private:
     }
   }
 
+  // What the visible set is computed from: the results themselves, and the
+  // filters that select and order them.
+  [[nodiscard]] std::uint64_t visibleShape(std::span<const Entry> entries)
+      const {
+    std::uint64_t hash = 1469598103934665603ULL; // FNV-1a
+    const auto mix = [&hash](std::uint64_t value) {
+      hash ^= value;
+      hash *= 1099511628211ULL;
+    };
+    mix(entries.size());
+    for (const Entry &e : entries) {
+      mix(static_cast<std::uint64_t>(e.fSetId));
+    }
+    mix(static_cast<std::uint64_t>(fFilters.fCategory));
+    mix(static_cast<std::uint64_t>(fFilters.fGenre));
+    mix(static_cast<std::uint64_t>(fFilters.fLanguage));
+    mix(static_cast<std::uint64_t>(fFilters.fExplicit));
+    mix(static_cast<std::uint64_t>(fFilters.fSort));
+    mix(fFilters.fDescending ? 1 : 0);
+    mix(fFilters.fExtra[0] ? 1 : 0);
+    mix(fFilters.fExtra[1] ? 1 : 0);
+    mix(fFilters.fGeneral[3] ? 1 : 0);
+    mix(fFilters.fGeneral[4] ? 1 : 0);
+    return hash;
+  }
+
   void rebuildVisible(std::span<const Entry> entries) {
     fVisible.clear();
     for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -1359,14 +1426,14 @@ private:
   skia::SkFont *fFont = nullptr;
   bool fLoading = false;
   float fMouseX = 0.0f, fMouseY = 0.0f;
-  double fBlink = 0.0;
   long fPreviewId = -1;
   float fPreviewProgress = 0.0f;
   skia::SkRect fTextBoxBounds = skia::SkRect::MakeEmpty();
 
   // The tree, and what it was built for.
   std::unique_ptr<scene::Drawable> fScene;
-  std::string fShape;
+  std::uint64_t fShape = 0;
+  std::uint64_t fVisibleShape = 0;
   nodes::ScrollContainer *fScroll = nullptr; // owned by the tree
   float fScrollTicks = 0.0f;
   bool fScrollToStart = false;

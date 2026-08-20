@@ -279,6 +279,14 @@ public:
     if (!fVisible || fAlpha <= 0.001f) {
       return;
     }
+    // Anything lying outside what is being repainted is skipped whole, with
+    // its subtree. Without this, a list of a few hundred cards is recorded in
+    // full every frame and Skia discards the off-screen ones after it has
+    // been told about them -- and once frames are clipped to damage, the same
+    // test is what keeps a repaint of one card from walking the other 200.
+    if (!fBounds.isEmpty() && canvas->quickReject(fBounds)) {
+      return;
+    }
     const float alpha = inheritedAlpha * fAlpha;
     const int saved = canvas->save();
     if (fMasking) {

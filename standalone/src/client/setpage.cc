@@ -218,6 +218,12 @@ public:
 
   // The region this page repainted, for a caller that clips frames to
   // damage. Empty means nothing moved.
+  // Whether a transform in the tree is still running: eased values say so
+  // themselves, transforms have to be asked.
+  [[nodiscard]] bool animating() const {
+    return fOpen && fScene && fScene->animatingTree();
+  }
+
   [[nodiscard]] skia::SkRect takeDamage() {
     return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
   }

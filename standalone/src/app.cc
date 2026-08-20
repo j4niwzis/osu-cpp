@@ -142,6 +142,10 @@ private:
   int fRefreshHz = 60; // the monitor's, sampled where GLFW allows the query
   double fRedrawUntilWall = 0.0; // frames are drawn until at least this time
   double fLastDrawWall = 0.0;
+  int fFramesOwed = 0;      // frames promised to something that just moved
+  double fWakeWall = 0.0;   // when a screen asked to be woken, or 0
+  bool fDamageDrives = false; // damage that is worth a frame of its own
+  bool fDrawing = false;      // inside a frame: damage reported now is not
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
   skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
   bool fDrewOnRaster = false;               // this frame went to the CPU one
@@ -430,6 +434,9 @@ private:
     if (fade >= 1.0f) {
       return;
     }
+    // Runs on the wall clock rather than on easing, so it asks for the frames
+    // it needs itself, and stops asking when it is over.
+    this->oweFrames(2);
     skia::SkPaint p;
     p.setColor(skia::colorSetARGB(
         static_cast<std::uint8_t>((1.0f - fade) * 160.0f), 10, 8, 14));
@@ -795,8 +802,10 @@ private:
   }
 
   void applyEvent(const Event &ev) {
-    // Long enough to cover the eased animations a click or a scroll starts.
-    this->requestRedraw(400.0);
+    // Enough to react and to paint the reaction. Anything that keeps moving
+    // after that -- an eased hover, a scroll gliding to a stop -- owes itself
+    // the frames it needs, and stops owing them when it settles.
+    this->oweFrames(3);
     switch (ev.fType) {
     case EventType::kResize:
       this->resize(ev.fA, ev.fB);
@@ -1337,7 +1346,9 @@ private:
   }
 
   void switchState(State st) {
-    this->requestRedraw(1500.0); // screen transitions run for a while
+    // The transition fades over 240 ms and asks for its own frames after
+    // that; what a new screen loads arrives as damage from a callback.
+    this->oweFrames(4);
     this->damageAll("screen change"); // the new screen owns every pixel
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
@@ -1413,10 +1424,33 @@ private:
     fRedrawUntilWall = std::max(fRedrawUntilWall, wallMs() + durationMs);
   }
 
+  // Promises a number of frames. Two is the useful minimum: the first lets
+  // whatever moved react and mark what it touched, the second paints that.
+  // This is what an event or an eased value owes -- rather than a blanket
+  // "keep drawing for the next 400 ms", which is how a listing nobody was
+  // touching ended up repainting at the refresh rate.
+  void oweFrames(int frames) { fFramesOwed = std::max(fFramesOwed, frames); }
+
+  // A screen that knows when it next changes by itself -- a caret blinking on
+  // its own clock -- says so, and sleeps until then instead of keeping frames
+  // coming in the hope of catching the moment.
+  void wakeAt(double wall) {
+    fWakeWall = fWakeWall <= 0.0 ? wall : std::min(fWakeWall, wall);
+  }
+
+  // Damage marked while a frame is being drawn says what to repaint; it does
+  // not ask for another frame. That distinction is what lets a screen repaint
+  // itself whole every time it draws -- most of them still do -- without that
+  // becoming a reason to draw again, for ever. Damage marked outside drawing,
+  // by an event or by work finishing in the background, does ask.
+
   // The whole screen has to be repainted: a screen changed, the window
   // resized, or something that does not report its bounds moved.
   void damageAll(const char *reason = "unspecified") {
     fFullDamage = true;
+    if (!fDrawing) {
+      fDamageDrives = true;
+    }
     fFullDamageReason = reason;
     fDamage.clear();
   }
@@ -1426,6 +1460,9 @@ private:
   void damage(const skia::SkRect &rect) {
     if (fFullDamage || rect.isEmpty()) {
       return;
+    }
+    if (!fDrawing) {
+      fDamageDrives = true;
     }
     skia::SkIRect area = rect.roundOut();
     area.outset(2, 2);
@@ -1485,21 +1522,28 @@ private:
   // have -- the screens repaint from state, so a clipped repaint of a region
   // is the same pixels -- only the work outside the clip is skipped.
   void beginFrame() {
+    fDrawing = true;
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
-    // What the frame would repaint, before the overlay has its say. An empty
-    // set means nothing asked to be repainted -- which is a different answer
-    // from "everything", and reporting it as red was what made an idle
-    // listing look like it was repainting itself continuously.
-    fComputedClipFull = fFullDamage;
+    //
+    // What the frame repaints. A frame drawn with nothing marked repaints
+    // everything -- the buffer being drawn into is several frames old and
+    // there is no region to trust -- so it is reported as full, honestly.
+    // The answer to those frames is not to relabel them: it is not to draw
+    // them, which is what the owed-frame count above is for.
+    if (!fFullDamage && fDamage.empty()) {
+      fFullDamageReason = "nothing marked itself";
+    }
+    fComputedClipFull = fFullDamage || fDamage.empty();
     fComputedClip = fDamage;
-    fFrameClipFull = fFullDamage || fDamage.empty();
+    fFrameClipFull = fComputedClipFull;
     fFrameClip.clear();
     if (!fFrameClipFull) {
       fFrameClip = fDamage;
     }
     fDamage.clear();
     fFullDamage = false;
+    fDamageDrives = false;
 
     // Showing the regions means repainting everything: the outlines are put
     // on a back buffer the window will come back to, and cleaning them up
@@ -1583,10 +1627,29 @@ private:
     if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
       return true;
     }
-    if (this->showingDamage()) {
-      return true; // its trails are cleaned by the frames that follow
+    // Scene trees know whether anything in them is still moving, which is the
+    // one thing they cannot express as damage in advance.
+    if (fState == State::kDownload &&
+        (fListing.animating() || fSetPage.animating())) {
+      return true;
     }
     const double now = wallMs();
+    if (fFramesOwed > 0) {
+      --fFramesOwed;
+      return true;
+    }
+    if (fWakeWall > 0.0 && now >= fWakeWall) {
+      fWakeWall = 0.0;
+      return true;
+    }
+    // Something marked itself outside a frame: an event handler, or work
+    // that finished in the background. Damage marked while drawing only says
+    // what to repaint when a frame next happens -- a screen that repaints
+    // itself whole every time it draws would otherwise be asking for the next
+    // frame, every frame, for ever.
+    if (fDamageDrives) {
+      return true;
+    }
     if (now <= fRedrawUntilWall) {
       return true;
     }
@@ -1596,6 +1659,10 @@ private:
   }
 
   void frame() {
+    // A screen that returned early last time -- gameplay without a beatmap
+    // loaded, say -- could leave this set; outside frame() nothing is drawing
+    // by definition.
+    fDrawing = false;
     this->applySwapInterval();
     // Work finishing in the background changes what is on screen, so it is
     // as good a reason to draw as an event.
@@ -1690,7 +1757,7 @@ private:
     // carousel, the listing, the panels -- animating without each of them
     // having to announce it.
     if (client::ui::takeEasingMoved()) {
-      this->requestRedraw(40.0);
+      this->oweFrames(2);
     }
     this->limitFrameRate();
   }
@@ -1801,6 +1868,7 @@ private:
                       std::chrono::steady_clock::now() - beforeSwap)
                       .count();
     this->reportFrameCost(frameStart, beforeSwap);
+    fDrawing = false;
   }
 
   // Where a frame goes, once a second, under OSU_SHOW_DAMAGE: drawing into
@@ -1889,9 +1957,6 @@ private:
     // Magenta around each region the frame would have been clipped to; a red
     // border when it would have repainted everything, with the reason,
     // because "why is it full again" is the question that keeps coming up.
-    if (!fComputedClipFull && fComputedClip.empty()) {
-      return; // nothing asked to be repainted: nothing to outline
-    }
     if (fComputedClipFull) {
       skia::SkPaint paint;
       paint.setStyle(skia::kStrokeStyle);
@@ -4916,6 +4981,9 @@ private:
                                  std::max(0.0f, total - halfHeight * 0.5f));
     fScrollAnim = this->approach(fScrollAnim, fCarouselScroll, 120.0f);
     fPopAnim = std::min(1.0f, fPopAnim + static_cast<float>(fUiDt) / 400.0f);
+    if (fPopAnim < 1.0f) {
+      this->oweFrames(2); // this one runs on a clock rather than on easing
+    }
     const float pop = easeOutQuint(fPopAnim);
 
     canvas->save();
@@ -5663,7 +5731,6 @@ private:
       fPreviewId = -1; // the clip ran out; the button goes back to play
       this->restoreMusic();
     }
-    fListing.tick(wallMs());
     fListing.setPreview(fPreviewId, this->previewProgress());
     fListing.draw(ctx);
     this->damage(fListing.takeDamage());
@@ -5695,6 +5762,9 @@ private:
     if (fListing.wantsMore()) {
       this->fetchPage();
     }
+    // The caret blinks on a clock of its own. Rather than keeping frames
+    // coming so the moment is not missed, the screen says when the moment is.
+    this->wakeAt(fListing.nextChangeWall(wallMs()));
     this->drawScreenFadeIn(canvas);
     this->present();
   }
