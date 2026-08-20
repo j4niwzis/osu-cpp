@@ -209,6 +209,9 @@ private:
     std::filesystem::path fPath;
     std::string fLabel;
     std::filesystem::file_time_type fTime;
+    osu::ReplayScore fScore;  // from the .osr header
+    std::string fGrade;
+    bool fHasScore = false;
   };
   bool fReplayListOpen = false;
   std::vector<ReplayFile> fReplays;
@@ -3311,8 +3314,33 @@ private:
       if (!e.is_regular_file() || e.path().extension() != ".osr") {
         continue;
       }
-      fReplays.push_back({e.path(), e.path().stem().string(),
-                          e.last_write_time(ec)});
+      ReplayFile entry{e.path(), e.path().stem().string(),
+                       e.last_write_time(ec)};
+      // Read just the header for the score; the events stay compressed.
+      std::ifstream in(e.path(), std::ios::binary);
+      if (in) {
+        const std::vector<std::uint8_t> bytes(
+            (std::istreambuf_iterator<char>(in)),
+            std::istreambuf_iterator<char>());
+        try {
+          const auto data = osu::decodeReplay(bytes);
+          entry.fScore = data.fScore;
+          entry.fHasScore = data.fScore.totalHits() > 0;
+          if (entry.fHasScore) {
+            osu::ScoreState state;
+            state.fGreat = entry.fScore.f300;
+            state.fGood = entry.fScore.f100;
+            state.fMeh = entry.fScore.f50;
+            state.fMiss = entry.fScore.fMiss;
+            state.fScore = static_cast<std::uint64_t>(entry.fScore.fTotalScore);
+            state.fMaxCombo = entry.fScore.fMaxCombo;
+            entry.fGrade = osu::gradeString(osu::computeGrade(state));
+          }
+        } catch (const std::exception &) {
+          // Unreadable replay: still listed, just without a score.
+        }
+      }
+      fReplays.push_back(std::move(entry));
     }
     // Newest first, as a scores list would be.
     std::ranges::sort(fReplays, std::ranges::greater{}, &ReplayFile::fTime);
@@ -4366,8 +4394,23 @@ private:
     const bool hover = r.contains(fMouseX, fMouseY);
     p.fillRounded(r, 10.0f * scale,
                   hover ? client::ui::kCardSel : client::ui::kBackground4);
-    p.textCentered("replay", r.centerX(), r.fTop + 40.0f * scale,
-                   16.0f * scale, client::ui::kAccent2, 0.9f);
+    if (replay.fHasScore) {
+      // ContractedPanelMiddleContent: rank, total score, accuracy, date.
+      p.textCentered(replay.fGrade, r.centerX(), r.fTop + 62.0f * scale,
+                     44.0f * scale, client::ui::kAccent);
+      p.textCentered(std::format("{}", replay.fScore.fTotalScore),
+                     r.centerX(), r.fTop + 92.0f * scale, 15.0f * scale,
+                     skia::kWhite);
+      p.textCentered(std::format("{:.2f}%", replay.fScore.accuracy() * 100.0),
+                     r.centerX(), r.fTop + 112.0f * scale, 12.0f * scale,
+                     client::ui::kAccent2, 0.9f);
+      p.textCentered(std::format("{}x", replay.fScore.fMaxCombo), r.centerX(),
+                     r.fTop + 130.0f * scale, 12.0f * scale, skia::kWhite,
+                     0.7f);
+    } else {
+      p.textCentered("replay", r.centerX(), r.fTop + 40.0f * scale,
+                     16.0f * scale, client::ui::kAccent2, 0.9f);
+    }
     // The stem carries the difficulty and the timestamp it was saved with.
     const auto underscore = replay.fLabel.rfind('_');
     const std::string diff = underscore == std::string::npos
@@ -5038,8 +5081,19 @@ private:
     auto t = std::chrono::system_clock::to_time_t(now);
     std::ostringstream nameStream;
     nameStream << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S");
-    auto replayBytes =
-        osu::encodeReplay(fRecordedEvents, this->beatmapMd5(), "Player", fMods);
+    // The .osr header has fields for the score, so it goes in there rather
+    // than into a sidecar: the file stays a plain, original-format replay.
+    const auto &sc = fEngine->score();
+    osu::ReplayScore score;
+    score.f300 = static_cast<std::uint16_t>(sc.fGreat);
+    score.f100 = static_cast<std::uint16_t>(sc.fGood);
+    score.f50 = static_cast<std::uint16_t>(sc.fMeh);
+    score.fMiss = static_cast<std::uint16_t>(sc.fMiss);
+    score.fTotalScore = static_cast<std::int32_t>(sc.fScore);
+    score.fMaxCombo = static_cast<std::uint16_t>(sc.fMaxCombo);
+    score.fPerfect = sc.fMiss == 0 && sc.fGood == 0 && sc.fMeh == 0;
+    auto replayBytes = osu::encodeReplay(fRecordedEvents, this->beatmapMd5(),
+                                         "Player", fMods, score);
     std::error_code ec;
     std::filesystem::create_directories(fReplayDir, ec);
     const std::filesystem::path outPath =

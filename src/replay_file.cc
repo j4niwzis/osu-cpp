@@ -8,11 +8,38 @@ import osu.engine;
 
 export namespace osu {
 
+// The .osr header carries the score alongside the input events; these are
+// those fields, in the order the format stores them.
+struct ReplayScore {
+  std::uint16_t f300 = 0;
+  std::uint16_t f100 = 0;
+  std::uint16_t f50 = 0;
+  std::uint16_t fGeki = 0;
+  std::uint16_t fKatu = 0;
+  std::uint16_t fMiss = 0;
+  std::int32_t fTotalScore = 0;
+  std::uint16_t fMaxCombo = 0;
+  bool fPerfect = false;
+
+  [[nodiscard]] int totalHits() const noexcept {
+    return f300 + f100 + f50 + fMiss;
+  }
+
+  [[nodiscard]] double accuracy() const noexcept {
+    const int total = totalHits();
+    if (total == 0) {
+      return 1.0;
+    }
+    return (300.0 * f300 + 100.0 * f100 + 50.0 * f50) / (300.0 * total);
+  }
+};
+
 struct ReplayData {
   std::vector<InputEvent> fEvents;
   std::string fBeatmapMd5;
   std::string fPlayerName;
   ModSet fMods = mod::kNone;
+  ReplayScore fScore;
 };
 
 [[nodiscard]] inline std::string
@@ -302,7 +329,8 @@ inline std::vector<InputEvent> decodeReplayData(std::string_view replayStr) {
 
 [[nodiscard]] inline std::vector<std::uint8_t>
 encodeReplay(std::span<const InputEvent> events, const std::string &beatmapMd5,
-             const std::string &playerName, ModSet mods) {
+             const std::string &playerName, ModSet mods,
+             const ReplayScore &score = {}) {
   using namespace detail;
   std::vector<std::uint8_t> out;
 
@@ -315,15 +343,15 @@ encodeReplay(std::span<const InputEvent> events, const std::string &beatmapMd5,
   auto replayHash = md5::hash(replayBytes);
   writeString(out, md5::hexString(replayHash));
 
-  writeShort(out, 0);
-  writeShort(out, 0);
-  writeShort(out, 0);
-  writeShort(out, 0);
-  writeShort(out, 0);
-  writeShort(out, 0);
-  writeInt(out, 0);
-  writeShort(out, 0);
-  writeByte(out, 0);
+  writeShort(out, static_cast<std::int16_t>(score.f300));
+  writeShort(out, static_cast<std::int16_t>(score.f100));
+  writeShort(out, static_cast<std::int16_t>(score.f50));
+  writeShort(out, static_cast<std::int16_t>(score.fGeki));
+  writeShort(out, static_cast<std::int16_t>(score.fKatu));
+  writeShort(out, static_cast<std::int16_t>(score.fMiss));
+  writeInt(out, score.fTotalScore);
+  writeShort(out, static_cast<std::int16_t>(score.fMaxCombo));
+  writeByte(out, score.fPerfect ? 1 : 0);
 
   writeInt(out, static_cast<std::int32_t>(mods.fValue));
   writeString(out, "");
@@ -354,15 +382,15 @@ decodeReplay(std::span<const std::uint8_t> data) {
   result.fBeatmapMd5 = readString(sp);
   result.fPlayerName = readString(sp);
   readString(sp);
-  readShort(sp);
-  readShort(sp);
-  readShort(sp);
-  readShort(sp);
-  readShort(sp);
-  readShort(sp);
-  readInt(sp);
-  readShort(sp);
-  readByte(sp);
+  result.fScore.f300 = static_cast<std::uint16_t>(readShort(sp));
+  result.fScore.f100 = static_cast<std::uint16_t>(readShort(sp));
+  result.fScore.f50 = static_cast<std::uint16_t>(readShort(sp));
+  result.fScore.fGeki = static_cast<std::uint16_t>(readShort(sp));
+  result.fScore.fKatu = static_cast<std::uint16_t>(readShort(sp));
+  result.fScore.fMiss = static_cast<std::uint16_t>(readShort(sp));
+  result.fScore.fTotalScore = readInt(sp);
+  result.fScore.fMaxCombo = static_cast<std::uint16_t>(readShort(sp));
+  result.fScore.fPerfect = readByte(sp) != 0;
   result.fMods = osu::ModSet(static_cast<std::uint32_t>(readInt(sp)));
   readString(sp);
   readLong(sp);
