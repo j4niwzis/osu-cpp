@@ -1886,6 +1886,36 @@ private:
     if (this->screenFade() < 1.0f) {
       this->damageAll("screen fade");
     }
+
+    // Overlays are drawn after the screen, over most of it, and none of them
+    // declares a region -- so while one is up, and on the frame it goes away,
+    // the screen underneath cannot be trusted to have marked enough.
+    const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
+                         fExportDialog.open() || fReplayListOpen ||
+                         fConfirmDelete || fSetPage.open();
+    // Only while one is moving, or on the frame it appears or goes away: a
+    // settled overlay is as static as the screen under it, and the screens do
+    // mark what they change beneath it.
+    if (overlay != fOverlayShown) {
+      this->damageAll("overlay appeared or went away");
+    } else if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
+      this->damageAll("overlay sliding");
+    } else if (fExportDialog.open()) {
+      // Neither the window nor even the whole box: what is behind the dim
+      // does not change while the dialog is up, and while a video is being
+      // written the only thing that moves is the per cent on the status line.
+      // The box itself is repainted for the pointer, whose buttons light up.
+      const skia::SkRect box =
+          client::ExportDialog::bounds(fScreenW, fScreenH);
+      const bool inside = box.contains(fMouseX, fMouseY);
+      if (inside || fPointerWasInDialog) {
+        this->damage(box);
+      } else if (fExportDialog.takeStatusChanged()) {
+        this->damage(client::ExportDialog::statusBounds(fScreenW, fScreenH));
+      }
+      fPointerWasInDialog = inside;
+    }
+    fOverlayShown = overlay;
   }
 
   // Whether the frame that was asked for would put anything new on screen.
@@ -2177,35 +2207,6 @@ private:
       this->damageAll("screen does not report damage");
       break;
     }
-    // Overlays are drawn after the screen, over most of it, and none of them
-    // declares a region -- so while one is up, and on the frame it goes away,
-    // the screen underneath cannot be trusted to have marked enough.
-    const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
-                         fExportDialog.open() || fReplayListOpen ||
-                         fConfirmDelete || fSetPage.open();
-    // Only while one is moving, or on the frame it appears or goes away: a
-    // settled overlay is as static as the screen under it, and the screens do
-    // mark what they change beneath it.
-    if (overlay != fOverlayShown) {
-      this->damageAll("overlay appeared or went away");
-    } else if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
-      this->damageAll("overlay sliding");
-    } else if (fExportDialog.open()) {
-      // Neither the window nor even the whole box: what is behind the dim
-      // does not change while the dialog is up, and while a video is being
-      // written the only thing that moves is the per cent on the status line.
-      // The box itself is repainted for the pointer, whose buttons light up.
-      const skia::SkRect box =
-          client::ExportDialog::bounds(fScreenW, fScreenH);
-      const bool inside = box.contains(fMouseX, fMouseY);
-      if (inside || fPointerWasInDialog) {
-        this->damage(box);
-      } else if (fExportDialog.takeStatusChanged()) {
-        this->damage(client::ExportDialog::statusBounds(fScreenW, fScreenH));
-      }
-      fPointerWasInDialog = inside;
-    }
-    fOverlayShown = overlay;
     this->beginFrame();
     switch (fState) {
     case State::kMainMenu:
