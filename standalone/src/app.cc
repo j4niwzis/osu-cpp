@@ -5342,8 +5342,13 @@ private:
     job->fOpts.fWidth = preset.fWidth;
     job->fOpts.fHeight = preset.fHeight;
     job->fOpts.fFps = 60;
+    // Beside the library rather than inside it: ~/.local/share/osu_client,
+    // which is the directory that holds maps/ and the caches. Said in full in
+    // the log, since "saved replay-....mp4" does not answer "saved where".
     job->fOpts.fOutput =
         fMapsDir.parent_path() / std::format("replay-{}.mp4", fBeatmapFilename);
+    std::println(std::cerr, "[export] writing {}",
+                 job->fOpts.fOutput.string());
 
     if (!job->fExporter->begin(job->fOpts)) {
       this->exportFailed(job->fExporter->error());
@@ -5481,6 +5486,7 @@ private:
     auto finished = std::make_shared<std::pair<bool, std::string>>();
     auto exporter = job.fExporter;
     const std::string name = job.fOpts.fOutput.filename().string();
+    const std::string full = job.fOpts.fOutput.string();
     fExportJob.reset();
     fLoader.submit(
         0xE0DEull,
@@ -5488,10 +5494,10 @@ private:
           finished->first = exporter->finish();
           finished->second = exporter->error();
         },
-        [this, finished, name] {
+        [this, finished, name, full] {
           if (finished->first) {
             fExportDialog.setStatus(std::format("saved {}", name));
-            std::println(std::cerr, "[export] saved {}", name);
+            std::println(std::cerr, "[export] saved {}", full);
           } else {
             this->exportFailed(finished->second);
           }
