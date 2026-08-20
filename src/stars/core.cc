@@ -289,8 +289,12 @@ private:
     const auto *cs = std::get_if<Slider>(fBase);
     const auto *ls = std::get_if<Slider>(fLast);
     if (cs) {
-      fTD =
-          fLTD * std::max(1.0, std::pow(static_cast<double>(cs->fRepeat), 0.3));
+      // Slider.RepeatCount is the number of repeats, which is one less than
+      // the number of spans the file records: a plain slider repeats zero
+      // times. Feeding the span count in here inflated the travel distance of
+      // every repeat slider.
+      const double repeats = static_cast<double>(std::max(0, cs->fRepeat - 1));
+      fTD = fLTD * std::max(1.0, std::pow(repeats, 0.3));
       fTT = std::max(fLTT / cr, static_cast<double>(kMDT));
     }
     fMJT = fADT;
