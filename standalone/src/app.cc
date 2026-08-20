@@ -25,6 +25,7 @@ import client.loader;
 import client.ui;
 import client.settings;
 import client.settingspanel;
+import client.overlays;
 import client.mods;
 import client.video;
 import bjson;
@@ -316,16 +317,9 @@ private:
   client::SettingsPanel fSettingsPanel;
   float fAppliedDim = 0.7f;
 
-  // ---- Mod select (ModSelectOverlay) ------------------------------------
-  bool fModsOpen = false;
-  float fModsSlide = 0.0f;
-  std::vector<skia::SkRect> fModHits;
-
-  // ---- Video export -----------------------------------------------------
-  bool fExportOpen = false;
-  int fExportPreset = 1; // 1080p
-  std::vector<skia::SkRect> fExportHits;
-  std::string fExportStatus;
+  // ---- Overlays (views live in client.overlays) -------------------------
+  client::ModSelect fModSelect;
+  client::ExportDialog fExportDialog;
 
 
   AnchoredClock fMenuClock;
@@ -833,16 +827,16 @@ private:
       return;
     }
     if (action == glfw::kPress && key == glfw::kKeyEscape) {
-      if (fExportOpen) {
-        fExportOpen = false;
+      if (fExportDialog.open()) {
+        fExportDialog.close();
         return;
       }
       if (fSettingsPanel.open()) {
         this->closeSettings();
         return;
       }
-      if (fModsOpen) {
-        fModsOpen = false;
+      if (fModSelect.open()) {
+        fModSelect.close();
         return;
       }
     }
@@ -1030,13 +1024,13 @@ private:
   }
 
   void clickAt(float x, float y) {
-    if (fExportOpen && this->exportClick(x, y)) {
+    if (this->exportClick(x, y)) {
       return;
     }
     if (this->settingsClick(x, y, true)) {
       return;
     }
-    if (fModsOpen && this->modClick(x, y)) {
+    if (fModSelect.open() && this->modClick(x, y)) {
       return;
     }
     switch (fState) {
@@ -1130,8 +1124,7 @@ private:
       } else if (idx == 1) {
         this->quitToSelect();
       } else {
-        fExportOpen = true;
-        fExportStatus.clear();
+        fExportDialog.show();
       }
     }
   }
@@ -1259,13 +1252,13 @@ private:
   void present() {
     // Overlays float above whatever screen is drawn.
     auto *canvas = fSurface->getCanvas();
-    if (fModsOpen || fModsSlide > 0.002f) {
+    if (fModSelect.visible()) {
       this->drawModSelect(canvas);
     }
     if (fSettingsPanel.visible()) {
       this->drawSettings(canvas);
     }
-    if (fExportOpen) {
+    if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
     }
     fContext->flushAndSubmit(fSurface.get());
@@ -1356,8 +1349,8 @@ private:
     this->resetGameplayState();
     // Overlays must not survive into gameplay.
     this->closeSettings();
-    fModsOpen = false;
-    fExportOpen = false;
+    fModSelect.close();
+    fExportDialog.close();
     this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(diffIdx)]);
     this->switchState(State::kPlaying);
     fFirstFrame = true;
@@ -3225,11 +3218,10 @@ private:
 #endif
   }
 
-  // ---- Mod select (ModSelectOverlay) ------------------------------------
+  // ---- Mod select and export dialog ---------------------------------------
   //
-  // lazer lays mods out in columns by category, each a rounded panel with the
-  // acronym, name and description, toggled by click or by its key. Only the
-  // mods this engine implements are offered.
+  // Both views live in client.overlays; this is the bridge to app state.
+
   [[nodiscard]] std::vector<client::ModEntry> modEntries() const {
     return {
         {"EZ", "Easy", "Larger circles, more forgiving HP drain.",
@@ -3243,226 +3235,59 @@ private:
     };
   }
 
-  void toggleMods() {
-    fModsOpen = !fModsOpen;
-  }
+  void toggleMods() { fModSelect.toggle(); }
 
   void drawModSelect(skia::SkCanvas *canvas) {
-    fModsSlide = client::ui::approach(fModsSlide, fModsOpen ? 1.0f : 0.0f,
-                                      120.0f, fUiDt);
-    fModHits.clear();
-    if (fModsSlide < 0.002f) {
-      return;
-    }
-    const client::ui::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    const float slide = client::ui::outQuint(fModsSlide);
-
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(slide * 190.0f), 8,
-                                  6, 12));
-
     const auto entries = this->modEntries();
-    const float colW = std::min(340.0f, sw * 0.34f);
-    const float panelH = 96.0f;
-    const float gap = 12.0f;
-    const float top = sh * 0.28f + (1.0f - slide) * 60.0f;
-
-    for (int col = 0; col < static_cast<int>(client::kModColumns.size());
-         ++col) {
-      const float cx = sw * 0.5f +
-                       (static_cast<float>(col) - 0.5f) * (colW + 40.0f) -
-                       colW * 0.5f + colW * 0.5f;
-      const float x = cx - colW * 0.5f;
-      p.textCentered(client::kModColumns[static_cast<std::size_t>(col)], cx,
-                     top - 18.0f, 16.0f, client::ui::kAccent2, slide);
-      float y = top;
-      for (const auto &m : entries) {
-        if (m.fColumn != col) {
-          continue;
-        }
-        const skia::SkRect r = skia::SkRect::MakeXYWH(x, y, colW, panelH);
-        fModHits.push_back(r);
-        const bool active = (fMods & m.fFlag) != osu::mod::kNone;
-        const bool hover = r.contains(fMouseX, fMouseY);
-        p.fillRounded(r, 12.0f,
-                      active ? client::ui::kAccent
-                      : hover ? client::ui::kCardSel
-                              : client::ui::kCardBg);
-        p.textClipped(m.fAcronym, r.fLeft + 18.0f, r.fTop + 34.0f, 70.0f, 24.0f,
-                      active ? skia::colorSetARGB(255, 24, 18, 30)
-                             : skia::kWhite,
-                      slide);
-        p.textClipped(m.fName, r.fLeft + 84.0f, r.fTop + 32.0f,
-                      colW - 100.0f, 16.0f,
-                      active ? skia::colorSetARGB(255, 24, 18, 30)
-                             : skia::kWhite,
-                      slide);
-        p.textClipped(m.fDescription, r.fLeft + 84.0f, r.fTop + 56.0f,
-                      colW - 100.0f, 12.0f,
-                      active ? skia::colorSetARGB(220, 30, 22, 36)
-                             : skia::kWhite,
-                      slide * 0.7f);
-        p.textClipped(std::format("{:.2f}x", m.fMultiplier), r.fLeft + 84.0f,
-                      r.fBottom - 12.0f, 80.0f, 11.0f,
-                      active ? skia::colorSetARGB(220, 30, 22, 36)
-                             : client::ui::kAccent2,
-                      slide * 0.9f);
-        y += panelH + gap;
-      }
-    }
-
-    p.textCentered("click a mod to toggle    Esc to close", sw * 0.5f,
-                   sh - 40.0f, 14.0f, skia::kWhite, slide * 0.7f);
+    fModSelect.draw(canvas, fFont, entries, fMods,
+                    {fScreenW, fScreenH, fMouseX, fMouseY, fUiDt});
   }
 
-  // ModSet exposes | and & but no ~, so removal goes through its explicit
-  // integer conversion rather than inventing an operator in the engine.
-  [[nodiscard]] static osu::ModSet without(osu::ModSet set, osu::ModSet flag) {
-    return osu::ModSet(static_cast<std::uint32_t>(set) &
-                       ~static_cast<std::uint32_t>(flag));
-  }
-
-  bool modClick(float x, float y) {
-    if (fModsSlide < 0.5f) {
-      return false;
-    }
-    const auto entries = this->modEntries();
-    std::size_t i = 0;
-    for (const auto &m : entries) {
-      if (i < fModHits.size() && fModHits[i].contains(x, y)) {
-        fMods = (fMods & m.fFlag) != osu::mod::kNone ? without(fMods, m.fFlag)
-                                                     : (fMods | m.fFlag);
-        // Speed mods are mutually exclusive, as in lazer.
-        if (m.fFlag == osu::mod::kDoubleTime &&
-            (fMods & osu::mod::kDoubleTime) != osu::mod::kNone) {
-          fMods = without(fMods, osu::mod::kHalfTime);
-        }
-        if (m.fFlag == osu::mod::kHalfTime &&
-            (fMods & osu::mod::kHalfTime) != osu::mod::kNone) {
-          fMods = without(fMods, osu::mod::kDoubleTime);
-        }
-        if (m.fFlag == osu::mod::kHardRock &&
-            (fMods & osu::mod::kHardRock) != osu::mod::kNone) {
-          fMods = without(fMods, osu::mod::kEasy);
-        }
-        if (m.fFlag == osu::mod::kEasy &&
-            (fMods & osu::mod::kEasy) != osu::mod::kNone) {
-          fMods = without(fMods, osu::mod::kHardRock);
-        }
-        return true;
-      }
-      ++i;
-    }
-    return true; // the overlay swallows clicks while open
-  }
-
-  // ---- Replay video export ----------------------------------------------
+  bool modClick(float x, float y) { return fModSelect.click(x, y, fMods); }
 
   void drawExportDialog(skia::SkCanvas *canvas) {
-    fExportHits.clear();
-    if (!fExportOpen) {
-      return;
-    }
-    const client::ui::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(200, 8, 6, 12));
-
-    const float w = std::min(520.0f, sw * 0.6f);
-    const float h = 300.0f;
-    const skia::SkRect box =
-        skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
-    p.fillRounded(box, 14.0f, client::ui::kBackground5);
-    p.strokeRounded(box, 14.0f, client::ui::kAccent, 2.0f);
-    p.textCentered("export replay as video", box.centerX(), box.fTop + 46.0f,
-                   24.0f, skia::kWhite);
-    p.textCentered("resolution", box.centerX(), box.fTop + 82.0f, 14.0f,
-                   skia::kWhite, 0.6f);
-
-    const float bw = (w - 80.0f) / 4.0f;
-    for (std::size_t i = 0; i < client::kVideoPresets.size(); ++i) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(
-          box.fLeft + 40.0f + static_cast<float>(i) * bw, box.fTop + 100.0f,
-          bw - 8.0f, 40.0f);
-      fExportHits.push_back(r);
-      const bool active = static_cast<int>(i) == fExportPreset;
-      p.fillRounded(r, 8.0f,
-                    active ? client::ui::kAccent : client::ui::kCardBg);
-      p.textCentered(client::kVideoPresets[i].fLabel, r.centerX(),
-                     r.centerY() + 5.0f, 14.0f,
-                     active ? skia::colorSetARGB(255, 24, 18, 30)
-                            : skia::kWhite);
-    }
-
-    const skia::SkRect go = skia::SkRect::MakeXYWH(
-        box.centerX() - 110.0f, box.fBottom - 92.0f, 220.0f, 44.0f);
-    fExportHits.push_back(go);
-    const bool hover = go.contains(fMouseX, fMouseY);
-    p.fillRounded(go, 10.0f,
-                  hover ? client::ui::kCardSel : client::ui::kCardBg);
-    p.strokeRounded(go, 10.0f, client::ui::kAccent2, 2.0f);
-    p.textCentered("render", go.centerX(), go.centerY() + 6.0f, 17.0f,
-                   skia::kWhite);
-
-    p.textCentered(fExportStatus.empty()
-                       ? "requires ffmpeg in PATH    Esc to cancel"
-                       : fExportStatus,
-                   box.centerX(), box.fBottom - 24.0f, 13.0f, skia::kWhite,
-                   0.75f);
+    fExportDialog.draw(canvas, fFont, fScreenW, fScreenH, fMouseX, fMouseY);
   }
 
   bool exportClick(float x, float y) {
-    if (!fExportOpen) {
+    if (!fExportDialog.open()) {
       return false;
     }
-    for (std::size_t i = 0; i < fExportHits.size(); ++i) {
-      if (!fExportHits[i].contains(x, y)) {
-        continue;
-      }
-      if (i < client::kVideoPresets.size()) {
-        fExportPreset = static_cast<int>(i);
-      } else {
-        this->exportReplayVideo();
-      }
-      return true;
+    if (fExportDialog.click(x, y)) {
+      this->exportReplayVideo();
     }
     return true;
   }
 
-  // Renders the just-played replay offscreen at the chosen resolution and
-  // muxes it with the beatmap audio. The gameplay path is reused verbatim by
-  // driving the engine from the recorded events, so what is exported is what
-  // was played.
+  // Re-renders the replay offscreen at the chosen resolution by driving a
+  // fresh engine from the recorded events, then hands the frames to ffmpeg.
   void exportReplayVideo() {
     if (!fMap || fRecordedEvents.empty()) {
-      fExportStatus = "nothing to export";
+      fExportDialog.setStatus("nothing to export");
       return;
     }
-    const auto preset =
-        client::kVideoPresets[static_cast<std::size_t>(fExportPreset)];
+    const auto preset = client::kVideoPresets[static_cast<std::size_t>(
+        fExportDialog.preset())];
     client::VideoOptions opts;
     opts.fWidth = preset.fWidth;
     opts.fHeight = preset.fHeight;
     opts.fFps = 60;
-    opts.fOutput = fMapsDir.parent_path() /
-                   std::format("replay-{}.mp4", fBeatmapFilename);
+    opts.fOutput =
+        fMapsDir.parent_path() / std::format("replay-{}.mp4", fBeatmapFilename);
+
     client::VideoExporter exporter;
     if (!exporter.begin(opts)) {
-      fExportStatus = exporter.error();
+      fExportDialog.setStatus(exporter.error());
       return;
     }
 
-    // Offscreen surface at the export resolution.
     auto surface = skia::RenderTarget(
         fContext.get(), skia::kNo,
         skia::SkImageInfo::Make(opts.fWidth, opts.fHeight,
                                 skia::kRGBA_8888_SkColorType,
                                 skia::kPremul_SkAlphaType));
     if (!surface) {
-      fExportStatus = "cannot create the offscreen surface";
+      fExportDialog.setStatus("cannot create the offscreen surface");
       return;
     }
 
@@ -3478,11 +3303,10 @@ private:
     const double end = fMap->lastObjectEndTime() + 1500.0;
     const double step = 1000.0 / static_cast<double>(opts.fFps);
     std::size_t evt = 0;
-    fExportStatus = "rendering...";
+    fExportDialog.setStatus("rendering...");
 
     for (double t = 0.0; t <= end; t += step) {
-      while (evt < fRecordedEvents.size() &&
-             fRecordedEvents[evt].fTime <= t) {
+      while (evt < fRecordedEvents.size() && fRecordedEvents[evt].fTime <= t) {
         engine.submit(fRecordedEvents[evt]);
         if (fRecordedEvents[evt].fAction == osu::InputAction::kMove) {
           fCursor = fRecordedEvents[evt].fPos;
@@ -3490,7 +3314,7 @@ private:
         ++evt;
       }
       engine.advance(t);
-      fEngine.emplace(engine); // the renderer reads from fEngine
+      fEngine.emplace(engine);
       this->render(t);
       fContext->flushAndSubmit(fSurface.get());
       exporter.addFrame(fSurface->makeImageSnapshot());
@@ -3501,7 +3325,6 @@ private:
     fScreenH = savedH;
     this->layoutForScreen();
 
-    // Audio for the mux, written out beside the frames.
     std::filesystem::path audioPath;
     if (!fMap->fMeta.fAudioFilename.empty()) {
       const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
@@ -3516,11 +3339,10 @@ private:
     }
     opts.fAudio = audioPath;
 
-    if (exporter.finish()) {
-      fExportStatus = std::format("saved {}", opts.fOutput.filename().string());
-    } else {
-      fExportStatus = exporter.error();
-    }
+    fExportDialog.setStatus(
+        exporter.finish()
+            ? std::format("saved {}", opts.fOutput.filename().string())
+            : exporter.error());
   }
 
   // ---- Song select (port of lazer's carousel geometry) ------------------
