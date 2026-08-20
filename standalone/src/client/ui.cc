@@ -78,10 +78,11 @@ public:
   [[nodiscard]] skia::SkCanvas *canvas() const noexcept { return fCanvas; }
 
   void fillRounded(const skia::SkRect &rect, float radius,
-                   skia::SkColor color) const {
+                   skia::SkColor color, float alpha = 1.0f) const {
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
+    p.setAlphaf(alpha);
     fCanvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
   }
 
@@ -95,9 +96,11 @@ public:
     fCanvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
   }
 
-  void fillRect(const skia::SkRect &rect, skia::SkColor color) const {
+  void fillRect(const skia::SkRect &rect, skia::SkColor color,
+                float alpha = 1.0f) const {
     skia::SkPaint p;
     p.setColor(color);
+    p.setAlphaf(alpha);
     fCanvas->drawRect(rect, p);
   }
 

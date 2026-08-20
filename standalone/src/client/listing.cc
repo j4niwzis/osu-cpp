@@ -101,7 +101,14 @@ struct Entry {
   std::string fTitle, fTitleUnicode, fArtist, fArtistUnicode, fCreator;
   std::string fStatus;
   std::string fUpdated;   // yyyy-mm-dd, for the date statistic
-  std::vector<float> fStars; // osu! difficulties, ascending
+  std::string fSource;
+  struct Difficulty {
+    std::string fVersion;
+    float fStars = 0.0f;
+    int fMode = 0;
+    double fLengthMs = 0.0;
+  };
+  std::vector<Difficulty> fDiffs; // sorted by star rating, as lazer lists them
   float fStarsMin = 0.0f, fStarsMax = 0.0f;
   int fDiffCount = 0;
   double fBpm = 0.0;
@@ -123,7 +130,7 @@ struct Entry {
 // ---- BeatmapCard metrics --------------------------------------------------
 inline constexpr float kCardWidth = 345.0f;       // BeatmapCard.WIDTH
 inline constexpr float kCardNormalHeight = 80.0f; // BeatmapCardNormal.HEIGHT
-inline constexpr float kCardExtraHeight = 140.0f; // BeatmapCardExtra.HEIGHT
+inline constexpr float kCardExtraHeight = 112.0f; // BeatmapCardExtra height
 inline constexpr float kCardCorner = 8.0f;        // BeatmapCard.CORNER_RADIUS
 inline constexpr float kCardSpacing = 10.0f;
 inline constexpr float kButtonsCollapsed = kCardCorner;
@@ -135,7 +142,11 @@ inline constexpr float kRowLabelWidth = 100.0f;    // BeatmapSearchFilterRow gri
 inline constexpr float kRowSpacing = 5.0f;
 inline constexpr float kTabSpacing = 10.0f;
 inline constexpr float kFilterFontSize = 13.0f;
+// FillFlowContainer auto-sizes a row to its text; 13px Torus lands here.
+inline constexpr float kFilterLineHeight = 16.0f;
 inline constexpr float kSortBarHeight = 40.0f;
+inline constexpr float kExpandedMaxHeight = 200.0f; // ExpandedContentScrollContainer
+inline constexpr float kExpandDelayMs = 100.0f;     // BeatmapCardContent.ExpandAfterDelay
 
 class Listing {
 public:
@@ -164,7 +175,19 @@ public:
     fScrollTarget -= ticks * 60.0f;
     fScrollTarget = std::max(0.0f, std::min(fScrollTarget, fMaxScroll));
   }
-  void scrollToStart() { fScrollTarget = 0.0f; }
+  void scrollToStart() {
+    fScrollTarget = 0.0f;
+    fScroll = 0.0f;
+  }
+
+  // The listing pages in as it is scrolled, the way the overlay's scroll
+  // container asks for the next cursor near the bottom. Also true when the
+  // client-side filters left too little on screen to fill it.
+  [[nodiscard]] bool wantsMore() const {
+    return fMaxScroll > 0.0f
+               ? fScrollTarget > fMaxScroll - 600.0f
+               : fVisible.size() < 12;
+  }
 
   // BeatmapListingFilterControl.resetSortControl: a query sorts by relevance,
   // otherwise by the date the category is about.
@@ -349,8 +372,8 @@ private:
     if (!emit) {
       return w;
     }
-    const skia::SkRect box = skia::SkRect::MakeXYWH(
-        x, y - kFilterFontSize, w, kFilterFontSize * 1.6f);
+    const skia::SkRect box =
+        skia::SkRect::MakeXYWH(x, y - kFilterFontSize, w, kFilterLineHeight);
     const bool hover = box.contains(fMouseX, fMouseY + fScroll);
     skia::SkColor colour = active ? kContent1 : kLight2;
     if (hover) {
@@ -371,7 +394,7 @@ private:
     const float tabsX = x + kRowLabelWidth;
     float cx = tabsX;
     float cy = y + kFilterFontSize;
-    const float lineHeight = kFilterFontSize * 1.6f;
+    const float lineHeight = kFilterLineHeight;
     for (std::size_t i = 0; i < labels.size(); ++i) {
       const std::string label = labels[i];
       const float w = this->measure(label, kFilterFontSize, true);
@@ -383,7 +406,10 @@ private:
                     static_cast<int>(i), emit);
       cx += w + kTabSpacing;
     }
-    return cy + lineHeight - kFilterFontSize;
+    // The height of the row, which is what the flow above adds up. (This used
+    // to return the last baseline, an absolute coordinate, so each row pushed
+    // the next one down by the whole panel offset.)
+    return cy - y - kFilterFontSize + lineHeight;
   }
 
   // ---- sections -----------------------------------------------------------
@@ -391,7 +417,8 @@ private:
   float drawHeader(float w) {
     const float height = 55.0f;
     this->rect(skia::SkRect::MakeXYWH(0, 0, w, height), kBackground5);
-    // OverlayTitle: 30px icon, 10px spacing, 20px title text.
+    // OverlayTitle: a 30px icon, 10px of spacing, the 20px title, and the
+    // description beside it in Content2.
     const float iconSize = 30.0f;
     const float x = kHorizontalPadding;
     skia::SkPaint icon;
@@ -399,10 +426,15 @@ private:
     icon.setColor(kContent2);
     icon.setStyle(skia::kStrokeStyle);
     icon.setStrokeWidth(2.5f);
-    fCanvas->drawCircle(x + iconSize * 0.5f, height * 0.5f, iconSize * 0.36f,
-                        icon);
-    this->text("beatmap listing", x + iconSize + 10.0f, height * 0.5f + 7.0f,
-               20.0f, kContent1);
+    const float cx = x + iconSize * 0.5f;
+    fCanvas->drawCircle(cx, height * 0.5f, iconSize * 0.36f, icon);
+    fCanvas->drawCircle(cx, height * 0.5f, iconSize * 0.12f, icon);
+    const std::string title = "beatmap listing";
+    const float titleX = x + iconSize + 10.0f;
+    this->text(title, titleX, height * 0.5f + 7.0f, 20.0f, kContent1);
+    this->text("browse for new beatmaps",
+               titleX + this->measure(title, 20.0f, false) + 12.0f,
+               height * 0.5f + 6.0f, 14.0f, kContent2, false, 0.8f);
     return height;
   }
 
@@ -595,29 +627,46 @@ private:
       }
       fHits.push_back({card, Kind::kCard, idx});
       y += cardH + kCardSpacing;
+      const auto &state = fCardState[static_cast<std::size_t>(idx)];
+      if (state.fExpanded > 0.01f) {
+        const float full =
+            std::min(kExpandedMaxHeight,
+                     static_cast<float>(e.fDiffs.size()) * 20.0f + 20.0f);
+        y += full * client::ui::outQuint(state.fExpanded);
+      }
     }
     return y + 20.0f;
   }
 
   void drawCard(const skia::SkRect &card, Entry &e, int index,
                 const Ctx &ctx) {
+    const bool extra = fFilters.fCardSize == CardSize::kExtra;
     const bool hover = card.contains(fMouseX, fMouseY + fScroll);
     const float h = card.height();
+    auto &state = fCardState[static_cast<std::size_t>(index)];
 
-    // The button column on the right expands on hover.
-    float &expand = fExpand[static_cast<std::size_t>(index)];
-    expand = client::ui::approach(expand, hover ? 1.0f : 0.0f,
-                                  kTransitionMs / 6.0f, ctx.fDtMs);
+    // The button column expands on hover, and hovering the bottom of the card
+    // expands the whole card after a short delay.
+    state.fExpand = client::ui::approach(state.fExpand, hover ? 1.0f : 0.0f,
+                                         kTransitionMs / 6.0f, ctx.fDtMs);
+    const bool overInfo =
+        hover && fMouseY + fScroll > card.fBottom - 22.0f && !e.fDiffs.empty();
+    state.fHoverMs = overInfo ? state.fHoverMs + ctx.fDtMs : 0.0;
+    const bool wantExpanded = state.fHoverMs > kExpandDelayMs ||
+                              (state.fExpanded > 0.5f && hover);
+    state.fExpanded = client::ui::approach(state.fExpanded,
+                                           wantExpanded ? 1.0f : 0.0f,
+                                           kTransitionMs / 5.0f, ctx.fDtMs);
+
     const float buttonsW =
-        kButtonsCollapsed + (kButtonsExpanded - kButtonsCollapsed) * expand;
+        kButtonsCollapsed + (kButtonsExpanded - kButtonsCollapsed) * state.fExpand;
 
-    // Buttons sit under the main area, which is inset from the right by them.
     this->rounded(card, kCardCorner, kBackground2);
     const skia::SkRect main = skia::SkRect::MakeLTRB(
         card.fLeft, card.fTop, card.fRight - buttonsW, card.fBottom);
 
-    // Thumbnail: a square of the card's height on the left, with the main
-    // content starting CORNER_RADIUS into it.
+    // Thumbnail: a square of the card's height on the left, the cover art
+    // doubling as the card's background behind the text.
     const skia::SkRect thumb =
         skia::SkRect::MakeXYWH(card.fLeft, card.fTop, h, h);
     fCanvas->save();
@@ -625,15 +674,14 @@ private:
         skia::SkRRect::MakeRectXY(main, kCardCorner, kCardCorner), true);
     this->rect(main, kBackground3);
     if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
-      // The cover doubles as the card background, dimmed behind the text.
       fCanvas->drawImageRect(
-          e.fThumb.get(), skia::SkRect::MakeXYWH(h - kCardCorner, card.fTop,
-                                                 main.width() - h + kCardCorner,
-                                                 h),
+          e.fThumb.get(),
+          skia::SkRect::MakeXYWH(card.fLeft + h - kCardCorner, card.fTop,
+                                 main.width() - h + kCardCorner, h),
           skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
-      this->rect(skia::SkRect::MakeLTRB(h - kCardCorner + card.fLeft,
+      this->rect(skia::SkRect::MakeLTRB(card.fLeft + h - kCardCorner,
                                         card.fTop, main.fRight, card.fBottom),
-                 skia::colorSetARGB(255, 23, 26, 28), hover ? 0.9f : 0.8f);
+                 kBackground6, hover ? 0.9f : 0.8f);
       fCanvas->drawImageRect(e.fThumb.get(), thumb,
                              skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
                              nullptr);
@@ -643,33 +691,30 @@ private:
     }
     fCanvas->restore();
 
-    // Main content: 10 horizontal, 4 vertical padding inside the main area.
+    // Main content, inset 10 horizontal and 4 vertical inside the main area.
     const float tx = card.fLeft + h + 10.0f - kCardCorner;
     const float tw = main.fRight - tx - 10.0f;
-    float ty = card.fTop + 4.0f;
-
-    ty += 18.0f;
+    float ty = card.fTop + 4.0f + 18.0f;
     this->textClipped(e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, tx,
                       ty, tw, 18.0f, kContent1, true);
     ty += 17.0f;
     this->textClipped("by " + (e.fArtistUnicode.empty() ? e.fArtist
                                                         : e.fArtistUnicode),
                       tx, ty, tw, 14.0f, kContent1, true);
-    ty += 14.0f;
-    const std::string mapped = "mapped by ";
-    this->text(mapped, tx, ty, 11.0f, kContent2, true);
-    this->textClipped(e.fCreator, tx + this->measure(mapped, 11.0f, true), ty,
-                      tw, 11.0f, kContent1, true);
-
-    // Bottom content: statistics fade in on hover above the extra info row.
-    const float bottom = card.fBottom - 6.0f;
-    if (expand > 0.01f) {
-      const std::string stats =
-          std::format("{} plays    {} favourites    {}", e.fPlayCount,
-                      e.fFavouriteCount, e.fUpdated);
-      this->textClipped(stats, tx, bottom - 15.0f, tw, 11.0f, kContent2, false,
-                        expand);
+    if (extra) {
+      // The extra card carries the source line where the normal one has the
+      // author, and moves "mapped by" into the bottom content.
+      ty += 14.0f;
+      this->textClipped(e.fSource, tx, ty, tw, 11.0f, kContent2, true);
+    } else {
+      ty += 14.0f;
+      const std::string mapped = "mapped by ";
+      this->text(mapped, tx, ty, 11.0f, kContent2, true);
+      this->textClipped(e.fCreator, tx + this->measure(mapped, 11.0f, true),
+                        ty, tw, 11.0f, kContent1, true);
     }
+
+    const float bottom = card.fBottom - 6.0f;
     if (e.fSt == Entry::St::kFetching) {
       // BeatmapCardDownloadProgressBar: 5 high, across the bottom content.
       const skia::SkRect bar =
@@ -678,11 +723,32 @@ private:
       this->rounded(skia::SkRect::MakeXYWH(bar.fLeft, bar.fTop,
                                            bar.width() * e.fProgress, 5.0f),
                     2.5f, kColour1);
+    } else if (extra) {
+      // "mapped by", then the statistics grid, then the extra info row.
+      const std::string mapped = "mapped by ";
+      this->text(mapped, tx, bottom - 34.0f, 11.0f, kContent2, true);
+      this->textClipped(e.fCreator, tx + this->measure(mapped, 11.0f, true),
+                        bottom - 34.0f, tw, 11.0f, kContent1, true);
+      this->drawStatistics(tx, bottom - 20.0f, tw, e, 1.0f);
+      this->drawExtraInfoRow(tx, bottom, tw, e);
     } else {
+      // The normal card only shows its statistics while hovered.
+      if (state.fExpand > 0.01f) {
+        this->drawStatistics(tx, bottom - 15.0f, tw, e, state.fExpand);
+      }
       this->drawExtraInfoRow(tx, bottom, tw, e);
     }
 
-    // Right-hand buttons: favourite on top, download below.
+    this->drawCardButtons(card, main, state.fExpand, e, index);
+
+    // The expanded content: the difficulty list, under the card.
+    if (state.fExpanded > 0.01f) {
+      this->drawExpandedContent(card, e, state.fExpanded);
+    }
+  }
+
+  void drawCardButtons(const skia::SkRect &card, const skia::SkRect &main,
+                       float expand, const Entry &e, int index) {
     const skia::SkRect buttons = skia::SkRect::MakeLTRB(
         main.fRight, card.fTop, card.fRight, card.fBottom);
     this->rounded(buttons, kCardCorner, kBackground3);
@@ -690,22 +756,21 @@ private:
                                       kCardCorner, buttons.height()),
                kBackground3);
     if (expand > 0.4f) {
-      skia::SkPaint p;
-      p.setAntiAlias(true);
-      p.setColor(kContent2);
-      p.setAlphaf(expand);
-      p.setStyle(skia::kStrokeStyle);
-      p.setStrokeWidth(1.6f);
+      skia::SkPaint stroke;
+      stroke.setAntiAlias(true);
+      stroke.setColor(kContent2);
+      stroke.setAlphaf(expand);
+      stroke.setStyle(skia::kStrokeStyle);
+      stroke.setStrokeWidth(1.6f);
       const float cx = buttons.centerX();
-      // Heart, roughly: two arcs over a point.
-      const float hy = card.fTop + h * 0.25f;
+      const float hy = card.fTop + card.height() * 0.25f;
       skia::SkPathBuilder heart;
       heart.moveTo(cx, hy + 4.0f)
           .cubicTo(cx - 8.0f, hy - 2.0f, cx - 3.0f, hy - 7.0f, cx, hy - 2.0f)
           .cubicTo(cx + 3.0f, hy - 7.0f, cx + 8.0f, hy - 2.0f, cx, hy + 4.0f);
-      fCanvas->drawPath(heart.detach(), p);
-      // Download arrow.
-      const float dy = card.fTop + h * 0.75f;
+      fCanvas->drawPath(heart.detach(), stroke);
+
+      const float dy = card.fTop + card.height() * 0.75f;
       skia::SkPaint solid;
       solid.setAntiAlias(true);
       solid.setAlphaf(expand);
@@ -716,9 +781,56 @@ private:
           .lineTo(cx, dy + 5.0f)
           .close();
       fCanvas->drawPath(arrow.detach(), solid);
-      fCanvas->drawLine(cx, dy - 7.0f, cx, dy - 1.0f, p);
+      fCanvas->drawLine(cx, dy - 7.0f, cx, dy - 1.0f, stroke);
     }
     fHits.push_back({buttons, Kind::kDownload, index});
+  }
+
+  // The statistics that fade in with a hover on the normal card and sit in a
+  // grid on the extra one: play count, favourites, and the date.
+  void drawStatistics(float x, float baseline, float maxW, const Entry &e,
+                      float alpha) {
+    const std::string stats =
+        std::format("{} plays    {} favourites    {}", e.fPlayCount,
+                    e.fFavouriteCount, e.fUpdated);
+    this->textClipped(stats, x, baseline, maxW, 11.0f, kContent2, false, alpha);
+  }
+
+  // BeatmapCardDifficultyList inside the expanded content: one row per
+  // difficulty, 3 apart, star rating beside the name.
+  void drawExpandedContent(const skia::SkRect &card, const Entry &e,
+                           float progress) {
+    const float rowH = 20.0f;
+    const float full = std::min(kExpandedMaxHeight,
+                                static_cast<float>(e.fDiffs.size()) * rowH +
+                                    20.0f);
+    const float height = full * client::ui::outQuint(progress);
+    const skia::SkRect panel = skia::SkRect::MakeXYWH(
+        card.fLeft, card.fBottom - kCardCorner, card.width(),
+        height + kCardCorner);
+    this->rounded(panel, kCardCorner, kBackground4, progress);
+
+    fCanvas->save();
+    fCanvas->clipRect(panel);
+    float y = card.fBottom + 10.0f; // Padding: horizontal 8, vertical 10
+    for (const auto &diff : e.fDiffs) {
+      if (y > panel.fBottom - 4.0f) {
+        break;
+      }
+      // StarRatingDisplay (small) then the difficulty name at 14 semibold.
+      const std::string stars = std::format("{:.2f}", diff.fStars);
+      const float pillW = this->measure(stars, 11.0f, true) + 16.0f;
+      const skia::SkRect pill =
+          skia::SkRect::MakeXYWH(card.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
+      this->rounded(pill, 8.0f, client::ui::starColor(diff.fStars), progress);
+      this->text(stars, pill.fLeft + 8.0f, y, 11.0f,
+                 skia::colorSetARGB(255, 20, 24, 26), true, progress);
+      this->textClipped(diff.fVersion, pill.fRight + 6.0f, y,
+                        card.width() - pillW - 24.0f, 14.0f, kContent1, true,
+                        progress);
+      y += rowH;
+    }
+    fCanvas->restore();
   }
 
   // BeatmapCardExtraInfoRow: the status pill and the difficulty spectrum.
@@ -734,12 +846,12 @@ private:
 
     // DifficultySpectrumDisplay: 5x10 dots, 1px apart, in star order.
     float dx = x + pillW + 8.0f;
-    for (const float stars : e.fStars) {
+    for (const auto &diff : e.fDiffs) {
       if (dx + 6.0f > x + maxW) {
         break;
       }
       this->rounded(skia::SkRect::MakeXYWH(dx, baseline - 10.0f, 5.0f, 10.0f),
-                    1.0f, client::ui::starColor(stars));
+                    1.0f, client::ui::starColor(diff.fStars));
       dx += 6.0f;
     }
   }
@@ -763,7 +875,7 @@ private:
   // Filters the mirror cannot apply, applied here, then the sort.
   void rebuildVisible(std::span<const Entry> entries) {
     fVisible.clear();
-    fExpand.resize(entries.size(), 0.0f);
+    fCardState.resize(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
       const Entry &e = entries[i];
       if (fFilters.fCategory == Category::kLeaderboard &&
@@ -841,7 +953,12 @@ private:
   Filters fFilters;
   std::vector<Hit> fHits;
   std::vector<int> fVisible;
-  std::vector<float> fExpand; // per-entry hover expansion
+  struct CardState {
+    float fExpand = 0.0f;   // button column / statistics
+    float fExpanded = 0.0f; // the difficulty list under the card
+    double fHoverMs = 0.0;  // time spent over the bottom info row
+  };
+  std::vector<CardState> fCardState;
   skia::SkRect fTextBox = skia::SkRect::MakeEmpty();
   skia::SkCanvas *fCanvas = nullptr;
   skia::SkFont *fFont = nullptr;

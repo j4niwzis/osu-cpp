@@ -205,9 +205,16 @@ private:
   // anything about HTTP.
   std::map<long, std::shared_ptr<client::http::Handle>> fTransfers;
   bool fSearchPending = false;
+  int fSearchOffset = 0;        // how much of the current search is loaded
+  bool fMoreAvailable = true;   // a full page came back, so ask for the next
   bool fSwallowChar = false; // the 'D' that opened the screen also arrives
                              // as a char event; it must not enter the query
   std::string fDownloadStatus;
+  // A short-lived message in the corner, as lazer's notification overlay
+  // shows when an import finishes.
+  std::string fToast;
+  skia::SkColor fToastColor = skia::kWhite;
+  double fToastWall = 0.0;
   struct ReplayFile {
     std::filesystem::path fPath;
     std::string fLabel;
@@ -1270,6 +1277,32 @@ private:
   // lazer's FPSCounter sits in the corner of every screen, and shows the
   // frame time beside the rate. The profiling readout is a separate thing and
   // stays behind --profile.
+  void notify(std::string text, skia::SkColor color = client::ui::kAccent2) {
+    fToast = std::move(text);
+    fToastColor = color;
+    fToastWall = wallMs();
+    std::println(std::cerr, "[notify] {}", fToast);
+  }
+
+  void drawToast(skia::SkCanvas *canvas) {
+    constexpr double kLifetimeMs = 4000.0;
+    const double age = wallMs() - fToastWall;
+    if (fToast.empty() || age > kLifetimeMs) {
+      return;
+    }
+    const client::ui::Painter p(canvas, fFont);
+    const float alpha = static_cast<float>(
+        std::min(1.0, std::min(age / 200.0, (kLifetimeMs - age) / 400.0)));
+    const float w = p.measure(fToast, 14.0f) + 32.0f;
+    const skia::SkRect box = skia::SkRect::MakeXYWH(
+        static_cast<float>(fScreenW) - w - 20.0f, 20.0f, w, 44.0f);
+    p.fillRounded(box, 8.0f, client::ui::kBackground5, alpha * 0.95f);
+    p.fillRect(skia::SkRect::MakeXYWH(box.fLeft, box.fTop, 4.0f, box.height()),
+               fToastColor, alpha);
+    p.textCentered(fToast, box.centerX() + 2.0f, box.centerY() + 5.0f, 14.0f,
+                   skia::kWhite, alpha);
+  }
+
   void drawFpsCounter(skia::SkCanvas *canvas) {
     const double now = wallMs();
     if (fFpsPrevWall > 0.0) {
@@ -1308,6 +1341,7 @@ private:
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
     }
+    this->drawToast(canvas);
     this->drawFpsCounter(canvas);
     fContext->flushAndSubmit(fSurface.get());
     glfw::glfwSwapBuffers(fWindow);
@@ -2221,63 +2255,185 @@ private:
 
   // ---- Download screen logic -------------------------------------------
 
-  static constexpr const char *kMirror = "https://catboy.best";
+  // Mirrors, in the order they are tried. None of them serves the whole
+  // filter set, so each says what it can do and the rest is applied to the
+  // page after it arrives.
+  //
+  // Verified by hand against each API:
+  //   nerinyan   q, m, s (name), sort, e (video/storyboard), nsfw, p/ps
+  //   osu.direct q, mode, status (id), sort (<field>:<dir>), amount/offset
+  //   mino       query, mode, status (id), limit/offset
+  enum class MirrorStyle : std::uint8_t { kNerinyan, kOsuDirect, kMino };
+  struct Mirror {
+    const char *fName;
+    MirrorStyle fStyle;
+    const char *fDownload; // {} takes the set id
+  };
+  static constexpr std::array<Mirror, 3> kMirrors{
+      Mirror{"nerinyan", MirrorStyle::kNerinyan,
+             "https://api.nerinyan.moe/d/{}"},
+      Mirror{"osu.direct", MirrorStyle::kOsuDirect,
+             "https://osu.direct/api/d/{}"},
+      Mirror{"mino", MirrorStyle::kMino, "https://catboy.best/d/{}"}};
+  std::size_t fMirror = 0;
+  static constexpr int kSearchPageSize = 50;
 
-  // "2020-04-24T18:08:56+02:00" -> a number that sorts by date. Only the
-  // ordering matters, so the digits are simply concatenated.
-  [[nodiscard]] static std::int64_t dateStamp(std::string_view iso) {
-    std::int64_t v = 0;
-    int digits = 0;
-    for (const char c : iso) {
-      if (c >= '0' && c <= '9') {
-        v = v * 10 + (c - '0');
-        if (++digits == 14) {
-          break;
-        }
-      }
+  // osu! status ids, which two of the three mirrors take directly.
+  [[nodiscard]] static int statusId(client::listing::Category c) {
+    using Category = client::listing::Category;
+    switch (c) {
+    case Category::kRanked: return 1;
+    case Category::kQualified: return 3;
+    case Category::kLoved: return 4;
+    case Category::kPending: return 0;
+    case Category::kWip: return -1;
+    case Category::kGraveyard: return -2;
+    default: return 100; // no server-side status
     }
-    return v;
+  }
+
+  [[nodiscard]] static const char *statusName(client::listing::Category c) {
+    using Category = client::listing::Category;
+    switch (c) {
+    case Category::kRanked: return "ranked";
+    case Category::kQualified: return "qualified";
+    case Category::kLoved: return "loved";
+    case Category::kPending: return "pending";
+    case Category::kWip: return "wip";
+    case Category::kGraveyard: return "graveyard";
+    case Category::kLeaderboard: return "leaderboard";
+    default: return "";
+    }
+  }
+
+  // lazer's criteria mapped onto what each mirror calls them. An empty string
+  // means the mirror cannot sort by it and the listing does it itself.
+  [[nodiscard]] static std::string sortParam(client::listing::Sort sort,
+                                             bool descending,
+                                             MirrorStyle style) {
+    using Sort = client::listing::Sort;
+    const char *field = nullptr;
+    switch (sort) {
+    case Sort::kTitle: field = "title"; break;
+    case Sort::kArtist: field = "artist"; break;
+    case Sort::kRanked: field = style == MirrorStyle::kOsuDirect
+                                    ? "ranked_date" : "ranked"; break;
+    case Sort::kUpdated: field = style == MirrorStyle::kOsuDirect
+                                     ? "last_updated" : "updated"; break;
+    case Sort::kPlays: field = style == MirrorStyle::kOsuDirect
+                                   ? "play_count" : "plays"; break;
+    case Sort::kFavourites: field = style == MirrorStyle::kOsuDirect
+                                        ? "favourite_count" : "favourites";
+      break;
+    default: return {}; // difficulty, rating, relevance, nominations
+    }
+    const char *dir = descending ? "desc" : "asc";
+    return style == MirrorStyle::kOsuDirect
+               ? std::format("{}:{}", field, dir)
+               : std::format("{}_{}", field, dir);
+  }
+
+  [[nodiscard]] std::string searchUrl(int offset) const {
+    const auto &f = fListing.filters();
+    const auto &mirror = kMirrors[fMirror];
+    const std::string q = client::http::urlEncode(f.fQuery);
+    const std::string sort =
+        sortParam(f.fSort, f.fDescending, mirror.fStyle);
+    const int status = statusId(f.fCategory);
+    std::string url;
+    switch (mirror.fStyle) {
+    case MirrorStyle::kNerinyan: {
+      url = std::format(
+          "https://api.nerinyan.moe/search?q={}&m={}&ps={}&p={}", q,
+          f.fRuleset, kSearchPageSize, offset / kSearchPageSize);
+      if (const char *name = statusName(f.fCategory); *name != '\0') {
+        url += std::format("&s={}", name);
+      }
+      // Extra and explicit content are server-side here, and only here.
+      std::string extra;
+      if (f.fExtra[0]) {
+        extra += "video";
+      }
+      if (f.fExtra[1]) {
+        extra += extra.empty() ? "storyboard" : ".storyboard";
+      }
+      if (!extra.empty()) {
+        url += "&e=" + extra;
+      }
+      url += f.fExplicit == client::listing::Explicit::kShow ? "&nsfw=true"
+                                                             : "&nsfw=false";
+      break;
+    }
+    case MirrorStyle::kOsuDirect:
+      url = std::format(
+          "https://osu.direct/api/v2/search?q={}&mode={}&amount={}&offset={}",
+          q, f.fRuleset, kSearchPageSize, offset);
+      if (status != 100) {
+        url += std::format("&status={}", status);
+      }
+      break;
+    case MirrorStyle::kMino:
+      url = std::format(
+          "https://catboy.best/api/v2/search?query={}&mode={}&limit={}&offset={}",
+          q, f.fRuleset, kSearchPageSize, offset);
+      if (status != 100) {
+        url += std::format("&status={}", status);
+      }
+      break;
+    }
+    if (!sort.empty()) {
+      url += "&sort=" + sort;
+    }
+    return url;
   }
 
   void startSearch() {
-    if (fSearchPending) {
+    fSearchOffset = 0;
+    fMoreAvailable = true;
+    fListing.resetSortForSearch();
+    fListing.scrollToStart();
+    fFound.clear();
+    this->fetchPage();
+  }
+
+  // The next page of the current search, appended to what is already there.
+  void fetchPage() {
+    if (fSearchPending || !fMoreAvailable) {
       return;
     }
     fSearchPending = true;
-    fListing.resetSortForSearch();
-    fDownloadStatus = "Searching...";
+    fDownloadStatus = fSearchOffset == 0 ? "Searching..." : "Loading more...";
+    const int offset = fSearchOffset;
     auto handle = std::make_shared<client::http::Handle>();
-    const auto &f = fListing.filters();
-    std::string url = std::format("{}/api/v2/search?limit=50&mode={}&query={}",
-                                  kMirror, f.fRuleset,
-                                  client::http::urlEncode(f.fQuery));
-    // Categories the mirror understands as an osu! status id; the composite
-    // ones (Any, Has Leaderboard) and the account-bound ones are left to the
-    // client-side pass.
-    switch (f.fCategory) {
-    case client::listing::Category::kRanked: url += "&status=1"; break;
-    case client::listing::Category::kQualified: url += "&status=3"; break;
-    case client::listing::Category::kLoved: url += "&status=4"; break;
-    case client::listing::Category::kPending: url += "&status=0"; break;
-    case client::listing::Category::kWip: url += "&status=-1"; break;
-    case client::listing::Category::kGraveyard: url += "&status=-2"; break;
-    default: break;
-    }
-    client::http::get(url, std::move(handle),
-                      [this](client::http::Response r) {
-                        this->onSearchDone(std::move(r));
+    client::http::get(this->searchUrl(offset), std::move(handle),
+                      [this, offset](client::http::Response r) {
+                        this->onSearchDone(offset, std::move(r));
                       });
   }
 
-  void onSearchDone(client::http::Response r) {
+  void onSearchDone(int offset, client::http::Response r) {
     fSearchPending = false;
     if (!r.fOk) {
+      // A mirror that will not answer is replaced by the next one; the same
+      // page is then asked of it.
+      if (fMirror + 1 < kMirrors.size()) {
+        ++fMirror;
+        std::println(std::cerr, "[listing] {} failed ({}), falling back to {}",
+                     kMirrors[fMirror - 1].fName, r.fError,
+                     kMirrors[fMirror].fName);
+        this->fetchPage();
+        return;
+      }
       fDownloadStatus = "Search failed: " + r.fError;
+      fMoreAvailable = false; // stop the scroll from asking again every frame
+      this->notify("search failed: " + r.fError,
+                   skia::colorSetARGB(255, 255, 110, 110));
       return;
     }
     const auto parsed = bjson::tryParse(r.fBody);
     if (!parsed) {
       fDownloadStatus = "Search failed: malformed JSON";
+      fMoreAvailable = false;
       return;
     }
     const bjson::array *arr = parsed->if_array();
@@ -2291,6 +2447,7 @@ private:
     }
     if (arr == nullptr) {
       fDownloadStatus = "Search failed: unexpected response shape";
+      fMoreAvailable = false;
       return;
     }
 
@@ -2322,7 +2479,10 @@ private:
       return {};
     };
 
-    fFound.clear();
+    if (offset == 0) {
+      fFound.clear();
+    }
+    const std::size_t before = fFound.size();
     for (const auto &e : *arr) {
       const bjson::object *o = e.if_object();
       if (o == nullptr) {
@@ -2343,6 +2503,7 @@ private:
       d.fUpdated = getStr(*o, "last_updated").substr(0, 10);
       d.fUpdatedDate = dateStamp(getStr(*o, "last_updated"));
       d.fRankedDate = dateStamp(getStr(*o, "ranked_date"));
+      d.fSource = getStr(*o, "source");
       d.fBpm = getNum(*o, "bpm");
       d.fRating = getNum(*o, "rating");
       d.fPlayCount = static_cast<long>(getNum(*o, "play_count"));
@@ -2376,7 +2537,12 @@ private:
               continue;
             }
             const auto v = static_cast<float>(sr->to_number<double>());
-            d.fStars.push_back(v);
+            client::listing::Entry::Difficulty diff;
+            diff.fStars = v;
+            diff.fVersion = getStr(*bo, "version");
+            diff.fMode = static_cast<int>(getNum(*bo, "mode_int"));
+            diff.fLengthMs = getNum(*bo, "total_length") * 1000.0;
+            d.fDiffs.push_back(std::move(diff));
             if (d.fDiffCount == 0) {
               d.fStarsMin = d.fStarsMax = v;
             } else {
@@ -2385,12 +2551,15 @@ private:
             }
             ++d.fDiffCount;
           }
-          std::ranges::sort(d.fStars);
+          std::ranges::sort(d.fDiffs, {},
+                            &client::listing::Entry::Difficulty::fStars);
         }
       }
       fFound.push_back(std::move(d));
     }
-    fListing.scrollToStart();
+    const std::size_t added = fFound.size() - before;
+    fSearchOffset = offset + kSearchPageSize;
+    fMoreAvailable = added >= static_cast<std::size_t>(kSearchPageSize) / 2;
     fDownloadStatus = std::format("{} results", fFound.size());
   }
 
@@ -2448,7 +2617,9 @@ private:
     auto handle = std::make_shared<client::http::Handle>();
     fTransfers[id] = handle;
     d.fProgress = 0.0f;
-    client::http::get(std::format("{}/d/{}", kMirror, id), std::move(handle),
+    const std::string url = std::vformat(kMirrors[fMirror].fDownload,
+                                         std::make_format_args(id));
+    client::http::get(url, std::move(handle),
                       [this, id](client::http::Response r) {
                         this->onDownloadDone(id, std::move(r));
                       });
@@ -2469,6 +2640,9 @@ private:
       }
       fDownloadStatus =
           "Download failed: " + (r.fError.empty() ? "empty file" : r.fError);
+      this->notify(std::format("download failed: {}",
+                               r.fError.empty() ? "empty file" : r.fError),
+                   skia::colorSetARGB(255, 255, 110, 110));
       return;
     }
     const auto path = fMapsDir / std::format("{}.osz", id);
@@ -2486,6 +2660,9 @@ private:
       }
       fDownloadStatus = "Added to library: " +
                         (d != nullptr ? d->fTitle : std::to_string(id));
+      this->notify(std::format("imported {}",
+                               d != nullptr ? d->fTitle : std::to_string(id)),
+                   skia::colorSetARGB(255, 120, 220, 120));
     } else if (d != nullptr) {
       d->fSt = client::listing::Entry::St::kError;
     }
@@ -4308,6 +4485,11 @@ private:
     // Covers are only fetched for what is on screen.
     for (const int idx : fListing.visible()) {
       this->requestThumb(static_cast<std::size_t>(idx));
+    }
+    // Scrolling near the end pages the next batch in, as the overlay's
+    // scroll container asks for the next cursor.
+    if (fListing.wantsMore()) {
+      this->fetchPage();
     }
     this->drawScreenFadeIn(canvas);
     this->present();
