@@ -419,6 +419,7 @@ private:
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
   float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
   int fHotResultButton = -1; // which action the pointer is on
+  float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
@@ -1928,6 +1929,13 @@ private:
     return true;
   }
 
+  // Whether the pointer has moved since the last frame was drawn. What an
+  // overlay that covers the screen and reports no regions has instead of
+  // knowing what it changed.
+  [[nodiscard]] bool pointerMoved() const {
+    return fMouseX != fDrawnMouseX || fMouseY != fDrawnMouseY;
+  }
+
   [[nodiscard]] bool needsFrame() {
     // Gameplay is a moving picture by definition, and so is anything with a
     // clock on screen.
@@ -2170,7 +2178,10 @@ private:
       this->damageAll("overlay appeared or went away");
     } else if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
       this->damageAll("overlay sliding");
-    } else if (fExportDialog.open()) {
+    } else if (fExportDialog.open() &&
+               (this->pointerMoved() || fExportDialog.takeStatusChanged())) {
+      // Live status while a video is being written; a dialog waiting for an
+      // answer changes only when the pointer is on it.
       this->damageAll("export dialog");
     }
     fOverlayShown = overlay;
@@ -2286,7 +2297,12 @@ private:
     auto *canvas = fSurface->getCanvas();
     if (fModSelect.visible()) {
       this->drawModSelect(canvas);
-      this->damageAll("mod select");
+      // It covers the screen and reports no regions, so the whole screen is
+      // the honest answer -- but only while it is moving or being pointed at.
+      // Standing open and untouched, it is a picture that does not change.
+      if (fModSelect.animating() || this->pointerMoved()) {
+        this->damageAll("mod select");
+      }
     }
     if (fSettingsPanel.visible()) {
       // What it repaints was worked out before the frame began, by the panel
@@ -2295,7 +2311,13 @@ private:
     }
     if (fReplayListOpen) {
       this->drawReplayList(canvas);
-      this->damageAll("replay browser");
+      // Same: the strip of panels glides when another replay is chosen, and
+      // the pointer picks out the one under it. Neither happening means
+      // nothing to repaint.
+      if (this->pointerMoved() ||
+          std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
+        this->damageAll("replay browser");
+      }
     }
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
@@ -2351,6 +2373,8 @@ private:
       fContext->flushAndSubmit(fSurface.get());
     }
 
+    fDrawnMouseX = fMouseX;
+    fDrawnMouseY = fMouseY;
     const auto beforeSwap = std::chrono::steady_clock::now();
     // What changed since the last frame the compositor was given. Handing it
     // over means it can leave the rest of the window alone instead of taking

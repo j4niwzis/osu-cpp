@@ -151,7 +151,19 @@ public:
     fStatus.clear();
   }
   void close() noexcept { fOpen = false; }
-  void setStatus(std::string status) { fStatus = std::move(status); }
+  void setStatus(std::string status) {
+    fStatusChanged = fStatusChanged || status != fStatus;
+    fStatus = std::move(status);
+  }
+
+  // Whether the line of status under the buttons has changed since this was
+  // last asked. A dialog waiting for an answer is a still picture; one
+  // writing a video is not, and this is the difference.
+  [[nodiscard]] bool takeStatusChanged() noexcept {
+    const bool changed = fStatusChanged;
+    fStatusChanged = false;
+    return changed;
+  }
   [[nodiscard]] int preset() const noexcept { return fPreset; }
 
   void draw(skia::SkCanvas *canvas, skia::SkFont &font, int screenW,
@@ -228,6 +240,7 @@ private:
   bool fOpen = false;
   int fPreset = 1; // 1080p
   std::string fStatus;
+  bool fStatusChanged = true;
   std::vector<skia::SkRect> fHits;
 };
 
