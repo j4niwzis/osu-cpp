@@ -234,6 +234,7 @@ private:
   int fBackgroundForSet = -1;
   int fMenuMusicForSet = -1; // set whose audio is playing under the menus
   double fMenuTrackWall = 0.0; // when it started, so its end can be told
+  double fMusicPollWall = 0.0; // last time the track was asked if it ended
   std::filesystem::path fMapsDir;
   std::filesystem::path fThumbDir;
   std::filesystem::path fReplayDir;
@@ -421,7 +422,10 @@ private:
   };
   std::vector<Angle> fVisualiserAngles; // fixed per bar count, not per frame
   int fVisualiserCount = 0;
-  std::mt19937 fUiRng{0xC0FFEEu};
+  // Seeded per run: a fixed seed meant the same "random" map on launch, the
+  // same order of tracks after it, and the same triangles behind the logo,
+  // every single time.
+  std::mt19937 fUiRng{std::random_device{}()};
 
   [[nodiscard]] static float easeOutQuint(float t) {
     return client::ui::outQuint(t);
@@ -1375,6 +1379,15 @@ private:
     // The transition fades over 240 ms and asks for its own frames after
     // that; what a new screen loads arrives as damage from a callback.
     this->oweFrames(4);
+    // Coming out of a play: the map's track ran to its end while it was being
+    // played, and silence after it is not a track that finished on its own.
+    // Loading it again for the same selection is what makes finishing a play
+    // land back where it started, rather than on whatever came up next.
+    if ((fState == State::kPlaying || fState == State::kPaused) &&
+        st != State::kPlaying && st != State::kPaused) {
+      fMenuMusicForSet = -1;
+      fMenuTrackWall = wallMs();
+    }
     this->damageAll("screen change"); // the new screen owns every pixel
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
@@ -1760,6 +1773,18 @@ private:
       const double wallNow = wallMs();
       fUiDt = fUiPrevWall > 0.0 ? std::min(50.0, wallNow - fUiPrevWall) : 16.0;
       fUiPrevWall = wallNow;
+    }
+    // The music belongs to the client rather than to the screen that happens
+    // to be up: it plays under everything that is not gameplay, and a track
+    // that ends has to be followed by another wherever the player is standing
+    // -- including a screen that is not drawing frames at all just now.
+    // Twenty times a second rather than once per iteration: this asks OpenAL
+    // whether the source is still going, and the loop spins several hundred
+    // times a second on a screen that is not drawing anything.
+    if (fState != State::kPlaying && fState != State::kPaused &&
+        wallMs() - fMusicPollWall > 50.0) {
+      fMusicPollWall = wallMs();
+      this->updateMenuMusic();
     }
     if (!this->needsFrame()) {
       // Nothing to show: no clear, no draw, no swap, so the front buffer
@@ -2445,7 +2470,10 @@ private:
       // having ended; OpenAL reports a source as stopped until it does.
       // Paused for a preview is not the same as finished.
       if (!fAudio.playing() && !fMusicDucked &&
-          wallMs() - fMenuTrackWall > 1000.0) {
+          wallMs() - fMenuTrackWall > 1000.0 && fState != State::kResults) {
+        // The results screen belongs to the map that was just played, and
+        // moving on from it would move the selection out from under the
+        // player, who is going back to that map.
         this->nextMenuTrack();
       }
       return;
@@ -2508,18 +2536,29 @@ private:
   void nextMenuTrack() {
     this->requestRedraw(1500.0);
     if (fVisible.size() > 1) {
-      const int previous = fSelSet;
-      for (int attempt = 0; attempt < 8; ++attempt) {
-        std::uniform_int_distribution<std::size_t> pick(0, fVisible.size() - 1);
-        const int candidate = fVisible[pick(fUiRng)];
-        if (candidate != previous) {
-          fSelSet = candidate;
-          fSelDiff = 0;
-          fUserScrolled = false; // let the carousel follow the new selection
-          fMenuTrackWall = wallMs();
-          return;
+      // One draw, uniform over everything except the one just heard. Drawing
+      // again until the draw differs is unbiased but can fail, and failing
+      // eight times in a row meant playing the same track over again -- which
+      // is the opposite of what this is for.
+      std::size_t current = fVisible.size();
+      for (std::size_t i = 0; i < fVisible.size(); ++i) {
+        if (fVisible[i] == fSelSet) {
+          current = i;
+          break;
         }
       }
+      const bool skipping = current < fVisible.size();
+      std::uniform_int_distribution<std::size_t> pick(
+          0, fVisible.size() - (skipping ? 2 : 1));
+      std::size_t idx = pick(fUiRng);
+      if (skipping && idx >= current) {
+        ++idx; // the gap left by the one being skipped closes over it
+      }
+      fSelSet = fVisible[idx];
+      fSelDiff = 0;
+      fUserScrolled = false; // let the carousel follow the new selection
+      fMenuTrackWall = wallMs();
+      return;
     }
     // Nothing else to play: start this one again.
     fMenuTrackWall = wallMs();
@@ -4089,7 +4128,6 @@ private:
 
   void frameMainMenu() {
     this->ensureMenuButtons();
-    this->updateMenuMusic();
     this->updateMenuSpectrum();
 
     auto *canvas = fSurface->getCanvas();
@@ -5019,7 +5057,6 @@ private:
       }
     }
 #endif
-    this->updateMenuMusic();
     auto *canvas = fSurface->getCanvas();
 
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
