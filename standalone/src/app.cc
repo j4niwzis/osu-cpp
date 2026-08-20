@@ -2150,10 +2150,10 @@ private:
       // the frame we are trying not to draw.
       return;
     }
-    // A video being rendered gets a slice of each frame rather than all of
-    // them; the client stays answerable while it runs.
+    // A video being rendered runs on its own thread; this is the client
+    // asking how far it has got.
     if (fExportJob) {
-      this->stepExportVideo();
+      this->pollExportVideo();
     }
     // Screens built as a scene tree settle before anything is drawn: the
     // pointer lands where it lands, values ease, the layout is redone, and
@@ -5302,30 +5302,29 @@ private:
   // bounded by a slice of wall clock, so the client keeps drawing and the
   // dialog keeps counting.
   struct ExportJob {
-    // Shared rather than held: the mux at the end outlives the job, on
-    // another thread.
+    // Everything the render needs, copied rather than referred to: the client
+    // goes on playing, changing tracks and starting plays while this runs, and
+    // a video that follows it around is what the last three of these were.
     std::shared_ptr<client::VideoExporter> fExporter =
         std::make_shared<client::VideoExporter>();
     client::VideoOptions fOpts;
-    skia::Sp<skia::SkSurface> fSurface;
-    std::optional<osu::Engine> fEngine;
-    std::optional<osu::Engine> fSaved; // the client's own, put back after
-    double fTime = 0.0;
-    double fEnd = 0.0;
-    double fStep = 1000.0 / 60.0;
-    std::size_t fEvent = 0;
-    int fSavedW = 0;
-    int fSavedH = 0;
-    std::vector<std::uint8_t> fPixels; // one frame, reused
-    bool fReadFailed = false;          // said once, not once per frame
-    std::size_t fJudged = 0;           // judgements handed to the view
-    int fCombo = 0;
-    // Its own view, with its own background, trail, popups and counters. The
-    // client's carries on showing whatever the client is doing -- and while
-    // an export was borrowing it, a track changing in the menu changed the
-    // artwork in the middle of the video.
+    skia::Sp<skia::SkSurface> fSurface; // raster: no GL on this thread
+    osu::Beatmap fMap;
+    osu::ComboInfo fCombo;
+    std::vector<osu::InputEvent> fEvents;
+    osu::ModSet fMods = osu::mod::kNone;
+    client::Skin *fSkin = nullptr; // shared, and read only from here
+    skia::SkFont fFont;
+    skia::SkFont fDisplayFont;
     client::GameplayView fView;
-    bool fPrepared = false;
+    float fCursorSize = 1.0f;
+    float fDim = 0.7f;
+    bool fNoGlow = false;
+    std::thread fThread;
+    std::atomic<int> fPercent{0};
+    std::atomic<bool> fFinished{false};
+    bool fOk = false;
+    std::string fMessage;
   };
 
   // Said in both places: the dialog is where it belongs, and the log is where
@@ -5350,6 +5349,7 @@ private:
     job->fOpts.fWidth = preset.fWidth;
     job->fOpts.fHeight = preset.fHeight;
     job->fOpts.fFps = 60;
+
     // Into the working directory, named for what it is: the replay it came
     // from when there is one, the difficulty otherwise, and the size it was
     // rendered at. Two exports of the same play at different sizes are two
@@ -5370,9 +5370,9 @@ private:
         (cwdError ? fMapsDir.parent_path() : here) /
         std::format("{}-{}x{}.mp4", safe, preset.fWidth, preset.fHeight);
 
-    // Written out before the encoder is started: ffmpeg is told about its
-    // inputs once, when it is launched, and an audio path handed over
-    // afterwards reached nobody -- which is why the videos had no sound.
+    // Written out before the encoder is started: it is told about its inputs
+    // once, when it is launched, and an audio path handed over afterwards
+    // reached nobody -- which is why the videos had no sound.
     if (!fMap->fMeta.fAudioFilename.empty()) {
       const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
       if (!bytes.empty()) {
@@ -5394,181 +5394,177 @@ private:
       return;
     }
 
-    job->fSurface = skia::RenderTarget(
-        fContext.get(), skia::kNo,
-        skia::SkImageInfo::Make(job->fOpts.fWidth, job->fOpts.fHeight,
-                                skia::kRGBA_8888_SkColorType,
-                                skia::kPremul_SkAlphaType));
+    // Raster, because the thread that will draw into it has no GL context and
+    // is not getting one: a second context does not share Skia's resources,
+    // so it would mean a second copy of the skin and the slider bodies.
+    job->fSurface = skia::Raster(skia::SkImageInfo::Make(
+        job->fOpts.fWidth, job->fOpts.fHeight, skia::kRGBA_8888_SkColorType,
+        skia::kPremul_SkAlphaType));
     if (!job->fSurface) {
       this->exportFailed("cannot create the offscreen surface");
       return;
     }
 
-    job->fEngine.emplace(*fMap, fMods);
-    job->fEnd = fMap->lastObjectEndTime() + 1500.0;
-    job->fStep = 1000.0 / static_cast<double>(job->fOpts.fFps);
-    // Engine is copy-constructible but not copy-assignable, so the client's
-    // own is put aside by construction rather than by assignment.
-    if (fEngine) {
-      job->fSaved.emplace(*fEngine);
+    // The slider bodies are built on the GPU and live there; a thread without
+    // a context cannot read them, so they are moved into memory first. The
+    // next play precomputes them again.
+    fSkin.flattenBodiesToRaster(fContext.get());
+
+    job->fMap = *fMap;
+    job->fCombo = fComboInfo;
+    job->fEvents = fRecordedEvents;
+    job->fMods = fMods;
+    job->fSkin = &fSkin;
+    job->fFont = fFont;
+    job->fDisplayFont = fDisplayFont;
+    job->fCursorSize = fSettings.value("cursorsize");
+    job->fDim = fSettings.value("dim");
+    job->fNoGlow = fNoGlow;
+    for (const auto &info : fSet.fBeatmaps) {
+      if (info.fMeta.fBackground.empty()) {
+        continue;
+      }
+      const auto bytes = fSet.findFile(info.fMeta.fBackground);
+      if (!bytes.empty()) {
+        job->fView.setBackground(loadImage(bytes));
+        break;
+      }
     }
+
     fExportDialog.setStatus("rendering 0%");
+    ExportJob *raw = job.get();
+    job->fThread = std::thread([raw] { runExport(*raw); });
     fExportJob = std::move(job);
   }
 
-  // One slice of the export, bounded by wall clock rather than by frame
-  // count: a big preset on a slow renderer would otherwise take the slice
-  // apart. Twenty milliseconds keeps the client at something like fifty
-  // frames a second while it works.
-  void stepExportVideo() {
+  // The whole render, on a thread of its own. Nothing here touches the client:
+  // every input is the job's own copy, the surface is raster, and the only way
+  // back is a per cent and a verdict.
+  static void runExport(ExportJob &job) {
+    const int width = job.fOpts.fWidth;
+    const int height = job.fOpts.fHeight;
+    // The same layout the client uses: the playfield takes 80% of the
+    // limiting dimension, worked out for the size being rendered.
+    const float scale =
+        0.8f * std::min(static_cast<float>(width) /
+                            static_cast<float>(osu::kPlayfieldWidth),
+                        static_cast<float>(height) /
+                            static_cast<float>(osu::kPlayfieldHeight));
+    const float offsetX =
+        (static_cast<float>(width) -
+         static_cast<float>(osu::kPlayfieldWidth) * scale) *
+        0.5f;
+    const float offsetY =
+        (static_cast<float>(height) -
+         static_cast<float>(osu::kPlayfieldHeight) * scale) *
+        0.5f;
+
+    client::GameplayView::Ctx ctx;
+    ctx.fMap = &job.fMap;
+    ctx.fSkin = job.fSkin;
+    ctx.fCombo = &job.fCombo;
+    ctx.fFont = &job.fFont;
+    ctx.fDisplayFont = &job.fDisplayFont;
+    ctx.fScale = scale;
+    ctx.fOffsetX = offsetX;
+    ctx.fOffsetY = offsetY;
+    ctx.fScreenW = width;
+    ctx.fScreenH = height;
+    ctx.fCursorSize = job.fCursorSize;
+    ctx.fDim = job.fDim;
+    ctx.fNoGlow = job.fNoGlow;
+    job.fView.preScaleBackground(ctx);
+
+    osu::Engine engine(job.fMap, job.fMods);
+    const double end = job.fMap.lastObjectEndTime() + 1500.0;
+    const double step = 1000.0 / static_cast<double>(job.fOpts.fFps);
+    const skia::SkImageInfo info =
+        skia::SkImageInfo::Make(width, height, skia::kRGBA_8888_SkColorType,
+                                skia::kPremul_SkAlphaType);
+    const std::size_t rowBytes = static_cast<std::size_t>(width) * 4u;
+    std::vector<std::uint8_t> pixels(rowBytes *
+                                     static_cast<std::size_t>(height));
+
+    std::size_t event = 0;
+    std::size_t judged = 0;
+    int combo = 0;
+    osu::Vec2 cursor = osu::kPlayfieldCenter;
+
+    for (double now = 0.0; now <= end; now += step) {
+      while (event < job.fEvents.size() && job.fEvents[event].fTime <= now) {
+        engine.submit(job.fEvents[event]);
+        if (job.fEvents[event].fAction == osu::InputAction::kMove) {
+          cursor = job.fEvents[event].fPos;
+          job.fView.addTrailPoint(cursor, job.fEvents[event].fTime);
+        }
+        ++event;
+      }
+      engine.advance(now);
+
+      // The popups and the combo are handed to the view by whoever is
+      // playing; nobody is, here, so the export does it out of the same
+      // events the client would have used.
+      const auto &events = engine.events();
+      while (judged < events.size()) {
+        const auto &result = events[judged++];
+        const osu::Vec2 pos =
+            result.fIndex < job.fMap.fObjects.size()
+                ? osu::objectPosition(job.fMap.fObjects[result.fIndex])
+                : osu::kPlayfieldCenter;
+        const bool counts =
+            !std::holds_alternative<osu::judgement::Miss>(result.fResult) &&
+            result.fIndex < job.fCombo.fIndices.size();
+        job.fView.addJudgement(result.fResult, result.fIndex, pos, now,
+                               counts ? job.fCombo.fIndices[result.fIndex] : 0,
+                               counts);
+        combo = std::holds_alternative<osu::judgement::Miss>(result.fResult)
+                    ? 0
+                    : combo + 1;
+        job.fView.setCombo(combo);
+      }
+
+      ctx.fCanvas = job.fSurface->getCanvas();
+      ctx.fEngine = &engine;
+      ctx.fCursor = cursor;
+      job.fView.render(ctx, now);
+      if (job.fSurface->readPixels(info, pixels.data(), rowBytes, 0, 0)) {
+        job.fExporter->addFrame(pixels);
+      }
+      job.fPercent.store(
+          static_cast<int>(std::clamp(now / std::max(1.0, end), 0.0, 1.0) *
+                           100.0),
+          std::memory_order_relaxed);
+    }
+
+    job.fOk = job.fExporter->finish();
+    job.fMessage = job.fOk ? job.fOpts.fOutput.string()
+                           : job.fExporter->error();
+    job.fFinished.store(true, std::memory_order_release);
+  }
+
+  // Nothing to step any more: the render is on its own thread. This is the
+  // client noticing how far it has got and what it had to say when it stopped.
+  void pollExportVideo() {
     if (!fExportJob) {
       return;
     }
     ExportJob &job = *fExportJob;
-    const auto sliceStart = std::chrono::steady_clock::now();
-
-    job.fSavedW = fScreenW;
-    job.fSavedH = fScreenH;
-    auto savedSurface = fSurface;
-    fSurface = job.fSurface;
-    fScreenW = job.fOpts.fWidth;
-    fScreenH = job.fOpts.fHeight;
-    this->layoutForScreen();
-
-    if (!job.fPrepared) {
-      // Its own copy of the map's artwork, scaled for the size being
-      // rendered rather than for the window.
-      job.fPrepared = true;
-      for (const auto &info : fSet.fBeatmaps) {
-        if (info.fMeta.fBackground.empty()) {
-          continue;
-        }
-        const auto bytes = fSet.findFile(info.fMeta.fBackground);
-        if (bytes.empty()) {
-          continue;
-        }
-        job.fView.setBackground(loadImage(bytes));
-        break;
-      }
-      job.fView.preScaleBackground(this->gameplayCtx(nullptr));
-    }
-
-    while (job.fTime <= job.fEnd) {
-      while (job.fEvent < fRecordedEvents.size() &&
-             fRecordedEvents[job.fEvent].fTime <= job.fTime) {
-        job.fEngine->submit(fRecordedEvents[job.fEvent]);
-        if (fRecordedEvents[job.fEvent].fAction == osu::InputAction::kMove) {
-          fCursor = fRecordedEvents[job.fEvent].fPos;
-          job.fView.addTrailPoint(fCursor,
-                                  fRecordedEvents[job.fEvent].fTime);
-        }
-        ++job.fEvent;
-      }
-      job.fEngine->advance(job.fTime);
-      fEngine.emplace(*job.fEngine); // the view draws the state it is handed
-      // The popups -- great, good, miss -- and the combo are not drawn by the
-      // engine: the client hands them to the view as the play produces them.
-      // An export that only advanced the engine produced a video with none of
-      // them in it.
-      const auto &events = job.fEngine->events();
-      while (job.fJudged < events.size()) {
-        const auto &judged = events[job.fJudged++];
-        const auto pos = this->objectPosition(judged.fIndex);
-        const bool counts =
-            !std::holds_alternative<osu::judgement::Miss>(judged.fResult) &&
-            judged.fIndex < fComboInfo.fIndices.size();
-        job.fView.addJudgement(judged.fResult, judged.fIndex, pos, job.fTime,
-                               counts ? fComboInfo.fIndices[judged.fIndex] : 0,
-                               counts);
-        if (std::holds_alternative<osu::judgement::Miss>(judged.fResult)) {
-          job.fCombo = 0;
-        } else {
-          ++job.fCombo;
-        }
-        job.fView.setCombo(job.fCombo);
-      }
-      job.fView.render(this->gameplayCtx(fSurface->getCanvas()), job.fTime);
-      fContext->flushAndSubmit(fSurface.get());
-      // Read straight off the surface into a buffer the job keeps: a
-      // snapshot per frame would allocate an image and copy it, and the
-      // encoder wants the raw pixels either way.
-      const std::size_t needed = static_cast<std::size_t>(job.fOpts.fWidth) *
-                                 static_cast<std::size_t>(job.fOpts.fHeight) *
-                                 4u;
-      if (job.fPixels.size() != needed) {
-        job.fPixels.resize(needed);
-      }
-      const skia::SkImageInfo info = skia::SkImageInfo::Make(
-          job.fOpts.fWidth, job.fOpts.fHeight, skia::kRGBA_8888_SkColorType,
-          skia::kPremul_SkAlphaType);
-      const std::size_t rowBytes =
-          static_cast<std::size_t>(job.fOpts.fWidth) * 4u;
-      bool read = fSurface->readPixels(info, job.fPixels.data(), rowBytes, 0, 0);
-      if (!read) {
-        // Some surfaces will not be read directly and will hand over an image
-        // that can be. Asking twice costs a snapshot on the frames where the
-        // first way works, which is none of them if it does not.
-        if (auto image = fSurface->makeImageSnapshot()) {
-          read = image->readPixels(fContext.get(), info, job.fPixels.data(),
-                                   rowBytes, 0, 0);
-        }
-      }
-      if (read) {
-        job.fExporter->addFrame(job.fPixels);
-      } else if (!job.fReadFailed) {
-        job.fReadFailed = true;
-        std::println(std::cerr,
-                     "[export] cannot read the rendered frame back ({}x{})",
-                     job.fOpts.fWidth, job.fOpts.fHeight);
-      }
-      job.fTime += job.fStep;
-
-      const auto spent = std::chrono::steady_clock::now() - sliceStart;
-      if (spent > std::chrono::milliseconds(20)) {
-        break;
-      }
-    }
-
-    fSurface = savedSurface;
-    fScreenW = job.fSavedW;
-    fScreenH = job.fSavedH;
-    this->layoutForScreen();
-
-    if (job.fTime <= job.fEnd) {
-      const int percent = static_cast<int>(
-          std::clamp(job.fTime / std::max(1.0, job.fEnd), 0.0, 1.0) * 100.0);
-      fExportDialog.setStatus(std::format("rendering {}%", percent));
+    if (!job.fFinished.load(std::memory_order_acquire)) {
+      fExportDialog.setStatus(std::format(
+          "rendering {}%", job.fPercent.load(std::memory_order_relaxed)));
       return;
     }
-
-    // Closing the encoder is a wait on a process: it touches no GL, so it
-    // goes to the loader thread rather than holding this one.
-    if (job.fSaved) {
-      fEngine.emplace(*job.fSaved);
-    } else {
-      fEngine.reset();
+    if (job.fThread.joinable()) {
+      job.fThread.join();
     }
-    fExportDialog.setStatus("encoding...");
-
-    auto finished = std::make_shared<std::pair<bool, std::string>>();
-    auto exporter = job.fExporter;
-    const std::string name = job.fOpts.fOutput.filename().string();
-    const std::string full = job.fOpts.fOutput.string();
+    if (job.fOk) {
+      fExportDialog.setStatus(std::format(
+          "saved {}", std::filesystem::path(job.fMessage).filename().string()));
+      std::println(std::cerr, "[export] saved {}", job.fMessage);
+    } else {
+      this->exportFailed(job.fMessage);
+    }
     fExportJob.reset();
-    fLoader.submit(
-        0xE0DEull,
-        [exporter, finished] {
-          finished->first = exporter->finish();
-          finished->second = exporter->error();
-        },
-        [this, finished, name, full] {
-          if (finished->first) {
-            fExportDialog.setStatus(std::format("saved {}", name));
-            std::println(std::cerr, "[export] saved {}", full);
-          } else {
-            this->exportFailed(finished->second);
-          }
-        });
   }
 
   // ---- Replay browser ------------------------------------------------------
