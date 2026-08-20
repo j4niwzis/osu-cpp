@@ -346,6 +346,19 @@ public:
   // The query is edited through the client, which types into the string the
   // box reads. The box has no way of noticing that, and a client that only
   // draws what says it changed would never show the letter that was typed.
+  // The dropdown belongs to the tree rather than to the card, so the card
+  // asks about it rather than looking only at its own hover.
+  [[nodiscard]] bool expansionHovered(const CardNode *card) const {
+    return fExpansion != nullptr && fExpansion->hovered() &&
+           fExpandedCard == card;
+  }
+
+  void invalidateExpansion() {
+    if (fExpansion != nullptr) {
+      fExpansion->invalidateLayout();
+    }
+  }
+
   void queryEdited() {
     if (fSearchBox != nullptr) {
       fSearchBox->markDamaged();
@@ -427,6 +440,7 @@ public:
 
     const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
     fTicking = false; // nodes counting out a delay set this again below
+    fExpandedCard = nullptr; // a card with its list open says so below
     fScene->updateTree(ctx.fNowMs);
     fScene->layoutIfNeeded(screen);
     if (fRebuilt) {
@@ -870,22 +884,35 @@ private:
 
   protected:
     void measure(const skia::SkRect &) override {
+      // Fixed, expanded or not. BeatmapCardContent keeps its height and hangs
+      // the dropdown off the bottom of it as a separate thing, so opening one
+      // does not shove every card below it down the page.
+      fCardHeight = fOwner->fFilters.fCardSize == CardSize::kNormal
+                        ? kCardNormalHeight
+                        : kCardExtraHeight;
+      fHeight = fCardHeight;
+    }
+
+  public:
+    // How far the list under this card reaches, at its current openness.
+    [[nodiscard]] float expandedHeight() const {
       const Entry &e = fOwner->fEntries[static_cast<std::size_t>(fEntry)];
-      const float cardH = fOwner->fFilters.fCardSize == CardSize::kNormal
-                              ? kCardNormalHeight
-                              : kCardExtraHeight;
       const float full =
           std::min(kExpandedMaxHeight,
                    static_cast<float>(e.fDiffs.size()) * 20.0f + 20.0f);
-      fCardHeight = cardH;
-      fHeight = cardH + full * client::ui::outQuint(fExpanded);
+      return full * client::ui::outQuint(fExpanded);
     }
+    [[nodiscard]] float expansion() const noexcept { return fExpanded; }
+    [[nodiscard]] int entry() const noexcept { return fEntry; }
 
+  protected:
     void update(double nowMs) override {
       const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
       fLastMs = nowMs;
       const Entry &e = fOwner->fEntries[static_cast<std::size_t>(fEntry)];
-      const bool hovered = fHovered;
+      // BeatmapCardContent stays open while either the card or the dropdown
+      // is hovered; the dropdown is over the card, so it takes the hover.
+      const bool hovered = fHovered || fOwner->expansionHovered(this);
       const float previousExpand = fExpand;
       const float previousExpanded = fExpanded;
       fExpand = client::ui::approach(fExpand, hovered ? 1.0f : 0.0f,
@@ -907,8 +934,16 @@ private:
       }
       fExpanded = client::ui::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
                                        kTransitionMs / 5.0f, dt);
-      if (fExpand != previousExpand || fExpanded != previousExpanded) {
-        this->invalidateLayout();
+      if (fExpanded > 0.01f) {
+        fOwner->fExpandedCard = this;
+      }
+      if (fExpand != previousExpand) {
+        this->markDamaged(); // the buttons on the right widen with the hover
+      }
+      if (fExpanded != previousExpanded) {
+        // The card itself does not change size any more; what moves is the
+        // panel hanging under it, which is laid out from here.
+        fOwner->invalidateExpansion();
       }
     }
 
@@ -1003,9 +1038,7 @@ private:
 
       this->drawThumbnailPlay(canvas, thumb, e, alpha);
       this->drawButtons(canvas, card, main, e, alpha);
-      if (fExpanded > 0.01f) {
-        this->drawExpanded(canvas, font, card, e, alpha);
-      }
+
     }
 
     bool acceptsInput() const override { return true; }
@@ -1197,6 +1230,72 @@ private:
     double fLastMs = 0.0;
   };
 
+  // BeatmapCardContent's dropdown. A drawable of its own, hanging under
+  // whichever card is open, drawn after the grid and hit-tested before it:
+  // inside the card it would have been under every card that comes after it
+  // in the flow, and it would have had to make the card taller to fit, which
+  // is what pushed the rest of the listing down the page.
+  class ExpansionNode : public scene::Drawable {
+  public:
+    explicit ExpansionNode(Listing *owner) : fOwner(owner) { fMasking = true; }
+
+  protected:
+    void measure(const skia::SkRect &parent) override {
+      const CardNode *card = fOwner->fExpandedCard;
+      const float height = card != nullptr ? card->expandedHeight() : 0.0f;
+      fVisible = card != nullptr && height > 1.0f;
+      if (!fVisible) {
+        fWidth = 0.0f;
+        fHeight = 0.0f;
+        return;
+      }
+      const skia::SkRect &box = card->box();
+      fX = box.fLeft - parent.fLeft;
+      fY = box.fBottom - kCardCorner - parent.fTop;
+      fWidth = box.width();
+      fHeight = height + kCardCorner;
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      const CardNode *card = fOwner->fExpandedCard;
+      if (card == nullptr) {
+        return;
+      }
+      auto &font = *fOwner->fFont;
+      const Entry &e =
+          fOwner->fEntries[static_cast<std::size_t>(card->entry())];
+      const float open = alpha * card->expansion();
+      paint::rounded(canvas, fBounds, kCardCorner, kBackground4, open);
+      // ExpandedContentScrollContainer: 8 either side, 10 top and bottom.
+      float y = fBounds.fTop + kCardCorner + 10.0f;
+      for (const auto &diff : e.fDiffs) {
+        if (y > fBounds.fBottom - 4.0f) {
+          break;
+        }
+        const std::string stars = std::format("{:.2f}", diff.fStars);
+        const float pillW = paint::measure(font, stars, 11.0f, true) + 16.0f;
+        const skia::SkRect pill = skia::SkRect::MakeXYWH(
+            fBounds.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
+        paint::rounded(canvas, pill, 8.0f, client::ui::starColor(diff.fStars),
+                       open);
+        paint::text(canvas, font, stars, pill.fLeft + 8.0f, y, 11.0f,
+                    skia::colorSetARGB(255, 20, 24, 26), true, open);
+        paint::textClipped(canvas, font, diff.fVersion, pill.fRight + 6.0f, y,
+                           fBounds.width() - pillW - 24.0f, 14.0f, kContent1,
+                           true, open);
+        y += 20.0f;
+      }
+    }
+
+    bool acceptsInput() const override { return fVisible; }
+
+    // Swallowed rather than passed through: the card underneath is covered.
+    bool onClick(float, float) override { return true; }
+
+  private:
+    Listing *fOwner;
+  };
+
   // OverlayHeader with its title and description.
   class HeaderNode : public scene::Drawable {
   public:
@@ -1263,6 +1362,8 @@ private:
   [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
     fScroll = nullptr;
     fSearchBox = nullptr;
+    fExpansion = nullptr;
+    fExpandedCard = nullptr;
     fCards.clear();
 
     auto root = std::make_unique<nodes::Box>(kBackground6);
@@ -1347,7 +1448,10 @@ private:
       grid->fRelativeSizeAxes = scene::Axes::kX;
       grid->fWidth = 1.0f;
       grid->fAutoSizeAxes = scene::Axes::kY;
-      grid->fPadding = {15.0f, kPanelPadding, 20.0f, kPanelPadding};
+      // Room under the last row for a dropdown to open into, which is what
+      // BeatmapListingOverlay leaves with its own bottom padding.
+      grid->fPadding = {15.0f, kPanelPadding, 20.0f + kExpandedMaxHeight,
+                        kPanelPadding};
       grid->setSpacing(kCardSpacing, kCardSpacing);
       grid->fCentreRows = true;
       for (const int idx : fVisible) {
@@ -1359,6 +1463,11 @@ private:
     }
 
     scroll->add(std::move(column));
+    // After the column, so it draws over the cards and is asked about clicks
+    // before they are -- and inside the scroll, so it travels with them.
+    auto expansion = std::make_unique<ExpansionNode>(this);
+    fExpansion = expansion.get();
+    scroll->add(std::move(expansion));
     root->add(std::move(scroll));
     return root;
   }
@@ -1610,6 +1719,8 @@ private:
   bool fRebuilt = false;
   bool fTicking = false; // something in the tree is waiting on the clock
   bool fCaretLive = false; // the search box is on screen, so it blinks
+  CardNode *fExpandedCard = nullptr; // whose dropdown is open, if any
+  ExpansionNode *fExpansion = nullptr;
   std::vector<int> fOnScreen; // entries whose cards are within reach
   SearchBoxNode *fSearchBox = nullptr;
   std::uint64_t fVisibleShape = 0;
