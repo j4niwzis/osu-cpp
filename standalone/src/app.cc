@@ -2714,6 +2714,7 @@ private:
     c.fScreenH = fScreenH;
     c.fCursor = fCursor;
     c.fCursorSize = fSettings.value("cursorsize");
+    c.fUiScale = std::clamp(static_cast<float>(fScreenH) / 1080.0f, 0.7f, 3.0f);
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
     c.fShowProfile = fShowProfile;
@@ -5517,6 +5518,7 @@ private:
     ctx.fScreenW = width;
     ctx.fScreenH = height;
     ctx.fCursorSize = job.fCursorSize;
+    ctx.fUiScale = std::clamp(static_cast<float>(height) / 1080.0f, 0.7f, 3.0f);
     ctx.fDim = job.fDim;
     ctx.fNoGlow = job.fNoGlow;
     job.fView.preScaleBackground(ctx);

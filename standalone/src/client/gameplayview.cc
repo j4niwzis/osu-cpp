@@ -31,6 +31,11 @@ public:
     int fScreenH = 0;
     osu::Vec2 fCursor{};
     float fCursorSize = 1.0f;
+    // The HUD is written in pixels against a 1080-tall screen; this is how
+    // much bigger the surface being drawn on is. One on a 1080p window, two
+    // in a 4K render -- where the numbers in the corner were otherwise a
+    // quarter of the size they have in the game.
+    float fUiScale = 1.0f;
     float fDim = 0.7f;
     bool fNoGlow = false;
     bool fShowProfile = false;
@@ -811,46 +816,56 @@ public:
     fHudPaint.setColor(skia::kWhite);
     fHudPaint.setAlphaf(1.0f);
 
+    // Everything in the corner is written against a 1080-tall screen and
+    // scaled from there, so a render at another size gets the same interface
+    // rather than the same number of pixels.
+    const float ui = c.fUiScale;
+
     // Combo counter (large, top-left).
-    (*c.fFont).setSize(48.0f);
+    (*c.fFont).setSize(48.0f * ui);
     const std::string comboText =
         std::format("{:.0f}x", std::max(0.0, fDisplayCombo));
-    client::ui::fonts().draw(canvas, *c.fFont, comboText, 20.0f, 60.0f, fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, comboText, 20.0f * ui,
+                             60.0f * ui, fHudPaint);
 
     // Score, accuracy, grade (top-center).
-    (*c.fFont).setSize(22.0f);
+    (*c.fFont).setSize(22.0f * ui);
     const std::string statsText =
         std::format("{:.0f}  {:.2f}%  {}", fDisplayScore,
                     std::clamp(fDisplayAccuracy, 0.0, 1.0) * 100.0,
                     osu::gradeString(osu::computeGrade(score)));
-    client::ui::fonts().draw(canvas, *c.fFont, statsText, 20.0f, 90.0f, fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, statsText, 20.0f * ui,
+                             90.0f * ui, fHudPaint);
 
     // Difficulty / mods (top-right).
-    (*c.fFont).setSize(16.0f);
+    (*c.fFont).setSize(16.0f * ui);
     const std::string diffText = std::format(
         "CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f} {}", c.fMap->fDiff.fCs,
         c.fMap->fDiff.fAr, c.fMap->fDiff.fOd, c.fMap->fDiff.fHp, c.fEngine->mods());
-    client::ui::fonts().draw(canvas, *c.fFont, diffText, 20.0f, 115.0f, fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, diffText, 20.0f * ui,
+                             115.0f * ui, fHudPaint);
 
     // Health bar (top).
-    this->drawHealthBar(c, canvas, 0.0f, 0.0f, sw, 14.0f, now);
+    this->drawHealthBar(c, canvas, 0.0f, 0.0f, sw, 14.0f * ui, now);
 
     // Judgement counts.
-    (*c.fFont).setSize(16.0f);
+    (*c.fFont).setSize(16.0f * ui);
     const std::string countsText =
         std::format("Great {}  Good {}  Meh {}  Miss {}", score.fGreat,
                     score.fGood, score.fMeh, score.fMiss);
-    client::ui::fonts().draw(canvas, *c.fFont, countsText, 20.0f, 140.0f, fHudPaint);
+    client::ui::fonts().draw(canvas, *c.fFont, countsText, 20.0f * ui,
+                             140.0f * ui, fHudPaint);
 
     // Time since the map started, top right. It used to sit in the bottom
     // right, which is where the frame counter is, and the two drew over each
     // other. Right-aligned, so the number growing a digit does not shift it.
-    (*c.fFont).setSize(14.0f);
+    (*c.fFont).setSize(14.0f * ui);
     fHudPaint.setAlphaf(0.7f);
     const std::string timeText = std::format("{:.1f}s", now / 1000.0);
     const float timeWidth = client::ui::fonts().measure(*c.fFont, timeText);
     client::ui::fonts().draw(canvas, *c.fFont, timeText,
-                             sw - timeWidth - 20.0f, 34.0f, fHudPaint);
+                             sw - timeWidth - 20.0f * ui, 34.0f * ui,
+                             fHudPaint);
 
     if (c.fShowProfile) {
       double avgAdv = 0.0, avgRender = 0.0, avgFlush = 0.0, avgSwap = 0.0;
