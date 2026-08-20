@@ -336,6 +336,7 @@ private:
   std::vector<MenuButton> fMenuButtons; // rebuilt every pause/results frame
   double fPausedNow = 0.0;              // frozen game time while paused
   double fPolledCursorX = -1.0, fPolledCursorY = -1.0; // wasm cursor polling
+  std::atomic<bool> fRefreshRequested{false}; // set by the event thread
   client::pause::PauseMenu fPauseMenu;
   int fRetryCount = 0;      // plays of this map since it was chosen
   bool fRetryPending = false;
@@ -680,6 +681,17 @@ private:
           // only the consumer knows which of the two it is looking at.
           self->enqueue({App::wallMs(), EventType::kKey, key, action,
                          static_cast<float>(mods)});
+        });
+    // The window system asking for the window back: dragged off the screen
+    // and returned, uncovered, unminimised. Whatever was in those buffers is
+    // gone, and a client that repaints only what it changed has to be told,
+    // or it paints its little rectangle onto whatever the compositor left.
+    glfw::glfwSetWindowRefreshCallback(
+        fWindow, [](glfw::GLFWwindow *w) {
+          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+          if (self != nullptr) {
+            self->fRefreshRequested.store(true, std::memory_order_release);
+          }
         });
     glfw::glfwSetMouseButtonCallback(
         fWindow, [](glfw::GLFWwindow *w, int button, int action, int) {
@@ -1928,6 +1940,12 @@ private:
     // loaded, say -- could leave this set; outside frame() nothing is drawing
     // by definition.
     fDrawing = false;
+    if (fRefreshRequested.exchange(false, std::memory_order_acquire)) {
+      // Set on the event thread, acted on here: everything the buffers held
+      // is suspect, so the history of what they hold goes with it.
+      fBlitHistory.clear();
+      this->damageAll("the window system asked for a repaint");
+    }
     this->applySwapInterval();
     // Work finishing in the background changes what is on screen, so it is
     // as good a reason to draw as an event.
