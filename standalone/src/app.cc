@@ -151,6 +151,7 @@ private:
   bool fDrawing = false;      // inside a frame: damage reported now is not
   int fFullRepaintsOwed = 0;  // buffers still holding an older screen
   int fBufferAge = -1;        // frames since this buffer last held a frame
+  skia::SkIRect fBlitBounds = skia::SkIRect::MakeEmpty(); // what to carry over
   bool fBufferAgeAssumed = false; // ...or what we were told to believe
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
   skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
@@ -1710,6 +1711,7 @@ private:
   // is the same pixels -- only the work outside the clip is skipped.
   void beginFrame() {
     fDrawing = true;
+    fBlitBounds = skia::SkIRect::MakeEmpty(); // empty means the whole window
     // How old the contents of the buffer being drawn into are, from the
     // window system rather than from a constant of mine. -1 when nobody will
     // say, which is when the constants come back.
@@ -1819,6 +1821,9 @@ private:
       return;
     }
     canvas->clipIRect(bounds);
+    // Remembered for the blit: with the CPU renderer the frame has to be
+    // carried into the window as pixels, and only this much of it is new.
+    fBlitBounds = bounds;
     // What is repainted starts clean: the buffer holds an older frame, and
     // anything translucent drawn over it would otherwise stack up.
     if (fState != State::kPlaying) {
@@ -2242,8 +2247,21 @@ private:
     fBlitStart = std::chrono::steady_clock::now();
     if (fDrewOnRaster && fWindowSurface) {
       // The CPU frame lives in main memory; the window wants it as pixels.
+      // Only the part that was repainted is carried over: the window's buffer
+      // already holds the rest, under exactly the assumption that let the
+      // frame be clipped in the first place. This is what makes the cost of
+      // the blit follow the damage instead of being a whole window every
+      // frame -- which it was, at a constant millisecond and a half.
       if (auto image = fRasterSurface->makeImageSnapshot()) {
-        fWindowSurface->getCanvas()->drawImage(image.get(), 0.0f, 0.0f);
+        auto *windowCanvas = fWindowSurface->getCanvas();
+        if (fBlitBounds.isEmpty()) {
+          windowCanvas->drawImage(image.get(), 0.0f, 0.0f);
+        } else {
+          const skia::SkRect region = skia::SkRect::Make(fBlitBounds);
+          windowCanvas->drawImageRect(image.get(), region, region,
+                                      skia::SkSamplingOptions(), nullptr,
+                                      skia::SkCanvas::kStrict_SrcRectConstraint);
+        }
       }
       fContext->flushAndSubmit(fWindowSurface.get());
     } else {
