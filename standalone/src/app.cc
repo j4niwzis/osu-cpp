@@ -408,6 +408,11 @@ private:
   float fMenuDim = 1.0f;
   // MainMenu.cs: Gray(1) idle, Gray(0.8) with buttons.
   float fDrawnMenuDim = -1.0f; // the dim the screen currently shows
+  struct Angle {
+    float fCos = 0.0f, fSin = 0.0f;
+  };
+  std::vector<Angle> fVisualiserAngles; // fixed per bar count, not per frame
+  int fVisualiserCount = 0;
   std::mt19937 fUiRng{0xC0FFEEu};
 
   [[nodiscard]] static float easeOutQuint(float t) {
@@ -4252,6 +4257,20 @@ private:
     constexpr int kRounds = 5;          // visualiser_rounds
     constexpr float kAmplitudeDeadZone = 1.0f / 600.0f;
     const auto count = static_cast<int>(bars.size());
+
+    // Nothing above the dead zone means nothing to draw at all, which is the
+    // usual case between tracks and during quiet passages.
+    bool anyAudible = false;
+    for (const float amp : bars) {
+      if (amp >= kAmplitudeDeadZone) {
+        anyAudible = true;
+        break;
+      }
+    }
+    if (!anyAudible) {
+      return;
+    }
+
     // lazer works in a box of `size` = logo diameter, with bar_length = 600
     // against a default logo of ~480px; keep the same proportion here.
     const float barLength = logoRadius * 2.0f * (600.0f / 480.0f);
@@ -4262,40 +4281,67 @@ private:
                                           static_cast<float>(count)))) /
         2.0f;
 
+    this->ensureVisualiserAngles(count, kRounds);
+
     skia::SkPaint paint;
     paint.setAntiAlias(true);
     paint.setColor(skia::kWhite);
     paint.setAlphaf(0.2f); // transparent_white
     paint.setBlendMode(skia::SkBlendMode::kPlus);
 
+    // One path per round rather than one per bar. Two hundred bars over five
+    // rounds was a thousand antialiased draws a frame, each with its own
+    // paint setup and clip test, which is what made this the most expensive
+    // thing on screen. The rounds stay separate because they overlap, and
+    // overlapping is what makes them add up: inside a single path the
+    // overlap would be filled once instead of twice.
     for (int round = 0; round < kRounds; ++round) {
+      skia::SkPathBuilder builder;
       for (int i = 0; i < count; ++i) {
         const float amp = bars[static_cast<std::size_t>(i)];
         if (amp < kAmplitudeDeadZone) {
           continue;
         }
+        const auto &angle =
+            fVisualiserAngles[static_cast<std::size_t>(round * count + i)];
+        const float bx = fLogoX + angle.fCos * logoRadius;
+        const float by = fLogoY + angle.fSin * logoRadius;
+        // bottomOffset is perpendicular; amplitudeOffset is radial.
+        const float ox = -angle.fSin * chord * 0.5f;
+        const float oy = angle.fCos * chord * 0.5f;
+        const float ax = angle.fCos * barLength * amp;
+        const float ay = angle.fSin * barLength * amp;
+
+        builder.moveTo(bx - ox, by - oy);
+        builder.lineTo(bx - ox + ax, by - oy + ay);
+        builder.lineTo(bx + ox + ax, by + oy + ay);
+        builder.lineTo(bx + ox, by + oy);
+        builder.close();
+      }
+      canvas->drawPath(builder.detach(), paint);
+    }
+  }
+
+  // The bars sit at fixed angles; only their lengths change. Computing two
+  // trigonometric functions per bar per frame -- two thousand of them at five
+  // rounds of two hundred -- was work repeated for an answer that never
+  // changes.
+  void ensureVisualiserAngles(int count, int rounds) {
+    const auto needed = static_cast<std::size_t>(count) *
+                        static_cast<std::size_t>(rounds);
+    if (fVisualiserAngles.size() == needed && fVisualiserCount == count) {
+      return;
+    }
+    fVisualiserAngles.resize(needed);
+    fVisualiserCount = count;
+    for (int round = 0; round < rounds; ++round) {
+      for (int i = 0; i < count; ++i) {
         const float rotation =
             2.0f * std::numbers::pi_v<float> *
             (static_cast<float>(i) / static_cast<float>(count) +
-             static_cast<float>(round) / static_cast<float>(kRounds));
-        const float cosA = std::cos(rotation);
-        const float sinA = std::sin(rotation);
-
-        const float bx = fLogoX + cosA * logoRadius;
-        const float by = fLogoY + sinA * logoRadius;
-        // bottomOffset is perpendicular; amplitudeOffset is radial.
-        const float ox = -sinA * chord * 0.5f;
-        const float oy = cosA * chord * 0.5f;
-        const float ax = cosA * barLength * amp;
-        const float ay = sinA * barLength * amp;
-
-        skia::SkPathBuilder bar;
-        bar.moveTo(bx - ox, by - oy);
-        bar.lineTo(bx - ox + ax, by - oy + ay);
-        bar.lineTo(bx + ox + ax, by + oy + ay);
-        bar.lineTo(bx + ox, by + oy);
-        bar.close();
-        canvas->drawPath(bar.detach(), paint);
+             static_cast<float>(round) / static_cast<float>(rounds));
+        fVisualiserAngles[static_cast<std::size_t>(round * count + i)] = {
+            std::cos(rotation), std::sin(rotation)};
       }
     }
   }
