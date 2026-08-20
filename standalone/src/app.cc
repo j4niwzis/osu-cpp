@@ -149,7 +149,7 @@ private:
   //
   // A list rather than one rectangle: the logo and the FPS counter sit in
   // opposite corners, and their union is half the screen.
-  static constexpr std::size_t kMaxDamageRects = 6;
+  static constexpr std::size_t kMaxDamageRects = 3;
   std::vector<skia::SkIRect> fDamage;
   bool fFullDamage = true;
   const char *fFullDamageReason = "start";
@@ -162,6 +162,7 @@ private:
   double fCostLogWall = 0.0;
   std::vector<skia::SkIRect> fFrameClip;
   bool fFrameClipFull = true;
+  std::vector<std::vector<skia::SkIRect>> fBlitHistory;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
   double fFpsPrevWall = 0.0;
@@ -1409,6 +1410,23 @@ private:
         return;
       }
     }
+    // Merging early keeps the clip a couple of rectangles rather than a
+    // region with many: every draw call is tested against it, and that is
+    // paid per call, not per pixel.
+    for (auto &existing : fDamage) {
+      skia::SkIRect merged = existing;
+      merged.join(area);
+      const auto mergedArea = static_cast<std::int64_t>(merged.width()) *
+                              merged.height();
+      const auto separate = static_cast<std::int64_t>(existing.width()) *
+                                existing.height() +
+                            static_cast<std::int64_t>(area.width()) *
+                                area.height();
+      if (mergedArea <= separate * 5 / 4) {
+        existing = merged;
+        return;
+      }
+    }
     if (fDamage.size() < kMaxDamageRects) {
       fDamage.push_back(area);
       return;
@@ -1663,7 +1681,23 @@ private:
     // surface, not in what is copied out of it.
     if (fWindowSurface) {
       auto *window = fWindowSurface->getCanvas();
+      // Copying the whole surface every frame costs more than drawing into
+      // it. The window alternates between a small number of back buffers, so
+      // the one being drawn into is missing whatever was repainted over the
+      // last few frames -- that, and only that, has to be copied.
+      this->rememberBlitRegion();
+      const int saved = window->save();
+      if (!this->blitRegionFull()) {
+        skia::SkRegion region;
+        for (const auto &frame : fBlitHistory) {
+          for (const auto &area : frame) {
+            region.op(area, skia::SkRegion::kUnion_Op);
+          }
+        }
+        window->clipRegion(region);
+      }
       fSurface->draw(window, 0.0f, 0.0f);
+      window->restoreToCount(saved);
       // Drawn onto the window rather than into the surface: the surface keeps
       // what is not repainted, so an outline drawn there would pile up.
       this->showDamage(window);
@@ -1705,6 +1739,33 @@ private:
     fCostLogWall = wallMs();
     fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
     fCostFrames = 0;
+  }
+
+  // How many back buffers the window may be cycling through; each of them
+  // needs the pixels a repaint produced, so a region stays in the blit set
+  // for that many frames.
+  static constexpr std::size_t kSwapChainDepth = 3;
+
+  [[nodiscard]] bool blitRegionFull() const {
+    if (fBlitHistory.size() < kSwapChainDepth) {
+      return true; // not enough history yet to know what the buffers hold
+    }
+    for (const auto &frame : fBlitHistory) {
+      if (frame.empty()) {
+        return true; // that frame repainted everything
+      }
+    }
+    return false;
+  }
+
+  void rememberBlitRegion() {
+    // An empty entry means "that frame was full", which forces a full copy
+    // until it ages out.
+    fBlitHistory.push_back(fFrameClipFull ? std::vector<skia::SkIRect>{}
+                                          : fFrameClip);
+    while (fBlitHistory.size() > kSwapChainDepth) {
+      fBlitHistory.erase(fBlitHistory.begin());
+    }
   }
 
   // OSU_SHOW_DAMAGE=1 outlines what was repainted, which is the only way to
