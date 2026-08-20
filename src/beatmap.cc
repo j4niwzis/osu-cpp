@@ -290,7 +290,13 @@ inline void applyStacking(Beatmap &bm) {
           HitObject &objN = bm.fObjects[static_cast<std::size_t>(n)];
           if (std::holds_alternative<Spinner>(objN))
             continue;
-          if (static_cast<int>(startTime(objI)) -
+          // Against the object the stack is currently based on, not the one
+          // the walk started from: lazer reassigns objectI as it moves back,
+          // and the window is measured from there. Measuring from the start
+          // cuts a long stack in half and leaves the rest of it a level
+          // short.
+          if (static_cast<int>(
+                  startTime(bm.fObjects[static_cast<std::size_t>(iBase)])) -
                   static_cast<int>(objectEndTime(objN, bm)) >
               stackThreshold)
             break;
@@ -336,7 +342,9 @@ inline void applyStacking(Beatmap &bm) {
           HitObject &objN = bm.fObjects[static_cast<std::size_t>(n)];
           if (std::holds_alternative<Spinner>(objN))
             continue;
-          if (startTime(objI) - startTime(objN) > stackThreshold)
+          if (startTime(bm.fObjects[static_cast<std::size_t>(iBase)]) -
+                  startTime(objN) >
+              stackThreshold)
             break;
           if (objectPosition(bm.fObjects[static_cast<std::size_t>(iBase)])
                   .distanceTo(nonStackedEndPosition(objN)) < kStackDistance) {
