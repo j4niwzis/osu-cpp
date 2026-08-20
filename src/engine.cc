@@ -54,6 +54,8 @@ public:
       fStates.emplace_back();
       if (const Slider *s = std::get_if<Slider>(&map.fObjects[i])) {
         fStates.back().fNested = this->buildNested(*s);
+      } else if (const Spinner *sp = std::get_if<Spinner>(&map.fObjects[i])) {
+        fStates.back().fNested = this->buildSpinnerTicks(*sp);
       }
     }
     this->computeMaxima();
@@ -101,7 +103,12 @@ public:
   [[nodiscard]] int maxAchievableCombo() const noexcept {
     int total = 0;
     for (const auto &state : fStates) {
-      total += 1 + static_cast<int>(state.fNested.size());
+      total += 1; // the object itself: a circle, a slider's head, a spinner
+      for (const auto &n : state.fNested) {
+        if (!isBonus(n.fKind)) {
+          ++total; // a spinner's spins are bonus and raise no combo
+        }
+      }
     }
     return total;
   }
@@ -228,6 +235,24 @@ private:
               }
             },
             [&](const Spinner &o) {
+              // One spin, one tick: they are handed out as the rotations
+              // arrive rather than on a clock, and whatever is left over when
+              // the spinner ends is missed.
+              const int spun = st.fRotations;
+              while (st.fNextNested < st.fNested.size() &&
+                     static_cast<int>(st.fNextNested) < spun &&
+                     time <= o.fEnd) {
+                const auto &n = st.fNested[st.fNextNested];
+                this->emit(i, n.fKind, judgement::Great{}, true, 0.0);
+                ++st.fNextNested;
+              }
+              if (time >= o.fEnd) {
+                while (st.fNextNested < st.fNested.size()) {
+                  const auto &n = st.fNested[st.fNextNested];
+                  this->emit(i, n.fKind, judgement::Miss{}, false, 0.0);
+                  ++st.fNextNested;
+                }
+              }
               if (time >= o.fEnd + windowMeh(fDiff.fOd)) {
                 this->finalizeSpinner(i);
               }
@@ -247,15 +272,7 @@ private:
             [this, i, end](const Spinner &o) {
               const double progress = spinnerProgress(
                   fStates[i].fRotations, o.fEnd - o.fTime, fDiff.fOd);
-              if (progress >= 1.0) {
-                this->judge(i, judgement::Great{}, end - o.fTime);
-              } else if (progress >= 0.9) {
-                this->judge(i, judgement::Good{}, end - o.fTime);
-              } else if (progress >= 0.75) {
-                this->judge(i, judgement::Meh{}, end - o.fTime);
-              } else {
-                this->judge(i, judgement::Miss{}, end - o.fTime);
-              }
+              this->judge(i, spinnerJudgement(progress), end - o.fTime);
             },
         },
         fMap.fObjects[i]);
@@ -313,6 +330,28 @@ private:
       tailTime = std::max(tailTime, nested.back().fTime);
     }
     nested.push_back({tailTime, HitKind::kSliderTail});
+    return nested;
+  }
+
+  // A spinner's spins, as objects: one per revolution, and past the required
+  // count plus a gap of two they become the larger bonus. They are bonus
+  // results -- no accuracy, no combo, straight onto the score.
+  [[nodiscard]] std::vector<Nested> buildSpinnerTicks(const Spinner &s) const {
+    std::vector<Nested> nested;
+    const double duration = s.fEnd - s.fTime;
+    if (duration <= 0.0) {
+      return nested;
+    }
+    const int required = spinsRequired(duration, fDiff.fOd);
+    const int bonus = maximumBonusSpins(duration, fDiff.fOd);
+    const int total = required + kBonusSpinsGap + bonus;
+    for (int i = 0; i < total; ++i) {
+      const double at =
+          s.fTime + static_cast<double>(i + 1) / total * duration;
+      nested.push_back({at, i < required + kBonusSpinsGap
+                                ? HitKind::kSmallBonus
+                                : HitKind::kLargeBonus});
+    }
     return nested;
   }
 
@@ -464,6 +503,9 @@ private:
       }
       increases.emplace_back(startTime(fMap.fObjects[i]), head);
       for (const auto &n : fStates[i].fNested) {
+        if (isBonus(n.fKind)) {
+          continue; // bonus results are left out of the drain rate solve
+        }
         double amount = healthIncreaseFor(n.fKind, judgement::Great{}, true,
                                           fDiff.fHp,
                                           n.fKind == HitKind::kLargeTick);

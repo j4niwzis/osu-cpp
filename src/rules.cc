@@ -200,20 +200,55 @@ inline double clampArOd(double ar, double rate) noexcept {
   return static_cast<double>(64.0f * static_cast<float>(circleScale(cs)));
 }
 
-[[nodiscard]] inline double spinnerRotationsPerSecond(double od) noexcept {
-  const double base = (od < 5.0) ? 3.0 + 0.4 * od : 2.5 + 0.5 * od;
-  return base * 0.7;
+// IBeatmapDifficultyInfo.DifficultyRange, the same shape the hit windows use.
+[[nodiscard]] inline double difficultyRange(double value, double min,
+                                            double mid, double max) noexcept {
+  if (value > 5.0) {
+    return mid + (max - mid) * (value - 5.0) / 5.0;
+  }
+  if (value < 5.0) {
+    return mid - (mid - min) * (5.0 - value) / 5.0;
+  }
+  return mid;
 }
 
-[[nodiscard]] inline double spinnerRequiredRotations(double durationMs,
-                                                     double od) noexcept {
-  return durationMs / 1000.0 * spinnerRotationsPerSecond(od);
+// Spinner.ApplyDefaultsToSelf. Two rates: the one that clears the spinner and
+// the one that also collects every bonus spin, both in revolutions per minute
+// against the overall difficulty. The gap of two spins between them is where
+// the bonus ticks begin.
+inline constexpr int kBonusSpinsGap = 2;
+
+[[nodiscard]] inline int spinsRequired(double durationMs, double od) noexcept {
+  const double minRps = difficultyRange(od, 90.0, 150.0, 225.0) / 60.0;
+  return static_cast<int>(minRps * (durationMs / 1000.0) + 0.0001);
+}
+
+[[nodiscard]] inline int maximumBonusSpins(double durationMs,
+                                           double od) noexcept {
+  const double maxRps = difficultyRange(od, 250.0, 380.0, 430.0) / 60.0;
+  const int total =
+      static_cast<int>(maxRps * (durationMs / 1000.0) + 0.0001);
+  return std::max(0, total - spinsRequired(durationMs, od) - kBonusSpinsGap);
 }
 
 [[nodiscard]] inline double spinnerProgress(int rotations, double durationMs,
                                             double od) noexcept {
   return static_cast<double>(rotations) /
-         std::max(1.0, spinnerRequiredRotations(durationMs, od));
+         std::max(1.0, static_cast<double>(spinsRequired(durationMs, od)));
+}
+
+// DrawableSpinner.CheckForResult: cleared, nearly, barely, or not at all.
+[[nodiscard]] inline Judgement spinnerJudgement(double progress) noexcept {
+  if (progress >= 1.0) {
+    return judgement::Great{};
+  }
+  if (progress > 0.9) {
+    return judgement::Good{};
+  }
+  if (progress > 0.75) {
+    return judgement::Meh{};
+  }
+  return judgement::Miss{};
 }
 
 [[nodiscard]] inline int scoreValue(const Judgement &j) noexcept {
@@ -231,13 +266,23 @@ inline double clampArOd(double ar, double rate) noexcept {
 // each carries its own base score, and each has its own say about the combo.
 // These are the numbers ScoreProcessor.GetBaseScoreForResult returns.
 enum class HitKind {
-  kBasic,      // circle, slider head, spinner: 300 / 100 / 50 / miss
-  kLargeTick,  // slider tick or repeat: 30 or nothing
-  kSliderTail, // the slider's end: 150 or nothing
+  kBasic,       // circle, slider head, spinner: 300 / 100 / 50 / miss
+  kLargeTick,   // slider tick or repeat: 30 or nothing
+  kSliderTail,  // the slider's end: 150 or nothing
+  kSmallBonus,  // a spinner's spin: 10, and nothing else
+  kLargeBonus,  // a spinner's spin past the bonus gap: 50
 };
 
 inline constexpr int kLargeTickScore = 30;
 inline constexpr int kSliderTailScore = 150;
+inline constexpr int kSmallBonusScore = 10;
+inline constexpr int kLargeBonusScore = 50;
+
+// A bonus result is scored, but it is not part of accuracy and not part of the
+// combo: it lands straight on the total as its own portion.
+[[nodiscard]] inline bool isBonus(HitKind kind) noexcept {
+  return kind == HitKind::kSmallBonus || kind == HitKind::kLargeBonus;
+}
 
 // Combo and accuracy are two different questions and lazer answers them
 // separately. HitResultExtensions.AffectsCombo lists large ticks and slider
@@ -256,6 +301,9 @@ struct ScoreState {
   int fMiss = 0;
   int fLargeTickHit = 0;
   int fLargeTickMiss = 0;
+  int fSmallBonus = 0;
+  int fLargeBonus = 0;
+  double fBonusPortion = 0.0;
   int fTailHit = 0;
   int fTailMiss = 0;
   double fHealth = 1.0;
@@ -306,7 +354,8 @@ struct ScoreState {
                 static_cast<double>(state.fMaxAccuracyJudgements)
           : 1.0;
   const double total = 500000.0 * acc * comboProgress +
-                       500000.0 * std::pow(acc, 5.0) * accuracyProgress;
+                       500000.0 * std::pow(acc, 5.0) * accuracyProgress +
+                       state.fBonusPortion;
   return static_cast<std::uint64_t>(
       std::llround(total * modMultiplier(mods)));
 }
@@ -381,6 +430,17 @@ inline void registerResult(ScoreState &state, HitKind kind, const Judgement &j,
       ++state.fTailMiss; // IgnoreMiss: no combo break, but accuracy pays
     }
     break;
+  case HitKind::kSmallBonus:
+  case HitKind::kLargeBonus:
+    if (hit) {
+      const int amount = kind == HitKind::kSmallBonus ? kSmallBonusScore
+                                                      : kLargeBonusScore;
+      (kind == HitKind::kSmallBonus ? state.fSmallBonus : state.fLargeBonus)++;
+      state.fBonusPortion += amount;
+    }
+    // A bonus touches neither accuracy nor combo, so nothing else happens.
+    state.fScore = standardisedScore(state, mods);
+    return;
   }
 
   if (increasesCombo) {
@@ -414,18 +474,6 @@ inline void registerHit(ScoreState &state, const Judgement &j, ModSet mods,
 // searched for so that a perfect play would dip to a target health and no
 // lower, which is what makes a high HP map punishing and a low one forgiving.
 //
-// IBeatmapDifficultyInfo.DifficultyRange, the same shape the hit windows use.
-[[nodiscard]] inline double difficultyRange(double value, double min,
-                                            double mid, double max) noexcept {
-  if (value > 5.0) {
-    return mid + (max - mid) * (value - 5.0) / 5.0;
-  }
-  if (value < 5.0) {
-    return mid - (mid - min) * (5.0 - value) / 5.0;
-  }
-  return mid;
-}
-
 // What one judgement does to the health bar, before the end-of-combo bonus.
 // OsuHealthProcessor.getHealthIncreaseFor.
 [[nodiscard]] inline double healthIncreaseFor(HitKind kind,
@@ -440,6 +488,10 @@ inline void registerHit(ScoreState &state, const Judgement &j, ModSet mods,
     // A slider's tail is a large tick that is not a SliderTick, and missing it
     // is an IgnoreMiss, which costs no health at all.
     return hit ? 0.02 : 0.0;
+  case HitKind::kSmallBonus:
+    return hit ? 0.0085 : 0.0;
+  case HitKind::kLargeBonus:
+    return hit ? 0.01 : 0.0;
   case HitKind::kBasic:
   default:
     break;
