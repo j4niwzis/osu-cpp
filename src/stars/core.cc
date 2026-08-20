@@ -267,8 +267,13 @@ private:
     for (std::size_t i = 1; i < nestedPositions.size(); ++i) {
       Vec2 mv = nestedPositions[i] - cur;
       double ml = sf * mv.length();
-      // A repeat asks for a tighter movement than a tick does.
-      double req = nested[i].fRepeat ? kNR : kASR;
+      // A repeat asks for a tighter movement than a tick does -- but the last
+      // nested object is handled by the branch below whatever it is, and
+      // lazer's "else if" means it keeps the wider threshold there.
+      double req = kASR;
+      if (i != nestedPositions.size() - 1 && nested[i].fRepeat) {
+        req = kNR;
+      }
       if (i == nestedPositions.size() - 1) {
         Vec2 lm = fLEP - cur;
         if (lm.length() < mv.length())
