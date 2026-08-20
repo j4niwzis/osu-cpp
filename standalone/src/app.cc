@@ -1412,6 +1412,14 @@ private:
     if (!fFrameClipFull) {
       canvas->clipIRect(fFrameClip);
     }
+    // The surface keeps what is not repainted, so what is repainted starts
+    // clean: a translucent overlay drawn over a region every frame -- the
+    // settings dim, for one -- would otherwise darken it a little more each
+    // time until it went black. Gameplay is exempt: it manages its own
+    // surface content and expects the previous frame to still be there.
+    if (fState != State::kPlaying) {
+      canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
+    }
   }
 
   [[nodiscard]] bool needsFrame() {
@@ -1424,8 +1432,15 @@ private:
     if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
       return true; // progress that is being watched
     }
-    if (fPreviewId >= 0 || fSettingsPanel.visible() || fModSelect.visible() ||
-        fExportDialog.open() || fConfirmDelete) {
+    if (fPreviewId >= 0 || fExportDialog.open()) {
+      return true; // a transfer or a dialog with live status in it
+    }
+    // Overlays are drawn while they slide in and out, and after that only
+    // when something touches them -- which arrives as an event.
+    if (fSettingsPanel.animating() || fModSelect.animating()) {
+      return true;
+    }
+    if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
       return true;
     }
     const double now = wallMs();

@@ -23,6 +23,10 @@ public:
   };
 
   [[nodiscard]] bool open() const noexcept { return fOpen; }
+  [[nodiscard]] bool animating() const noexcept {
+    return fOpen ? fSlide < 0.999f : fSlide > 0.001f;
+  }
+
   [[nodiscard]] bool visible() const noexcept {
     return fOpen || fSlide > 0.002f;
   }

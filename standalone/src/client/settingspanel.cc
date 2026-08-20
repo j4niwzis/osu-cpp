@@ -31,6 +31,11 @@ public:
 
   [[nodiscard]] bool open() const noexcept { return fOpen; }
   [[nodiscard]] float slide() const noexcept { return fSlide; }
+  // Still sliding: the only time an untouched panel needs frames.
+  [[nodiscard]] bool animating() const noexcept {
+    return fOpen ? fSlide < 0.999f : fSlide > 0.001f;
+  }
+
   [[nodiscard]] bool visible() const noexcept {
     return fOpen || fSlide > 0.002f;
   }
