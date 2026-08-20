@@ -287,14 +287,32 @@ int main(int argc, char **argv) {
                   << std::format("  max combo {}\n",
                                  engine.maxAchievableCombo())
                   << std::format("  objects   {}\n", map.fObjects.size());
+        if (dumpAim) {
+          // The geometry behind those numbers: what each slider's path came
+          // out as, which is the other half of any disagreement about aim.
+          for (std::size_t i = 0; i < map.fObjects.size(); ++i) {
+            const auto *slider = std::get_if<osu::Slider>(&map.fObjects[i]);
+            if (slider == nullptr) {
+              continue;
+            }
+            std::cout << std::format(
+                "slider {:.1f} spans {} declared {:.6f} path {:.6f}"
+                " span {:.4f} tick {:.4f}\n",
+                slider->fTime, slider->fRepeat, slider->fPixelLength,
+                map.fSliderPaths[i].length(), map.sliderSpanDuration(*slider),
+                map.sliderTickDistance(*slider));
+          }
+        }
         for (const auto &point : aimTrace) {
           std::cout << std::format(
               "strain {:.1f} snap {:.10f} agility {:.10f} flow {:.10f}"
               " total {:.10f} angle {:.4f} last {:.4f} rep {:.6f}"
-              " jump {:.4f}\n",
+              " jump {:.4f} lazytravel {:.6f} travel {:.6f}"
+              " traveltime {:.4f}\n",
               point.fTime, point.fSnap, point.fAgility, point.fFlow,
               point.fStrain, point.fAngle, point.fLastAngle,
-              point.fRepetition, point.fJump);
+              point.fRepetition, point.fJump, point.fLazyTravel,
+              point.fTravel, point.fTravelTime);
         }
       } catch (const std::exception &e) {
         std::cerr << target.filename().string() << ": " << e.what() << '\n';

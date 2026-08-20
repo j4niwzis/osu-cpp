@@ -223,6 +223,9 @@ public:
     double fLastAngle = -1.0; // the previous object's, same convention
     double fRepetition = 1.0; // vectorAngleRepetition
     double fJump = 0.0;       // lazy jump distance, normalised
+    double fLazyTravel = 0.0; // LazyTravelDistance
+    double fTravel = 0.0;     // TravelDistance
+    double fTravelTime = 0.0; // TravelTime
   };
   struct Pk {
     double v, l;
@@ -332,7 +335,8 @@ private:
          FlowAimEvaluator::Eval(c, fInc), strain,
          c.fA ? *c.fA * kDeg : -1.0,
          (p != nullptr && p->fA) ? *p->fA * kDeg : -1.0,
-         (p != nullptr) ? SnapAimEvaluator::repetition(c, *p) : 1.0, c.fLJD});
+         (p != nullptr) ? SnapAimEvaluator::repetition(c, *p) : 1.0, c.fLJD,
+         c.fLTD, c.fTD, c.fTT});
   }
 
   double strainOf(const OsuDifficultyHitObject &c) {
