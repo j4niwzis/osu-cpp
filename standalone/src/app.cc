@@ -30,6 +30,7 @@ import client.overlays;
 import client.filtercontrol;
 import client.listing;
 import client.carousel;
+import client.pause;
 import client.setpage;
 import client.scene;
 import client.nodes;
@@ -316,6 +317,9 @@ private:
   };
   std::vector<MenuButton> fMenuButtons; // rebuilt every pause/results frame
   double fPausedNow = 0.0;              // frozen game time while paused
+  client::pause::PauseMenu fPauseMenu;
+  int fRetryCount = 0;      // plays of this map since it was chosen
+  bool fRetryPending = false;
   int fPlayingSet = -1;
   int fPlayingDiff = -1;
 
@@ -970,8 +974,16 @@ private:
       this->keyDownload(key);
       return;
     case State::kPaused:
+      // GameplayMenuOverlay: the arrows cycle the buttons, enter takes the
+      // selected one, and back is the first button -- Continue.
       if (key == glfw::kKeyEscape) {
         this->resumeGame();
+      } else if (key == glfw::kKeyUp) {
+        fPauseMenu.selectPrevious();
+      } else if (key == glfw::kKeyDown) {
+        fPauseMenu.selectNext();
+      } else if (key == glfw::kKeyEnter) {
+        this->applyPauseAction(fPauseMenu.triggerSelected());
       }
       return;
     case State::kResults:
@@ -1266,8 +1278,10 @@ private:
       }
       return;
     }
-    case State::kResults:
     case State::kPaused:
+      this->applyPauseAction(fPauseMenu.click(x, y));
+      break;
+    case State::kResults:
       for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
         if (fMenuButtons[i].fRect.contains(x, y)) {
           this->menuButtonPressed(i);
@@ -1280,16 +1294,27 @@ private:
     }
   }
 
+  void applyPauseAction(client::pause::PauseMenu::Action action) {
+    using Action = client::pause::PauseMenu::Action;
+    switch (action) {
+    case Action::kContinue:
+      this->resumeGame();
+      break;
+    case Action::kRetry:
+      this->retry();
+      break;
+    case Action::kQuit:
+      this->quitToSelect();
+      break;
+    case Action::kNone:
+      break;
+    }
+  }
+
+  // The results screen is the last one still drawing its own buttons; the
+  // pause overlay reports what was pressed instead.
   void menuButtonPressed(std::size_t idx) {
-    if (fState == State::kPaused) {
-      if (idx == 0) {
-        this->resumeGame();
-      } else if (idx == 1) {
-        this->retry();
-      } else {
-        this->quitToSelect();
-      }
-    } else if (fState == State::kResults) {
+    if (fState == State::kResults) {
       if (idx == 0) {
         this->retry();
       } else if (idx == 1) {
@@ -1706,6 +1731,8 @@ private:
       this->updateDownload();
     } else if (fState == State::kSongSelect) {
       this->updateSongSelect();
+    } else if (fState == State::kPaused) {
+      this->updatePause();
     }
     // A transition dims the whole screen, so a frame drawn during one has to
     // repaint whole: clipped to a region, everything outside it would stay
@@ -2256,6 +2283,10 @@ private:
   }
 
   void startPlay(int setIdx, int diffIdx) {
+    // Retries are counted per map: coming here from anywhere but the retry
+    // button starts the count again.
+    fRetryCount = fRetryPending ? fRetryCount + 1 : 0;
+    fRetryPending = false;
     fPreview.stop();
     fPreviewId = -1;
     fMusicDucked = false; // gameplay takes the track over anyway
@@ -2289,7 +2320,10 @@ private:
     this->setCursorVisible(false);
   }
 
-  void retry() { this->startPlay(fPlayingSet, fPlayingDiff); }
+  void retry() {
+    fRetryPending = true; // the pause overlay counts these
+    this->startPlay(fPlayingSet, fPlayingDiff);
+  }
 
   void pauseGame() {
     fPausedNow = this->nowMs();
@@ -6024,41 +6058,45 @@ private:
   }
 
   // ---- Pause ------------------------------------------------------------
+  //
+  // client.pause is lazer's GameplayMenuOverlay; here it only gets the play's
+  // numbers and says what was clicked.
+
+  void updatePause() {
+    client::pause::PauseMenu::Ctx ctx;
+    ctx.fFont = &fFont;
+    ctx.fWidth = static_cast<float>(fScreenW);
+    ctx.fHeight = static_cast<float>(fScreenH);
+    ctx.fMouseX = fMouseX;
+    ctx.fMouseY = fMouseY;
+    ctx.fNowMs = wallMs();
+    ctx.fDtMs = fUiDt;
+    ctx.fRetries = fRetryCount;
+    ctx.fProgress = this->playProgress();
+    ctx.fAccuracy = fEngine ? static_cast<float>(fEngine->score().accuracy())
+                            : 1.0f;
+    fPauseMenu.update(ctx);
+  }
+
+  // How far into the playable part of the map the pause happened, which is
+  // what GameplayMenuOverlay puts under the buttons.
+  [[nodiscard]] float playProgress() const {
+    if (!fMap || fMap->fObjects.empty()) {
+      return 0.0f;
+    }
+    const double first = osu::startTime(fMap->fObjects.front());
+    const double last = osu::startTime(fMap->fObjects.back());
+    if (last <= first) {
+      return 0.0f;
+    }
+    return static_cast<float>(
+        std::clamp((fPausedNow - first) / (last - first), 0.0, 1.0));
+  }
 
   void framePaused() {
     fView.invalidate(); // static scene: always repaint fully
     fView.render(this->gameplayCtx(fSurface->getCanvas()), fPausedNow);
-    auto *canvas = fSurface->getCanvas();
-
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    skia::SkPaint dim;
-    dim.setColor(skia::colorSetARGB(170, 8, 6, 12));
-    canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
-
-    this->drawTextCentered(canvas, "paused", sw * 0.5f, sh * 0.26f, 42.0f,
-                           skia::kWhite);
-
-    fMenuButtons.clear();
-    const char *labels[] = {"continue", "retry", "quit"};
-    const skia::SkColor accents[] = {
-        skia::colorSetARGB(255, 120, 220, 120),
-        skia::colorSetARGB(255, 255, 204, 102),
-        skia::colorSetARGB(255, 255, 110, 110)};
-    const float bw = std::min(420.0f, sw * 0.5f);
-    const float bh = 60.0f;
-    const float fade = this->screenFade();
-    float y = sh * 0.38f;
-    for (int i = 0; i < 3; ++i) {
-      // Buttons slide in from alternating sides, lazer-style.
-      const float side = (i % 2 == 0) ? -1.0f : 1.0f;
-      const float slide = (1.0f - fade) * 90.0f * side;
-      const skia::SkRect r =
-          skia::SkRect::MakeXYWH((sw - bw) * 0.5f + slide, y, bw, bh);
-      fMenuButtons.push_back({r, labels[i], accents[i]});
-      this->drawMenuButton(canvas, fMenuButtons.back());
-      y += bh + 16.0f;
-    }
+    fPauseMenu.render(fSurface->getCanvas());
     this->present();
   }
 
