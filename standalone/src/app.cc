@@ -341,67 +341,7 @@ private:
   std::vector<skia::SkRect> fExportHits;
   std::string fExportStatus;
 
-  // ---- Main menu button system (port of lazer's ButtonSystem) ----------
-  //
-  // lazer models the menu as a small state machine (Initial -> TopLevel ->
-  // a submenu), with every button owning an expand/contract animation and
-  // the logo sliding aside to make room. Same structure here.
-  enum class MenuState : std::uint8_t { kInitial, kTopLevel, kPlay };
-  enum class MenuAction : std::uint8_t {
-    kOpenPlay,
-    kBrowse,
-    kImport,
-    kExit,
-    kSolo,
-    kRandom,
-    kBack,
-    kSettings,
-  };
-  struct MenuBtn {
-    std::string fLabel;
-    std::string fGlyph;      // drawn as a text glyph; no icon font here
-    skia::SkColor fColor{};
-    MenuAction fAction{};
-    MenuState fVisible{};    // menu state this button belongs to
-    bool fLeftSide = false;  // back button sits left of the logo, as in lazer
-    float fExpand = 0.0f;    // 0 contracted .. 1 expanded
-    float fHover = 0.0f;     // eased hover weight
-    float fFlash = 0.0f;     // click flash, decays
-    skia::SkRect fRect = skia::SkRect::MakeEmpty();
-  };
-  std::vector<MenuBtn> fMenuBtns;
-  MenuState fMenuState = MenuState::kInitial;
-  float fLogoX = 0.0f;
-  float fLogoY = 0.0f;
-  float fLogoScale = 1.0f;
-  bool fLogoPlaced = false;
-  float fLogoHover = 0.0f;
-  float fLogoPunch = 0.0f; // click/beat impact, decays
-  skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
-  client::Spectrum fSpectrum;
 
-  // ---- Settings overlay (SettingsPanel: 70px sidebar + 400px panel,
-  // sliding in from the left over 600 ms, sections with a 30px header).
-  bool fSettingsOpen = false;
-  float fSettingsSlide = 0.0f;    // 0 hidden .. 1 fully out
-  double fSettingsEnterWall = 0.0;
-  int fSettingsSection = 0;
-  int fDraggingSetting = -1;
-  struct SettingRow {
-    skia::SkRect fRect;
-    int fIndex;
-  };
-  std::vector<SettingRow> fSettingRows;
-  std::vector<SettingRow> fRestoreHits; // "restore default" hit areas
-  std::vector<skia::SkRect> fSidebarHits;
-  std::array<float, 3> fSidebarGrow{}; // selection indicator animation
-
-  float fSettings.value("offset") = 0.0f;
-  float fSettings.value("dim") = 0.7f;
-  float fSettings.value("cursorsize") = 1.0f;
-  bool fSettings.flag("fps") = false;
-  bool fSettings.flag("snaking") = true;
-  float fAppliedDim = 0.7f; // dim the scaled background was rendered with
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
   double fLastMenuPosMs = 0.0;
