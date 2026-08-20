@@ -225,6 +225,7 @@ private:
         state.fGood = header.fScore.f100;
         state.fMeh = header.fScore.f50;
         state.fMiss = header.fScore.fMiss;
+        state.adoptLegacyCounts();
         state.fScore = static_cast<std::uint64_t>(header.fScore.fTotalScore);
         state.fMaxCombo = header.fScore.fMaxCombo;
         e.fGrade = osu::gradeString(osu::computeGrade(state));

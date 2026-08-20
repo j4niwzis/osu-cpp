@@ -202,6 +202,26 @@ inline double clampArOd(double ar, double rate) noexcept {
                     j);
 }
 
+// A slider is not one judgement in lazer. Its head is judged like a circle,
+// its ticks and repeats are large ticks, and its tail is a result of its own;
+// each carries its own base score, and each has its own say about the combo.
+// These are the numbers ScoreProcessor.GetBaseScoreForResult returns.
+enum class HitKind {
+  kBasic,      // circle, slider head, spinner: 300 / 100 / 50 / miss
+  kLargeTick,  // slider tick or repeat: 30 or nothing
+  kSliderTail, // the slider's end: 150 or nothing
+};
+
+inline constexpr int kLargeTickScore = 30;
+inline constexpr int kSliderTailScore = 150;
+
+// Combo and accuracy are two different questions and lazer answers them
+// separately. HitResultExtensions.AffectsCombo lists large ticks and slider
+// tails alongside the basic results, so hitting them raises the combo; a
+// missed large tick breaks it, while a missed tail does not (its minimum
+// result is IgnoreMiss). Accuracy is the base score over the maximum the
+// judgements seen so far could have given, which is why a dropped tail costs
+// 150 of accuracy rather than turning a 300 into a 100.
 struct ScoreState {
   std::uint64_t fScore = 0;
   int fCombo = 0;
@@ -210,57 +230,169 @@ struct ScoreState {
   int fGood = 0;
   int fMeh = 0;
   int fMiss = 0;
+  int fLargeTickHit = 0;
+  int fLargeTickMiss = 0;
+  int fTailHit = 0;
+  int fTailMiss = 0;
   double fHealth = 1.0;
+
+  // Running totals for the standardised score. The maxima come from a
+  // simulated perfect play and are filled in by the engine before any
+  // gameplay is registered.
+  double fBaseScore = 0.0;
+  double fMaxBaseScore = 0.0;
+  double fComboPortion = 0.0;
+  int fAccuracyJudgements = 0;
+  double fMaxComboPortion = 0.0;
+  int fMaxAccuracyJudgements = 0;
 
   [[nodiscard]] int totalHits() const noexcept {
     return fGreat + fGood + fMeh + fMiss;
   }
 
   [[nodiscard]] double accuracy() const noexcept {
-    const int total = totalHits();
-    if (total == 0) {
+    if (fMaxBaseScore <= 0.0) {
       return 1.0;
     }
-    return (300 * fGreat + 100 * fGood + 50 * fMeh) / (300.0 * total);
+    return fBaseScore / fMaxBaseScore;
+  }
+
+  // An .osr header carries the four legacy counts and nothing about ticks or
+  // tails, so a score read back from one is scored on those alone.
+  void adoptLegacyCounts() noexcept {
+    fBaseScore = 300.0 * fGreat + 100.0 * fGood + 50.0 * fMeh;
+    fMaxBaseScore = 300.0 * this->totalHits();
+    fAccuracyJudgements = this->totalHits();
+    fMaxAccuracyJudgements = this->totalHits();
   }
 };
 
-inline void registerHit(ScoreState &state, const Judgement &j, ModSet mods,
-                        double hp = 5.0) noexcept {
+// ScoreProcessor.ComputeTotalScore: half of the million rides on the combo
+// scaled by accuracy, half on accuracy to the fifth scaled by how much of the
+// map has been judged.
+[[nodiscard]] inline std::uint64_t standardisedScore(const ScoreState &state,
+                                                     ModSet mods) noexcept {
+  const double acc = state.accuracy();
+  const double comboProgress =
+      state.fMaxComboPortion > 0.0 ? state.fComboPortion / state.fMaxComboPortion
+                                   : 1.0;
+  const double accuracyProgress =
+      state.fMaxAccuracyJudgements > 0
+          ? static_cast<double>(state.fAccuracyJudgements) /
+                static_cast<double>(state.fMaxAccuracyJudgements)
+          : 1.0;
+  const double total = 500000.0 * acc * comboProgress +
+                       500000.0 * std::pow(acc, 5.0) * accuracyProgress;
+  return static_cast<std::uint64_t>(
+      std::llround(total * modMultiplier(mods)));
+}
+
+// The maximum a result of this kind can give, which is what the combo portion
+// and the accuracy denominator are both counted in.
+[[nodiscard]] inline int maxBaseScore(HitKind kind) noexcept {
+  switch (kind) {
+  case HitKind::kLargeTick:
+    return kLargeTickScore;
+  case HitKind::kSliderTail:
+    return kSliderTailScore;
+  case HitKind::kBasic:
+  default:
+    return 300;
+  }
+}
+
+// One judgement, of any kind. `hit` is only consulted for ticks and tails;
+// for a basic result the judgement itself says whether it was a hit.
+inline void registerResult(ScoreState &state, HitKind kind, const Judgement &j,
+                           bool hit, ModSet mods, double hp = 5.0) noexcept {
   auto applyHp = [&](double inc) {
     if (state.fHealth >= 0.0) {
       state.fHealth += inc;
       state.fHealth = std::min(1.0, state.fHealth);
     }
   };
-  std::visit(Overloaded{
-                 [&state, &applyHp, hp](judgement::Great) {
-                   ++state.fGreat;
-                   state.fCombo++;
-                   applyHp(0.01 * (10.2 - hp));
-                 },
-                 [&state, &applyHp, hp](judgement::Good) {
-                   ++state.fGood;
-                   state.fCombo++;
-                   applyHp(0.01 * (8.0 - hp));
-                 },
-                 [&state, &applyHp, hp](judgement::Meh) {
-                   ++state.fMeh;
-                   state.fCombo = 0;
-                   applyHp(0.01 * (4.0 - hp));
-                 },
-                 [&state, &applyHp, hp](judgement::Miss) {
-                   ++state.fMiss;
-                   state.fCombo = 0;
-                   applyHp(-0.02 * hp);
-                 },
-             },
-             j);
+
+  int base = 0;
+  bool increasesCombo = false;
+  bool breaksCombo = false;
+
+  switch (kind) {
+  case HitKind::kBasic:
+    std::visit(Overloaded{
+                   [&](judgement::Great) {
+                     ++state.fGreat;
+                     base = 300;
+                     increasesCombo = true;
+                     applyHp(0.01 * (10.2 - hp));
+                   },
+                   [&](judgement::Good) {
+                     ++state.fGood;
+                     base = 100;
+                     increasesCombo = true;
+                     applyHp(0.01 * (8.0 - hp));
+                   },
+                   [&](judgement::Meh) {
+                     ++state.fMeh;
+                     base = 50;
+                     increasesCombo = true; // a 50 keeps the combo
+                     applyHp(0.01 * (4.0 - hp));
+                   },
+                   [&](judgement::Miss) {
+                     ++state.fMiss;
+                     breaksCombo = true;
+                     applyHp(-0.02 * hp);
+                   },
+               },
+               j);
+    break;
+  case HitKind::kLargeTick:
+    if (hit) {
+      ++state.fLargeTickHit;
+      base = kLargeTickScore;
+      increasesCombo = true;
+      applyHp(0.01 * (10.2 - hp));
+    } else {
+      ++state.fLargeTickMiss;
+      breaksCombo = true;
+      applyHp(-0.02 * hp);
+    }
+    break;
+  case HitKind::kSliderTail:
+    if (hit) {
+      ++state.fTailHit;
+      base = kSliderTailScore;
+      increasesCombo = true;
+      applyHp(0.01 * (10.2 - hp));
+    } else {
+      ++state.fTailMiss; // IgnoreMiss: no combo break, but accuracy pays
+    }
+    break;
+  }
+
+  if (increasesCombo) {
+    ++state.fCombo;
+  } else if (breaksCombo) {
+    state.fCombo = 0;
+  }
   state.fMaxCombo = std::max(state.fMaxCombo, state.fCombo);
-  const double comboFactor = 1.0 + state.fCombo / 25.0;
-  const double modFactor = modMultiplier(mods);
-  state.fScore +=
-      static_cast<std::uint64_t>(scoreValue(j) * comboFactor * modFactor);
+
+  state.fBaseScore += base;
+  state.fMaxBaseScore += maxBaseScore(kind);
+  ++state.fAccuracyJudgements;
+  // A dropped tail is an IgnoreMiss, which is not scorable, so it adds
+  // nothing to the combo portion. Everything else does -- a miss adds its
+  // maximum times a combo of zero, which is nothing, but by the same rule.
+  if (increasesCombo || breaksCombo) {
+    state.fComboPortion +=
+        maxBaseScore(kind) * std::sqrt(static_cast<double>(state.fCombo));
+  }
+  state.fScore = standardisedScore(state, mods);
+}
+
+// Kept for callers that only deal in basic results.
+inline void registerHit(ScoreState &state, const Judgement &j, ModSet mods,
+                        double hp = 5.0) noexcept {
+  registerResult(state, HitKind::kBasic, j, true, mods, hp);
 }
 
 [[nodiscard]] inline Grade computeGrade(const ScoreState &state) noexcept {

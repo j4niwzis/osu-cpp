@@ -5561,6 +5561,11 @@ private:
       const auto &events = engine.events();
       while (judged < events.size()) {
         const auto &result = events[judged++];
+        combo = engine.score().fCombo;
+        job.fView.setCombo(combo);
+        if (result.fKind != osu::HitKind::kBasic) {
+          continue;
+        }
         const osu::Vec2 pos =
             result.fIndex < job.fMap.fObjects.size()
                 ? osu::objectPosition(job.fMap.fObjects[result.fIndex])
@@ -5571,10 +5576,6 @@ private:
         job.fView.addJudgement(result.fResult, result.fIndex, pos, now,
                                counts ? job.fCombo.fIndices[result.fIndex] : 0,
                                counts);
-        combo = std::holds_alternative<osu::judgement::Miss>(result.fResult)
-                    ? 0
-                    : combo + 1;
-        job.fView.setCombo(combo);
       }
 
       ctx.fCanvas = job.fSurface->getCanvas();
@@ -7106,12 +7107,23 @@ private:
       int f300 = 0, f100 = 0, f50 = 0, fMiss = 0, fCombo = 0;
       double fAccuracy = 1.0;
       bool fDetail = false; // hit error and UR are only kept for this session
+      int fTickHit = 0, fTickTotal = 0, fTailHit = 0, fTailTotal = 0;
     };
     Shown sh;
     if (replay == nullptr) {
       const auto &sc = fResult.fScore;
-      sh = {sc.fScore,  sc.fGreat,      sc.fGood, sc.fMeh, sc.fMiss,
-            sc.fMaxCombo, sc.accuracy(), true};
+      sh = {sc.fScore,
+            sc.fGreat,
+            sc.fGood,
+            sc.fMeh,
+            sc.fMiss,
+            sc.fMaxCombo,
+            sc.accuracy(),
+            true,
+            sc.fLargeTickHit,
+            sc.fLargeTickHit + sc.fLargeTickMiss,
+            sc.fTailHit,
+            sc.fTailHit + sc.fTailMiss};
     } else if (replay->fHasScore) {
       const auto &sc = replay->fScore;
       sh = {static_cast<std::uint64_t>(sc.fTotalScore),
@@ -7223,6 +7235,20 @@ private:
           {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite});
       bottom.push_back({"UR", std::format("{:.0f}", fResult.fUr),
                         skia::kWhite});
+      // What the sliders did, which lazer keeps out of the 300/100/50 counts
+      // and reports on its own.
+      if (sh.fTickTotal > 0) {
+        bottom.push_back({"slider ticks",
+                          std::format("{}/{}", sh.fTickHit, sh.fTickTotal),
+                          sh.fTickHit == sh.fTickTotal ? skia::kWhite
+                                                       : client::ui::kMiss});
+      }
+      if (sh.fTailTotal > 0) {
+        bottom.push_back({"slider ends",
+                          std::format("{}/{}", sh.fTailHit, sh.fTailTotal),
+                          sh.fTailHit == sh.fTailTotal ? skia::kWhite
+                                                       : client::ui::kMiss});
+      }
     } else if (replay != nullptr) {
       // A stored replay keeps no hit statistics, only when it was played.
       const auto underscore = replay->fLabel.rfind('_');
@@ -7654,6 +7680,17 @@ private:
     const auto &events = fEngine->events();
     while (fPlayedEvents < events.size()) {
       const auto &ev = events[fPlayedEvents++];
+      const int previous = fCombo;
+      // The engine owns the combo now that a slider hands out several
+      // judgements: its ticks and its tail each raise it, and only some of
+      // them break it.
+      fCombo = fEngine->score().fCombo;
+      fView.setCombo(fCombo);
+      // Ticks and tails are scored but not shown; lazer pops the head's
+      // judgement at the head and nothing at all for what is under it.
+      if (ev.fKind != osu::HitKind::kBasic) {
+        continue;
+      }
       const auto pos = this->objectPosition(ev.fIndex);
       const bool counts =
           !std::holds_alternative<osu::judgement::Miss>(ev.fResult) &&
@@ -7661,15 +7698,11 @@ private:
       fView.addJudgement(ev.fResult, ev.fIndex, pos, now,
                          counts ? fComboInfo.fIndices[ev.fIndex] : 0, counts);
       if (std::holds_alternative<osu::judgement::Miss>(ev.fResult)) {
-        if (fCombo > 20) {
+        if (previous > 20) {
           this->playSample("combobreak");
         }
-        fCombo = 0;
-        fView.setCombo(0);
         continue;
       }
-      ++fCombo;
-      fView.setCombo(fCombo);
       const double hitTime = ev.fIndex < fMap->fObjects.size()
                                  ? osu::startTime(fMap->fObjects[ev.fIndex])
                                  : now;
