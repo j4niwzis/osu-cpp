@@ -42,8 +42,9 @@ inline constexpr double kTailLeniency = 36.0;
 
 class Engine {
 public:
-  explicit Engine(const Beatmap &map, ModSet mods = mod::kNone)
-      : fMap(map), fMods(mods) {
+  explicit Engine(const Beatmap &map, ModSet mods = mod::kNone,
+                  RuleSet rules = RuleSet::kLazer)
+      : fMap(map), fMods(mods), fRules(rules) {
     fDiff = applyMods(map.fDiff, mods);
     for (std::size_t i = 0; i < map.fObjects.size(); ++i) {
       if (const Slider *s = std::get_if<Slider>(&map.fObjects[i])) {
@@ -59,7 +60,9 @@ public:
       }
     }
     this->computeMaxima();
-    this->computeDrain();
+    if (fRules == RuleSet::kLazer) {
+      this->computeDrain();
+    }
     fLastDrainTime = fDrainStart;
   }
 
@@ -94,6 +97,10 @@ public:
   // FailedAtJudgement on it and returns without touching the score, the
   // accuracy or the combo.
   [[nodiscard]] bool failed() const noexcept { return fFailed; }
+  [[nodiscard]] RuleSet rules() const noexcept { return fRules; }
+  [[nodiscard]] bool legacy() const noexcept {
+    return fRules == RuleSet::kLegacyClient;
+  }
 
   [[nodiscard]] int spinnerRotations(std::size_t index) const noexcept {
     return index < fStates.size() ? fStates[index].fRotations : 0;
@@ -164,10 +171,12 @@ private:
     bool fSpinnerInitialized = false;
     std::vector<Nested> fNested;
     std::size_t fNextNested = 0;
+    Judgement fLegacyPending = judgement::Great{};
   };
 
   const Beatmap &fMap;
   ModSet fMods = mod::kNone;
+  RuleSet fRules = RuleSet::kLazer;
   EffectiveDifficulty fDiff;
   std::size_t fProcessedObjects = 0;
   ScoreState fScore;
@@ -216,7 +225,7 @@ private:
                 this->emit(i, HitKind::kBasic, judgement::Miss{}, false,
                            time - o.fTime);
               }
-              while (st.fNextNested < st.fNested.size() &&
+              while (!this->legacy() && st.fNextNested < st.fNested.size() &&
                      time >= st.fNested[st.fNextNested].fTime) {
                 const auto &n = st.fNested[st.fNextNested];
                 // TryJudgeNestedObject: nothing under a slider is judged
@@ -228,6 +237,25 @@ private:
                                : Judgement{judgement::Miss{}},
                            hit, time - n.fTime);
                 ++st.fNextNested;
+              }
+              if (this->legacy()) {
+                // The old model: nothing is judged until the slider ends, and
+                // then the whole thing is one result.
+                if (time >= this->objectEnd(i) && !st.fJudged) {
+                  const Judgement result =
+                      !st.fHeadHit          ? Judgement{judgement::Miss{}}
+                      : st.fTracking        ? st.fLegacyPending
+                                            : Judgement{judgement::Good{}};
+                  st.fJudged = true;
+                  fEvents.push_back(
+                      {i, result, HitKind::kBasic, time - o.fTime});
+                  registerResult(fScore, HitKind::kBasic, result,
+                                 !std::holds_alternative<judgement::Miss>(
+                                     result),
+                                 fMods, fDiff.fHp);
+                  this->legacyHealth(result);
+                }
+                return;
               }
               if (st.fHeadJudged && st.fNextNested >= st.fNested.size() &&
                   time >= this->objectEnd(i)) {
@@ -377,6 +405,10 @@ private:
       return; // judged, but it counts for nothing
     }
     registerResult(fScore, kind, j, hit, fMods, fDiff.fHp);
+    if (this->legacy()) {
+      this->legacyHealth(j);
+      return;
+    }
     this->applyHealth(i, kind, j, hit);
   }
 
@@ -429,10 +461,26 @@ private:
     }
   }
 
+  // The health this client used to give, kept for replays recorded under it.
+  void legacyHealth(const Judgement &j) {
+    const double hp = fDiff.fHp;
+    const double inc = std::visit(
+        Overloaded{
+            [hp](judgement::Great) { return 0.01 * (10.2 - hp); },
+            [hp](judgement::Good) { return 0.01 * (8.0 - hp); },
+            [hp](judgement::Meh) { return 0.01 * (4.0 - hp); },
+            [hp](judgement::Miss) { return -0.02 * hp; },
+        },
+        j);
+    if (fScore.fHealth >= 0.0) {
+      fScore.fHealth = std::min(1.0, fScore.fHealth + inc);
+    }
+  }
+
   // Health drains continuously between judgements, but not through breaks and
   // not past the last object.
   void drainTo(double time) {
-    if (fDrainRate <= 0.0 || time <= fLastDrainTime) {
+    if (this->legacy() || fDrainRate <= 0.0 || time <= fLastDrainTime) {
       fLastDrainTime = std::max(fLastDrainTime, time);
       return;
     }
@@ -626,6 +674,10 @@ private:
             fStates[i].fHeadJudged = true;
             fStates[i].fTracking = true;
             fTapDeltas.push_back(delta);
+            if (this->legacy()) {
+              fStates[i].fLegacyPending = judgeDelta(delta, fDiff.fOd);
+              return true;
+            }
             this->emit(i, HitKind::kBasic, judgeDelta(delta, fDiff.fOd), true,
                        delta);
             return true;
@@ -654,11 +706,13 @@ private:
               [](const Spinner &) { return false; },
           },
           fMap.fObjects[i]);
-      if (wouldHit && !this->allowedToHit(i, time)) {
-        return; // note lock: the press is swallowed, nothing is judged
-      }
-      if (wouldHit) {
-        this->missEarlierBlocking(i, time);
+      if (!this->legacy()) {
+        if (wouldHit && !this->allowedToHit(i, time)) {
+          return; // note lock: the press is swallowed, nothing is judged
+        }
+        if (wouldHit) {
+          this->missEarlierBlocking(i, time);
+        }
       }
       if (std::visit(visitor, fMap.fObjects[i])) {
         while (fProcessedObjects < fMap.fObjects.size() &&

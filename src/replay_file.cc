@@ -8,6 +8,10 @@ import osu.engine;
 
 export namespace osu {
 
+// Replays stamped with this version or later were scored by osu!'s rules;
+// anything older came from this client's own model and plays back under it.
+inline constexpr std::int32_t kLazerRulesVersion = 20260820;
+
 // The .osr header carries the score alongside the input events; these are
 // those fields, in the order the format stores them.
 struct ReplayScore {
@@ -42,6 +46,7 @@ struct ReplayHeader {
   std::string fPlayerName;
   ModSet fMods = mod::kNone;
   ReplayScore fScore;
+  std::int32_t fVersion = 0; // the game version field, which is a rules stamp
 };
 
 struct ReplayData {
@@ -50,6 +55,7 @@ struct ReplayData {
   std::string fPlayerName;
   ModSet fMods = mod::kNone;
   ReplayScore fScore;
+  std::int32_t fVersion = 0;
 };
 
 [[nodiscard]] inline std::string
@@ -405,7 +411,10 @@ encodeReplay(std::span<const InputEvent> events, const std::string &beatmapMd5,
   std::vector<std::uint8_t> out;
 
   writeByte(out, 0);
-  writeInt(out, 20250726);
+  // The game version field doubles as a rules stamp: replays written before
+  // this one were scored by the old model -- one judgement per slider, no
+  // drain, no note lock -- and are played back that way.
+  writeInt(out, kLazerRulesVersion);
   writeString(out, beatmapMd5);
   writeString(out, playerName);
 
@@ -487,7 +496,7 @@ parseReplayHeader(std::span<const std::uint8_t> &sp) {
   ReplayHeader h;
   need(5);
   readByte(sp); // mode
-  readInt(sp);  // game version
+  h.fVersion = readInt(sp); // game version, and this client's rules stamp
   h.fBeatmapMd5 = str();
   h.fPlayerName = str();
   str(); // replay md5
@@ -525,6 +534,7 @@ decodeReplay(std::span<const std::uint8_t> data) {
   result.fPlayerName = std::move(header.fPlayerName);
   result.fMods = header.fMods;
   result.fScore = header.fScore;
+  result.fVersion = header.fVersion;
 
   std::int32_t replayLen = readInt(sp);
   auto replayBytes = sp.subspan(0, static_cast<std::size_t>(replayLen));

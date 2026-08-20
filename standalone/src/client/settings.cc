@@ -81,6 +81,9 @@ public:
                2.0f, 0.01f, 1.0f, "x"});
     this->add({2, "snaking", "Snaking sliders", SettingKind::kToggle, 0.0f,
                1.0f, 0.0f, 1.0f, ""});
+    this->add({2, "rules", "Gameplay rules", SettingKind::kChoice, 0.0f, 1.0f,
+               1.0f, 0.0f, "",
+               {"osu!lazer", "This client, before 2026"}});
     this->add({2, "hitlighting", "Hit lighting", SettingKind::kToggle, 0.0f,
                1.0f, 0.0f, 1.0f, ""});
     this->add({2, "savereplay", "Save replays automatically",

@@ -528,7 +528,30 @@ private:
   void startGameplay(const osu::BeatmapInfo &info) {
     fMap.emplace(client::loadBeatmap(fSet, info));
     fBeatmapFilename = info.fFilename;
-    fEngine.emplace(*fMap, fMods);
+
+    // Which rules to play by. The setting decides for a fresh play; a replay
+    // decides for itself, since one recorded before the rules changed was
+    // scored by the old ones and only plays back as it was under them.
+    osu::RuleSet rules = fSettings.choice("rules") == 1
+                             ? osu::RuleSet::kLegacyClient
+                             : osu::RuleSet::kLazer;
+    std::optional<osu::ReplayData> replay;
+    if (fAutoplay && !fReplayPath.empty()) {
+      std::ifstream file(fReplayPath, std::ios::binary);
+      if (file) {
+        std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file),
+                                        std::istreambuf_iterator<char>()};
+        try {
+          replay = osu::decodeReplay(bytes);
+          if (replay->fVersion < osu::kLazerRulesVersion) {
+            rules = osu::RuleSet::kLegacyClient;
+          }
+        } catch (const std::exception &) {
+          replay.reset();
+        }
+      }
+    }
+    fEngine.emplace(*fMap, fMods, rules);
     this->loadComboInfo();
     fSkin.setComboColors(fMap->fComboColors);
     fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get());
@@ -539,18 +562,14 @@ private:
       fSkin.flattenBodiesToRaster(fContext.get());
     }
     if (fAutoplay) {
-      if (!fReplayPath.empty()) {
-        std::ifstream file(fReplayPath, std::ios::binary);
-        if (file) {
-          std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file),
-                                          std::istreambuf_iterator<char>()};
-          auto replayData = osu::decodeReplay(bytes);
-          fAutoplayEvents = std::move(replayData.fEvents);
-          fMods = replayData.fMods;
-          // The video exporter renders the recorded events; a watched replay
-          // is its own recording. saveReplay refuses to write it back out.
-          fRecordedEvents = fAutoplayEvents;
-        }
+      if (replay) {
+        fAutoplayEvents = std::move(replay->fEvents);
+        fMods = replay->fMods;
+        // The video exporter renders the recorded events; a watched replay
+        // is its own recording. saveReplay refuses to write it back out.
+        fRecordedEvents = fAutoplayEvents;
+      } else if (!fReplayPath.empty()) {
+        // Unreadable: nothing to play back.
       } else {
         fAutoplayEvents = osu::buildAutoplay(*fMap, fMods);
       }

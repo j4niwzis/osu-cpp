@@ -261,6 +261,15 @@ inline constexpr int kBonusSpinsGap = 2;
                     j);
 }
 
+// Which rules the engine plays by.
+//
+// kLazer is osu!'s: a slider is its head, ticks and tail, health drains, a
+// press can be swallowed by note lock, and running out of health ends the
+// play. kLegacyClient is what this client did before all of that -- one
+// judgement per slider, no drain, no note lock -- and it exists so that
+// replays recorded back then still play back as they were scored.
+enum class RuleSet { kLazer, kLegacyClient };
+
 // A slider is not one judgement in lazer. Its head is judged like a circle,
 // its ticks and repeats are large ticks, and its tail is a result of its own;
 // each carries its own base score, and each has its own say about the combo.
