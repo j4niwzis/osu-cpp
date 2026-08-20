@@ -2288,21 +2288,29 @@ private:
       // frame be clipped in the first place. This is what makes the cost of
       // the blit follow the damage instead of being a whole window every
       // frame -- which it was, at a constant millisecond and a half.
-      skia::SkPixmap pixels;
-      if (!fBlitRegions.empty() && fRasterSurface->peekPixels(&pixels)) {
-        // Straight into the window's texture, one rectangle at a time.
-        // Separately rather than as one bounding box: the frame counter sits
-        // in a far corner, and a box around it and the middle of the screen
-        // is most of the screen -- which is how a blit of a tenth of a frame
-        // stayed as expensive as a blit of all of it.
-        for (const auto &area : fBlitRegions) {
-          skia::SkPixmap region;
-          if (pixels.extractSubset(&region, area)) {
-            fWindowSurface->writePixels(region, area.fLeft, area.fTop);
+      if (auto image = fRasterSurface->makeImageSnapshot()) {
+        auto *windowCanvas = fWindowSurface->getCanvas();
+        if (fBlitRegions.empty()) {
+          windowCanvas->drawImage(image.get(), 0.0f, 0.0f);
+        } else {
+          // A subset image per region, drawn through the canvas. writePixels
+          // was quicker to say and put the pixels in the wrong place: the
+          // window surface is wrapped bottom-left, and that call does not go
+          // through the canvas that knows it. Cut the piece out first and let
+          // the canvas place it -- only the piece is uploaded either way.
+          //
+          // Separate pieces rather than one box around them: the frame
+          // counter sits in a far corner, and a box containing it and the
+          // middle of the screen is most of the screen.
+          for (const auto &area : fBlitRegions) {
+            auto piece = image->makeSubset(nullptr, area);
+            if (piece) {
+              windowCanvas->drawImage(piece.get(),
+                                      static_cast<float>(area.fLeft),
+                                      static_cast<float>(area.fTop));
+            }
           }
         }
-      } else if (auto image = fRasterSurface->makeImageSnapshot()) {
-        fWindowSurface->getCanvas()->drawImage(image.get(), 0.0f, 0.0f);
       }
       fContext->flushAndSubmit(fWindowSurface.get());
     } else {
