@@ -2214,6 +2214,18 @@ private:
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
                    box.fBottom - 8.0f, 12.0f, skia::kWhite, 0.7f);
+    this->includeInBlit(box);
+  }
+
+  // Something drawn outside the frame's clip still has to be carried into the
+  // window when the CPU renderer only carries over what it repainted.
+  void includeInBlit(const skia::SkRect &rect) {
+    if (fBlitBounds.isEmpty()) {
+      return; // the whole surface is going over anyway
+    }
+    skia::SkIRect area = rect.roundOut();
+    area.outset(2, 2);
+    fBlitBounds.join(area);
   }
 
   void present() {
@@ -2242,7 +2254,10 @@ private:
     canvas->restoreToCount(fFrameSave);
     // Drawn after the clip is lifted: a small thing in the far corner that
     // changes every frame, so clipping to it would drag the repainted region
-    // across the whole screen, and clipping it away would freeze it.
+    // across the whole screen, and clipping it away would freeze it. It still
+    // has to reach the window, which on the CPU renderer means saying so --
+    // otherwise the counter is drawn into a surface whose corner is never
+    // carried over, and the number stops.
     this->drawFpsCounter(canvas);
     fBlitStart = std::chrono::steady_clock::now();
     if (fDrewOnRaster && fWindowSurface) {
@@ -2252,16 +2267,18 @@ private:
       // frame be clipped in the first place. This is what makes the cost of
       // the blit follow the damage instead of being a whole window every
       // frame -- which it was, at a constant millisecond and a half.
-      if (auto image = fRasterSurface->makeImageSnapshot()) {
-        auto *windowCanvas = fWindowSurface->getCanvas();
-        if (fBlitBounds.isEmpty()) {
-          windowCanvas->drawImage(image.get(), 0.0f, 0.0f);
-        } else {
-          const skia::SkRect region = skia::SkRect::Make(fBlitBounds);
-          windowCanvas->drawImageRect(image.get(), region, region,
-                                      skia::SkSamplingOptions(), nullptr,
-                                      skia::SkCanvas::kStrict_SrcRectConstraint);
+      skia::SkPixmap pixels;
+      if (!fBlitBounds.isEmpty() && fRasterSurface->peekPixels(&pixels)) {
+        // Straight into the window's texture, one rectangle of it. Drawing a
+        // sub-rectangle of a snapshot does not promise to upload only that
+        // sub-rectangle -- writePixels is the call that means it.
+        skia::SkPixmap region;
+        if (pixels.extractSubset(&region, fBlitBounds)) {
+          fWindowSurface->writePixels(region, fBlitBounds.fLeft,
+                                      fBlitBounds.fTop);
         }
+      } else if (auto image = fRasterSurface->makeImageSnapshot()) {
+        fWindowSurface->getCanvas()->drawImage(image.get(), 0.0f, 0.0f);
       }
       fContext->flushAndSubmit(fWindowSurface.get());
     } else {
