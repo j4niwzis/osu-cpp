@@ -173,7 +173,8 @@ private:
   const bool fForcePartialRedraw =
       std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-  std::vector<skia::SkIRect> fOverlayTrail; // outlines waiting to be cleaned
+  std::vector<skia::SkIRect> fComputedClip; // what the frame would have used
+  bool fComputedClipFull = true;
 
   [[nodiscard]] bool partialRedraw() const {
     return fForcePartialRedraw || fSettings.flag("partial");
@@ -1486,13 +1487,27 @@ private:
   void beginFrame() {
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
-    fFrameClipFull = fFullDamage || fDamage.empty();
+    // What the frame would repaint, before the overlay has its say.
+    fComputedClipFull = fFullDamage || fDamage.empty();
+    fComputedClip = fDamage;
+    fFrameClipFull = fComputedClipFull;
     fFrameClip.clear();
     if (!fFrameClipFull) {
       fFrameClip = fDamage;
     }
     fDamage.clear();
     fFullDamage = false;
+
+    // Showing the regions means repainting everything: the outlines are put
+    // on a back buffer the window will come back to, and cleaning them up
+    // afterwards would have to land on that same buffer rather than on
+    // whichever one is next. Repainting whole sidesteps that entirely -- the
+    // tool costs frames while it is on, and in exchange it never lies or
+    // leaves anything behind.
+    if (this->showingDamage()) {
+      fFrameClipFull = true;
+      fFrameClip.clear();
+    }
     this->rememberBlitRegion();
 
     if (!fSurface) {
@@ -1800,8 +1815,13 @@ private:
     fCostDrawUs += us(start, fBlitStart);
     fCostBlitUs += us(fBlitStart, beforeSwap);
     fCostSwapUs += us(beforeSwap, now);
-    for (const auto &rect : fFrameClip) {
-      fCostClipArea += static_cast<std::int64_t>(rect.width()) * rect.height();
+    if (fComputedClipFull) {
+      fCostClipArea += static_cast<std::int64_t>(fScreenW) * fScreenH;
+    } else {
+      for (const auto &rect : fComputedClip) {
+        fCostClipArea +=
+            static_cast<std::int64_t>(rect.width()) * rect.height();
+      }
     }
     ++fCostFrames;
     if (wallMs() - fCostLogWall < 1000.0 || fCostFrames == 0) {
@@ -1862,40 +1882,35 @@ private:
     if (!this->showingDamage()) {
       return;
     }
-    // What this frame actually repainted: magenta around each region, red
-    // around the edge when the whole screen went -- with the reason, since
-    // "why is it full again" is the question that keeps coming up.
-    const float width = fFrameClipFull ? 6.0f : 2.0f;
+    // Magenta around each region the frame would have been clipped to; a red
+    // border when it would have repainted everything, with the reason,
+    // because "why is it full again" is the question that keeps coming up.
+    if (fComputedClipFull) {
+      skia::SkPaint paint;
+      paint.setStyle(skia::kStrokeStyle);
+      paint.setStrokeWidth(6.0f);
+      paint.setColor(skia::colorSetARGB(255, 255, 40, 40));
+      skia::SkRect border = skia::SkRect::MakeWH(static_cast<float>(fScreenW),
+                                                 static_cast<float>(fScreenH));
+      border.inset(3.0f, 3.0f);
+      canvas->drawRect(border, paint);
+      if (wallMs() - fDamageLogWall > 1000.0) {
+        fDamageLogWall = wallMs();
+        std::println(std::cerr, "[damage] would repaint everything: {}",
+                     fFullDamageReason);
+      }
+      return;
+    }
     skia::SkPaint paint;
     paint.setStyle(skia::kStrokeStyle);
-    paint.setStrokeWidth(width);
-    paint.setColor(fFrameClipFull ? skia::colorSetARGB(255, 255, 40, 40)
-                                  : skia::colorSetARGB(255, 255, 0, 255));
-    for (const auto &rect : fFrameClip) {
-      // Inset by half the stroke, so the whole outline lies inside the area
-      // that was repainted. Drawn on the boundary, its outer half falls on
-      // pixels this frame never touches and nothing ever paints over it --
-      // which is how it was leaving stripes behind as the region moved.
+    paint.setStrokeWidth(2.0f);
+    paint.setColor(skia::colorSetARGB(255, 255, 0, 255));
+    for (const auto &rect : fComputedClip) {
       skia::SkRect outline = skia::SkRect::Make(rect);
-      outline.inset(width * 0.5f, width * 0.5f);
-      if (outline.isEmpty()) {
-        continue;
+      outline.inset(1.0f, 1.0f);
+      if (!outline.isEmpty()) {
+        canvas->drawRect(outline, paint);
       }
-      canvas->drawRect(outline, paint);
-    }
-    // The outline lands in a back buffer that comes round again, so the
-    // rectangles it drew last time have to be repainted over. They are added
-    // exactly as they were: feeding them back through damage() would grow
-    // them by its margin every frame, which is what made them creep outwards.
-    for (const auto &rect : fOverlayTrail) {
-      if (!fFullDamage) {
-        fDamage.push_back(rect);
-      }
-    }
-    fOverlayTrail = fFrameClip;
-    if (fFrameClipFull && wallMs() - fDamageLogWall > 1000.0) {
-      fDamageLogWall = wallMs();
-      std::println(std::cerr, "[damage] full repaint: {}", fFullDamageReason);
     }
   }
 
