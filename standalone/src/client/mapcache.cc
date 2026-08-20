@@ -35,7 +35,9 @@ struct CachedSet {
 class MapCache {
 public:
   // Bump when the star algorithm changes so stale ratings are recomputed.
-  static constexpr int kStarAlgorithmVersion = 1;
+  // 2: strain peak capping, slider repeat/tick thresholds, spinners no longer
+  //    skipped by the speed and reading skills.
+  static constexpr int kStarAlgorithmVersion = 2;
   // Bump when this file's field layout changes.
   static constexpr int kSchemaVersion = 3;
 
