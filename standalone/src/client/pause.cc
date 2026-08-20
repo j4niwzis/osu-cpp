@@ -96,6 +96,7 @@ public:
   // SelectionCycleFillFlowContainer: the arrows walk the buttons and wrap.
   void selectNext() { this->select(fSelected + 1); }
   void selectPrevious() { this->select(fSelected - 1); }
+  [[nodiscard]] int selected() const noexcept { return fSelected; }
   [[nodiscard]] Action triggerSelected() const {
     return fSelected >= 0 && fSelected < 3 ? kActions[static_cast<std::size_t>(
                                                  fSelected)]
@@ -116,6 +117,7 @@ private:
 
   void select(int index) {
     fSelected = ((index % 3) + 3) % 3;
+    fSelectedByPointer = false; // the keyboard keeps what it chose
   }
 
   // The header. Drawn glyph by glyph because lazer spaces the letters out by
@@ -162,9 +164,16 @@ private:
       fLastMs = nowMs;
       fDt = dt;
       this->markDamaged(); // the triangles are always moving
-      // Hovering selects, as GameplayMenuOverlay.Button does on mouse move.
-      if (fHovered && fOwner->fSelected != static_cast<int>(fIndex)) {
+      // Hovering selects, as GameplayMenuOverlay.Button does on mouse move,
+      // and losing the pointer gives the selection back -- but only when the
+      // pointer is what set it. A selection made with the arrow keys stays
+      // where it was put.
+      if (fHovered) {
         fOwner->fSelected = static_cast<int>(fIndex);
+        fOwner->fSelectedByPointer = true;
+      } else if (fOwner->fSelectedByPointer &&
+                 fOwner->fSelected == static_cast<int>(fIndex)) {
+        fOwner->fSelected = -1;
       }
       const bool selected = fOwner->fSelected == static_cast<int>(fIndex);
       const float previous = fGrow;
@@ -421,6 +430,7 @@ private:
   float fBuiltW = 0.0f;
   float fBuiltH = 0.0f;
   int fSelected = -1;
+  bool fSelectedByPointer = false;
   Action fPending = Action::kNone;
 };
 

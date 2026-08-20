@@ -2117,6 +2117,7 @@ private:
     case State::kResults:
     case State::kDownload:
     case State::kSongSelect:
+    case State::kPaused:
       break; // these mark what they change: the listing does it per node
     case State::kPlaying:
       this->damageAll("gameplay"); // a moving picture by definition
@@ -6389,6 +6390,7 @@ private:
     ctx.fAccuracy = fEngine ? static_cast<float>(fEngine->score().accuracy())
                             : 1.0f;
     fPauseMenu.update(ctx);
+    this->damage(fPauseMenu.takeDamage());
   }
 
   // How far into the playable part of the map the pause happened, which is
@@ -6407,7 +6409,11 @@ private:
   }
 
   void framePaused() {
-    fView.invalidate(); // static scene: always repaint fully
+    // The frozen game underneath does not change while it is paused; what
+    // moves is the overlay, and the frame is clipped to what the overlay
+    // said. The scene is still redrawn, because a clipped repaint has to put
+    // back whatever was under the piece being repainted.
+    fView.invalidate();
     fView.render(this->gameplayCtx(fSurface->getCanvas()), fPausedNow);
     fPauseMenu.render(fSurface->getCanvas());
     this->present();
