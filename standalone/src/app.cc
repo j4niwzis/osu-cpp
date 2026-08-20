@@ -140,6 +140,8 @@ private:
   std::atomic<int> fSwapIntervalRequest{-1};
   int fSwapInterval = -1;
   int fRefreshHz = 60; // the monitor's, sampled where GLFW allows the query
+  double fRedrawUntilWall = 0.0; // frames are drawn until at least this time
+  double fLastDrawWall = 0.0;
   std::chrono::steady_clock::time_point fNextFrame{};
   double fFpsPrevWall = 0.0;
   double fFpsFrameMs = 0.0;
@@ -734,6 +736,8 @@ private:
   }
 
   void applyEvent(const Event &ev) {
+    // Long enough to cover the eased animations a click or a scroll starts.
+    this->requestRedraw(400.0);
     switch (ev.fType) {
     case EventType::kResize:
       this->resize(ev.fA, ev.fB);
@@ -1274,6 +1278,7 @@ private:
   }
 
   void switchState(State st) {
+    this->requestRedraw(1500.0); // screen transitions run for a while
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
     fStateEnterWall = wallMs();
@@ -1339,10 +1344,44 @@ private:
 #endif
   }
 
+  // A frame is only drawn when there is a reason to: an event arrived,
+  // something is animating, a transfer is running, or the safety interval
+  // elapsed. A menu nobody is touching costs a poll and a sleep, which is
+  // how a compositor treats a window that has not damaged itself.
+  void requestRedraw(double durationMs = 0.0) {
+    fRedrawUntilWall = std::max(fRedrawUntilWall, wallMs() + durationMs);
+  }
+
+  [[nodiscard]] bool needsFrame() {
+    // Gameplay is a moving picture by definition, and so is anything with a
+    // clock on screen.
+    if (fState == State::kPlaying || fState == State::kResults ||
+        fState == State::kMainMenu) {
+      return true; // the logo tracks the music, the results count up
+    }
+    if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
+      return true; // progress that is being watched
+    }
+    if (fPreviewId >= 0 || fSettingsPanel.visible() || fModSelect.visible() ||
+        fExportDialog.open() || fConfirmDelete) {
+      return true;
+    }
+    const double now = wallMs();
+    if (now <= fRedrawUntilWall) {
+      return true;
+    }
+    // Safety net: whatever the screens forgot to announce shows up within
+    // this long rather than never.
+    return now - fLastDrawWall > 500.0;
+  }
+
   void frame() {
     this->applySwapInterval();
-    client::http::poll();  // completed network callbacks land here
-    fLoader.poll();        // finished background loads land here
+    // Work finishing in the background changes what is on screen, so it is
+    // as good a reason to draw as an event.
+    if (client::http::poll() > 0 || fLoader.poll() > 0) {
+      this->requestRedraw(600.0);
+    }
     this->drainDroppedFiles();
     this->drainInput();
     {
@@ -1350,6 +1389,13 @@ private:
       fUiDt = fUiPrevWall > 0.0 ? std::min(50.0, wallNow - fUiPrevWall) : 16.0;
       fUiPrevWall = wallNow;
     }
+    if (!this->needsFrame()) {
+      // Nothing to show: no clear, no draw, no swap, so the front buffer
+      // keeps what it already had.
+      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      return;
+    }
+    fLastDrawWall = wallMs();
     switch (fState) {
     case State::kMainMenu:
       this->frameMainMenu();
@@ -1378,6 +1424,7 @@ private:
   // frame time beside the rate. The profiling readout is a separate thing and
   // stays behind --profile.
   void notify(std::string text, skia::SkColor color = client::ui::kAccent2) {
+    this->requestRedraw(4500.0); // the toast has to fade out on its own
     fToast = std::move(text);
     fToastColor = color;
     fToastWall = wallMs();
@@ -1853,6 +1900,7 @@ private:
   // Picks another map to listen to. Random, and never the one just heard as
   // long as there is anything else in the library.
   void nextMenuTrack() {
+    this->requestRedraw(1500.0);
     if (fVisible.size() > 1) {
       const int previous = fSelSet;
       for (int attempt = 0; attempt < 8; ++attempt) {

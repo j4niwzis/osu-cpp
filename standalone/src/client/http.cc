@@ -139,7 +139,9 @@ inline void get(const std::string &url, std::shared_ptr<Handle> handle,
 }
 
 // Run completed callbacks on the calling thread. Call once per frame.
-inline void poll() {
+// Returns how many callbacks ran: a caller that draws on demand needs to
+// know whether anything changed under it.
+inline std::size_t poll() {
   std::vector<detail::Completed> ready;
   {
     const std::scoped_lock lock(detail::queueMutex());
@@ -148,6 +150,7 @@ inline void poll() {
   for (auto &c : ready) {
     c.fCb(std::move(c.fResp));
   }
+  return ready.size();
 }
 
 // Percent-encode a query component.

@@ -54,12 +54,15 @@ public:
   }
 
   // Run finished completions. Call once per frame.
-  void poll() {
+  // Returns how many completions ran, so a caller that only draws on demand
+  // knows something arrived.
+  std::size_t poll() {
     std::vector<Task> ready;
     {
       const std::scoped_lock lock(fMutex);
       ready.swap(fDone);
     }
+    const std::size_t count = ready.size();
     for (auto &t : ready) {
       if (t.fDone) {
         t.fDone();
@@ -67,6 +70,7 @@ public:
       const std::scoped_lock lock(fMutex);
       fPending.erase(t.fKey);
     }
+    return count;
   }
 
 private:
