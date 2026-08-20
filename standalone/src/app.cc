@@ -2303,7 +2303,8 @@ private:
           // counter sits in a far corner, and a box containing it and the
           // middle of the screen is most of the screen.
           for (const auto &area : fBlitRegions) {
-            auto piece = image->makeSubset(nullptr, area);
+            // No recorder, no mipmaps: a straight copy of the rectangle.
+            auto piece = image->makeSubset(nullptr, area, {});
             if (piece) {
               windowCanvas->drawImage(piece.get(),
                                       static_cast<float>(area.fLeft),
