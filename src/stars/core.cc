@@ -325,7 +325,8 @@ private:
         lastCP = sp(*ld->fBase, bm.fDiff.fCs);
       Vec2 last2CP = getEndPos(*lld);
       double angle = calcAngle(sp(*fBase, bm.fDiff.fCs), lastCP, last2CP);
-      double sliderA = calcSliderAngle(ld, last2CP, bm);
+      double sliderA =
+          this->calcSliderAngle(*ld, last2CP, bm.fDiff.fCs);
       Vec2 v = sp(*fBase, bm.fDiff.fCs) - lastCP;
       fNVA = (std::abs(v.fX) > 1e-10 || std::abs(v.fY) > 1e-10)
                  ? std::optional(std::atan2(std::abs(v.fY), std::abs(v.fX)))
@@ -343,12 +344,21 @@ private:
     return std::abs(std::atan2(v1.fX * v2.fY - v1.fY * v2.fX,
                                v1.fX * v2.fX + v1.fY * v2.fY));
   }
-  static double calcSliderAngle(const OsuDifficultyHitObject *ld, Vec2 last2CP,
-                                const Beatmap &bm) {
-    Vec2 lastCP = getEndPos(*ld);
-    if (ld && std::holds_alternative<Slider>(*ld->fBase) && ld->fTD > 0)
-      last2CP = ld->fSliderSecondLastNestedPos;
-    return calcAngle(sp(*ld->fBase, bm.fDiff.fCs), lastCP, last2CP);
+  // calculateSliderAngle: the same angle as above, but with the previous
+  // slider's second-to-last nested object standing in for where the cursor
+  // came from. The vertex is this object -- passing the previous object's
+  // position, as this did, makes the second vector exactly zero, and then
+  // atan2(0, 0) decides the angle by the sign of a floating point zero: it
+  // came out as pi (leaving the real angle) when both components of the other
+  // vector were negative, and as zero (destroying it, since the two are
+  // min()ed) otherwise. That is why the angle was right on some objects and
+  // absent on others.
+  [[nodiscard]] double calcSliderAngle(const OsuDifficultyHitObject &ld,
+                                       Vec2 last2CP, double cs) const {
+    Vec2 lastCP = getEndPos(ld);
+    if (std::holds_alternative<Slider>(*ld.fBase) && ld.fTD > 0)
+      last2CP = ld.fSliderSecondLastNestedPos;
+    return calcAngle(sp(*fBase, cs), lastCP, last2CP);
   }
 };
 

@@ -129,8 +129,9 @@ private:
         cc += std::cos(8.0 * std::min(std::acos(-1.0) * 11.25 / 180.0, d));
       }
     }
-    if (cc <= 0)
-      return 1.0;
+    // No guard for a count of zero: 0.5/0 is infinity, min() takes the one,
+    // and lazer carries on to apply the base nerf. Returning early here
+    // skipped that nerf on every rhythm change.
     double r = std::pow(std::min(0.5 / cc, 1.0), 2.0);
     double st = diffutil::smootherstep(c.fLJD, 0.0, kND);
     double ad = std::cos(2.0 * std::min(std::acos(-1.0) * 45.0 / 180.0,
