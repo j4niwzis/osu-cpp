@@ -51,11 +51,13 @@ inline double smoothstepBellCurve(double x) {
 }
 } // namespace diffutil
 
+// DifficultyHitObject.HitWindow: twice the legacy window, so the same
+// rounding the ruleset judges by.
 inline double hitWindowGreat(double od) noexcept {
-  return 2.0 * (80.0 - 6.0 * od);
+  return 2.0 * osu::windowGreat(od);
 }
-[[nodiscard]] constexpr double lazerCircleRadius(double cs) noexcept {
-  return 54.4 - 4.48 * cs;
+[[nodiscard]] inline double lazerCircleRadius(double cs) noexcept {
+  return osu::circleRadius(cs);
 }
 
 namespace stars {

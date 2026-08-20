@@ -133,14 +133,22 @@ inline double clampArOd(double ar, double rate) noexcept {
   return 1.0;
 }
 
+// Hit windows as a beatmap file gets them. A converted beatmap uses the
+// legacy windows, which are the value rounded down to a whole millisecond
+// with half of one taken off -- so OD 7 great is 37.5 ms rather than 38, and
+// OD 9.2 is 23.5 rather than 24.8. Checked against lazer for OD 3, 7, 9 and
+// 9.6.
+[[nodiscard]] inline double legacyWindow(double raw) noexcept {
+  return std::floor(raw) - 0.5;
+}
 [[nodiscard]] inline double windowGreat(double od) noexcept {
-  return 80.0 - 6.0 * od;
+  return legacyWindow(80.0 - 6.0 * od);
 }
 [[nodiscard]] inline double windowGood(double od) noexcept {
-  return 140.0 - 8.0 * od;
+  return legacyWindow(140.0 - 8.0 * od);
 }
 [[nodiscard]] inline double windowMeh(double od) noexcept {
-  return 200.0 - 10.0 * od;
+  return legacyWindow(200.0 - 10.0 * od);
 }
 
 [[nodiscard]] inline Judgement judgeDelta(double delta, double od) noexcept {
@@ -157,11 +165,13 @@ inline double clampArOd(double ar, double rate) noexcept {
   return judgement::Miss{};
 }
 
+// TimePreempt, floored to a whole millisecond. AR 8.3 gives 704 and not 705,
+// AR 9.3 gives 554 and not 555 -- and since neither 8.3 nor 9.3 is exact in
+// binary, the value that gets floored is a hair under the round number.
 [[nodiscard]] inline double preemptTime(double ar) noexcept {
-  if (ar <= 5.0) {
-    return 1200.0 + 600.0 * (5.0 - ar) / 5.0;
-  }
-  return 1200.0 - 750.0 * (ar - 5.0) / 5.0;
+  const double raw = ar <= 5.0 ? 1200.0 + 600.0 * (5.0 - ar) / 5.0
+                               : 1200.0 - 750.0 * (ar - 5.0) / 5.0;
+  return std::floor(raw);
 }
 
 [[nodiscard]] inline double fadeInTime(double ar) noexcept {
@@ -172,8 +182,16 @@ inline double clampArOd(double ar, double rate) noexcept {
   return std::min(800.0, preemptTime(ar));
 }
 
+// OsuHitObject.Radius: 64 units of object radius times the scale the circle
+// size gives, and that scale carries a "broken gamefield rounding allowance"
+// of 1.00041 -- osu! builds before 2013 rounded the playfield down, and the
+// allowance keeps old replays working. lazer applies it to every beatmap, so
+// every circle is that fraction larger than the plain formula says, and every
+// normalised distance in the difficulty calculation is that fraction smaller.
+inline constexpr double kGamefieldRoundingAllowance = 1.00041;
+
 [[nodiscard]] inline double circleRadius(double cs) noexcept {
-  return (109.0 - 9.0 * cs) / 2.0;
+  return (54.4 - 4.48 * cs) * kGamefieldRoundingAllowance;
 }
 
 [[nodiscard]] inline double spinnerRotationsPerSecond(double od) noexcept {
