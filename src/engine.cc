@@ -57,6 +57,8 @@ public:
       }
     }
     this->computeMaxima();
+    this->computeDrain();
+    fLastDrainTime = fDrainStart;
   }
 
   [[nodiscard]] const Beatmap &map() const noexcept { return fMap; }
@@ -118,6 +120,7 @@ public:
   }
 
   void advance(double time) {
+    this->drainTo(time);
     // Update tracking state for the active slider/spinner at the current time.
     this->updateTracking(time);
 
@@ -161,6 +164,11 @@ private:
   std::vector<ObjectState> fStates;
   Vec2 fCursor{kPlayfieldCenter};
   bool fKeyDown = false;
+  double fDrainRate = 0.0;
+  double fDrainStart = 0.0;
+  double fGameplayEnd = 0.0;
+  double fLastDrainTime = 0.0;
+  ComboResult fComboResult = ComboResult::kPerfect;
 
   [[nodiscard]] double objectEnd(std::size_t i) const noexcept {
     return std::visit(Overloaded{
@@ -320,6 +328,134 @@ private:
   void emit(std::size_t i, HitKind kind, Judgement j, bool hit, double delta) {
     fEvents.push_back({i, j, kind, delta});
     registerResult(fScore, kind, j, hit, fMods, fDiff.fHp);
+    this->applyHealth(i, kind, j, hit);
+  }
+
+  // OsuHealthProcessor: an increase per judgement, plus a bonus on the last
+  // object of a combo that depends on how the combo went.
+  void applyHealth(std::size_t i, HitKind kind, const Judgement &j, bool hit) {
+    if (i < fMap.fObjects.size() && objectCombo(fMap.fObjects[i]) == 1 &&
+        kind == HitKind::kBasic) {
+      fComboResult = ComboResult::kPerfect; // a new combo starts clean
+    }
+
+    const bool tick = kind == HitKind::kLargeTick;
+    double increase = healthIncreaseFor(kind, j, hit, fDiff.fHp, tick);
+
+    // The combo result only ever degrades within a combo.
+    auto degrade = [this](ComboResult to) {
+      fComboResult = static_cast<ComboResult>(
+          std::min(static_cast<int>(fComboResult), static_cast<int>(to)));
+    };
+    if (kind == HitKind::kLargeTick && !hit) {
+      degrade(ComboResult::kGood);
+    } else if (kind == HitKind::kSliderTail && !hit) {
+      degrade(ComboResult::kGood);
+    } else if (kind == HitKind::kBasic) {
+      std::visit(Overloaded{
+                     [](judgement::Great) {},
+                     [&degrade](judgement::Good) { degrade(ComboResult::kGood); },
+                     [&degrade](judgement::Meh) { degrade(ComboResult::kNone); },
+                     [&degrade](judgement::Miss) { degrade(ComboResult::kNone); },
+                 },
+                 j);
+    }
+
+    if (hit && this->lastInCombo(i) && this->isFinalJudgement(i, kind)) {
+      increase += comboBonusFor(fComboResult);
+    }
+
+    if (fScore.fHealth >= 0.0) {
+      fScore.fHealth = std::min(1.0, fScore.fHealth + increase);
+    }
+  }
+
+  // Health drains continuously between judgements, but not through breaks and
+  // not past the last object.
+  void drainTo(double time) {
+    if (fDrainRate <= 0.0 || time <= fLastDrainTime) {
+      fLastDrainTime = std::max(fLastDrainTime, time);
+      return;
+    }
+    const double from = std::clamp(fLastDrainTime, fDrainStart, fGameplayEnd);
+    const double to = std::clamp(time, fDrainStart, fGameplayEnd);
+    double elapsed = to - from;
+    for (const auto &period : fMap.fBreaks) {
+      const double overlap = std::min(to, period.fEnd) -
+                             std::max(from, period.fStart);
+      if (overlap > 0.0) {
+        elapsed -= overlap;
+      }
+    }
+    if (elapsed > 0.0 && fScore.fHealth >= 0.0) {
+      fScore.fHealth -= fDrainRate * elapsed;
+    }
+    fLastDrainTime = time;
+  }
+
+  [[nodiscard]] static int objectCombo(const HitObject &o) noexcept {
+    return std::visit(Overloaded{
+                          [](const Circle &c) { return c.fCombo; },
+                          [](const Slider &s) { return s.fCombo; },
+                          [](const Spinner &s) { return s.fCombo; },
+                      },
+                      o);
+  }
+
+  [[nodiscard]] bool lastInCombo(std::size_t i) const noexcept {
+    if (i + 1 >= fMap.fObjects.size()) {
+      return true;
+    }
+    return objectCombo(fMap.fObjects[i + 1]) == 1;
+  }
+
+  // Whether this is the judgement that finishes the object: a circle's own, or
+  // a slider's tail.
+  [[nodiscard]] bool isFinalJudgement(std::size_t i,
+                                      HitKind kind) const noexcept {
+    if (i >= fMap.fObjects.size()) {
+      return kind == HitKind::kBasic;
+    }
+    if (std::holds_alternative<Slider>(fMap.fObjects[i])) {
+      return kind == HitKind::kSliderTail;
+    }
+    return kind == HitKind::kBasic;
+  }
+
+  // A perfect play's health increases, which is what the drain rate is solved
+  // against.
+  void computeDrain() {
+    if (fMap.fObjects.empty()) {
+      return;
+    }
+    fDrainStart = startTime(fMap.fObjects.front());
+    fGameplayEnd = this->objectEnd(fMap.fObjects.size() - 1);
+
+    std::vector<std::pair<double, double>> increases;
+    ComboResult combo = ComboResult::kPerfect;
+    for (std::size_t i = 0; i < fMap.fObjects.size(); ++i) {
+      const bool slider = std::holds_alternative<Slider>(fMap.fObjects[i]);
+      double head =
+          healthIncreaseFor(HitKind::kBasic, judgement::Great{}, true,
+                            fDiff.fHp);
+      if (!slider && this->lastInCombo(i)) {
+        head += comboBonusFor(combo);
+      }
+      increases.emplace_back(startTime(fMap.fObjects[i]), head);
+      for (const auto &n : fStates[i].fNested) {
+        double amount = healthIncreaseFor(n.fKind, judgement::Great{}, true,
+                                          fDiff.fHp,
+                                          n.fKind == HitKind::kLargeTick);
+        if (slider && n.fKind == HitKind::kSliderTail &&
+            this->lastInCombo(i)) {
+          amount += comboBonusFor(combo);
+        }
+        increases.emplace_back(n.fTime, amount);
+      }
+    }
+    std::ranges::stable_sort(increases, {}, &std::pair<double, double>::first);
+    fDrainRate = computeDrainRate(increases, fMap.fBreaks, fDrainStart,
+                                  targetMinimumHealth(fDiff.fHp));
   }
 
   void judge(std::size_t i, Judgement j, double delta) {

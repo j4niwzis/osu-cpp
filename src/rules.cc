@@ -327,15 +327,12 @@ struct ScoreState {
 
 // One judgement, of any kind. `hit` is only consulted for ticks and tails;
 // for a basic result the judgement itself says whether it was a hit.
+// Health is not touched here: the engine owns it, because it needs the drain
+// between judgements and the bonus at the end of a combo, and neither is a
+// property of the judgement alone.
 inline void registerResult(ScoreState &state, HitKind kind, const Judgement &j,
-                           bool hit, ModSet mods, double hp = 5.0) noexcept {
-  auto applyHp = [&](double inc) {
-    if (state.fHealth >= 0.0) {
-      state.fHealth += inc;
-      state.fHealth = std::min(1.0, state.fHealth);
-    }
-  };
-
+                           bool hit, ModSet mods,
+                           [[maybe_unused]] double hp = 5.0) noexcept {
   int base = 0;
   bool increasesCombo = false;
   bool breaksCombo = false;
@@ -347,24 +344,20 @@ inline void registerResult(ScoreState &state, HitKind kind, const Judgement &j,
                      ++state.fGreat;
                      base = 300;
                      increasesCombo = true;
-                     applyHp(0.01 * (10.2 - hp));
                    },
                    [&](judgement::Good) {
                      ++state.fGood;
                      base = 100;
                      increasesCombo = true;
-                     applyHp(0.01 * (8.0 - hp));
                    },
                    [&](judgement::Meh) {
                      ++state.fMeh;
                      base = 50;
                      increasesCombo = true; // a 50 keeps the combo
-                     applyHp(0.01 * (4.0 - hp));
                    },
                    [&](judgement::Miss) {
                      ++state.fMiss;
                      breaksCombo = true;
-                     applyHp(-0.02 * hp);
                    },
                },
                j);
@@ -374,11 +367,9 @@ inline void registerResult(ScoreState &state, HitKind kind, const Judgement &j,
       ++state.fLargeTickHit;
       base = kLargeTickScore;
       increasesCombo = true;
-      applyHp(0.01 * (10.2 - hp));
     } else {
       ++state.fLargeTickMiss;
       breaksCombo = true;
-      applyHp(-0.02 * hp);
     }
     break;
   case HitKind::kSliderTail:
@@ -386,7 +377,6 @@ inline void registerResult(ScoreState &state, HitKind kind, const Judgement &j,
       ++state.fTailHit;
       base = kSliderTailScore;
       increasesCombo = true;
-      applyHp(0.01 * (10.2 - hp));
     } else {
       ++state.fTailMiss; // IgnoreMiss: no combo break, but accuracy pays
     }
@@ -417,6 +407,119 @@ inline void registerResult(ScoreState &state, HitKind kind, const Judgement &j,
 inline void registerHit(ScoreState &state, const Judgement &j, ModSet mods,
                         double hp = 5.0) noexcept {
   registerResult(state, HitKind::kBasic, j, true, mods, hp);
+}
+
+// osu!'s health, which is two things at once: an increase for every judgement
+// and a continuous drain in between. The drain rate is not a constant -- it is
+// searched for so that a perfect play would dip to a target health and no
+// lower, which is what makes a high HP map punishing and a low one forgiving.
+//
+// IBeatmapDifficultyInfo.DifficultyRange, the same shape the hit windows use.
+[[nodiscard]] inline double difficultyRange(double value, double min,
+                                            double mid, double max) noexcept {
+  if (value > 5.0) {
+    return mid + (max - mid) * (value - 5.0) / 5.0;
+  }
+  if (value < 5.0) {
+    return mid - (mid - min) * (5.0 - value) / 5.0;
+  }
+  return mid;
+}
+
+// What one judgement does to the health bar, before the end-of-combo bonus.
+// OsuHealthProcessor.getHealthIncreaseFor.
+[[nodiscard]] inline double healthIncreaseFor(HitKind kind,
+                                              const Judgement &j, bool hit,
+                                              double hp,
+                                              bool tick = false) noexcept {
+  switch (kind) {
+  case HitKind::kLargeTick:
+    return hit ? (tick ? 0.015 : 0.02)
+               : difficultyRange(hp, -0.02, -0.075, -0.14);
+  case HitKind::kSliderTail:
+    // A slider's tail is a large tick that is not a SliderTick, and missing it
+    // is an IgnoreMiss, which costs no health at all.
+    return hit ? 0.02 : 0.0;
+  case HitKind::kBasic:
+  default:
+    break;
+  }
+  return std::visit(
+      Overloaded{
+          [hp](judgement::Miss) {
+            return difficultyRange(hp, -0.03, -0.125, -0.2);
+          },
+          [](judgement::Meh) { return 0.002; },
+          [](judgement::Good) { return 0.011; },
+          [](judgement::Great) { return 0.03; },
+      },
+      j);
+}
+
+// How well the combo just finished went, which decides the bonus for its last
+// object. It only ever degrades within a combo.
+enum class ComboResult { kNone = 0, kGood = 1, kPerfect = 2 };
+
+[[nodiscard]] inline double comboBonusFor(ComboResult result) noexcept {
+  switch (result) {
+  case ComboResult::kPerfect:
+    return 0.07;
+  case ComboResult::kGood:
+    return 0.05;
+  case ComboResult::kNone:
+  default:
+    return 0.03;
+  }
+}
+
+// DrainingHealthProcessor.ComputeDrainRate: double the adjustment until a
+// perfect play's lowest health lands within a hundredth of the target.
+[[nodiscard]] inline double
+computeDrainRate(std::span<const std::pair<double, double>> increases,
+                 std::span<const BreakPeriod> breaks, double drainStartTime,
+                 double targetMinimumHealth) noexcept {
+  if (increases.size() <= 1) {
+    return 0.0;
+  }
+  constexpr double kMinimumHealthError = 0.01;
+  int adjustment = 1;
+  double result = 1.0;
+  while (adjustment > 0) {
+    double currentHealth = 1.0;
+    double lowestHealth = 1.0;
+    std::size_t currentBreak = 0;
+    for (std::size_t i = 0; i < increases.size(); ++i) {
+      const double currentTime = increases[i].first;
+      double lastTime = i > 0 ? increases[i - 1].first : drainStartTime;
+      while (currentBreak < breaks.size() &&
+             breaks[currentBreak].fEnd <= currentTime) {
+        lastTime = currentTime;
+        ++currentBreak;
+      }
+      currentHealth -= (currentTime - lastTime) * result;
+      lowestHealth = std::min(lowestHealth, currentHealth);
+      currentHealth = std::min(1.0, currentHealth + increases[i].second);
+      if (lowestHealth < 0.0) {
+        break;
+      }
+    }
+    if (std::abs(lowestHealth - targetMinimumHealth) <= kMinimumHealthError) {
+      break;
+    }
+    adjustment *= 2;
+    const double sign = lowestHealth > targetMinimumHealth   ? 1.0
+                        : lowestHealth < targetMinimumHealth ? -1.0
+                                                             : 0.0;
+    result += 1.0 / adjustment * sign;
+  }
+  return result;
+}
+
+[[nodiscard]] inline double targetMinimumHealth(double hp,
+                                                double lenience = 0.0) noexcept {
+  double target = difficultyRange(hp, 0.99, 0.9, 0.4);
+  target += lenience * (1.0 - target);
+  return std::clamp(target, 0.0, 1.0);
 }
 
 [[nodiscard]] inline Grade computeGrade(const ScoreState &state) noexcept {

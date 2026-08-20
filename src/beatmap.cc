@@ -30,6 +30,7 @@ public:
   Metadata fMeta;
   Difficulty fDiff;
   std::vector<TimingPoint> fTiming;
+  std::vector<BreakPeriod> fBreaks;
   std::vector<HitObject> fObjects;
   std::vector<SliderPath> fSliderPaths;
   std::vector<std::array<std::uint8_t, 3>> fComboColors;
@@ -541,6 +542,22 @@ inline Beatmap parseBeatmap(std::string_view text) {
       break;
     }
     case Section::kEvents: {
+      {
+        // "2,start,end" (or "Break,start,end") is a break period.
+        const auto fields = detail::split(line, ',');
+        if (fields.size() >= 3) {
+          const auto kind = detail::trim(fields[0]);
+          if (kind == "2" || kind == "Break") {
+            BreakPeriod period;
+            period.fStart = detail::toDouble(fields[1]);
+            period.fEnd = detail::toDouble(fields[2]);
+            if (period.fEnd > period.fStart) {
+              bm.fBreaks.push_back(period);
+            }
+            break;
+          }
+        }
+      }
       if (bm.fMeta.fBackground.empty()) {
         const auto fields = detail::split(line, ',');
         if (fields.size() >= 3 && detail::trim(fields[0]) == "0") {

@@ -212,6 +212,13 @@ inline constexpr double kGamefieldRoundingAllowance = 1.00041;
   return s.fPos + stackOffset(s.fStack, cs);
 }
 
+// A break in the map: no health drain runs through it, and the drain rate is
+// computed as if the time did not pass.
+struct BreakPeriod {
+  double fStart = 0.0;
+  double fEnd = 0.0;
+};
+
 struct TimingPoint {
   double fTime = 0.0;
   double fBeatLength = 0.0;
