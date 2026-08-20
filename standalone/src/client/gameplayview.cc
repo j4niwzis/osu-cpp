@@ -113,6 +113,13 @@ public:
     if (countsCombo) {
       fHitBursts.push_back({pos, now, comboIndex});
     }
+    // A miss that actually cost health starts the red display on the bar; the
+    // glow hangs back at the old value for half a second before easing down.
+    if (std::holds_alternative<osu::judgement::Miss>(result)) {
+      fMissDisplayUntil = now + 500.0;
+    } else {
+      fFlashUntil = now + 330.0; // 30 ms to white, 300 ms back
+    }
   }
 
   void addTrailPoint(osu::Vec2 pos, double time) {
@@ -806,6 +813,31 @@ public:
     fLastHudTime = now;
     constexpr double kLazyLag = 200.0;
     const double lagFactor = 1.0 - std::exp(-dt / kLazyLag);
+
+    // ArgonHealthDisplay. The bar does not show the health, it chases it:
+    // Interpolation.DampContinuously with a half life of 50 ms. The glow bar
+    // chases it too, except while a miss is being shown -- then it hangs back
+    // at where the health used to be, and the gap between the two is the red
+    // that tells you what you just lost.
+    const auto damp = [dt](double current, double target, double halfLife) {
+      return current +
+             (target - current) * (1.0 - std::pow(0.5, dt / halfLife));
+    };
+    fHealthBarValue = damp(fHealthBarValue, score.fHealth, 50.0);
+    if (now >= fMissDisplayUntil) {
+      if (fMissDisplayUntil > 0.0) {
+        // The 300 ms ease back to the current health once the miss has been
+        // shown for half a second.
+        fGlowBarValue = damp(fGlowBarValue, score.fHealth, 100.0);
+        if (std::abs(fGlowBarValue - score.fHealth) < 1e-4) {
+          fMissDisplayUntil = 0.0;
+          fGlowBarValue = score.fHealth;
+        }
+      } else {
+        fGlowBarValue = damp(fGlowBarValue, score.fHealth, 50.0);
+      }
+    }
+    fFlashUntil = std::max(fFlashUntil, 0.0);
     fDisplayHealth += (score.fHealth - fDisplayHealth) * lagFactor;
     fDisplayScore +=
         (static_cast<double>(score.fScore) - fDisplayScore) * lagFactor;
@@ -938,25 +970,58 @@ public:
       return;
     }
 
-    const float fill =
-        w * static_cast<float>(std::clamp(fDisplayHealth, 0.0, 1.0));
+    // ArgonHealthDisplay: a white bar with a soft blue glow at its end, and a
+    // red tail left behind when health is lost. The colours are lazer's --
+    // #7ED7FD at half alpha for the glow, and the miss red easing from
+    // (255, 147, 147) to (255, 93, 93) over its first 800 ms.
+    const float barValue =
+        static_cast<float>(std::clamp(fHealthBarValue, 0.0, 1.0));
+    const float glowValue =
+        static_cast<float>(std::clamp(fGlowBarValue, 0.0, 1.0));
+    const float fill = w * barValue;
+
     skia::SkPaint bg;
     bg.setColor(skia::kBlack);
     bg.setStyle(skia::kFillStyle);
     bg.setAlphaf(0.5f);
     canvas->drawRect(skia::SkRect::MakeXYWH(x, y, w, h), bg);
 
+    // The portion between the health and where it was: what the last miss
+    // took away.
+    if (glowValue > barValue) {
+      const double sinceMiss = std::max(0.0, now - (fMissDisplayUntil - 500.0));
+      const double t = std::clamp(sinceMiss / 800.0, 0.0, 1.0);
+      const auto mix = [t](double from, double to) {
+        return static_cast<int>(std::lround(from + (to - from) * t));
+      };
+      skia::SkPaint lost;
+      lost.setStyle(skia::kFillStyle);
+      lost.setAntiAlias(true);
+      lost.setColor(skia::colorSetARGB(255, mix(255, 255), mix(147, 93),
+                                       mix(147, 93)));
+      canvas->drawRect(
+          skia::SkRect::MakeXYWH(x + fill, y, w * (glowValue - barValue), h),
+          lost);
+    }
+
     skia::SkPaint fg;
     fg.setStyle(skia::kFillStyle);
     fg.setAntiAlias(true);
-    if (fDisplayHealth > 0.5) {
-      fg.setColor(skia::colorSetARGB(255, 50, 205, 50));
-    } else if (fDisplayHealth > 0.25) {
-      fg.setColor(skia::colorSetARGB(255, 255, 215, 0));
-    } else {
-      fg.setColor(skia::colorSetARGB(255, 255, 50, 50));
-    }
+    fg.setColor(skia::kWhite);
     canvas->drawRect(skia::SkRect::MakeXYWH(x, y, fill, h), fg);
+
+    // The glow at the end of the bar, flashing white for a moment on a hit.
+    if (fill > 0.0f) {
+      const bool flashing = now < fFlashUntil;
+      skia::SkPaint glow;
+      glow.setStyle(skia::kFillStyle);
+      glow.setAntiAlias(true);
+      glow.setColor(flashing ? skia::colorSetARGB(200, 255, 255, 255)
+                             : skia::colorSetARGB(128, 0x7E, 0xD7, 0xFD));
+      const float glowW = std::min(fill, h * 2.0f);
+      canvas->drawRect(
+          skia::SkRect::MakeXYWH(x + fill - glowW, y, glowW, h), glow);
+    }
 
     skia::SkPaint border;
     border.setColor(skia::kWhite);
@@ -975,6 +1040,10 @@ private:
   skia::Sp<skia::SkImage> fBackgroundScaled;
 
   double fDisplayHealth = 1.0;
+  double fHealthBarValue = 1.0;
+  double fGlowBarValue = 1.0;
+  double fMissDisplayUntil = 0.0;
+  double fFlashUntil = 0.0;
   double fDisplayScore = 0.0;
   double fDisplayCombo = 0.0;
   double fDisplayAccuracy = 1.0;
