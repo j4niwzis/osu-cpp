@@ -987,7 +987,10 @@ private:
         fFilterDirty = true;
         break;
       }
-      if (fExportDialog.open()) {
+      // Only where nothing else is listening. Song select and the beatmap
+      // browser have a search box that is always focused, and a size typed
+      // into a dialog is worth less than a filter that stops working.
+      if (fExportDialog.open() && fState == State::kResults) {
         fExportDialog.typeInSize(static_cast<char>(ev.fA));
         break;
       }
@@ -1038,10 +1041,10 @@ private:
     if (key == glfw::kKeyLeftControl || key == glfw::kKeyRightControl) {
       return;
     }
-    // The export dialog takes the keys while it is up: a size is typed into
-    // it, and backspace belongs to that rather than to the screen behind.
-    if (fExportDialog.open() && action == glfw::kPress &&
-        key == glfw::kKeyBackspace) {
+    // Backspace belongs to the dialog only where nothing else wants it: the
+    // filter and the beatmap search are both edited with it.
+    if (fExportDialog.open() && fState == State::kResults &&
+        action == glfw::kPress && key == glfw::kKeyBackspace) {
       fExportDialog.backspaceSize();
       return;
     }
@@ -1540,6 +1543,11 @@ private:
     // The transition fades over 240 ms and asks for its own frames after
     // that; what a new screen loads arrives as damage from a callback.
     this->oweFrames(4);
+    // A dialog belongs to the screen it was opened on; carried to another one
+    // it would go on taking the keys typed at that screen's search box.
+    if (fState == State::kResults && st != State::kResults) {
+      fExportDialog.close();
+    }
     // Coming out of a play: the map's track ran to its end while it was being
     // played, and silence after it is not a track that finished on its own.
     // Loading it again for the same selection is what makes finishing a play
