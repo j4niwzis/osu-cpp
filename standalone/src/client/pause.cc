@@ -46,6 +46,7 @@ public:
     float fMouseY = 0.0f;
     double fNowMs = 0.0;
     double fDtMs = 16.0;
+    bool fAnimateTriangles = true;
     int fRetries = 0;
     float fProgress = 0.0f; // 0..1 through the playable part of the map
     float fAccuracy = 1.0f;
@@ -162,8 +163,12 @@ private:
     void update(double nowMs) override {
       const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
       fLastMs = nowMs;
-      fDt = dt;
-      this->markDamaged(); // the triangles are always moving
+      // Only a moving triangle is worth a repaint; held still, the button is
+      // as static as the rest of a paused screen.
+      fDt = fOwner->fCtx.fAnimateTriangles ? dt : 0.0;
+      if (fOwner->fCtx.fAnimateTriangles) {
+        this->markDamaged();
+      }
       // Hovering selects, as GameplayMenuOverlay.Button does on mouse move,
       // and losing the pointer gives the selection back -- but only when the
       // pointer is what set it. A selection made with the arrow keys stays

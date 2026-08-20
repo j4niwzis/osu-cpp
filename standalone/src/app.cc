@@ -1919,7 +1919,7 @@ private:
     if (fState == State::kMainMenu) {
       return true; // the logo keeps tracking the music behind anything
     }
-    if (fState == State::kPaused) {
+    if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
       return true; // triangles drift inside the buttons, as lazer's do
     }
     if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
@@ -4668,8 +4668,10 @@ private:
     // own, which with the counter in the opposite corner pushed the frame
     // over the "repaint it whole" threshold and saved nothing at all.
     float loudest = 0.0f;
-    for (const float amp : fSpectrum.bars()) {
-      loudest = std::max(loudest, amp);
+    if (fSettings.flag("visualiser")) {
+      for (const float amp : fSpectrum.bars()) {
+        loudest = std::max(loudest, amp);
+      }
     }
     const float logoRadius = fLogoRect.width() * 0.5f;
     const float reach = logoRadius * 2.0f * (600.0f / 480.0f) * loudest;
@@ -4789,7 +4791,9 @@ private:
                     (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
     fLogoRect = skia::SkRect::MakeXYWH(fLogoX - r, fLogoY - r, r * 2, r * 2);
 
-    this->drawVisualiser(canvas, r);
+    if (fSettings.flag("visualiser")) {
+      this->drawVisualiser(canvas, r);
+    }
 
     // Ripple: same circle, scaled slightly out, alpha 0.15 * amplitude.
     if (amp > 0.01f) {
@@ -6391,6 +6395,7 @@ private:
     ctx.fMouseY = fMouseY;
     ctx.fNowMs = wallMs();
     ctx.fDtMs = fUiDt;
+    ctx.fAnimateTriangles = fSettings.flag("pausetriangles");
     ctx.fRetries = fRetryCount;
     ctx.fProgress = this->playProgress();
     ctx.fAccuracy = fEngine ? static_cast<float>(fEngine->score().accuracy())

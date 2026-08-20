@@ -68,6 +68,12 @@ public:
     this->add({1, "bufferage", "Assume buffer age", SettingKind::kChoice, 0.0f,
                3.0f, 1.0f, 0.0f, "",
                {"ask the driver", "1 (swap copies)", "2", "3"}});
+    // The two things that draw whether or not anybody touched them. Off, the
+    // menu and the pause screen stop asking for frames of their own.
+    this->add({1, "visualiser", "Logo visualiser", SettingKind::kToggle, 0.0f,
+               1.0f, 0.0f, 1.0f, ""});
+    this->add({1, "pausetriangles", "Animate pause triangles",
+               SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 1.0f, ""});
     // Section 2: Gameplay
     this->add({2, "cursorsize", "Cursor size", SettingKind::kSlider, 0.5f,
                2.0f, 0.01f, 1.0f, "x"});
