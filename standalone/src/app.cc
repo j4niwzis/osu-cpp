@@ -337,6 +337,8 @@ private:
   double fPausedNow = 0.0;              // frozen game time while paused
   double fPolledCursorX = -1.0, fPolledCursorY = -1.0; // wasm cursor polling
   std::atomic<bool> fRefreshRequested{false}; // set by the event thread
+  std::atomic<int> fWindowX{0}, fWindowY{0};  // where the window sits
+  std::atomic<int> fWorkAreaX{0}, fWorkAreaY{0}, fWorkAreaW{0}, fWorkAreaH{0};
   client::pause::PauseMenu fPauseMenu;
   int fRetryCount = 0;      // plays of this map since it was chosen
   bool fRetryPending = false;
@@ -690,9 +692,21 @@ private:
         fWindow, [](glfw::GLFWwindow *w) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self != nullptr) {
+            self->noteWindowPlacement();
             self->fRefreshRequested.store(true, std::memory_order_release);
           }
         });
+    // Where the window is, tracked from the thread that is allowed to ask:
+    // what has to be repainted after an expose is the part of the window a
+    // screen is actually showing.
+    glfw::glfwSetWindowPosCallback(
+        fWindow, [](glfw::GLFWwindow *w, int, int) {
+          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+          if (self != nullptr) {
+            self->noteWindowPlacement();
+          }
+        });
+    this->noteWindowPlacement();
     glfw::glfwSetMouseButtonCallback(
         fWindow, [](glfw::GLFWwindow *w, int button, int action, int) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
@@ -1935,16 +1949,69 @@ private:
     return now - fLastDrawWall > 500.0;
   }
 
+  // The part of the window that a screen is actually showing, in the window's
+  // own coordinates. Empty when nothing is known about the placement.
+  [[nodiscard]] skia::SkIRect visiblePortion() const {
+    const int x = fWindowX.load(std::memory_order_acquire);
+    const int y = fWindowY.load(std::memory_order_acquire);
+    const int areaX = fWorkAreaX.load(std::memory_order_acquire);
+    const int areaY = fWorkAreaY.load(std::memory_order_acquire);
+    const int areaW = fWorkAreaW.load(std::memory_order_acquire);
+    const int areaH = fWorkAreaH.load(std::memory_order_acquire);
+    if (areaW <= 0 || areaH <= 0 || fScreenW <= 0 || fScreenH <= 0) {
+      return skia::SkIRect::MakeEmpty();
+    }
+    skia::SkIRect window = skia::SkIRect::MakeXYWH(x, y, fScreenW, fScreenH);
+    const skia::SkIRect area =
+        skia::SkIRect::MakeXYWH(areaX, areaY, areaW, areaH);
+    if (!window.intersect(area)) {
+      return skia::SkIRect::MakeEmpty();
+    }
+    // Back into the window's own coordinates, and grown a little: the edge
+    // between shown and hidden is not worth being exact about.
+    window.offset(-x, -y);
+    window.outset(4, 4);
+    return window;
+  }
+
+  // Called on the event thread, where asking about windows and monitors is
+  // allowed; the render thread reads the numbers.
+  void noteWindowPlacement() {
+    int x = 0, y = 0;
+    glfw::glfwGetWindowPos(fWindow, &x, &y);
+    fWindowX.store(x, std::memory_order_release);
+    fWindowY.store(y, std::memory_order_release);
+    if (const auto monitor = glfw::glfwGetPrimaryMonitor(); monitor != nullptr) {
+      int ax = 0, ay = 0, aw = 0, ah = 0;
+      glfw::glfwGetMonitorWorkarea(monitor, &ax, &ay, &aw, &ah);
+      fWorkAreaX.store(ax, std::memory_order_release);
+      fWorkAreaY.store(ay, std::memory_order_release);
+      fWorkAreaW.store(aw, std::memory_order_release);
+      fWorkAreaH.store(ah, std::memory_order_release);
+    }
+  }
+
   void frame() {
     // A screen that returned early last time -- gameplay without a beatmap
     // loaded, say -- could leave this set; outside frame() nothing is drawing
     // by definition.
     fDrawing = false;
     if (fRefreshRequested.exchange(false, std::memory_order_acquire)) {
-      // Set on the event thread, acted on here: everything the buffers held
+      // Set on the event thread, acted on here: everything those buffers held
       // is suspect, so the history of what they hold goes with it.
       fBlitHistory.clear();
-      this->damageAll("the window system asked for a repaint");
+      // X11 says which rectangles were exposed and GLFW does not pass them
+      // on, so the region is reconstructed from where the window sits: the
+      // part of it a screen is showing is the part worth painting. Dragging a
+      // window back in from off the edge then costs the strip that came back,
+      // not the whole window, every frame of the drag.
+      const skia::SkIRect onScreen = this->visiblePortion();
+      if (onScreen.isEmpty() ||
+          (onScreen.width() >= fScreenW && onScreen.height() >= fScreenH)) {
+        this->damageAll("the window system asked for a repaint");
+      } else {
+        this->damage(skia::SkRect::Make(onScreen));
+      }
     }
     this->applySwapInterval();
     // Work finishing in the background changes what is on screen, so it is
