@@ -977,6 +977,15 @@ private:
       }
       break;
     case EventType::kChar:
+      // Before the screens, not after them: song select answers first and
+      // puts everything into its filter, so a check further down was never
+      // reached. The dialog is the frontmost thing while it is up, and it
+      // closes when the screen changes, so this cannot eat a filter's letters
+      // from somewhere else.
+      if (fExportDialog.open()) {
+        fExportDialog.typeInSize(static_cast<char>(ev.fA));
+        break;
+      }
       if (fState == State::kSongSelect) {
         if (fSwallowChar) {
           fSwallowChar = false;
@@ -986,13 +995,6 @@ private:
         this->appendUtf8(utf8, static_cast<std::uint32_t>(ev.fA));
         fFilter.appendText(utf8);
         fFilterDirty = true;
-        break;
-      }
-      // The dialog is the frontmost thing while it is up, so it takes what is
-      // typed -- and it closes when the screen changes, which is what stopped
-      // it from eating a filter's letters from another screen.
-      if (fExportDialog.open()) {
-        fExportDialog.typeInSize(static_cast<char>(ev.fA));
         break;
       }
       if (fState == State::kDownload) {
@@ -1906,6 +1908,44 @@ private:
       this->damageAll("screen fade");
     }
 
+    // The overlays that cover the screen say what they repaint here, before
+    // the frame is committed to. Said while drawing -- which is where this
+    // lived -- it describes a frame that has already been declined, and the
+    // screen it belongs to freezes: the strip of panels easing to the one
+    // that was picked marked itself for a frame that was never drawn, and so
+    // never advanced, and so kept marking itself.
+    if (fModSelect.visible()) {
+      const skia::SkRect region = fModSelect.damageFor(
+          {fScreenW, fScreenH, fMouseX, fMouseY, fUiDt});
+      if (region.width() >= static_cast<float>(fScreenW)) {
+        this->damageAll("mod select sliding");
+      } else {
+        this->damage(region);
+      }
+    }
+    if (fReplayListOpen) {
+      if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f ||
+          fPanelScroll != fDrawnPanelScroll) {
+        // Dragged or gliding: a drag sets the position outright, so the
+        // target says nothing about it. Where it was when it was last drawn
+        // does.
+        fDrawnPanelScroll = fPanelScroll;
+        this->damageAll("replay browser moving");
+      } else {
+        int hot = -1;
+        for (std::size_t i = 0; i < fPanelHits.size(); ++i) {
+          if (fPanelHits[i].fRect.contains(fMouseX, fMouseY)) {
+            hot = static_cast<int>(i);
+            break;
+          }
+        }
+        if (hot != fHotReplayPanel) {
+          fHotReplayPanel = hot;
+          this->damage(fPanelBand);
+        }
+      }
+    }
+
     // Overlays are drawn after the screen, over most of it, and none of them
     // declares a region -- so while one is up, and on the frame it goes away,
     // the screen underneath cannot be trusted to have marked enough.
@@ -2332,16 +2372,6 @@ private:
     auto *canvas = fSurface->getCanvas();
     if (fModSelect.visible()) {
       this->drawModSelect(canvas);
-      // It says what changed now: the whole screen while it slides, because
-      // the dim behind it fades with it, and otherwise the chip the pointer
-      // has arrived on and the one it left.
-      const skia::SkRect region = fModSelect.damageFor(
-          {fScreenW, fScreenH, fMouseX, fMouseY, fUiDt});
-      if (region.width() >= static_cast<float>(fScreenW)) {
-        this->damageAll("mod select sliding");
-      } else {
-        this->damage(region);
-      }
     }
     if (fSettingsPanel.visible()) {
       // What it repaints was worked out before the frame began, by the panel
@@ -2350,32 +2380,6 @@ private:
     }
     if (fReplayListOpen) {
       this->drawReplayList(canvas);
-      // Same: the strip of panels glides when another replay is chosen, and
-      // the pointer picks out the one under it. Neither happening means
-      // nothing to repaint.
-      if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f ||
-          fPanelScroll != fDrawnPanelScroll) {
-        // Gliding to a chosen panel, or dragged: a drag sets the position
-        // outright rather than easing towards it, so comparing against the
-        // target says nothing and the strip looked frozen under the pointer.
-        fDrawnPanelScroll = fPanelScroll;
-        this->damageAll("replay browser moving");
-      } else {
-        // The panels are the only thing in it that answers the pointer, and
-        // the client knows where they are: the band they occupy is the answer
-        // rather than the window they are drawn over.
-        int hot = -1;
-        for (std::size_t i = 0; i < fPanelHits.size(); ++i) {
-          if (fPanelHits[i].fRect.contains(fMouseX, fMouseY)) {
-            hot = static_cast<int>(i);
-            break;
-          }
-        }
-        if (hot != fHotReplayPanel) {
-          fHotReplayPanel = hot;
-          this->damage(fPanelBand);
-        }
-      }
     }
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
