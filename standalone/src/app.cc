@@ -31,6 +31,7 @@ import client.filtercontrol;
 import client.listing;
 import client.carousel;
 import client.pause;
+import present;
 import client.setpage;
 import client.scene;
 import client.nodes;
@@ -149,6 +150,7 @@ private:
   bool fDamageDrives = false; // damage that is worth a frame of its own
   bool fDrawing = false;      // inside a frame: damage reported now is not
   int fFullRepaintsOwed = 0;  // buffers still holding an older screen
+  int fBufferAge = -1;        // frames since this buffer last held a frame
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
   skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
   bool fDrewOnRaster = false;               // this frame went to the CPU one
@@ -1554,7 +1556,9 @@ private:
     // repaints to be sure of three -- and it stopped being an accident when
     // that went away, which is how coming back to the menu started leaving
     // the screen it was called from underneath.
-    fFullRepaintsOwed = kFullRepaintsAfterChange;
+    // With a real buffer age each frame works out for itself how far back it
+    // has to repaint, so the margin is only for the case where nobody says.
+    fFullRepaintsOwed = fBufferAge >= 0 ? 0 : kFullRepaintsAfterChange;
     if (!fDrawing) {
       fDamageDrives = true;
       this->oweFrames(kFullRepaintsAfterChange + 1);
@@ -1631,6 +1635,10 @@ private:
   // is the same pixels -- only the work outside the clip is skipped.
   void beginFrame() {
     fDrawing = true;
+    // How old the contents of the buffer being drawn into are, from the
+    // window system rather than from a constant of mine. -1 when nobody will
+    // say, which is when the constants come back.
+    fBufferAge = this->partialRedraw() ? present::bufferAge() : -1;
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
     //
@@ -1690,9 +1698,18 @@ private:
     if (!this->partialRedraw() || this->blitRegionFull()) {
       return;
     }
+    // How far back to repaint. With an age of N the buffer holds the frame
+    // from N swaps ago, so everything damaged since then -- N entries of the
+    // history, this frame included -- has to be painted again. Without an
+    // age, the whole history, which is the old guess with margin in it.
+    const std::size_t reach =
+        fBufferAge > 0 ? static_cast<std::size_t>(fBufferAge)
+                       : fBlitHistory.size();
     skia::SkIRect bounds = skia::SkIRect::MakeEmpty();
-    for (const auto &frame : fBlitHistory) {
-      for (const auto &area : frame) {
+    std::size_t seen = 0;
+    for (auto frame = fBlitHistory.rbegin();
+         frame != fBlitHistory.rend() && seen < reach; ++frame, ++seen) {
+      for (const auto &area : *frame) {
         if (bounds.isEmpty()) {
           bounds = area;
         } else {
@@ -2079,7 +2096,20 @@ private:
     }
 
     const auto beforeSwap = std::chrono::steady_clock::now();
-    glfw::glfwSwapBuffers(fWindow);
+    // What changed since the last frame the compositor was given. Handing it
+    // over means it can leave the rest of the window alone instead of taking
+    // the whole surface every frame -- the other half of what buffer age
+    // buys, and the half that lands on the "swap" line of the frame report.
+    std::vector<std::array<int, 4>> damage;
+    if (!fComputedClipFull && !fComputedClip.empty()) {
+      damage.reserve(fComputedClip.size());
+      for (const auto &rect : fComputedClip) {
+        damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
+      }
+    }
+    if (damage.empty() || !present::swapWithDamage(fScreenH, damage)) {
+      glfw::glfwSwapBuffers(fWindow);
+    }
     fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - beforeSwap)
                       .count();
@@ -2126,7 +2156,10 @@ private:
                      std::max<double>(1.0, static_cast<double>(fCostFrames) *
                                                fScreenW * fScreenH),
                  std::string(fDrewOnRaster ? " [cpu]" : " [gpu]") +
-                     (this->partialRedraw() ? " (partial redraw)" : ""));
+                     (this->partialRedraw()
+                          ? std::format(" (partial redraw, buffer age {} via {})",
+                                        fBufferAge, present::backend())
+                          : ""));
     fCostLogWall = wallMs();
     fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
     fCostClipArea = 0;
@@ -2145,13 +2178,23 @@ private:
   // that repaint whole after one are counted with some to spare.
   static constexpr std::size_t kSwapChainDepth = 4;
   static constexpr int kFullRepaintsAfterChange = 6;
+  // Kept longer than the guess, so that a window system reporting an age of
+  // six has six frames of history to be told about.
+  static constexpr std::size_t kBlitHistoryDepth = 8;
 
   [[nodiscard]] bool blitRegionFull() const {
-    if (fBlitHistory.size() < kSwapChainDepth) {
-      return true; // not enough history yet to know what the buffers hold
+    if (fBufferAge == 0) {
+      return true; // the window system says the contents are undefined
     }
-    for (const auto &frame : fBlitHistory) {
-      if (frame.empty()) {
+    const std::size_t reach =
+        fBufferAge > 0 ? static_cast<std::size_t>(fBufferAge) : kSwapChainDepth;
+    if (fBlitHistory.size() < reach) {
+      return true; // not enough history yet to know what this buffer holds
+    }
+    std::size_t seen = 0;
+    for (auto frame = fBlitHistory.rbegin();
+         frame != fBlitHistory.rend() && seen < reach; ++frame, ++seen) {
+      if (frame->empty()) {
         return true; // that frame repainted everything
       }
     }
@@ -2163,7 +2206,7 @@ private:
     // until it ages out.
     fBlitHistory.push_back(fFrameClipFull ? std::vector<skia::SkIRect>{}
                                           : fFrameClip);
-    while (fBlitHistory.size() > kSwapChainDepth) {
+    while (fBlitHistory.size() > kBlitHistoryDepth) {
       fBlitHistory.erase(fBlitHistory.begin());
     }
   }

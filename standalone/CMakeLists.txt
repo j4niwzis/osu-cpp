@@ -127,6 +127,9 @@ else()
     ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
     OpenSSL::SSL
     OpenSSL::Crypto
+    # present.cc resolves EGL/GLX at run time rather than linking against
+    # them, so that a machine without either still builds and runs.
+    ${CMAKE_DL_LIBS}
   )
 endif()
 
