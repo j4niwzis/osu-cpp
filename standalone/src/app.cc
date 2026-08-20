@@ -32,6 +32,7 @@ import client.listing;
 import client.carousel;
 import client.pause;
 import client.mainmenu;
+import client.triangles;
 import present;
 import client.setpage;
 import client.scene;
@@ -444,17 +445,8 @@ private:
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
   double fLastMenuPosMs = 0.0;
-  struct Tri {
-    float fX = 0.0f;     // 0..1 of width
-    float fY = 0.0f;     // 0..1 of height
-    float fScale = 1.0f; // multiplies triangle_size
-    float fShade = 0.5f;
-  };
-  std::vector<Tri> fTriangles;
-  std::vector<Tri> fLogoTris; // TrianglesV2 masked inside the logo
-  float fTriangleScale = 2.4f;    // TrianglesV2 uses much larger shapes
-  float fSpawnRatio = 1.0f;       // TrianglesV2.SpawnRatio
-  float fTriangleVelocity = 1.0f; // TrianglesV2.Velocity
+  client::triangles::Field fBackgroundTriangles;
+  client::triangles::Field fLogoTriangles;
   float fMenuDim = 1.0f;
   // MainMenu.cs: Gray(1) idle, Gray(0.8) with buttons.
   float fDrawnMenuDim = -1.0f; // the dim the screen currently shows
@@ -1969,6 +1961,13 @@ private:
     if (fPreviewId >= 0 || fExportDialog.open()) {
       return true; // a transfer or a dialog with live status in it
     }
+    // The replay browser's strip glides to the panel that was picked. It is
+    // drawn as an overlay rather than as a screen, so it has nobody else to
+    // ask for the frames that carry it there.
+    if (fReplayListOpen &&
+        std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
+      return true;
+    }
     // Overlays are drawn while they slide in and out, and after that only
     // when something touches them -- which arrives as an event.
     if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
@@ -2125,9 +2124,6 @@ private:
       // The question the safety net exists to ask has just been asked and
       // answered, so the net does not need to fire.
       fLastDrawWall = wallMs();
-      if (client::ui::takeEasingMoved()) {
-        this->oweFrames(2);
-      }
 #ifndef __EMSCRIPTEN__
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
 #endif
@@ -2214,13 +2210,6 @@ private:
     case State::kResults:
       this->frameResults();
       break;
-    }
-    // Anything that eased this frame has not finished easing, so the next
-    // frame is owed. This is what keeps screens that draw immediately -- the
-    // carousel, the listing, the panels -- animating without each of them
-    // having to announce it.
-    if (client::ui::takeEasingMoved()) {
-      this->oweFrames(2);
     }
     this->limitFrameRate();
   }
@@ -4570,93 +4559,18 @@ private:
     }
   }
 
-  // Port of osu.Game/Graphics/Backgrounds/Triangles.cs. Constants are the
-  // originals: 100px base size, 0.866 equilateral ratio, 50px/s base velocity,
-  // scale drawn from a normal distribution (mean 0.5, sigma 0.16, floor 0.1),
-  // count derived from the drawing area. Particles drift upward and respawn
-  // below once they leave the top edge.
-  static constexpr float kTriangleSize = 100.0f;
-  static constexpr float kTriangleRatio = 0.866f;
-  static constexpr float kTriangleBaseVelocity = 50.0f;
-  static constexpr int kMaxTriangles = 1000;
 
-  [[nodiscard]] float randomTriangleScale() {
-    // Box-Muller, as in TrianglesV2.createTriangle: normal(0.5, 0.16^2).
-    std::uniform_real_distribution<float> u(1e-6f, 1.0f);
-    const float u1 = u(fUiRng);
-    const float u2 = u(fUiRng);
-    const float randStdNormal =
-        std::sqrt(-2.0f * std::log(u1)) *
-        std::sin(2.0f * std::numbers::pi_v<float> * u2);
-    return std::max(0.5f + 0.16f * randStdNormal, 0.1f);
-  }
-
-  void ensureTriangles() {
+  // The background field, when there is no artwork to show: client.triangles
+  // is the port of TrianglesV2, and this is the same one the pause buttons
+  // and the logo use.
+  void drawMenuTriangles(skia::SkCanvas *canvas) {
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
-    if (sw <= 0.0f || sh <= 0.0f) {
-      return;
-    }
-    // TrianglesV2: AimCount = clamp(DrawWidth * 0.02 * SpawnRatio, 1, max).
-    // Far sparser than the old Triangles -- a couple of dozen large shapes,
-    // not a swarm.
-    const int aim = std::clamp(static_cast<int>(sw * 0.02f * fSpawnRatio), 1,
-                               kMaxTriangles);
-    if (static_cast<int>(fTriangles.size()) == aim) {
-      return;
-    }
-    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
-    while (static_cast<int>(fTriangles.size()) < aim) {
-      fTriangles.push_back({ux(fUiRng), ux(fUiRng), this->randomTriangleScale(),
-                            ux(fUiRng)});
-    }
-    while (static_cast<int>(fTriangles.size()) > aim) {
-      fTriangles.pop_back();
-    }
-    std::ranges::sort(fTriangles, {}, &Tri::fScale);
-  }
-
-  void updateAndDrawTriangles(skia::SkCanvas *canvas) {
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-    // Held still when the switch says so: drawn where they are, so the menu
-    // keeps its background without asking for a single frame to keep it.
-    const float elapsedSeconds = fSettings.flag("menutriangles")
-                                     ? static_cast<float>(fUiDt) / 1000.0f
-                                     : 0.0f;
-    // TrianglesV2: movedDistance = -elapsed * Velocity * base_velocity / height
-    const float moved =
-        elapsedSeconds * fTriangleVelocity * kTriangleBaseVelocity / sh;
-
-    std::uniform_real_distribution<float> ux(0.0f, 1.0f);
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
-    paint.setStyle(skia::kStrokeStyle);
-
-    for (auto &t : fTriangles) {
-      t.fY -= moved;
-      const float w = kTriangleSize * t.fScale * fTriangleScale;
-      const float h = w * kTriangleRatio;
-      if (t.fY * sh + h < 0.0f) {
-        t.fY = 1.0f + h / sh;
-        t.fX = ux(fUiRng);
-        t.fScale = this->randomTriangleScale();
-        t.fShade = ux(fUiRng);
-      }
-
-      const float cx = t.fX * sw;
-      const float cy = t.fY * sh;
-      skia::SkPathBuilder b;
-      b.moveTo(cx, cy - h * 0.5f);
-      b.lineTo(cx - w * 0.5f, cy + h * 0.5f);
-      b.lineTo(cx + w * 0.5f, cy + h * 0.5f);
-      b.close();
-      // Thickness = 0.02 of the triangle's own size, per TrianglesV2.
-      paint.setStrokeWidth(std::max(1.0f, w * 0.02f * 2.0f));
-      paint.setColor(skia::kWhite);
-      paint.setAlphaf(0.06f + 0.10f * t.fShade);
-      canvas->drawPath(b.detach(), paint);
-    }
+    fBackgroundTriangles.setScaleAdjust(2.4f);
+    fBackgroundTriangles.setAlphaRange(0.06f, 0.16f);
+    fBackgroundTriangles.draw(canvas, skia::SkRect::MakeWH(sw, sh),
+                              fSettings.flag("menutriangles") ? fUiDt : 0.0,
+                              1.0f);
   }
 
 
@@ -4852,8 +4766,7 @@ private:
       // Only with no beatmaps at all does lazer's default (triangle)
       // background show; while artwork is still loading, stay dark.
       canvas->clear(skia::colorSetARGB(255, 32, 24, 44));
-      this->ensureTriangles();
-      this->updateAndDrawTriangles(canvas);
+      this->drawMenuTriangles(canvas);
     } else {
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
@@ -5006,60 +4919,17 @@ private:
     }
   }
 
-  // TrianglesV2 inside the logo: Thickness 0.009, ScaleAdjust 3,
-  // SpawnRatio 1.4, gradient #ff66ab -> #b6346f.
+  // TrianglesV2 inside the logo: Thickness 0.009, ScaleAdjust 3, SpawnRatio
+  // 1.4, tinted #ff66ab at the top to #b6346f at the bottom.
   void drawLogoTriangles(skia::SkCanvas *canvas, const skia::SkRect &rect) {
-    const float w = rect.width();
-    const float h = rect.height();
-    if (fLogoTris.empty()) {
-      std::uniform_real_distribution<float> u(0.0f, 1.0f);
-      const int aim = std::max(1, static_cast<int>(w * 0.02f * 1.4f));
-      for (int i = 0; i < aim; ++i) {
-        fLogoTris.push_back({u(fUiRng), u(fUiRng),
-                             this->randomTriangleScale() * 3.0f, u(fUiRng)});
-      }
-      std::ranges::sort(fLogoTris, {}, &Tri::fScale);
-    }
-    // Held still by the same switch as the ones behind the menu: these are
-    // the ones that were still drifting, a frame at a time, whenever
-    // something else caused a frame -- so they crept while the pointer moved
-    // and froze when it stopped.
-    const float moved = fSettings.flag("menutriangles")
-                            ? static_cast<float>(fUiDt) / 1000.0f *
-                                  kTriangleBaseVelocity / std::max(1.0f, h)
-                            : 0.0f;
-    std::uniform_real_distribution<float> u(0.0f, 1.0f);
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setStyle(skia::kStrokeStyle);
-    for (auto &t : fLogoTris) {
-      t.fY -= moved;
-      const float tw = kTriangleSize * t.fScale * 0.35f;
-      const float th = tw * kTriangleRatio;
-      if (t.fY * h + th < 0.0f) {
-        t.fY = 1.0f + th / h;
-        t.fX = u(fUiRng);
-        t.fScale = this->randomTriangleScale() * 3.0f;
-      }
-      const float cx = rect.fLeft + t.fX * w;
-      const float cy = rect.fTop + t.fY * h;
-      skia::SkPathBuilder b;
-      b.moveTo(cx, cy - th * 0.5f);
-      b.lineTo(cx - tw * 0.5f, cy + th * 0.5f);
-      b.lineTo(cx + tw * 0.5f, cy + th * 0.5f);
-      b.close();
-      p.setStrokeWidth(std::max(1.0f, tw * 0.009f * 4.0f));
-      // Gradient #ff66ab -> #b6346f across the logo. Clamp: fY runs outside
-      // [0,1] while a particle is above the top edge or waiting to respawn,
-      // and the unclamped lerp wrapped the colour bytes (hence blue tips).
-      const float shade = std::clamp(t.fY, 0.0f, 1.0f);
-      p.setColor(skia::colorSetARGB(
-          255, static_cast<std::uint8_t>(0xff + (0xb6 - 0xff) * shade),
-          static_cast<std::uint8_t>(0x66 + (0x34 - 0x66) * shade),
-          static_cast<std::uint8_t>(0xab + (0x6f - 0xab) * shade)));
-      p.setAlphaf(0.85f);
-      canvas->drawPath(b.detach(), p);
-    }
+    fLogoTriangles.setScaleAdjust(1.05f);
+    fLogoTriangles.setSpawnRatio(1.4f);
+    fLogoTriangles.setThickness(0.009f);
+    fLogoTriangles.setAlphaRange(0.85f, 0.85f);
+    fLogoTriangles.setColours(skia::colorSetARGB(255, 0xff, 0x66, 0xab),
+                              skia::colorSetARGB(255, 0xb6, 0x34, 0x6f));
+    fLogoTriangles.draw(canvas, rect,
+                        fSettings.flag("menutriangles") ? fUiDt : 0.0, 1.0f);
   }
 
   // LogoVisualisation.VisualisationDrawNode, transcribed. Each bar is a quad

@@ -60,24 +60,13 @@ inline constexpr skia::SkColor kMiss = skia::colorSetARGB(255, 237, 17, 33);
 }
 
 // Frame-rate independent approach toward a target (tau in milliseconds).
-// Whether anything eased since this was last asked.
 //
-// Screens that draw immediately have no way to announce "I am still
-// animating", and a client that only draws frames on demand needs to know:
-// otherwise a carousel gliding to a stop, or a panel fading in, gets one
-// frame at the start and the next when something else happens. Every eased
-// value in the client goes through approach, so approach is where to notice.
-inline bool &easingMovedFlag() {
-  static bool moved = false;
-  return moved;
-}
-
-[[nodiscard]] inline bool takeEasingMoved() {
-  const bool moved = easingMovedFlag();
-  easingMovedFlag() = false;
-  return moved;
-}
-
+// This used to set a global flag whenever anything moved, which the frame
+// loop read once a frame to decide whether to keep drawing. It worked, and it
+// was a side channel: every eased value in the client wrote to one bool, and
+// nothing could be asked who had moved. Every screen now settles in a pass of
+// its own and marks what changed, and marked damage is what asks for the next
+// frame -- so the flag has nothing left to say.
 [[nodiscard]] inline float approach(float current, float target, float tauMs,
                                     double dtMs) {
   const float a = 1.0f - std::exp(-static_cast<float>(dtMs) / tauMs);
@@ -88,11 +77,7 @@ inline bool &easingMovedFlag() {
   // decides what to repaint -- concludes that it is still moving. Below a
   // thousandth of a unit, which is under a pixel and under 1/255 of an
   // alpha, it is there.
-  const float settled = std::abs(target - next) < 0.001f ? target : next;
-  if (settled != current) {
-    easingMovedFlag() = true;
-  }
-  return settled;
+  return std::abs(target - next) < 0.001f ? target : next;
 }
 
 // ---- Text with fallback ---------------------------------------------------

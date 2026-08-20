@@ -24,6 +24,19 @@ public:
   void setVelocity(float velocity) { fVelocity = velocity; }
   void setSpawnRatio(float ratio) { fSpawnRatio = ratio; }
   void setScaleAdjust(float scale) { fScaleAdjust = scale; }
+  // TrianglesV2.Thickness: the border as a fraction of a triangle's size.
+  void setThickness(float thickness) { fThickness = thickness; }
+  // Lerped down the box, the way lazer tints the ones inside the logo.
+  void setColours(skia::SkColor top, skia::SkColor bottom) {
+    fTop = top;
+    fBottom = bottom;
+  }
+  // The band the per-triangle shade picks from, so a field can be uniform
+  // (both ends the same) or vary with depth as the background one does.
+  void setAlphaRange(float low, float high) {
+    fAlphaLow = low;
+    fAlphaHigh = high;
+  }
 
   // Advances by dt and draws inside the box. Positions are relative to it, as
   // lazer's are, so a box that changes size keeps its triangles.
@@ -44,7 +57,6 @@ public:
     paint.setAntiAlias(true);
     paint.setStyle(skia::kStrokeStyle);
     paint.setBlendMode(blend);
-    paint.setColor(skia::kWhite);
 
     for (auto &part : fParts) {
       part.fY -= std::max(0.5f, part.fSpeed) * moved;
@@ -62,13 +74,32 @@ public:
       builder.lineTo(cx - w * 0.5f, cy + h * 0.5f);
       builder.lineTo(cx + w * 0.5f, cy + h * 0.5f);
       builder.close();
-      paint.setStrokeWidth(std::max(1.0f, w * 0.02f * 2.0f));
-      paint.setAlphaf(alpha * (0.6f + 0.4f * part.fShade));
+      paint.setStrokeWidth(std::max(1.0f, w * fThickness * 2.0f));
+      // Clamped: a particle above the top edge or waiting to respawn has a y
+      // outside [0,1], and an unclamped lerp wraps the colour bytes.
+      const float depth = std::clamp(part.fY, 0.0f, 1.0f);
+      paint.setColor(lerpColour(fTop, fBottom, depth));
+      paint.setAlphaf(alpha *
+                      (fAlphaLow + (fAlphaHigh - fAlphaLow) * part.fShade));
       canvas->drawPath(builder.detach(), paint);
     }
   }
 
 private:
+  [[nodiscard]] static skia::SkColor lerpColour(skia::SkColor from,
+                                                skia::SkColor to, float t) {
+    const auto channel = [](skia::SkColor c, int shift) {
+      return static_cast<float>((c >> shift) & 0xffu);
+    };
+    const auto mix = [t](float a, float b) {
+      return static_cast<std::uint8_t>(a + (b - a) * t);
+    };
+    return skia::colorSetARGB(mix(channel(from, 24), channel(to, 24)),
+                              mix(channel(from, 16), channel(to, 16)),
+                              mix(channel(from, 8), channel(to, 8)),
+                              mix(channel(from, 0), channel(to, 0)));
+  }
+
   struct Particle {
     float fX = 0.0f;
     float fY = 0.0f;
@@ -110,6 +141,11 @@ private:
   float fVelocity = 1.0f;
   float fSpawnRatio = 1.0f;
   float fScaleAdjust = 1.0f;
+  float fThickness = 0.02f;
+  float fAlphaLow = 0.6f;
+  float fAlphaHigh = 1.0f;
+  skia::SkColor fTop = skia::kWhite;
+  skia::SkColor fBottom = skia::kWhite;
 };
 
 } // namespace client::triangles
