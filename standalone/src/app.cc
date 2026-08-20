@@ -422,6 +422,10 @@ private:
   int fHotResultButton = -1; // which action the pointer is on
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
   int fHotReplayPanel = -1;
+  // Defined further down, next to the code that steps it; a unique_ptr only
+  // needs the type complete where it is destroyed, which is the end of this
+  // class.
+  struct ExportJob;
   std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
   bool fPointerWasInDialog = false;
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
@@ -5343,7 +5347,11 @@ private:
     job->fEngine.emplace(*fMap, fMods);
     job->fEnd = fMap->lastObjectEndTime() + 1500.0;
     job->fStep = 1000.0 / static_cast<double>(job->fOpts.fFps);
-    job->fSaved = fEngine;
+    // Engine is copy-constructible but not copy-assignable, so the client's
+    // own is put aside by construction rather than by assignment.
+    if (fEngine) {
+      job->fSaved.emplace(*fEngine);
+    }
     fExportDialog.setStatus("rendering 0%");
     fExportJob = std::move(job);
   }
@@ -5377,7 +5385,7 @@ private:
         ++job.fEvent;
       }
       job.fEngine->advance(job.fTime);
-      fEngine = job.fEngine; // the view draws the state it is handed
+      fEngine.emplace(*job.fEngine); // the view draws the state it is handed
       fView.render(this->gameplayCtx(fSurface->getCanvas()), job.fTime);
       fContext->flushAndSubmit(fSurface.get());
       job.fExporter->addFrame(fSurface->makeImageSnapshot());
@@ -5416,7 +5424,11 @@ private:
       }
     }
     job.fOpts.fAudio = audioPath;
-    fEngine = job.fSaved;
+    if (job.fSaved) {
+      fEngine.emplace(*job.fSaved);
+    } else {
+      fEngine.reset();
+    }
     fExportDialog.setStatus("encoding...");
 
     auto finished = std::make_shared<std::pair<bool, std::string>>();
