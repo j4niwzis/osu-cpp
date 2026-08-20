@@ -143,8 +143,13 @@ private:
   double fRedrawUntilWall = 0.0; // frames are drawn until at least this time
   double fLastDrawWall = 0.0;
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
+  // Two distinct things, which sharing one variable confused: what the next
+  // frame has to repaint (filled in while this one draws) and what this frame
+  // is clipped to (taken from that accumulator when the frame starts).
   skia::SkIRect fDamage = skia::SkIRect::MakeEmpty();
   bool fFullDamage = true;
+  skia::SkIRect fFrameClip = skia::SkIRect::MakeEmpty();
+  bool fFrameClipFull = true;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
   double fFpsPrevWall = 0.0;
@@ -1382,13 +1387,21 @@ private:
   // have -- the screens repaint from state, so a clipped repaint of a region
   // is the same pixels -- only the work outside the clip is skipped.
   void beginFrame() {
+    // Take the accumulator as this frame's clip and hand a fresh one to the
+    // screens, which fill it in as they draw for the frame after this.
+    fFrameClipFull = fFullDamage || fDamage.isEmpty();
+    fFrameClip = fFrameClipFull ? skia::SkIRect::MakeWH(fScreenW, fScreenH)
+                                : fDamage;
+    fDamage = skia::SkIRect::MakeEmpty();
+    fFullDamage = false;
+
     if (!fSurface) {
       return;
     }
     auto *canvas = fSurface->getCanvas();
     fFrameSave = canvas->save();
-    if (!fFullDamage && !fDamage.isEmpty()) {
-      canvas->clipIRect(fDamage);
+    if (!fFrameClipFull) {
+      canvas->clipIRect(fFrameClip);
     }
   }
 
@@ -1438,11 +1451,6 @@ private:
     fLastDrawWall = wallMs();
     if (fState == State::kPlaying) {
       this->damageAll(); // a moving picture by definition
-    }
-    // Anything that changed without saying where repaints everything; a
-    // frame drawn with nothing marked would otherwise clip to nothing.
-    if (!fFullDamage && fDamage.isEmpty()) {
-      this->damageAll();
     }
     this->beginFrame();
     switch (fState) {
@@ -1541,7 +1549,6 @@ private:
     this->drawDeleteConfirmation(canvas);
     this->drawToast(canvas);
     this->drawFpsCounter(canvas);
-    this->showDamage(canvas);
     canvas->restoreToCount(fFrameSave);
     fContext->flushAndSubmit(fSurface.get());
 
@@ -1549,26 +1556,31 @@ private:
     // takes the whole surface; the saving is in what was drawn into the
     // surface, not in what is copied out of it.
     if (fWindowSurface) {
-      fSurface->draw(fWindowSurface->getCanvas(), 0.0f, 0.0f);
+      auto *window = fWindowSurface->getCanvas();
+      fSurface->draw(window, 0.0f, 0.0f);
+      // Drawn onto the window rather than into the surface: the surface keeps
+      // what is not repainted, so an outline drawn there would pile up.
+      this->showDamage(window);
       fContext->flushAndSubmit(fWindowSurface.get());
     }
     glfw::glfwSwapBuffers(fWindow);
-    fDamage = skia::SkIRect::MakeEmpty();
-    fFullDamage = false;
   }
 
   // OSU_SHOW_DAMAGE=1 outlines what was repainted, which is the only way to
   // see whether a screen is reporting its damage honestly.
   void showDamage(skia::SkCanvas *canvas) {
     static const bool show = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-    if (!show || fFullDamage || fDamage.isEmpty()) {
+    if (!show) {
       return;
     }
+    // What this frame actually repainted: magenta for a region, red around
+    // the edge when the whole screen went.
     skia::SkPaint paint;
     paint.setStyle(skia::kStrokeStyle);
-    paint.setStrokeWidth(2.0f);
-    paint.setColor(skia::colorSetARGB(255, 255, 0, 255));
-    canvas->drawRect(skia::SkRect::Make(fDamage), paint);
+    paint.setStrokeWidth(fFrameClipFull ? 6.0f : 2.0f);
+    paint.setColor(fFrameClipFull ? skia::colorSetARGB(255, 255, 40, 40)
+                                  : skia::colorSetARGB(255, 255, 0, 255));
+    canvas->drawRect(skia::SkRect::Make(fFrameClip), paint);
   }
 
   void framePlaying() {
