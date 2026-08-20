@@ -4914,8 +4914,14 @@ private:
       }
       std::ranges::sort(fLogoTris, {}, &Tri::fScale);
     }
-    const float moved = static_cast<float>(fUiDt) / 1000.0f *
-                        kTriangleBaseVelocity / std::max(1.0f, h);
+    // Held still by the same switch as the ones behind the menu: these are
+    // the ones that were still drifting, a frame at a time, whenever
+    // something else caused a frame -- so they crept while the pointer moved
+    // and froze when it stopped.
+    const float moved = fSettings.flag("menutriangles")
+                            ? static_cast<float>(fUiDt) / 1000.0f *
+                                  kTriangleBaseVelocity / std::max(1.0f, h)
+                            : 0.0f;
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
     skia::SkPaint p;
     p.setAntiAlias(true);
@@ -4986,7 +4992,11 @@ private:
         if (hash01(index * 40503U + 17U) > 0.94f) {
           amp *= 2.1f; // a partial standing out of the noise
         }
-        bars[static_cast<std::size_t>(i)] = std::clamp(amp, 0.01f, 0.85f);
+        // Shorter than a loud moment of music: this one is on screen for as
+        // long as the menu is, and a skirt that reaches out as far as a drop
+        // does looks wrong standing still.
+        bars[static_cast<std::size_t>(i)] = std::clamp(amp * 0.62f, 0.01f,
+                                                       0.55f);
       }
       return bars;
     }();
