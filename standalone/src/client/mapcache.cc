@@ -37,7 +37,10 @@ public:
   // Bump when the star algorithm changes so stale ratings are recomputed.
   // 2: strain peak capping, slider repeat/tick thresholds, spinners no longer
   //    skipped by the speed and reading skills.
-  static constexpr int kStarAlgorithmVersion = 2;
+  // 3: the angle fix (atan2 of a zero vector), the reduction loop, zero-length
+  //    sliders, NaN green lines, stack heights, curve approximation. This is
+  //    the version that matches lazer's own diffcalc tests.
+  static constexpr int kStarAlgorithmVersion = 3;
   // Bump when this file's field layout changes.
   static constexpr int kSchemaVersion = 3;
 
