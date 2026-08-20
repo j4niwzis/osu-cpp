@@ -1618,6 +1618,13 @@ private:
       this->frameResults();
       break;
     }
+    // Anything that eased this frame has not finished easing, so the next
+    // frame is owed. This is what keeps screens that draw immediately -- the
+    // carousel, the listing, the panels -- animating without each of them
+    // having to announce it.
+    if (client::ui::takeEasingMoved()) {
+      this->requestRedraw(40.0);
+    }
     this->limitFrameRate();
   }
 
