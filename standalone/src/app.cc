@@ -185,7 +185,14 @@ private:
   bool fComputedClipFull = true;
 
   [[nodiscard]] bool partialRedraw() const {
+#ifdef __EMSCRIPTEN__
+    // WebGL throws the drawing buffer away after compositing unless the
+    // context was made with preserveDrawingBuffer, so there is no older frame
+    // to repaint a piece of: in a browser every frame is a whole frame.
+    return false;
+#else
     return fForcePartialRedraw || fSettings.flag("partial");
+#endif
   }
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
@@ -317,6 +324,7 @@ private:
   };
   std::vector<MenuButton> fMenuButtons; // rebuilt every pause/results frame
   double fPausedNow = 0.0;              // frozen game time while paused
+  double fPolledCursorX = -1.0, fPolledCursorY = -1.0; // wasm cursor polling
   client::pause::PauseMenu fPauseMenu;
   int fRetryCount = 0;      // plays of this map since it was chosen
   bool fRetryPending = false;
@@ -1865,7 +1873,13 @@ private:
     if (!this->needsFrame()) {
       // Nothing to show: no clear, no draw, no swap, so the front buffer
       // keeps what it already had.
+#ifndef __EMSCRIPTEN__
       std::this_thread::sleep_for(std::chrono::milliseconds(4));
+#endif
+      // In a browser this is a callback on the main thread and the frame is
+      // paced by requestAnimationFrame: sleeping here would block the page,
+      // and emscripten implements the sleep as a spin, which is worse than
+      // the frame we are trying not to draw.
       return;
     }
     // Screens built as a scene tree settle before anything is drawn: the
@@ -1880,7 +1894,9 @@ private:
       if (client::ui::takeEasingMoved()) {
         this->oweFrames(2);
       }
+#ifndef __EMSCRIPTEN__
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
+#endif
       return;
     }
     fLastDrawWall = wallMs();
@@ -3868,10 +3884,17 @@ private:
     glfw::glfwPollEvents();
 
     {
+      // Polled rather than delivered by a callback here, so it is only an
+      // event when it actually moved: pushing the same position every frame
+      // made every frame an event, and an event owes frames.
       double cx = 0, cy = 0;
       glfw::glfwGetCursorPos(fWindow, &cx, &cy);
-      this->enqueue({wallMs(), EventType::kCursorMove, 0, 0,
-                     static_cast<float>(cx), static_cast<float>(cy)});
+      if (cx != fPolledCursorX || cy != fPolledCursorY) {
+        fPolledCursorX = cx;
+        fPolledCursorY = cy;
+        this->enqueue({wallMs(), EventType::kCursorMove, 0, 0,
+                       static_cast<float>(cx), static_cast<float>(cy)});
+      }
     }
 
     int fw = 0, fh = 0;
