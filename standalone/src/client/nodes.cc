@@ -79,9 +79,9 @@ protected:
       return;
     }
     font->setSize(fSize);
-    font->setEmbolden(fBold);
+    client::ui::fonts().applyWeight(*font, fBold);
     const float measured = client::ui::fonts().measure(*font, fText);
-    font->setEmbolden(false);
+    client::ui::fonts().applyWeight(*font, false);
     fWidth = fMaxWidth > 0.0f ? std::min(fMaxWidth, measured) : measured;
     fHeight = fSize * 1.25f;
     fMeasuredSize = fSize;
@@ -93,7 +93,7 @@ protected:
       return;
     }
     font->setSize(fSize);
-    font->setEmbolden(fBold);
+    client::ui::fonts().applyWeight(*font, fBold);
     skia::SkPaint paint;
     paint.setAntiAlias(true);
     paint.setColor(fColour);
@@ -106,7 +106,7 @@ protected:
     client::ui::fonts().draw(canvas, *font, fText, fBounds.fLeft,
                              fBounds.fTop + fSize, paint);
     canvas->restoreToCount(saved);
-    font->setEmbolden(false);
+    client::ui::fonts().applyWeight(*font, false);
   }
 
 private:

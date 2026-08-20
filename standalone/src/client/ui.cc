@@ -87,7 +87,35 @@ class FontStack {
 public:
   void setPrimary(skia::Sp<skia::SkTypeface> face) {
     fPrimary = std::move(face);
+    // A weight instance of the same file, so bold text is a different face
+    // rather than the same one dilated at rasterisation time. Faking bold
+    // costs more per glyph than drawing one, and on a software rasteriser
+    // that is the difference between a text-heavy screen at 150 frames a
+    // second and at 60.
+    fPrimaryBold.reset();
+    if (fPrimary) {
+      skia::SkFontArguments::VariationPosition::Coordinate coordinate{
+          kWeightAxis, 600.0f};
+      skia::SkFontArguments::VariationPosition position{&coordinate, 1};
+      skia::SkFontArguments arguments;
+      arguments.setVariationDesignPosition(position);
+      fPrimaryBold = fPrimary->makeClone(arguments);
+    }
     this->invalidateCaches();
+  }
+
+  // Picks the face for the weight instead of asking the rasteriser to
+  // thicken one, falling back to that only when there is no bold instance.
+  void applyWeight(skia::SkFont &font, bool bold) const {
+    if (bold && fPrimaryBold) {
+      font.setTypeface(fPrimaryBold);
+      font.setEmbolden(false);
+      return;
+    }
+    if (fPrimary) {
+      font.setTypeface(fPrimary);
+    }
+    font.setEmbolden(bold);
   }
   void addFallback(skia::Sp<skia::SkTypeface> face) {
     if (face) {
@@ -291,7 +319,15 @@ private:
     return cp;
   }
 
+  // 'wght', the OpenType weight axis.
+  static constexpr std::uint32_t kWeightAxis =
+      (static_cast<std::uint32_t>('w') << 24) |
+      (static_cast<std::uint32_t>('g') << 16) |
+      (static_cast<std::uint32_t>('h') << 8) |
+      static_cast<std::uint32_t>('t');
+
   skia::Sp<skia::SkTypeface> fPrimary;
+  skia::Sp<skia::SkTypeface> fPrimaryBold;
   std::vector<skia::Sp<skia::SkTypeface>> fFallbacks;
   mutable std::unordered_map<std::int32_t, int> fCoverage;
   mutable std::unordered_map<const skia::SkTypeface *, bool> fAsciiCovered;

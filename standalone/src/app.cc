@@ -1484,24 +1484,37 @@ private:
     // Partial repainting draws straight into the window: there is no second
     // surface and nothing is copied. The buffer being drawn into is one of
     // several the window cycles through, so it is missing everything the last
-    // few frames changed -- clipping to their union is what makes drawing
-    // less than a whole frame produce a correct one.
+    // few frames changed.
     //
-    // Whether it wins depends on where the frame's cost is. On a software
-    // rasteriser pixels are CPU time, so painting a strip instead of a screen
-    // is a real saving. On a GPU the cost is the number of draw calls, which
-    // clipping does not reduce -- which is why it is asked for rather than
-    // assumed.
+    // Clipped to one rectangle rather than to a region of several: a region
+    // takes Skia off its analytic clip path and onto clip masks, which are
+    // paid per draw call and cost more than the pixels they save.
     if (!fPartialRedraw || this->blitRegionFull()) {
       return;
     }
-    skia::SkRegion region;
+    skia::SkIRect bounds = skia::SkIRect::MakeEmpty();
     for (const auto &frame : fBlitHistory) {
       for (const auto &area : frame) {
-        region.op(area, skia::SkRegion::kUnion_Op);
+        if (bounds.isEmpty()) {
+          bounds = area;
+        } else {
+          bounds.join(area);
+        }
       }
     }
-    canvas->clipRegion(region);
+    if (bounds.isEmpty()) {
+      return;
+    }
+    // Past half the screen the clip stops paying for itself: every draw call
+    // is recorded and tested either way, and only pixels are saved.
+    const std::int64_t screenArea =
+        static_cast<std::int64_t>(fScreenW) * fScreenH;
+    const std::int64_t boundsArea =
+        static_cast<std::int64_t>(bounds.width()) * bounds.height();
+    if (boundsArea * 2 > screenArea) {
+      return;
+    }
+    canvas->clipIRect(bounds);
     // What is repainted starts clean: the buffer holds an older frame, and
     // anything translucent drawn over it would otherwise stack up.
     if (fState != State::kPlaying) {
@@ -1673,11 +1686,15 @@ private:
     }
     if (fSettingsPanel.visible()) {
       this->drawSettings(canvas);
-      // Scrolling, hovering and dragging all happen inside this strip, and
-      // the screen underneath has no idea it is there.
-      this->damage(skia::SkRect::MakeXYWH(
-          0.0f, 0.0f, fSettingsPanel.occupiedWidth() + 4.0f,
-          static_cast<float>(fScreenH)));
+      // Scrolling, hovering and dragging happen inside this strip, and the
+      // screen underneath has no idea it is there. A panel nobody is touching
+      // does not change, so marking it every frame would repaint half the
+      // screen for nothing.
+      const float stripWidth = fSettingsPanel.occupiedWidth() + 4.0f;
+      if (fSettingsPanel.animating(wallMs()) || fMouseX <= stripWidth) {
+        this->damage(skia::SkRect::MakeXYWH(0.0f, 0.0f, stripWidth,
+                                            static_cast<float>(fScreenH)));
+      }
     }
     if (fReplayListOpen) {
       this->drawReplayList(canvas);
@@ -1724,12 +1741,13 @@ private:
       return;
     }
     std::println(std::cerr,
-                 "[frame] draw {:.2f} ms, blit {:.2f} ms, swap {:.2f} ms "
-                 "over {} frames",
+                 "[frame] record {:.2f} ms, raster {:.2f} ms, swap {:.2f} "
+                 "ms over {} frames{}",
                  static_cast<double>(fCostDrawUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
                  static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0,
-                 fCostFrames);
+                 fCostFrames,
+                 fPartialRedraw ? " (partial redraw)" : "");
     fCostLogWall = wallMs();
     fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
     fCostFrames = 0;
@@ -6131,6 +6149,12 @@ private:
   // which is how Chinese or anything else can be added without a rebuild.
   void loadFonts() {
     auto &stack = client::ui::fonts();
+    if (std::getenv("OSU_SYSTEM_FONT") != nullptr) {
+      // For comparing against what the system provides: when text is what
+      // costs, swapping the faces out in one run is worth the branch.
+      std::println(std::cerr, "[ui] bundled fonts skipped by request");
+      return;
+    }
     auto primary = this->loadTypeface("Inter.ttf");
     stack.setPrimary(primary);
 

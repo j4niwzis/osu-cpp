@@ -364,21 +364,21 @@ private:
 
   [[nodiscard]] float measure(const std::string &s, float size, bool bold) {
     fFont->setSize(size);
-    fFont->setEmbolden(bold);
+    client::ui::fonts().applyWeight(*fFont, bold);
     const float w = client::ui::fonts().measure(*fFont, s);
-    fFont->setEmbolden(false);
+    client::ui::fonts().applyWeight(*fFont, false);
     return w;
   }
   void text(const std::string &s, float x, float y, float size,
             skia::SkColor color, bool bold = false, float alpha = 1.0f) {
     fFont->setSize(size);
-    fFont->setEmbolden(bold);
+    client::ui::fonts().applyWeight(*fFont, bold);
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
     p.setAlphaf(alpha);
     client::ui::fonts().draw(fCanvas, *fFont, s, x, y, p);
-    fFont->setEmbolden(false);
+    client::ui::fonts().applyWeight(*fFont, false);
   }
   void textClipped(const std::string &s, float x, float y, float maxW,
                    float size, skia::SkColor color, bool bold = false,
