@@ -346,19 +346,6 @@ public:
   // The query is edited through the client, which types into the string the
   // box reads. The box has no way of noticing that, and a client that only
   // draws what says it changed would never show the letter that was typed.
-  // The dropdown belongs to the tree rather than to the card, so the card
-  // asks about it rather than looking only at its own hover.
-  [[nodiscard]] bool expansionHovered(const CardNode *card) const {
-    return fExpansion != nullptr && fExpansion->hovered() &&
-           fExpandedCard == card;
-  }
-
-  void invalidateExpansion() {
-    if (fExpansion != nullptr) {
-      fExpansion->invalidateLayout();
-    }
-  }
-
   void queryEdited() {
     if (fSearchBox != nullptr) {
       fSearchBox->markDamaged();
@@ -1303,6 +1290,19 @@ private:
   private:
     Listing *fOwner;
   };
+
+  // The dropdown belongs to the tree rather than to the card, so the card
+  // asks about it rather than looking only at its own hover.
+  [[nodiscard]] bool expansionHovered(const CardNode *card) const {
+    return fExpansion != nullptr && fExpansion->hovered() &&
+           fExpandedCard == card;
+  }
+
+  void invalidateExpansion() {
+    if (fExpansion != nullptr) {
+      fExpansion->invalidateLayout();
+    }
+  }
 
   // OverlayHeader with its title and description.
   class HeaderNode : public scene::Drawable {
