@@ -2278,6 +2278,22 @@ private:
   std::size_t fMirror = 0;
   static constexpr int kSearchPageSize = 50;
 
+  // "2020-04-24T18:08:56+02:00" -> a number that sorts by date. Only the
+  // ordering matters, so the digits are simply concatenated.
+  [[nodiscard]] static std::int64_t dateStamp(std::string_view iso) {
+    std::int64_t v = 0;
+    int digits = 0;
+    for (const char c : iso) {
+      if (c >= '0' && c <= '9') {
+        v = v * 10 + (c - '0');
+        if (++digits == 14) {
+          break;
+        }
+      }
+    }
+    return v;
+  }
+
   // osu! status ids, which two of the three mirrors take directly.
   [[nodiscard]] static int statusId(client::listing::Category c) {
     using Category = client::listing::Category;
