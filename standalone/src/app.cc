@@ -215,6 +215,8 @@ private:
   };
   bool fReplayListOpen = false;
   std::vector<ReplayFile> fReplays;
+  std::string fReplayFilter; // md5 the list was built for
+  std::filesystem::path fLastSavedReplay; // this run's own file
   struct PanelHit {
     skia::SkRect fRect;
     int fIndex;
@@ -1164,6 +1166,7 @@ private:
       this->frameMainMenu();
       break;
     case State::kSongSelect:
+      this->refreshReplayFilter();
       this->frameSongSelect();
       break;
     case State::kDownload:
@@ -1290,6 +1293,7 @@ private:
     }
     fPlayingSet = setIdx;
     fPlayingDiff = diffIdx;
+    fLastSavedReplay.clear();
     fSet = *set; // active copy: gameplay reads audio/bg from here
     fMenuMusicForSet = -1;  // gameplay reloads the track from scratch
     fAudio.setLooping(false);
@@ -3307,7 +3311,42 @@ private:
     }
   }
 
+  // The browser lists the selected difficulty's replays, so a selection made
+  // while it is open has to rebuild the list.
+  void refreshReplayFilter() {
+    if (!fReplayListOpen) {
+      return;
+    }
+    if (this->difficultyMd5(fSelSet, fSelDiff) != fReplayFilter) {
+      this->scanReplays();
+    }
+  }
+
+  // md5 of a difficulty in the library, which is what an .osr records.
+  [[nodiscard]] std::string difficultyMd5(int setIdx, int diffIdx) {
+    const auto &infos = this->infosFor(setIdx);
+    if (diffIdx < 0 || diffIdx >= static_cast<int>(infos.size())) {
+      return {};
+    }
+    auto set = this->setFor(setIdx);
+    if (!set) {
+      return {}; // still loading; the list fills in on a later frame
+    }
+    const auto bytes =
+        set->findFile(infos[static_cast<std::size_t>(diffIdx)].fFilename);
+    if (bytes.empty()) {
+      return {};
+    }
+    return osu::md5HashString(bytes);
+  }
+
+  // Only the replays for the difficulty in question, as a leaderboard shows.
   void scanReplays() {
+    const std::string wanted =
+        fState == State::kResults || fState == State::kPlaying
+            ? this->beatmapMd5()
+            : this->difficultyMd5(fSelSet, fSelDiff);
+    fReplayFilter = wanted;
     fReplays.clear();
     std::error_code ec;
     for (const auto &e : std::filesystem::directory_iterator(fReplayDir, ec)) {
@@ -3316,6 +3355,7 @@ private:
       }
       ReplayFile entry{e.path(), e.path().stem().string(),
                        e.last_write_time(ec)};
+      bool matches = wanted.empty();
       // Read just the header for the score; the events stay compressed.
       std::ifstream in(e.path(), std::ios::binary);
       if (in) {
@@ -3324,6 +3364,10 @@ private:
             std::istreambuf_iterator<char>());
         try {
           const auto data = osu::decodeReplay(bytes);
+          if (!wanted.empty() && data.fBeatmapMd5 != wanted) {
+            continue; // a replay of some other difficulty
+          }
+          matches = true;
           entry.fScore = data.fScore;
           entry.fHasScore = data.fScore.totalHits() > 0;
           if (entry.fHasScore) {
@@ -3337,8 +3381,12 @@ private:
             entry.fGrade = osu::gradeString(osu::computeGrade(state));
           }
         } catch (const std::exception &) {
-          // Unreadable replay: still listed, just without a score.
+          // Unreadable replay: skip it rather than list it as a mystery.
+          continue;
         }
+      }
+      if (!matches) {
+        continue;
       }
       fReplays.push_back(std::move(entry));
     }
@@ -4352,7 +4400,15 @@ private:
         0, static_cast<int>((sw * 0.5f - expandedW * 0.5f -
                              kExpandedSpacing * scale) /
                             ((contractedW + kPanelSpacing) * scale)));
-    const int total = static_cast<int>(fReplays.size());
+    // The score in hand is the expanded panel, so the replay just written for
+    // it must not appear as a side panel too.
+    std::vector<int> sidePanels;
+    for (int i = 0; i < static_cast<int>(fReplays.size()); ++i) {
+      if (fReplays[static_cast<std::size_t>(i)].fPath != fLastSavedReplay) {
+        sidePanels.push_back(i);
+      }
+    }
+    const int total = static_cast<int>(sidePanels.size());
     const int shown = std::min(total, perSide * 2);
 
     float leftX = sw * 0.5f - expandedW * 0.5f - kExpandedSpacing * scale -
@@ -4370,10 +4426,11 @@ private:
                                    panelH);
         rightX += contractedW + kPanelSpacing * scale;
       }
-      this->drawContractedPanel(p, r, fReplays[static_cast<std::size_t>(i)],
+      const int idx = sidePanels[static_cast<std::size_t>(i)];
+      this->drawContractedPanel(p, r, fReplays[static_cast<std::size_t>(idx)],
                                 scale);
       if (interactive) {
-        fPanelHits.push_back({r, i});
+        fPanelHits.push_back({r, idx});
       }
     }
 
@@ -5101,6 +5158,7 @@ private:
     std::ofstream out(outPath, std::ios::binary);
     for (std::uint8_t b : replayBytes)
       out.put(static_cast<char>(b));
+    fLastSavedReplay = outPath;
     std::println(std::cerr, "[replay] saved {}", outPath.string());
   }
 
