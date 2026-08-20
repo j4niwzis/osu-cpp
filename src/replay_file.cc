@@ -34,6 +34,16 @@ struct ReplayScore {
   }
 };
 
+// Everything the .osr carries before the compressed input events. Reading it
+// costs a few hundred bytes and no decompression, which is what indexing a
+// replay directory needs.
+struct ReplayHeader {
+  std::string fBeatmapMd5;
+  std::string fPlayerName;
+  ModSet fMods = mod::kNone;
+  ReplayScore fScore;
+};
+
 struct ReplayData {
   std::vector<InputEvent> fEvents;
   std::string fBeatmapMd5;
@@ -371,29 +381,90 @@ encodeReplay(std::span<const InputEvent> events, const std::string &beatmapMd5,
   return out;
 }
 
+// The header, parsed with bounds checks so that a truncated buffer -- a
+// prefix read for indexing, or a half-written file -- is rejected instead of
+// running off the end. `sp` is left at the first byte after the header.
+[[nodiscard]] inline ReplayHeader
+parseReplayHeader(std::span<const std::uint8_t> &sp) {
+  using namespace detail;
+  const auto need = [&sp](std::size_t n) {
+    if (sp.size() < n) {
+      throw std::runtime_error{"replay header truncated"};
+    }
+  };
+  const auto str = [&sp, &need]() {
+    need(1);
+    if (sp[0] == 0x00) {
+      sp = sp.subspan(1);
+      return std::string{};
+    }
+    auto probe = sp.subspan(1);
+    // ULEB128 length, at most five bytes for the 32-bit lengths osu! writes.
+    std::uint64_t len = 0;
+    int shift = 0;
+    std::size_t used = 0;
+    while (true) {
+      if (used >= probe.size() || used >= 5) {
+        throw std::runtime_error{"replay header truncated"};
+      }
+      const std::uint8_t byte = probe[used++];
+      len |= static_cast<std::uint64_t>(byte & 0x7f) << shift;
+      shift += 7;
+      if ((byte & 0x80) == 0) {
+        break;
+      }
+    }
+    probe = probe.subspan(used);
+    if (probe.size() < len) {
+      throw std::runtime_error{"replay header truncated"};
+    }
+    std::string out(probe.begin(),
+                    probe.begin() + static_cast<std::ptrdiff_t>(len));
+    sp = probe.subspan(static_cast<std::size_t>(len));
+    return out;
+  };
+
+  ReplayHeader h;
+  need(5);
+  readByte(sp); // mode
+  readInt(sp);  // game version
+  h.fBeatmapMd5 = str();
+  h.fPlayerName = str();
+  str(); // replay md5
+  need(23);
+  h.fScore.f300 = readShort(sp);
+  h.fScore.f100 = readShort(sp);
+  h.fScore.f50 = readShort(sp);
+  h.fScore.fGeki = readShort(sp);
+  h.fScore.fKatu = readShort(sp);
+  h.fScore.fMiss = readShort(sp);
+  h.fScore.fTotalScore = readInt(sp);
+  h.fScore.fMaxCombo = readShort(sp);
+  h.fScore.fPerfect = readByte(sp) != 0;
+  h.fMods = osu::ModSet(static_cast<std::uint32_t>(readInt(sp)));
+  str(); // life bar graph
+  need(8);
+  readLong(sp); // timestamp
+  return h;
+}
+
+[[nodiscard]] inline ReplayHeader
+decodeReplayHeader(std::span<const std::uint8_t> data) {
+  auto sp = data;
+  return parseReplayHeader(sp);
+}
+
 [[nodiscard]] inline ReplayData
 decodeReplay(std::span<const std::uint8_t> data) {
   using namespace detail;
   ReplayData result;
   auto sp = data;
 
-  readByte(sp);
-  readInt(sp);
-  result.fBeatmapMd5 = readString(sp);
-  result.fPlayerName = readString(sp);
-  readString(sp);
-  result.fScore.f300 = static_cast<std::uint16_t>(readShort(sp));
-  result.fScore.f100 = static_cast<std::uint16_t>(readShort(sp));
-  result.fScore.f50 = static_cast<std::uint16_t>(readShort(sp));
-  result.fScore.fGeki = static_cast<std::uint16_t>(readShort(sp));
-  result.fScore.fKatu = static_cast<std::uint16_t>(readShort(sp));
-  result.fScore.fMiss = static_cast<std::uint16_t>(readShort(sp));
-  result.fScore.fTotalScore = readInt(sp);
-  result.fScore.fMaxCombo = static_cast<std::uint16_t>(readShort(sp));
-  result.fScore.fPerfect = readByte(sp) != 0;
-  result.fMods = osu::ModSet(static_cast<std::uint32_t>(readInt(sp)));
-  readString(sp);
-  readLong(sp);
+  auto header = parseReplayHeader(sp);
+  result.fBeatmapMd5 = std::move(header.fBeatmapMd5);
+  result.fPlayerName = std::move(header.fPlayerName);
+  result.fMods = header.fMods;
+  result.fScore = header.fScore;
 
   std::int32_t replayLen = readInt(sp);
   auto replayBytes = sp.subspan(0, static_cast<std::size_t>(replayLen));

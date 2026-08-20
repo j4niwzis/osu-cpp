@@ -667,6 +667,7 @@ inline Beatmap parseBeatmap(std::string_view text) {
 
 struct BeatmapInfo {
   std::string fFilename;
+  std::string fMd5; // of the .osu file, which is how a replay names it
   Metadata fMeta;
   Difficulty fDiff;
   double fLengthMs = 0.0;

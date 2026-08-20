@@ -16,6 +16,7 @@ export namespace client {
 // version, and any mismatch simply recomputes that set.
 struct CachedDifficulty {
   std::string fFilename;
+  std::string fMd5;
   std::string fTitle, fTitleUnicode, fArtist, fArtistUnicode, fCreator,
       fVersion, fAudioFilename, fBackground;
   double fStars = 0.0;
@@ -35,7 +36,7 @@ public:
   // Bump when the star algorithm changes so stale ratings are recomputed.
   static constexpr int kStarAlgorithmVersion = 1;
   // Bump when this file's field layout changes.
-  static constexpr int kSchemaVersion = 1;
+  static constexpr int kSchemaVersion = 2;
 
   void load(const std::filesystem::path &file) {
     fFile = file;
@@ -82,6 +83,7 @@ public:
           }
           CachedDifficulty cd;
           cd.fFilename = strOf(dobj, "file");
+          cd.fMd5 = strOf(dobj, "md5");
           cd.fTitle = strOf(dobj, "title");
           cd.fTitleUnicode = strOf(dobj, "titleU");
           cd.fArtist = strOf(dobj, "artist");
@@ -140,6 +142,7 @@ public:
       for (const auto &d : cs.fDifficulties) {
         bjson::object dobj;
         dobj["file"] = d.fFilename;
+        dobj["md5"] = d.fMd5;
         dobj["title"] = d.fTitle;
         dobj["titleU"] = d.fTitleUnicode;
         dobj["artist"] = d.fArtist;

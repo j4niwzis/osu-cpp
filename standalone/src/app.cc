@@ -20,6 +20,7 @@ import client.timing;
 import client.http;
 import client.spectrum;
 import client.mapcache;
+import client.replaycache;
 import client.filter;
 import client.loader;
 import client.ui;
@@ -208,14 +209,14 @@ private:
   struct ReplayFile {
     std::filesystem::path fPath;
     std::string fLabel;
-    std::filesystem::file_time_type fTime;
-    osu::ReplayScore fScore;  // from the .osr header
+    osu::ReplayScore fScore; // from the .osr header, via the index
     std::string fGrade;
     bool fHasScore = false;
   };
   bool fReplayListOpen = false;
   std::vector<ReplayFile> fReplays;
   std::string fReplayFilter; // md5 the list was built for
+  client::ReplayIndex fReplayIndex;
   std::filesystem::path fLastSavedReplay; // this run's own file
   struct PanelHit {
     skia::SkRect fRect;
@@ -1387,8 +1388,7 @@ private:
     // run is never lost because the flag was not passed.
     // Watching a replay must not write it back out again.
     if (fReplayPath.empty() && (fRecord || fSettings.flag("savereplay"))) {
-      this->saveReplay();
-      this->scanReplays(); // so the browser lists it immediately
+      this->saveReplay(); // the index picks it up; the results list follows
     }
     this->switchState(State::kResults);
     fView.invalidate();
@@ -1455,6 +1455,8 @@ private:
     fReplayDir = fMapsDir.parent_path() / "replays";
     std::filesystem::create_directories(fThumbDir, ec);
     fMapCache.load(fMapsDir / "metadata-cache.json");
+    fReplayIndex.load(fMapsDir.parent_path() / "replay-index.json");
+    fReplayIndex.refresh(fReplayDir);
     fSettings.load(fMapsDir.parent_path() / "settings.json");
     fAppliedDim = fSettings.value("dim");
 
@@ -1636,6 +1638,7 @@ private:
   infoFromCache(const client::CachedDifficulty &d) {
     osu::BeatmapInfo info;
     info.fFilename = d.fFilename;
+    info.fMd5 = d.fMd5;
     info.fMeta.fTitle = d.fTitle;
     info.fMeta.fTitleUnicode = d.fTitleUnicode;
     info.fMeta.fArtist = d.fArtist;
@@ -1657,8 +1660,9 @@ private:
   [[nodiscard]] static std::vector<client::CachedDifficulty>
   cacheRecordFor(const osu::BeatmapSet &set) {
     std::vector<client::CachedDifficulty> diffs;
+    diffs.reserve(set.fBeatmaps.size());
     for (const auto &info : set.fBeatmaps) {
-      diffs.push_back({info.fFilename, info.fMeta.fTitle,
+      diffs.push_back({info.fFilename, info.fMd5, info.fMeta.fTitle,
                        info.fMeta.fTitleUnicode, info.fMeta.fArtist,
                        info.fMeta.fArtistUnicode, info.fMeta.fCreator,
                        info.fMeta.fVersion, info.fMeta.fAudioFilename,
@@ -1682,24 +1686,7 @@ private:
       LibraryEntry entry;
       entry.fPath = path;
       for (const auto &d : *cached) {
-        osu::BeatmapInfo info;
-        info.fFilename = d.fFilename;
-        info.fMeta.fTitle = d.fTitle;
-        info.fMeta.fTitleUnicode = d.fTitleUnicode;
-        info.fMeta.fArtist = d.fArtist;
-        info.fMeta.fArtistUnicode = d.fArtistUnicode;
-        info.fMeta.fCreator = d.fCreator;
-        info.fMeta.fVersion = d.fVersion;
-        info.fMeta.fAudioFilename = d.fAudioFilename;
-        info.fMeta.fBackground = d.fBackground;
-        info.fStars = d.fStars;
-        info.fDiff.fCs = d.fCs;
-        info.fDiff.fAr = d.fAr;
-        info.fDiff.fOd = d.fOd;
-        info.fDiff.fHp = d.fHp;
-        info.fLengthMs = d.fLengthMs;
-        info.fObjectCount = d.fObjectCount;
-        entry.fInfos.push_back(std::move(info));
+        entry.fInfos.push_back(infoFromCache(d));
       }
       if (!entry.fInfos.empty()) {
         fLibrary.push_back(std::move(entry));
@@ -1715,17 +1702,7 @@ private:
       entry.fInfos = set->fBeatmaps;
       fLibrary.push_back(std::move(entry));
 
-      std::vector<client::CachedDifficulty> diffs;
-      for (const auto &info : set->fBeatmaps) {
-        diffs.push_back({info.fFilename, info.fMeta.fTitle,
-                         info.fMeta.fTitleUnicode, info.fMeta.fArtist,
-                         info.fMeta.fArtistUnicode, info.fMeta.fCreator,
-                         info.fMeta.fVersion, info.fMeta.fAudioFilename,
-                         info.fMeta.fBackground, info.fStars, info.fDiff.fCs,
-                         info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp,
-                         info.fLengthMs, info.fObjectCount});
-      }
-      fMapCache.store(key, size, mtime, std::move(diffs));
+      fMapCache.store(key, size, mtime, cacheRecordFor(*set));
     } catch (const std::exception &e) {
       std::println(std::cerr, "[library] skipping {}: {}", key, e.what());
     }
@@ -3350,6 +3327,9 @@ private:
   void toggleReplayList() {
     fReplayListOpen = !fReplayListOpen;
     if (fReplayListOpen) {
+      // Catch replays dropped in from outside; unchanged files are only
+      // stat'ed, so this is a directory listing and nothing more.
+      fReplayIndex.refresh(fReplayDir);
       this->scanReplays();
     }
   }
@@ -3365,25 +3345,19 @@ private:
     }
   }
 
-  // md5 of a difficulty in the library, which is what an .osr records.
-  [[nodiscard]] std::string difficultyMd5(int setIdx, int diffIdx) {
+  // md5 of a difficulty in the library, which is what an .osr records. It is
+  // computed when the archive is parsed and kept in the metadata cache, so
+  // this costs nothing and never has to open the archive.
+  [[nodiscard]] std::string difficultyMd5(int setIdx, int diffIdx) const {
     const auto &infos = this->infosFor(setIdx);
     if (diffIdx < 0 || diffIdx >= static_cast<int>(infos.size())) {
       return {};
     }
-    auto set = this->setFor(setIdx);
-    if (!set) {
-      return {}; // still loading; the list fills in on a later frame
-    }
-    const auto bytes =
-        set->findFile(infos[static_cast<std::size_t>(diffIdx)].fFilename);
-    if (bytes.empty()) {
-      return {};
-    }
-    return osu::md5HashString(bytes);
+    return infos[static_cast<std::size_t>(diffIdx)].fMd5;
   }
 
-  // Only the replays for the difficulty in question, as a leaderboard shows.
+  // The replays of the difficulty in question, as a leaderboard shows. The
+  // index answers this without touching the disk.
   void scanReplays() {
     const std::string wanted =
         fState == State::kResults || fState == State::kPlaying
@@ -3391,59 +3365,17 @@ private:
             : this->difficultyMd5(fSelSet, fSelDiff);
     fReplayFilter = wanted;
     fReplays.clear();
-    std::error_code ec;
-    for (const auto &e : std::filesystem::directory_iterator(fReplayDir, ec)) {
-      if (!e.is_regular_file() || e.path().extension() != ".osr") {
-        continue;
-      }
-      ReplayFile entry{e.path(), e.path().stem().string(),
-                       e.last_write_time(ec)};
-      bool matches = wanted.empty();
-      // Read just the header for the score; the events stay compressed.
-      std::ifstream in(e.path(), std::ios::binary);
-      if (in) {
-        const std::vector<std::uint8_t> bytes(
-            (std::istreambuf_iterator<char>(in)),
-            std::istreambuf_iterator<char>());
-        try {
-          const auto data = osu::decodeReplay(bytes);
-          if (!wanted.empty() && data.fBeatmapMd5 != wanted) {
-            continue; // a replay of some other difficulty
-          }
-          matches = true;
-          entry.fScore = data.fScore;
-          entry.fHasScore = data.fScore.totalHits() > 0;
-          if (entry.fHasScore) {
-            osu::ScoreState state;
-            state.fGreat = entry.fScore.f300;
-            state.fGood = entry.fScore.f100;
-            state.fMeh = entry.fScore.f50;
-            state.fMiss = entry.fScore.fMiss;
-            state.fScore = static_cast<std::uint64_t>(entry.fScore.fTotalScore);
-            state.fMaxCombo = entry.fScore.fMaxCombo;
-            entry.fGrade = osu::gradeString(osu::computeGrade(state));
-          }
-        } catch (const std::exception &) {
-          // Unreadable replay: skip it rather than list it as a mystery.
-          continue;
-        }
-      }
-      if (!matches) {
-        continue;
-      }
-      fReplays.push_back(std::move(entry));
+    for (const auto *e : fReplayIndex.forBeatmap(wanted)) {
+      fReplays.push_back({e->fPath, e->fLabel, e->fScore, e->fGrade,
+                          e->fHasScore});
     }
-    // Newest first, as a scores list would be.
-    std::ranges::sort(fReplays, std::ranges::greater{}, &ReplayFile::fTime);
-    // The score in hand (or the newest replay) starts expanded, centred.
+    // The score in hand starts expanded, centred.
     fSelectedPanel = 0;
     fPanelFreeScroll = false;
     fPanelDragging = false;
     fPanelEntries.clear();
   }
 
-  // The replay browser is the same ScorePanelList, with no score in hand:
-  // the panels are the saved replays and picking one plays it back.
   void drawReplayList(skia::SkCanvas *canvas) {
     if (!fReplayListOpen) {
       fPanelHits.clear();
@@ -5314,12 +5246,12 @@ private:
   }
 
   [[nodiscard]] std::string beatmapMd5() const {
-    if (!fMap)
-      return {};
-    const auto bytes = fSet.findFile(fBeatmapFilename);
-    if (bytes.empty())
-      return {};
-    return osu::md5HashString(bytes);
+    for (const auto &info : fSet.fBeatmaps) {
+      if (info.fFilename == fBeatmapFilename) {
+        return info.fMd5;
+      }
+    }
+    return {};
   }
 
   void saveReplay() {
@@ -5349,7 +5281,9 @@ private:
     std::ofstream out(outPath, std::ios::binary);
     for (std::uint8_t b : replayBytes)
       out.put(static_cast<char>(b));
+    out.close();
     fLastSavedReplay = outPath;
+    fReplayIndex.add(outPath);
     std::println(std::cerr, "[replay] saved {}", outPath.string());
   }
 

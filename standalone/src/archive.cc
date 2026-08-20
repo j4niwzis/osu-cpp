@@ -106,6 +106,7 @@ loadBeatmapSet(const std::filesystem::path &path) {
     const osu::Beatmap bm = osu::loadBeatmap(text);
     auto info = osu::buildBeatmapInfo(target, bm);
     info.fStars = osu::calculateStars(bm).fTotal;
+    info.fMd5 = osu::md5HashString(it->second);
     set.fBeatmaps.push_back(std::move(info));
   } else {
     throw std::runtime_error{"unsupported beatmap path: " + path.string()};
@@ -121,6 +122,7 @@ loadBeatmapSet(const std::filesystem::path &path) {
         const osu::Beatmap bm = osu::loadBeatmap(text);
         auto info = osu::buildBeatmapInfo(name, bm);
         info.fStars = osu::calculateStars(bm).fTotal;
+        info.fMd5 = osu::md5HashString(bytes);
         std::println("{} -> {:.2f}*", info.fMeta.fVersion, info.fStars);
         set.fBeatmaps.push_back(std::move(info));
       } catch (const osu::UnsupportedModeError &) {
