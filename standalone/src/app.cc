@@ -4466,7 +4466,9 @@ private:
       if (!data || data->isEmpty()) {
         continue;
       }
-      auto mgr = skia::SkFontMgr_New_Custom_Data(std::move(data));
+      // The factory takes a span of datas, not a single one.
+      std::array<skia::Sp<skia::SkData>, 1> datas{std::move(data)};
+      auto mgr = skia::SkFontMgr_New_Custom_Data(datas);
       if (!mgr) {
         continue;
       }
