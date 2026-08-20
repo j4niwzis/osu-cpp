@@ -128,6 +128,13 @@ public:
     fDirty = true;
   }
 
+  // A beatmap that has been deleted has no business staying in the cache.
+  void remove(const std::string &key) {
+    if (fEntries.erase(key) > 0) {
+      fDirty = true;
+    }
+  }
+
   void save() {
     if (!fDirty || fFile.empty()) {
       return;

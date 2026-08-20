@@ -201,6 +201,8 @@ private:
   skia::SkRect fBackChip = skia::SkRect::MakeEmpty();      // footer back
   bool fOptionsOpen = false;
   std::vector<skia::SkRect> fOptionHits;
+  bool fConfirmDelete = false; // the deletion dialog is up
+  std::vector<skia::SkRect> fConfirmHits;
 
   // Download screen (mirror search + .osz fetch).
   client::listing::Listing fListing;
@@ -815,6 +817,10 @@ private:
       return;
     }
     if (action == glfw::kPress && key == glfw::kKeyEscape) {
+      if (fConfirmDelete) {
+        fConfirmDelete = false;
+        return;
+      }
       if (fExportDialog.open()) {
         fExportDialog.close();
         return;
@@ -1051,6 +1057,9 @@ private:
   }
 
   void clickAt(float x, float y) {
+    if (this->confirmDeleteClick(x, y)) {
+      return;
+    }
     if (this->exportClick(x, y)) {
       return;
     }
@@ -1423,6 +1432,7 @@ private:
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
     }
+    this->drawDeleteConfirmation(canvas);
     this->drawToast(canvas);
     this->drawFpsCounter(canvas);
     fContext->flushAndSubmit(fSurface.get());
@@ -1803,14 +1813,21 @@ private:
     std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
     auto pcm = std::make_shared<audio_client::DecodedAudio>();
     const int forSet = fSelSet;
+    // The index alone is not identity: deleting a beatmap shifts everything
+    // after it, so the path is checked too before this track is adopted.
+    const auto forPath = fLibrary[static_cast<std::size_t>(fSelSet)].fPath;
     fLoader.submit(
         static_cast<std::uint64_t>(fSelSet) | (3ull << 32),
         [copy = std::move(copy), ext, pcm] {
           *pcm = audio_client::decodeAudio(copy, ext);
         },
-        [this, forSet, pcm] {
+        [this, forSet, forPath, pcm] {
           if (forSet != fSelSet || pcm->fSamples.empty()) {
             return; // selection moved on while decoding
+          }
+          if (forSet >= static_cast<int>(fLibrary.size()) ||
+              fLibrary[static_cast<std::size_t>(forSet)].fPath != forPath) {
+            return; // that entry is not the one this was decoded for
           }
           fAudio.adopt(std::move(*pcm));
           fAudio.setLooping(false); // the next track is chosen when it ends
@@ -4783,8 +4800,9 @@ private:
     if (!fOptionsOpen) {
       return;
     }
-    static constexpr std::array<const char *, 4> kItems = {
-        "import .osz", "browse beatmaps", "replays", "settings"};
+    static constexpr std::array<const char *, 5> kItems = {
+        "import .osz", "browse beatmaps", "replays", "delete beatmap",
+        "settings"};
     const float w = 220.0f;
     const float itemH = 38.0f;
     const float h = itemH * static_cast<float>(kItems.size()) + 12.0f;
@@ -4816,6 +4834,7 @@ private:
         case 0: this->importOsz(); break;
         case 1: this->openDownloads(); break;
         case 2: this->toggleReplayList(); break;
+        case 3: this->askDeleteBeatmap(); break;
         default: this->toggleSettings(); break;
         }
         return true;
@@ -4839,6 +4858,118 @@ private:
       return true;
     }
     return false;
+  }
+
+  // lazer never deletes a beatmap without asking, and neither does this.
+  void askDeleteBeatmap() {
+    if (fSelSet < 0 || fSelSet >= static_cast<int>(fLibrary.size())) {
+      return;
+    }
+    fConfirmDelete = true;
+  }
+
+  void drawDeleteConfirmation(skia::SkCanvas *canvas) {
+    fConfirmHits.clear();
+    if (!fConfirmDelete) {
+      return;
+    }
+    const auto &infos = this->infosFor(fSelSet);
+    if (infos.empty()) {
+      fConfirmDelete = false;
+      return;
+    }
+    const client::ui::Painter p(canvas, fFont);
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
+               skia::colorSetARGB(200, 8, 6, 12));
+
+    const float w = std::min(560.0f, sw - 80.0f);
+    const skia::SkRect box =
+        skia::SkRect::MakeXYWH((sw - w) * 0.5f, sh * 0.5f - 110.0f, w, 220.0f);
+    p.fillRounded(box, 12.0f, client::ui::kBackground5);
+    p.textCentered("Confirm deletion of", box.centerX(), box.fTop + 46.0f,
+                   16.0f, skia::kWhite, 0.75f);
+    const auto &meta = infos.front().fMeta;
+    p.textCenteredClipped(
+        std::format("{} - {}",
+                    meta.fArtistUnicode.empty() ? meta.fArtist
+                                                : meta.fArtistUnicode,
+                    meta.fTitleUnicode.empty() ? meta.fTitle
+                                               : meta.fTitleUnicode),
+        box.centerX(), box.fTop + 78.0f, w - 40.0f, 20.0f, skia::kWhite);
+    p.textCentered(std::format("{} difficulties will be removed from disk",
+                               infos.size()),
+                   box.centerX(), box.fTop + 106.0f, 13.0f, skia::kWhite,
+                   0.6f);
+
+    const char *labels[] = {"Yes. Totally. Delete it.", "Cancel"};
+    const skia::SkColor accents[] = {skia::colorSetARGB(255, 255, 110, 110),
+                                     client::ui::kAccent2};
+    const float bw = (w - 60.0f) * 0.5f;
+    for (int i = 0; i < 2; ++i) {
+      const skia::SkRect r = skia::SkRect::MakeXYWH(
+          box.fLeft + 20.0f + static_cast<float>(i) * (bw + 20.0f),
+          box.fBottom - 66.0f, bw, 46.0f);
+      const bool hover = r.contains(fMouseX, fMouseY);
+      p.fillRounded(r, 10.0f, hover ? client::ui::kCardSel : client::ui::kCardBg);
+      p.strokeRounded(r, 10.0f, accents[i], hover ? 3.0f : 2.0f);
+      p.textCentered(labels[i], r.centerX(), r.centerY() + 6.0f, 15.0f,
+                     hover ? accents[i] : skia::kWhite);
+      fConfirmHits.push_back(r);
+    }
+  }
+
+  bool confirmDeleteClick(float x, float y) {
+    if (!fConfirmDelete) {
+      return false;
+    }
+    for (std::size_t i = 0; i < fConfirmHits.size(); ++i) {
+      if (!fConfirmHits[i].contains(x, y)) {
+        continue;
+      }
+      fConfirmDelete = false;
+      if (i == 0) {
+        this->deleteSelectedBeatmap();
+      }
+      return true;
+    }
+    return true; // the dialog is modal
+  }
+
+  // Removes the archive and everything the client remembers about it.
+  void deleteSelectedBeatmap() {
+    if (fSelSet < 0 || fSelSet >= static_cast<int>(fLibrary.size())) {
+      return;
+    }
+    const auto index = static_cast<std::size_t>(fSelSet);
+    const auto path = fLibrary[index].fPath;
+    const std::string name =
+        path.empty() ? std::string{} : path.filename().string();
+
+    // The track playing under the menu belongs to this set; let it go before
+    // the file does.
+    this->stopMenuMusic();
+    fMenuMusicForSet = -1;
+    fBackgroundForSet = -1;
+
+    fLibrary.erase(fLibrary.begin() + static_cast<std::ptrdiff_t>(index));
+    if (!path.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+      std::filesystem::remove(this->thumbPathFor(path), ec);
+      fMapCache.remove(name);
+      fMapCache.save();
+    }
+    this->sortLibrary();
+    this->rebuildVisible();
+    fSelSet = std::clamp(fSelSet, 0,
+                         std::max(0, static_cast<int>(fLibrary.size()) - 1));
+    fSelDiff = 0;
+    fPlayingSet = -1;
+    fPlayingDiff = -1;
+    this->notify(name.empty() ? "beatmap deleted"
+                              : std::format("deleted {}", name));
   }
 
   void drawBottomBar(skia::SkCanvas *canvas, const std::string &hint) {
