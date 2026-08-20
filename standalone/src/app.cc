@@ -1892,7 +1892,8 @@ private:
       return false;
     }
     if (fState != State::kDownload && fState != State::kSongSelect &&
-        fState != State::kMainMenu && fState != State::kResults) {
+        fState != State::kMainMenu && fState != State::kResults &&
+        fState != State::kPaused) {
       // The screens still drawn immediately cannot answer this. Their state
       // advances while they draw -- an eased hover, a logo settling -- so a
       // frame skipped for want of damage is a frame in which nothing moves,
