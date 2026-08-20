@@ -149,6 +149,7 @@ private:
   skia::SkIRect fDamage = skia::SkIRect::MakeEmpty();
   bool fFullDamage = true;
   bool fOverlayShown = false; // an overlay covered the screen last frame
+  double fDamageLogWall = 0.0;
   skia::SkIRect fFrameClip = skia::SkIRect::MakeEmpty();
   bool fFrameClipFull = true;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
@@ -1297,7 +1298,7 @@ private:
 
   void switchState(State st) {
     this->requestRedraw(1500.0); // screen transitions run for a while
-    this->damageAll();           // and the new screen owns every pixel
+    this->damageAll("screen change"); // the new screen owns every pixel
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
     fStateEnterWall = wallMs();
@@ -1373,24 +1374,53 @@ private:
 
   // The whole screen has to be repainted: a screen changed, the window
   // resized, or something that does not report its bounds moved.
-  void damageAll() {
+  void damageAll(const char *reason = "unspecified") {
     fFullDamage = true;
-    fDamage = skia::SkIRect::MakeWH(fScreenW, fScreenH);
+    fFullDamageReason = reason;
+    fDamage.clear();
   }
 
   // A region did. Rounded outwards, because a rectangle that is a pixel too
   // small leaves a seam behind.
   void damage(const skia::SkRect &rect) {
-    if (rect.isEmpty()) {
+    if (fFullDamage || rect.isEmpty()) {
       return;
     }
     skia::SkIRect area = rect.roundOut();
     area.outset(2, 2);
-    if (fDamage.isEmpty()) {
-      fDamage = area;
-    } else {
-      fDamage.join(area);
+
+    // Merge into a rectangle it already touches, so a widget that reports
+    // itself every frame does not add a new entry every frame.
+    for (auto &existing : fDamage) {
+      skia::SkIRect probe = existing;
+      probe.outset(2, 2);
+      if (skia::SkIRect::Intersects(probe, area)) {
+        existing.join(area);
+        return;
+      }
     }
+    if (fDamage.size() < kMaxDamageRects) {
+      fDamage.push_back(area);
+      return;
+    }
+
+    // Full: fold it into whichever rectangle grows least by taking it, which
+    // keeps the list short without swallowing the screen.
+    std::size_t best = 0;
+    std::int64_t bestCost = std::numeric_limits<std::int64_t>::max();
+    for (std::size_t i = 0; i < fDamage.size(); ++i) {
+      skia::SkIRect merged = fDamage[i];
+      merged.join(area);
+      const auto cost = static_cast<std::int64_t>(merged.width()) *
+                            merged.height() -
+                        static_cast<std::int64_t>(fDamage[i].width()) *
+                            fDamage[i].height();
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = i;
+      }
+    }
+    fDamage[best].join(area);
   }
 
   // Clips the frame to what changed. Everything draws exactly as it would
@@ -1399,10 +1429,14 @@ private:
   void beginFrame() {
     // Take the accumulator as this frame's clip and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
-    fFrameClipFull = fFullDamage || fDamage.isEmpty();
-    fFrameClip = fFrameClipFull ? skia::SkIRect::MakeWH(fScreenW, fScreenH)
-                                : fDamage;
-    fDamage = skia::SkIRect::MakeEmpty();
+    fFrameClipFull = fFullDamage || fDamage.empty();
+    fFrameClip.clear();
+    if (fFrameClipFull) {
+      fFrameClip.push_back(skia::SkIRect::MakeWH(fScreenW, fScreenH));
+    } else {
+      fFrameClip = fDamage;
+    }
+    fDamage.clear();
     fFullDamage = false;
 
     if (!fSurface) {
@@ -1411,7 +1445,13 @@ private:
     auto *canvas = fSurface->getCanvas();
     fFrameSave = canvas->save();
     if (!fFrameClipFull) {
-      canvas->clipIRect(fFrameClip);
+      // Several disjoint rectangles: a region, not a bounding box, or the
+      // clip would be their union again.
+      skia::SkRegion region;
+      for (const auto &rect : fFrameClip) {
+        region.op(rect, skia::SkRegion::kUnion_Op);
+      }
+      canvas->clipRegion(region);
     }
     // The surface keeps what is not repainted, so what is repainted starts
     // clean: a translucent overlay drawn over a region every frame -- the
@@ -1477,7 +1517,7 @@ private:
     }
     fLastDrawWall = wallMs();
     if (fState == State::kPlaying) {
-      this->damageAll(); // a moving picture by definition
+      this->damageAll("gameplay"); // a moving picture by definition
     }
     // Overlays are drawn after the screen, over most of it, and none of them
     // declares a region -- so while one is up, and on the frame it goes away,
@@ -1488,9 +1528,12 @@ private:
     // Only while one is moving, or on the frame it appears or goes away: a
     // settled overlay is as static as the screen under it, and the screens do
     // mark what they change beneath it.
-    if (overlay != fOverlayShown || fSettingsPanel.animating() ||
-        fModSelect.animating() || fExportDialog.open() || fReplayListOpen) {
-      this->damageAll();
+    if (overlay != fOverlayShown) {
+      this->damageAll("overlay appeared or went away");
+    } else if (fSettingsPanel.animating() || fModSelect.animating()) {
+      this->damageAll("overlay sliding");
+    } else if (fExportDialog.open()) {
+      this->damageAll("export dialog");
     }
     fOverlayShown = overlay;
     this->beginFrame();
@@ -1578,7 +1621,7 @@ private:
     auto *canvas = fSurface->getCanvas();
     if (fModSelect.visible()) {
       this->drawModSelect(canvas);
-      this->damageAll(); // it covers the middle of the screen, columns and all
+      this->damageAll("mod select");
     }
     if (fSettingsPanel.visible()) {
       this->drawSettings(canvas);
@@ -1590,7 +1633,7 @@ private:
     }
     if (fReplayListOpen) {
       this->drawReplayList(canvas);
-      this->damageAll(); // a full-screen overlay with a scrolling strip in it
+      this->damageAll("replay browser");
     }
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
@@ -1622,14 +1665,21 @@ private:
     if (!show) {
       return;
     }
-    // What this frame actually repainted: magenta for a region, red around
-    // the edge when the whole screen went.
+    // What this frame actually repainted: magenta around each region, red
+    // around the edge when the whole screen went -- with the reason, since
+    // "why is it full again" is the question that keeps coming up.
     skia::SkPaint paint;
     paint.setStyle(skia::kStrokeStyle);
     paint.setStrokeWidth(fFrameClipFull ? 6.0f : 2.0f);
     paint.setColor(fFrameClipFull ? skia::colorSetARGB(255, 255, 40, 40)
                                   : skia::colorSetARGB(255, 255, 0, 255));
-    canvas->drawRect(skia::SkRect::Make(fFrameClip), paint);
+    for (const auto &rect : fFrameClip) {
+      canvas->drawRect(skia::SkRect::Make(rect), paint);
+    }
+    if (fFrameClipFull && wallMs() - fDamageLogWall > 1000.0) {
+      fDamageLogWall = wallMs();
+      std::println(std::cerr, "[damage] full repaint: {}", fFullDamageReason);
+    }
   }
 
   void framePlaying() {
@@ -3322,7 +3372,7 @@ private:
     }
     if (bytes.empty()) {
       fView.setBackground(nullptr);
-      this->damageAll();
+      this->damageAll("artwork cleared");
       return;
     }
     auto image = std::make_shared<skia::Sp<skia::SkImage>>();
@@ -3336,13 +3386,13 @@ private:
                      }
                      fView.setBackground(*image);
                      fView.preScaleBackground(this->gameplayCtx(nullptr));
-                     this->damageAll(); // the artwork is the whole backdrop
+                     this->damageAll("artwork arrived");
                      this->requestRedraw(400.0);
                    });
   }
 
   void loadSelectBackground(const osu::BeatmapSet &set) {
-    this->damageAll(); // whatever it ends up with, the backdrop changes
+    this->damageAll("select background"); // the backdrop changes either way
     for (const auto &info : set.fBeatmaps) {
       if (!info.fMeta.fBackground.empty()) {
         const auto bytes = set.findFile(info.fMeta.fBackground);
@@ -3661,8 +3711,10 @@ private:
     // What moves here is the logo with its visualiser and the buttons; the
     // background is the beatmap's artwork, which sits still. The dim fade and
     // the triangle fallback do cover the screen, so those say so.
-    if (fMenuDim != fDrawnMenuDim || !fView.hasBackground()) {
-      this->damageAll();
+    if (fMenuDim != fDrawnMenuDim) {
+      this->damageAll("menu dim");
+    } else if (!fView.hasBackground()) {
+      this->damageAll("no artwork: triangles or flat fill");
     }
     fDrawnMenuDim = fMenuDim;
 
@@ -6100,7 +6152,7 @@ private:
         skia::SkImageInfo::Make(fScreenW, fScreenH,
                                 skia::kRGBA_8888_SkColorType,
                                 skia::kPremul_SkAlphaType));
-    this->damageAll();
+    this->damageAll("resize");
     fView.invalidate();
     fView.preScaleBackground(this->gameplayCtx(nullptr));
   }

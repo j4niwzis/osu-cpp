@@ -25,6 +25,7 @@ module;
 #include <skia/core/SkSamplingOptions.h>
 #include <skia/core/SkShader.h>
 #include <skia/core/SkStream.h>
+#include <skia/core/SkRegion.h>
 #include <skia/core/SkString.h>
 #include <skia/core/SkSurface.h>
 #include <skia/core/SkTypeface.h>
@@ -83,6 +84,7 @@ using ::SkSamplingOptions;
 using ::SkShader;
 using ::SkStream;
 using ::SkStreamAsset;
+using ::SkRegion;
 using ::SkString;
 using ::SkSurface;
 using ::SkSurfaceProps;
