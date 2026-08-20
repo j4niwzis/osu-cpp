@@ -302,7 +302,9 @@ inline void applyStacking(Beatmap &bm) {
             Vec2 endN = nonStackedEndPosition(objN);
             if (objectPosition(bm.fObjects[static_cast<std::size_t>(iBase)])
                     .distanceTo(endN) < kStackDistance) {
-              int offset = stackI - stackHeight(objN) + 1;
+              int offset =
+                  stackHeight(bm.fObjects[static_cast<std::size_t>(iBase)]) -
+                  stackHeight(objN) + 1;
               for (int j = n + 1; j <= i; ++j) {
                 HitObject &objJ = bm.fObjects[static_cast<std::size_t>(j)];
                 if (objectPosition(objJ).distanceTo(endN) < kStackDistance) {
@@ -319,7 +321,12 @@ inline void applyStacking(Beatmap &bm) {
           }
           if (objectPosition(bm.fObjects[static_cast<std::size_t>(iBase)])
                   .distanceTo(objectPosition(objN)) < kStackDistance) {
-            stackHeight(objN) = stackI + 1;
+            // Height comes from the object the stack is currently based on,
+            // which moves backwards as the stack grows: lazer reassigns
+            // objectI as it walks, so a run of three circles gets 1, 2, 3
+            // rather than 1, 1, 1.
+            stackHeight(objN) =
+                stackHeight(bm.fObjects[static_cast<std::size_t>(iBase)]) + 1;
             iBase = n;
           }
         }
@@ -333,7 +340,8 @@ inline void applyStacking(Beatmap &bm) {
             break;
           if (objectPosition(bm.fObjects[static_cast<std::size_t>(iBase)])
                   .distanceTo(nonStackedEndPosition(objN)) < kStackDistance) {
-            stackHeight(objN) = stackI + 1;
+            stackHeight(objN) =
+                stackHeight(bm.fObjects[static_cast<std::size_t>(iBase)]) + 1;
             iBase = n;
           }
         }
