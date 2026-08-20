@@ -448,7 +448,13 @@ public:
     const bool hovered = fVisible && fBounds.contains(x, y);
     if (hovered != fHovered) {
       fHovered = hovered;
-      this->markDamaged(); // hover is drawn, so a change to it is damage
+      // Only where hover is drawn. Every box, flow and container in the tree
+      // was marking itself as the pointer crossed it, which is a repaint for
+      // a picture that did not change -- and there are a lot more containers
+      // than there are things that light up.
+      if (this->hoverChangesAppearance()) {
+        this->markDamaged();
+      }
     }
     for (auto &child : fChildren) {
       child->applyHover(x, y);
@@ -467,6 +473,10 @@ protected:
   // Chance to set fWidth/fHeight from content before layout uses them.
   virtual void measure(const skia::SkRect &) {}
   virtual bool acceptsInput() const { return false; }
+  // Whether the pointer entering or leaving changes what this draws. Taking
+  // input is the usual reason to light up, so that is the default; a drawable
+  // that takes input only to swallow it says so.
+  virtual bool hoverChangesAppearance() const { return this->acceptsInput(); }
   virtual bool onClick(float, float) { return false; }
   virtual bool onScroll(float) { return false; }
 

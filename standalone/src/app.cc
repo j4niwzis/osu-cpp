@@ -413,6 +413,7 @@ private:
   bool fLogoPlaced = false;
   float fLogoHover = 0.0f;
   float fLogoPunch = 0.0f; // click/beat impact, decays
+  skia::SkRect fDrawnLogoDamage = skia::SkRect::MakeEmpty();
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
 
@@ -1871,7 +1872,8 @@ private:
     if (fFullDamage || !fDamage.empty() || fFullRepaintsOwed > 0) {
       return false;
     }
-    if (fState != State::kDownload && fState != State::kSongSelect) {
+    if (fState != State::kDownload && fState != State::kSongSelect &&
+        fState != State::kMainMenu) {
       return false; // the screens still drawn immediately cannot answer
     }
     // Anything drawn over the screen repaints whole and does not report a
@@ -4720,7 +4722,15 @@ private:
     const float reach = logoRadius * 2.0f * (600.0f / 480.0f) * loudest;
     skia::SkRect moving = fLogoRect;
     moving.outset(reach + 4.0f, reach + 4.0f);
-    this->damage(moving);
+    // Marked while something in there is actually moving -- a live
+    // visualiser, drifting triangles inside the logo, or the logo itself
+    // having shifted. Marking it every frame regardless is a repaint of the
+    // busiest part of the screen for a picture that is identical.
+    if (fSettings.flag("menutriangles") || moving != fDrawnLogoDamage) {
+      this->damage(fDrawnLogoDamage); // where it was
+      this->damage(moving);           // and where it is now
+      fDrawnLogoDamage = moving;
+    }
 
     // A button only needs repainting while something about it changes. Its
     // drawn shape is a parallelogram sheared by the wedge, and the label and

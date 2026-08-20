@@ -1293,6 +1293,10 @@ private:
 
     bool acceptsInput() const override { return fVisible; }
 
+    // It takes input to keep it off the card underneath, not because it
+    // lights up: the pointer crossing it is not a repaint.
+    bool hoverChangesAppearance() const override { return false; }
+
     // Swallowed rather than passed through: the card underneath is covered.
     bool onClick(float, float) override { return true; }
 
