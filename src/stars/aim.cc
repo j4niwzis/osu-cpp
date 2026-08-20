@@ -202,6 +202,16 @@ public:
 
   bool fInc;
   double fCur = 0;
+  // Per-object strain, kept for diagnostics: this is the series the section
+  // machinery is fed, and comparing it against lazer's is the only way to
+  // tell an evaluator's mistake from an aggregation one.
+  struct TracePoint {
+    double fTime = 0.0;
+    double fSnap = 0.0;
+    double fAgility = 0.0;
+    double fFlow = 0.0;
+    double fStrain = 0.0;
+  };
   struct Pk {
     double v, l;
   };
@@ -217,16 +227,6 @@ public:
 
   AimSkill(bool inc) : fInc(inc) {}
 
-  // Per-object strain, kept for diagnostics: this is the series the section
-  // machinery is fed, and comparing it against lazer's is the only way to
-  // tell an evaluator's mistake from an aggregation one.
-  struct TracePoint {
-    double fTime = 0.0;
-    double fSnap = 0.0;
-    double fAgility = 0.0;
-    double fFlow = 0.0;
-    double fStrain = 0.0;
-  };
   [[nodiscard]] std::span<const TracePoint> trace() const { return fTrace; }
 
   void process(const OsuDifficultyHitObject &c) {
