@@ -141,14 +141,24 @@ inline double clampArOd(double ar, double rate) noexcept {
 [[nodiscard]] inline double legacyWindow(double raw) noexcept {
   return std::floor(raw) - 0.5;
 }
+
+// A beatmap's difficulty values live in single precision on the other side,
+// and that matters wherever a floor follows: AR 9.6 as a float works out to
+// 509.99994 and floors to 509, where the same sum in double gives
+// 510.0000000000001 and floors to 510. One millisecond of preempt is enough
+// to move the reading value by a third of a percent.
+[[nodiscard]] inline double asSingle(double value) noexcept {
+  return static_cast<double>(static_cast<float>(value));
+}
+
 [[nodiscard]] inline double windowGreat(double od) noexcept {
-  return legacyWindow(80.0 - 6.0 * od);
+  return legacyWindow(80.0 - 6.0 * asSingle(od));
 }
 [[nodiscard]] inline double windowGood(double od) noexcept {
-  return legacyWindow(140.0 - 8.0 * od);
+  return legacyWindow(140.0 - 8.0 * asSingle(od));
 }
 [[nodiscard]] inline double windowMeh(double od) noexcept {
-  return legacyWindow(200.0 - 10.0 * od);
+  return legacyWindow(200.0 - 10.0 * asSingle(od));
 }
 
 [[nodiscard]] inline Judgement judgeDelta(double delta, double od) noexcept {
@@ -169,8 +179,9 @@ inline double clampArOd(double ar, double rate) noexcept {
 // AR 9.3 gives 554 and not 555 -- and since neither 8.3 nor 9.3 is exact in
 // binary, the value that gets floored is a hair under the round number.
 [[nodiscard]] inline double preemptTime(double ar) noexcept {
-  const double raw = ar <= 5.0 ? 1200.0 + 600.0 * (5.0 - ar) / 5.0
-                               : 1200.0 - 750.0 * (ar - 5.0) / 5.0;
+  const double value = asSingle(ar);
+  const double raw = value <= 5.0 ? 1200.0 + 600.0 * (5.0 - value) / 5.0
+                                  : 1200.0 - 750.0 * (value - 5.0) / 5.0;
   return std::floor(raw);
 }
 
@@ -191,7 +202,14 @@ inline double clampArOd(double ar, double rate) noexcept {
 inline constexpr double kGamefieldRoundingAllowance = 1.00041;
 
 [[nodiscard]] inline double circleRadius(double cs) noexcept {
-  return (54.4 - 4.48 * cs) * kGamefieldRoundingAllowance;
+  // CalculateScaleFromCircleSize, in the precision it is computed in:
+  // (1 - 0.7 * (cs - 5) / 5) / 2, times the allowance, times the object
+  // radius of 64.
+  const float size = static_cast<float>(cs);
+  const float scale =
+      static_cast<float>(1.0f - 0.7f * (size - 5.0f) / 5.0f) / 2.0f *
+      static_cast<float>(kGamefieldRoundingAllowance);
+  return static_cast<double>(64.0f * scale);
 }
 
 [[nodiscard]] inline double spinnerRotationsPerSecond(double od) noexcept {
