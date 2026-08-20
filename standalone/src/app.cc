@@ -168,6 +168,7 @@ private:
   const bool fPartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
+  std::int64_t fLastSwapUs = 0; // how long the last swap blocked for
   double fFpsPrevWall = 0.0;
   double fFpsFrameMs = 0.0;
 
@@ -1354,9 +1355,19 @@ private:
     if (fSwapInterval <= 0 || fRefreshHz <= 0) {
       return;
     }
+    // If the swap itself blocks, the driver is honouring the interval and
+    // there is nothing to pace: doing it anyway would idle twice per frame.
+    // This matters most where it hurts most -- a software rasteriser spreads
+    // its work over the machine's cores, and a loop of ours that spins
+    // waiting for a deadline takes one of them away from it.
     using clock = std::chrono::steady_clock;
     const auto period = std::chrono::nanoseconds(
         static_cast<std::int64_t>(1'000'000'000.0 / fRefreshHz));
+    if (fLastSwapUs * 1000 > period.count() / 4) {
+      fNextFrame = clock::now() + period;
+      return;
+    }
+
     const auto now = clock::now();
     if (fNextFrame.time_since_epoch().count() == 0 ||
         now > fNextFrame + period * 4) {
@@ -1364,19 +1375,14 @@ private:
       return;
     }
     if (now < fNextFrame) {
-      // Sleep short of the target and spin the remainder: the scheduler
-      // overshoots by more than a frame is worth.
-      const auto slack = std::chrono::microseconds(1200);
-      if (fNextFrame - now > slack) {
-        std::this_thread::sleep_until(fNextFrame - slack);
-      }
-      while (clock::now() < fNextFrame) {
-        std::this_thread::yield();
-      }
+      // Sleeping is imprecise, but a spin costs a core, and on this renderer
+      // that core is doing the drawing.
+      std::this_thread::sleep_until(fNextFrame);
     }
     fNextFrame += period;
 #endif
   }
+
 
   // A frame is only drawn when there is a reason to: an event arrived,
   // something is animating, a transfer is running, or the safety interval
@@ -1690,6 +1696,9 @@ private:
 
     const auto beforeSwap = std::chrono::steady_clock::now();
     glfw::glfwSwapBuffers(fWindow);
+    fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - beforeSwap)
+                      .count();
     this->reportFrameCost(frameStart, beforeSwap);
   }
 
