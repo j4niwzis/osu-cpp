@@ -418,6 +418,7 @@ private:
   float fLogoRadius = 0.0f;
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
   float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
+  int fHotResultButton = -1; // which action the pointer is on
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
@@ -1876,6 +1877,8 @@ private:
       this->updatePause();
     } else if (fState == State::kMainMenu) {
       this->updateMainMenu();
+    } else if (fState == State::kResults) {
+      this->updateResults();
     }
     // A transition dims the whole screen, so a frame drawn during one has to
     // repaint whole: clipped to a region, everything outside it would stay
@@ -1893,7 +1896,7 @@ private:
       return false;
     }
     if (fState != State::kDownload && fState != State::kSongSelect &&
-        fState != State::kMainMenu) {
+        fState != State::kMainMenu && fState != State::kResults) {
       // The screens still drawn immediately cannot answer this. Their state
       // advances while they draw -- an eased hover, a logo settling -- so a
       // frame skipped for want of damage is a frame in which nothing moves,
@@ -1928,8 +1931,15 @@ private:
   [[nodiscard]] bool needsFrame() {
     // Gameplay is a moving picture by definition, and so is anything with a
     // clock on screen.
-    if (fState == State::kPlaying || fState == State::kResults) {
-      return true; // a moving picture, and a screen that counts up
+    if (fState == State::kPlaying) {
+      return true; // a moving picture by definition
+    }
+    // The results screen counts up, slides its panels and fades in, all of
+    // which end. After that it is a still picture like any other.
+    if (fState == State::kResults &&
+        (wallMs() - fStateEnterWall < 2500.0 ||
+         std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f)) {
+      return true;
     }
     // The logo tracks the music and the triangles drift, and either is a
     // reason to keep drawing. Neither is a reason to stop: everything below
@@ -6590,6 +6600,47 @@ private:
   static constexpr float kPanelSpacing = 5.0f;
   static constexpr float kExpandedSpacing = 15.0f;
 
+  // The actions under the panel strip. Laid out before anything is drawn, so
+  // that what the pointer is on -- and therefore what has to be repainted --
+  // is known without drawing them first.
+  void updateResults() {
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+    fMenuButtons.clear();
+    const float bw = std::min(260.0f, sw * 0.22f);
+    const float bh = 46.0f;
+    const float gap = 14.0f;
+    float bx = (sw - (bw * 3.0f + gap * 2.0f)) * 0.5f;
+    const char *labels[] = {"retry", "back to song select", "export video"};
+    const skia::SkColor accents[] = {skia::colorSetARGB(255, 255, 204, 102),
+                                     client::ui::kAccent2,
+                                     skia::colorSetARGB(255, 170, 102, 255)};
+    for (int i = 0; i < 3; ++i) {
+      fMenuButtons.push_back(
+          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh), labels[i],
+           accents[i]});
+      bx += bw + gap;
+    }
+
+    // The row lights the button under the pointer and nothing else.
+    int hot = -1;
+    for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
+      if (fMenuButtons[i].fRect.contains(fMouseX, fMouseY)) {
+        hot = static_cast<int>(i);
+        break;
+      }
+    }
+    if (hot != fHotResultButton) {
+      fHotResultButton = hot;
+      this->damage(skia::SkRect::MakeXYWH(0.0f, sh - 100.0f, sw, 100.0f));
+    }
+    // The strip of panels glides when another score is chosen, and the whole
+    // of it moves while it does.
+    if (std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
+      this->damageAll("results strip gliding");
+    }
+  }
+
   void frameResults() {
     fView.invalidate();
     auto *canvas = fSurface->getCanvas();
@@ -6603,25 +6654,9 @@ private:
 
     this->drawScorePanelList(canvas, p, sw, sh,
                             /*ownScore=*/fReplayPath.empty());
-
-    // ---- Actions, below the list.
-    fMenuButtons.clear();
-    const float bw = std::min(260.0f, sw * 0.22f);
-    const float bh = 46.0f;
-    const float gap = 14.0f;
-    float bx = (sw - (bw * 3.0f + gap * 2.0f)) * 0.5f;
-    const char *labels[] = {"retry", "back to song select", "export video"};
-    const skia::SkColor accents[] = {skia::colorSetARGB(255, 255, 204, 102),
-                                     client::ui::kAccent2,
-                                     skia::colorSetARGB(255, 170, 102, 255)};
-    for (int i = 0; i < 3; ++i) {
-      const skia::SkRect r =
-          skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh);
-      fMenuButtons.push_back({r, labels[i], accents[i]});
-      this->drawMenuButton(canvas, fMenuButtons.back());
-      bx += bw + gap;
+    for (const auto &b : fMenuButtons) {
+      this->drawMenuButton(canvas, b);
     }
-    this->damage(skia::SkRect::MakeXYWH(0.0f, sh - 100.0f, sw, 100.0f));
 
     this->drawScreenFadeIn(canvas);
     this->present();
