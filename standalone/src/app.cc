@@ -1904,7 +1904,10 @@ private:
       return true; // a moving picture, and a screen that counts up
     }
     if (fState == State::kMainMenu) {
-      return true; // the logo keeps tracking the music behind anything
+      // The logo tracks the music and the triangles drift; with both of those
+      // switched off the menu is a still picture, and a still picture is
+      // drawn when something touches it and not otherwise.
+      return fSettings.flag("visualiser") || fSettings.flag("menutriangles");
     }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
       return true; // triangles drift inside the buttons, as lazer's do
@@ -4524,7 +4527,11 @@ private:
   void updateAndDrawTriangles(skia::SkCanvas *canvas) {
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
-    const float elapsedSeconds = static_cast<float>(fUiDt) / 1000.0f;
+    // Held still when the switch says so: drawn where they are, so the menu
+    // keeps its background without asking for a single frame to keep it.
+    const float elapsedSeconds = fSettings.flag("menutriangles")
+                                     ? static_cast<float>(fUiDt) / 1000.0f
+                                     : 0.0f;
     // TrianglesV2: movedDistance = -elapsed * Velocity * base_velocity / height
     const float moved =
         elapsedSeconds * fTriangleVelocity * kTriangleBaseVelocity / sh;
@@ -4702,10 +4709,9 @@ private:
     // own, which with the counter in the opposite corner pushed the frame
     // over the "repaint it whole" threshold and saved nothing at all.
     float loudest = 0.0f;
-    if (fSettings.flag("visualiser")) {
-      for (const float amp : fSpectrum.bars()) {
-        loudest = std::max(loudest, amp);
-      }
+    for (const float amp : fSettings.flag("visualiser") ? fSpectrum.bars()
+                                                        : this->stillBars()) {
+      loudest = std::max(loudest, amp);
     }
     const float logoRadius = fLogoRect.width() * 0.5f;
     const float reach = logoRadius * 2.0f * (600.0f / 480.0f) * loudest;
@@ -4818,16 +4824,16 @@ private:
     fLogoPunch = this->approach(fLogoPunch, 0.0f, 180.0f);
 
     // Amplitude-driven beat: lazer drives these from timing points, which the
-    // menu has not loaded, so bass energy stands in.
-    const float amp = fSpectrum.bass();
+    // menu has not loaded, so bass energy stands in. Switched off with the
+    // visualiser, or the logo would keep breathing on a screen that has
+    // stopped drawing frames and would jump whenever one happened.
+    const float amp = fSettings.flag("visualiser") ? fSpectrum.bass() : 0.0f;
     const float beat = 1.0f - 0.02f * amp;
     const float r = logoBase * fLogoScale * beat *
                     (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
     fLogoRect = skia::SkRect::MakeXYWH(fLogoX - r, fLogoY - r, r * 2, r * 2);
 
-    if (fSettings.flag("visualiser")) {
-      this->drawVisualiser(canvas, r);
-    }
+    this->drawVisualiser(canvas, r);
 
     // Ripple: same circle, scaled slightly out, alpha 0.15 * amplitude.
     if (amp > 0.01f) {
@@ -4945,8 +4951,29 @@ private:
   // sitting on the logo's circumference, `bar_length * amplitude` long, with
   // width equal to the chord subtended by one bar; the whole ring is drawn
   // `visualiser_rounds` times, rotated, additively at 20% white.
+  // What the bars stand at when the visualiser is switched off: a fixed
+  // shape, so the logo keeps its skirt instead of sitting on the background
+  // as a bare circle. Deterministic on purpose -- it is drawn once and never
+  // asks to be drawn again.
+  [[nodiscard]] std::span<const float> stillBars() const {
+    static const std::vector<float> kBars = [] {
+      constexpr int kCount = 200;
+      std::vector<float> bars(kCount);
+      for (int i = 0; i < kCount; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(kCount);
+        const float wide = std::sin(t * 6.0f * std::numbers::pi_v<float>);
+        const float fine = std::sin(t * 23.0f * std::numbers::pi_v<float>);
+        bars[static_cast<std::size_t>(i)] =
+            0.10f + 0.045f * (1.0f + wide) + 0.02f * (1.0f + fine);
+      }
+      return bars;
+    }();
+    return kBars;
+  }
+
   void drawVisualiser(skia::SkCanvas *canvas, float logoRadius) {
-    const auto bars = fSpectrum.bars();
+    const auto bars = fSettings.flag("visualiser") ? fSpectrum.bars()
+                                                   : this->stillBars();
     if (bars.empty()) {
       return;
     }

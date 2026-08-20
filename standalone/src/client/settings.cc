@@ -74,6 +74,8 @@ public:
                1.0f, 0.0f, 1.0f, ""});
     this->add({1, "pausetriangles", "Animate pause triangles",
                SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 1.0f, ""});
+    this->add({1, "menutriangles", "Animate menu triangles",
+               SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 1.0f, ""});
     // Section 2: Gameplay
     this->add({2, "cursorsize", "Cursor size", SettingKind::kSlider, 0.5f,
                2.0f, 0.01f, 1.0f, "x"});
