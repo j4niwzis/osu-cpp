@@ -296,6 +296,13 @@ inline FontStack &fonts() {
   return stack;
 }
 
+// The alpha a colour already carries, times the one the caller asked for.
+// SkPaint::setAlphaf replaces rather than multiplies, so passing both without
+// combining them turns a translucent colour opaque.
+[[nodiscard]] inline float combinedAlpha(skia::SkColor color, float alpha) {
+  return static_cast<float>((color >> 24) & 0xffu) / 255.0f * alpha;
+}
+
 // ---- Drawing helpers -----------------------------------------------------
 //
 // A thin wrapper around the canvas and the shared font, so screens do not
@@ -312,7 +319,7 @@ public:
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
-    p.setAlphaf(alpha);
+    p.setAlphaf(combinedAlpha(color, alpha));
     fCanvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
   }
 
@@ -330,7 +337,7 @@ public:
                 float alpha = 1.0f) const {
     skia::SkPaint p;
     p.setColor(color);
-    p.setAlphaf(alpha);
+    p.setAlphaf(combinedAlpha(color, alpha));
     fCanvas->drawRect(rect, p);
   }
 
@@ -339,7 +346,7 @@ public:
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
-    p.setAlphaf(alpha);
+    p.setAlphaf(combinedAlpha(color, alpha));
     fCanvas->drawCircle(cx, cy, r, p);
   }
 
@@ -354,7 +361,7 @@ public:
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
-    p.setAlphaf(alpha);
+    p.setAlphaf(combinedAlpha(color, alpha));
     fonts().draw(fCanvas, *fFont, str, x, y, p);
   }
 

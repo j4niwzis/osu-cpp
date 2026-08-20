@@ -1297,6 +1297,7 @@ private:
 
   void switchState(State st) {
     this->requestRedraw(1500.0); // screen transitions run for a while
+    this->damageAll();           // and the new screen owns every pixel
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
     fStateEnterWall = wallMs();
@@ -1425,9 +1426,13 @@ private:
   [[nodiscard]] bool needsFrame() {
     // Gameplay is a moving picture by definition, and so is anything with a
     // clock on screen.
-    if (fState == State::kPlaying || fState == State::kResults ||
-        fState == State::kMainMenu) {
-      return true; // the logo tracks the music, the results count up
+    if (fState == State::kPlaying || fState == State::kResults) {
+      return true; // a moving picture, and a screen that counts up
+    }
+    // The menu's logo tracks the music -- unless something is covering it.
+    if (fState == State::kMainMenu && !fSettingsPanel.visible() &&
+        !fModSelect.visible()) {
+      return true;
     }
     if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
       return true; // progress that is being watched
@@ -1482,7 +1487,11 @@ private:
     const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
                          fExportDialog.open() || fReplayListOpen ||
                          fConfirmDelete || fSetPage.open();
-    if (overlay || overlay != fOverlayShown) {
+    // Only while one is moving, or on the frame it appears or goes away: a
+    // settled overlay is as static as the screen under it, and the screens do
+    // mark what they change beneath it.
+    if (overlay != fOverlayShown || fSettingsPanel.animating() ||
+        fModSelect.animating() || fExportDialog.open() || fReplayListOpen) {
       this->damageAll();
     }
     fOverlayShown = overlay;
@@ -3744,9 +3753,14 @@ private:
     // button that moved leaves its old self behind.
     for (auto &b : fMenuBtns) {
       const bool visible = b.fVisible == fMenuState && b.fExpand > 0.001f;
-      const bool changed = b.fExpand != b.fDrawnExpand ||
-                           b.fHover != b.fDrawnHover ||
-                           b.fFlash != b.fDrawnFlash || b.fRect != b.fDrawnRect;
+      // Eased values approach their target without reaching it; comparing
+      // them exactly kept every button "changing" for ever, which is what
+      // held the repainted region open around the whole row.
+      constexpr float kSettled = 0.002f;
+      const bool changed = std::abs(b.fExpand - b.fDrawnExpand) > kSettled ||
+                           std::abs(b.fHover - b.fDrawnHover) > kSettled ||
+                           std::abs(b.fFlash - b.fDrawnFlash) > kSettled ||
+                           b.fRect != b.fDrawnRect;
       if (!changed) {
         continue;
       }
