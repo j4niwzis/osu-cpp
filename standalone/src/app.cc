@@ -5437,9 +5437,18 @@ private:
       return;
     }
 
-    // The slider bodies are built on the GPU and live there; a thread without
-    // a context cannot read them, so they are moved into memory first. The
-    // next play precomputes them again.
+    // The slider bodies are built on the GPU, at one scale, and live there.
+    // They were built for the window, so a 4K export drew them soft; they are
+    // rebuilt for the size being rendered and then moved into memory, since a
+    // thread without a context cannot read them off the GPU. The next play
+    // precomputes them for the window again.
+    const float exportScale =
+        0.8f * std::min(static_cast<float>(job->fOpts.fWidth) /
+                            static_cast<float>(osu::kPlayfieldWidth),
+                        static_cast<float>(job->fOpts.fHeight) /
+                            static_cast<float>(osu::kPlayfieldHeight));
+    fSkin.precomputeSliderBodies(*fMap, fComboInfo, exportScale,
+                                 fContext.get());
     fSkin.flattenBodiesToRaster(fContext.get());
 
     job->fMap = *fMap;
@@ -5449,7 +5458,12 @@ private:
     job->fSkin = &fSkin;
     job->fFont = fFont;
     job->fDisplayFont = fDisplayFont;
-    job->fCursorSize = fSettings.value("cursorsize");
+    // The cursor is drawn at a size in screen pixels, which is right for a
+    // window and wrong for a render: at 4K it came out a quarter of the size
+    // it has on screen. Scaled by how much bigger the playfield is, it keeps
+    // the size it has relative to the play.
+    job->fCursorSize = fSettings.value("cursorsize") *
+                       (fScale > 0.0f ? exportScale / fScale : 1.0f);
     job->fDim = fSettings.value("dim");
     job->fNoGlow = fNoGlow;
     for (const auto &info : fSet.fBeatmaps) {
