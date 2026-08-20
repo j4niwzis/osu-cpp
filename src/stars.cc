@@ -11,8 +11,15 @@ export import :aim;
 export import :speed;
 export import :rhythm;
 export import :reading;
+export import :ranked;
 
 export namespace osu {
+
+// Which calculator to run. They disagree -- the reworked one in ppy/osu master
+// against the one the servers still run, which is where a beatmap's listed
+// star rating comes from -- and a client that wants to show either needs both.
+enum class StarAlgorithm { kLazerMaster, kRanked };
+
 
 // `aimTrace`, when given, is filled with the per-object aim terms: the
 // series behind the aim value, for comparing against lazer's own.
@@ -25,7 +32,11 @@ export namespace osu {
 [[nodiscard]] inline StarRating
 calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
                std::vector<stars::AimSkill::TracePoint> *aimTrace = nullptr,
-               double untilTime = std::numeric_limits<double>::infinity()) {
+               double untilTime = std::numeric_limits<double>::infinity(),
+               StarAlgorithm algorithm = StarAlgorithm::kLazerMaster) {
+  if (algorithm == StarAlgorithm::kRanked) {
+    return stars::ranked::calculate(bm, mods);
+  }
   using namespace stars;
   if (bm.fObjects.size() < 2)
     return {};

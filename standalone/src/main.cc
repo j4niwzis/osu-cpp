@@ -116,6 +116,8 @@ void printUsage(std::string_view program) {
       << "  --until <ms>       With --stars, only objects up to this time\n"
       << "  --dump-aim         With --stars, print the per-object aim "
          "strain\n"
+      << "  --ranked           With --stars, use the calculator the servers "
+         "run\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"
@@ -138,6 +140,7 @@ int main(int argc, char **argv) {
   bool starsOnly = false;
   double until = std::numeric_limits<double>::infinity();
   bool dumpAim = false;
+  osu::StarAlgorithm algorithm = osu::StarAlgorithm::kLazerMaster;
   osu::ModSet mods = osu::mod::kNone;
 
   for (std::size_t i = 0; i < args.size(); ++i) {
@@ -171,6 +174,8 @@ int main(int argc, char **argv) {
       mods |= osu::mod::kEasy;
     } else if (arg == "--dump-aim") {
       dumpAim = true;
+    } else if (arg == "--ranked") {
+      algorithm = osu::StarAlgorithm::kRanked;
     } else if (arg == "--until" && i + 1 < args.size()) {
       until = std::stod(std::string(args[++i]));
     } else if (arg == "--beatmap" && i + 1 < args.size()) {
@@ -267,7 +272,7 @@ int main(int argc, char **argv) {
         const osu::Beatmap map = osu::loadBeatmap(text);
         std::vector<osu::stars::AimSkill::TracePoint> aimTrace;
         const osu::StarRating rating = osu::calculateStars(
-            map, mods, dumpAim ? &aimTrace : nullptr, until);
+            map, mods, dumpAim ? &aimTrace : nullptr, until, algorithm);
         // The combo and object counts are of the part that was processed,
         // which is what the timed tests assert.
         osu::Beatmap counted = map;
