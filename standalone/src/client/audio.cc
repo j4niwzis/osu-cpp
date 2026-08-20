@@ -115,6 +115,8 @@ decodePcm(std::span<const std::uint8_t> data, std::string_view ext, int &rate,
           int &channels) {
   const std::string_view actual = sniffAudioExtension(data, ext);
   std::vector<std::int16_t> samples;
+  // Reported once per decode so a hot master is distinguishable from the
+  // mixer misbehaving.
   if (actual == ".mp3") {
     samples = audio::decode_mp3_memory(data, rate, channels);
     if (samples.empty()) {
@@ -126,6 +128,7 @@ decodePcm(std::span<const std::uint8_t> data, std::string_view ext, int &rate,
       samples = audio::decode_mp3_memory(data, rate, channels);
     }
   }
+  audio::report_pcm_level(samples, "decoded");
   return samples;
 }
 

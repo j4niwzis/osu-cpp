@@ -165,6 +165,15 @@ decode_sndfile(const std::filesystem::path &path, int &rate, int &channels) {
     std::cerr << "[audio] decode_sndfile: sf_open failed\n";
     return {};
   }
+  // libsndfile converts float data to short without clipping unless it is
+  // asked to: a sample above full scale wraps instead of being limited, so
+  // the loudest peaks come back inverted. Ogg Vorbis (which is what osu!
+  // serves previews as, and what plenty of beatmap audio is) decodes to
+  // float, and modern masters sit at or above 0 dBFS, so this is heard as
+  // the sound tearing at its loudest -- as if it were cut off, leaving only
+  // what was quiet enough to survive.
+  sf_command(file, SFC_SET_CLIPPING, nullptr, SF_TRUE);
+
   rate = info.samplerate;
   channels = info.channels;
   const auto frames = static_cast<sf_count_t>(info.frames);
@@ -284,6 +293,15 @@ decode_sndfile_memory(std::span<const std::uint8_t> data, int &rate,
     std::cerr << "[audio] decode_sndfile_memory: sf_open_virtual failed\n";
     return {};
   }
+  // libsndfile converts float data to short without clipping unless it is
+  // asked to: a sample above full scale wraps instead of being limited, so
+  // the loudest peaks come back inverted. Ogg Vorbis (which is what osu!
+  // serves previews as, and what plenty of beatmap audio is) decodes to
+  // float, and modern masters sit at or above 0 dBFS, so this is heard as
+  // the sound tearing at its loudest -- as if it were cut off, leaving only
+  // what was quiet enough to survive.
+  sf_command(file, SFC_SET_CLIPPING, nullptr, SF_TRUE);
+
   rate = info.samplerate;
   channels = info.channels;
   const auto frames = static_cast<sf_count_t>(info.frames);
@@ -302,7 +320,6 @@ decode_sndfile_memory(std::span<const std::uint8_t> data, int &rate,
 [[nodiscard]] inline std::vector<std::int16_t>
 decode_mp3_memory(std::span<const std::uint8_t> data, int &rate,
                   int &channels) {
-  std::cerr << "[audio] decode_mp3_memory: " << data.size() << " bytes\n";
   if (!ensureMpg123Init()) {
     std::cerr << "[audio] decode_mp3_memory: mpg123_init failed\n";
     return {};
@@ -312,6 +329,23 @@ decode_mp3_memory(std::span<const std::uint8_t> data, int &rate,
     std::cerr << "[audio] decode_mp3_memory: mpg123_new failed\n";
     return {};
   }
+
+  // The output format is fixed before a single frame is decoded. Letting
+  // mpg123 pick means it picks its own preference -- float32 on a build with
+  // float support -- and the first block comes back in that encoding, which
+  // the old code then copied into an int16 buffer as if it were samples.
+  // Changing the format afterwards only affects what follows, so the track
+  // began with a burst of noise and could stay in the wrong encoding
+  // entirely.
+  mpg123_format_none(handle);
+  const long *rates = nullptr;
+  std::size_t rateCount = 0;
+  mpg123_rates(&rates, &rateCount);
+  for (std::size_t i = 0; i < rateCount; ++i) {
+    mpg123_format(handle, rates[i], MPG123_MONO | MPG123_STEREO,
+                  MPG123_ENC_SIGNED_16);
+  }
+
   if (mpg123_open_feed(handle) != MPG123_OK) {
     std::cerr << "[audio] decode_mp3_memory: mpg123_open_feed failed\n";
     mpg123_delete(handle);
@@ -324,47 +358,25 @@ decode_mp3_memory(std::span<const std::uint8_t> data, int &rate,
     return {};
   }
 
+  std::vector<std::int16_t> out;
+  constexpr std::size_t kBlock = 256 * 1024;
+  std::vector<unsigned char> buffer(kBlock);
   long nativeRate = 0;
   int nativeChannels = 0;
   int encoding = 0;
-
-  std::vector<unsigned char> probe(4096);
-  std::size_t done = 0;
+  bool haveFormat = false;
   int err = MPG123_OK;
-  while ((err = mpg123_read(handle, probe.data(), probe.size(), &done)) ==
-             MPG123_OK &&
-         done == 0) {
-  }
-
-  if ((err != MPG123_OK && err != MPG123_NEW_FORMAT && err != MPG123_DONE) ||
-      mpg123_getformat(handle, &nativeRate, &nativeChannels, &encoding) !=
-          MPG123_OK) {
-    std::cerr << "[audio] decode_mp3_memory: format detection failed\n";
-    mpg123_close(handle);
-    mpg123_delete(handle);
-    return {};
-  }
-
-  mpg123_format_none(handle);
-  mpg123_format(handle, nativeRate, nativeChannels, MPG123_ENC_SIGNED_16);
-  rate = static_cast<int>(nativeRate);
-  channels = nativeChannels;
-  std::cerr << "[audio] decode_mp3_memory: " << rate << " Hz, " << channels
-            << " ch\n";
-
-  std::vector<std::int16_t> out;
-  if (done > 0) {
-    const std::size_t samples = done / sizeof(std::int16_t);
-    const std::size_t oldSize = out.size();
-    out.resize(oldSize + samples);
-    std::memcpy(out.data() + oldSize, probe.data(),
-                samples * sizeof(std::int16_t));
-  }
-
-  constexpr std::size_t kBlock = 256 * 1024;
-  std::vector<unsigned char> buffer(kBlock);
   while (err != MPG123_DONE) {
+    std::size_t done = 0;
     err = mpg123_read(handle, buffer.data(), buffer.size(), &done);
+    if (err == MPG123_NEW_FORMAT || (!haveFormat && err == MPG123_OK)) {
+      if (mpg123_getformat(handle, &nativeRate, &nativeChannels, &encoding) ==
+          MPG123_OK) {
+        haveFormat = true;
+        rate = static_cast<int>(nativeRate);
+        channels = nativeChannels;
+      }
+    }
     if (done > 0) {
       const std::size_t samples = done / sizeof(std::int16_t);
       const std::size_t oldSize = out.size();
@@ -372,17 +384,48 @@ decode_mp3_memory(std::span<const std::uint8_t> data, int &rate,
       std::memcpy(out.data() + oldSize, buffer.data(),
                   samples * sizeof(std::int16_t));
     }
+    if (err == MPG123_NEED_MORE) {
+      break; // everything was fed up front, so this is the end of the stream
+    }
     if (err != MPG123_OK && err != MPG123_NEW_FORMAT && err != MPG123_DONE) {
-      std::cerr << "[audio] decode_mp3_memory: error " << err << '\n';
+      std::cerr << "[audio] decode_mp3_memory: error " << err << " ("
+                << mpg123_plain_strerror(err) << ")\n";
       break;
     }
   }
+  if (!haveFormat) {
+    std::cerr << "[audio] decode_mp3_memory: format detection failed\n";
+  }
 
-  std::cerr << "[audio] decode_mp3_memory: produced " << out.size()
-            << " samples\n";
   mpg123_close(handle);
   mpg123_delete(handle);
+  std::cerr << "[audio] decode_mp3_memory: " << rate << " Hz, " << channels
+            << " ch, " << out.size() << " samples, encoding 0x" << std::hex
+            << encoding << std::dec << '\n';
   return out;
+}
+
+// How hot the decoded material is. A track mastered to full scale plus a
+// generous gain is what an output limiter reacts to, and that is heard as
+// the sound ducking; this says which side the problem is on.
+inline void report_pcm_level(std::span<const std::int16_t> samples,
+                             const char *what) {
+  if (samples.empty()) {
+    return;
+  }
+  int peak = 0;
+  std::size_t hot = 0;
+  for (const std::int16_t s : samples) {
+    const int magnitude = s == -32768 ? 32767 : (s < 0 ? -s : s);
+    peak = magnitude > peak ? magnitude : peak;
+    if (magnitude > 32000) {
+      ++hot;
+    }
+  }
+  std::cerr << "[audio] " << what << ": peak " << peak << " ("
+            << (100.0 * static_cast<double>(hot) /
+                static_cast<double>(samples.size()))
+            << "% near full scale)\n";
 }
 
 } // namespace audio
