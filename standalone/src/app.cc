@@ -889,9 +889,25 @@ private:
   // physically happened.
 
   void drainInput() {
+    // Resizes are coalesced: a window being dragged by its corner delivers
+    // dozens of sizes a frame, and acting on each of them means recreating
+    // surfaces dozens of times a frame and drawing none of them -- which is
+    // what the black flash while resizing was.
     Event ev;
+    bool resized = false;
+    int width = 0;
+    int height = 0;
     while (fInputQueue.tryPop(ev)) {
+      if (ev.fType == EventType::kResize) {
+        resized = true;
+        width = ev.fA;
+        height = ev.fB;
+        continue;
+      }
       this->applyEvent(ev);
+    }
+    if (resized && (width != fScreenW || height != fScreenH)) {
+      this->resize(width, height);
     }
   }
 
@@ -2084,7 +2100,8 @@ private:
     // Gameplay draws on the CPU as well when asked to: the slider bodies it
     // needs were computed on the GPU and flattened into memory once, at load,
     // so nothing is read back per frame.
-    const bool software = fSettings.choice("renderer") == 1 && fRasterSurface;
+    const bool software =
+        fSettings.choice("renderer") == 1 && this->ensureRasterSurface();
     if (software != fDrewOnRaster) {
       this->damageAll("renderer changed");
     }
@@ -7098,6 +7115,30 @@ private:
         (fScreenH - static_cast<float>(osu::kPlayfieldHeight) * fScale) * 0.5f;
   }
 
+  // Skia's CPU rasteriser, as an alternative target for the menus, made on
+  // the frame that first asks for it. On a software GL stack the driver's own
+  // rasteriser is not obviously better than Skia's, and which one wins is a
+  // question for measurement rather than for argument -- hence the setting.
+  //
+  // Gameplay is never drawn this way, and that is deliberate: slider bodies
+  // are precomputed once into textures through SkSL, which llvmpipe's JIT
+  // handles better than a CPU rasteriser would, and drawing those textures
+  // into a raster canvas would mean reading them back every frame.
+  [[nodiscard]] bool ensureRasterSurface() {
+    if (fRasterSurface && fRasterSurface->width() == fScreenW &&
+        fRasterSurface->height() == fScreenH) {
+      return true;
+    }
+    // Same colour space as the window, or the pixels get encoded twice on the
+    // way over and the whole frame comes out lighter.
+    fRasterSurface = skia::Raster(skia::SkImageInfo::Make(
+        fScreenW, fScreenH, skia::kRGBA_8888_SkColorType,
+        skia::kPremul_SkAlphaType,
+        fWindowSurface ? fWindowSurface->imageInfo().refColorSpace()
+                       : nullptr));
+    return static_cast<bool>(fRasterSurface);
+  }
+
   void resize(int w, int h) {
     // Called on the render thread with framebuffer dimensions delivered by
     // the resize event (or the pre-thread snapshot); querying GLFW here is
@@ -7115,22 +7156,9 @@ private:
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);
     fSurface = fWindowSurface;
-    // Skia's CPU rasteriser, as an alternative target for the menus. On a
-    // software GL stack the driver's own rasteriser is not obviously better
-    // than Skia's, and which one wins is a question for measurement rather
-    // than for argument -- hence the setting.
-    //
-    // Gameplay is never drawn this way, and that is deliberate: slider bodies
-    // are precomputed once into textures through SkSL, which llvmpipe's JIT
-    // handles better than a CPU rasteriser would, and drawing those textures
-    // into a raster canvas would mean reading them back every frame.
-    // Same colour space as the window, or the pixels get encoded twice on
-    // the way over and the whole frame comes out lighter.
-    fRasterSurface = skia::Raster(skia::SkImageInfo::Make(
-        fScreenW, fScreenH, skia::kRGBA_8888_SkColorType,
-        skia::kPremul_SkAlphaType,
-        fWindowSurface ? fWindowSurface->imageInfo().refColorSpace()
-                       : nullptr));
+    // Dropped rather than remade: eight megabytes for a screen nobody may be
+    // drawing on that way. The frame that needs it makes it.
+    fRasterSurface.reset();
     fBlitHistory.clear();
     this->damageAll("resize");
     fView.invalidate();
