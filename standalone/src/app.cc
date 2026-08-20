@@ -28,6 +28,7 @@ import client.settings;
 import client.settingspanel;
 import client.overlays;
 import client.filtercontrol;
+import client.listing;
 import client.gameplayview;
 import client.mods;
 import client.video;
@@ -188,27 +189,15 @@ private:
   std::vector<skia::SkRect> fOptionHits;
 
   // Download screen (mirror search + .osz fetch).
-  struct DownloadEntry {
-    long fSetId = -1;
-    std::string fTitle, fArtist, fCreator, fRankStatus;
-    float fStarsMin = 0.0f;
-    float fStarsMax = 0.0f;
-    int fDiffCount = 0;
-    enum class St : std::uint8_t { kIdle, kFetching, kDone, kError };
-    St fSt = St::kIdle;
-    std::shared_ptr<client::http::Handle> fHandle;
-    enum class Thumb : std::uint8_t { kNone, kFetching, kReady, kFailed };
-    Thumb fThumbSt = Thumb::kNone;
-    skia::Sp<skia::SkImage> fThumb;
-  };
-  std::string fSearchQuery;
+  client::listing::Listing fListing;
+  std::vector<client::listing::Entry> fFound;
+  // Transfers in flight, so progress can be polled without the view knowing
+  // anything about HTTP.
+  std::map<long, std::shared_ptr<client::http::Handle>> fTransfers;
   bool fSearchPending = false;
   bool fSwallowChar = false; // the 'D' that opened the screen also arrives
                              // as a char event; it must not enter the query
-  std::vector<DownloadEntry> fFound;
-  float fDownloadScroll = 0.0f;
-  std::string fDownloadStatus = "Type a query and press Enter";
-  std::vector<skia::SkRect> fFoundHits; // rebuilt every download frame
+  std::string fDownloadStatus;
   struct ReplayFile {
     std::filesystem::path fPath;
     std::string fLabel;
@@ -737,7 +726,7 @@ private:
         fCarouselScroll -= ev.fX * 90.0f;
         fUserScrolled = true;
       } else if (fState == State::kDownload) {
-        fDownloadScroll -= ev.fX * 60.0f;
+        fListing.scroll(ev.fX);
       }
       break;
     case EventType::kChar:
@@ -757,7 +746,9 @@ private:
           fSwallowChar = false;
           break;
         }
-        this->appendUtf8(fSearchQuery, static_cast<std::uint32_t>(ev.fA));
+        this->appendUtf8(fListing.filters().fQuery,
+                         static_cast<std::uint32_t>(ev.fA));
+        fListing.scrollToStart(); // onTypingStarted
       }
       break;
     case EventType::kKey:
@@ -941,7 +932,7 @@ private:
     fSwallowChar = true;
     this->switchState(State::kDownload);
     if (fFound.empty() && !fSearchPending) {
-      this->startSearch(); // empty query => recently ranked listing
+      this->startSearch(); // the listing opens on results, not a blank page
     }
   }
 
@@ -955,7 +946,7 @@ private:
       return;
     }
     if (key == glfw::kKeyBackspace) {
-      this->popUtf8(fSearchQuery);
+      this->popUtf8(fListing.filters().fQuery);
     }
   }
 
@@ -1073,14 +1064,21 @@ private:
         }
       }
       break;
-    case State::kDownload:
-      for (std::size_t i = 0; i < fFoundHits.size(); ++i) {
-        if (fFoundHits[i].contains(x, y)) {
-          this->startDownload(i);
-          return;
-        }
+    case State::kDownload: {
+      const auto result = fListing.click(x, y);
+      switch (result.fAction) {
+      case client::listing::Listing::Action::kSearch:
+        this->startSearch();
+        break;
+      case client::listing::Listing::Action::kDownload:
+        this->startDownload(result.fIndex);
+        break;
+      case client::listing::Listing::Action::kRefilter:
+      case client::listing::Listing::Action::kNone:
+        break;
       }
-      break;
+      return;
+    }
     case State::kResults:
     case State::kPaused:
       for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
@@ -2144,16 +2142,46 @@ private:
 
   static constexpr const char *kMirror = "https://catboy.best";
 
+  // "2020-04-24T18:08:56+02:00" -> a number that sorts by date. Only the
+  // ordering matters, so the digits are simply concatenated.
+  [[nodiscard]] static std::int64_t dateStamp(std::string_view iso) {
+    std::int64_t v = 0;
+    int digits = 0;
+    for (const char c : iso) {
+      if (c >= '0' && c <= '9') {
+        v = v * 10 + (c - '0');
+        if (++digits == 14) {
+          break;
+        }
+      }
+    }
+    return v;
+  }
+
   void startSearch() {
     if (fSearchPending) {
       return;
     }
     fSearchPending = true;
+    fListing.resetSortForSearch();
     fDownloadStatus = "Searching...";
     auto handle = std::make_shared<client::http::Handle>();
-    const std::string url = std::string(kMirror) +
-                            "/api/v2/search?mode=0&limit=50&query=" +
-                            client::http::urlEncode(fSearchQuery);
+    const auto &f = fListing.filters();
+    std::string url = std::format("{}/api/v2/search?limit=50&mode={}&query={}",
+                                  kMirror, f.fRuleset,
+                                  client::http::urlEncode(f.fQuery));
+    // Categories the mirror understands as an osu! status id; the composite
+    // ones (Any, Has Leaderboard) and the account-bound ones are left to the
+    // client-side pass.
+    switch (f.fCategory) {
+    case client::listing::Category::kRanked: url += "&status=1"; break;
+    case client::listing::Category::kQualified: url += "&status=3"; break;
+    case client::listing::Category::kLoved: url += "&status=4"; break;
+    case client::listing::Category::kPending: url += "&status=0"; break;
+    case client::listing::Category::kWip: url += "&status=-1"; break;
+    case client::listing::Category::kGraveyard: url += "&status=-2"; break;
+    default: break;
+    }
     client::http::get(url, std::move(handle),
                       [this](client::http::Response r) {
                         this->onSearchDone(std::move(r));
@@ -2185,6 +2213,24 @@ private:
       return;
     }
 
+    const auto getNum = [](const bjson::object &o,
+                           std::string_view key) -> double {
+      if (const bjson::value *v = o.if_contains(key)) {
+        if (v->is_number()) {
+          return v->to_number<double>();
+        }
+      }
+      return 0.0;
+    };
+    const auto getBool = [](const bjson::object &o,
+                            std::string_view key) -> bool {
+      if (const bjson::value *v = o.if_contains(key)) {
+        if (const bool *b = v->if_bool()) {
+          return *b;
+        }
+      }
+      return false;
+    };
     const auto getStr = [](const bjson::object &o,
                            std::string_view key) -> std::string {
       if (const bjson::value *v = o.if_contains(key)) {
@@ -2201,42 +2247,70 @@ private:
       if (o == nullptr) {
         continue;
       }
-      DownloadEntry d;
+      client::listing::Entry d;
       const bjson::value *id = o->if_contains("id");
       if (id == nullptr || !id->is_int64()) {
         continue;
       }
       d.fSetId = static_cast<long>(id->as_int64());
       d.fTitle = getStr(*o, "title");
+      d.fTitleUnicode = getStr(*o, "title_unicode");
       d.fArtist = getStr(*o, "artist");
+      d.fArtistUnicode = getStr(*o, "artist_unicode");
       d.fCreator = getStr(*o, "creator");
-      d.fRankStatus = getStr(*o, "status");
+      d.fStatus = getStr(*o, "status");
+      d.fUpdated = getStr(*o, "last_updated").substr(0, 10);
+      d.fUpdatedDate = dateStamp(getStr(*o, "last_updated"));
+      d.fRankedDate = dateStamp(getStr(*o, "ranked_date"));
+      d.fBpm = getNum(*o, "bpm");
+      d.fRating = getNum(*o, "rating");
+      d.fPlayCount = static_cast<long>(getNum(*o, "play_count"));
+      d.fFavouriteCount = static_cast<long>(getNum(*o, "favourite_count"));
+      d.fVideo = getBool(*o, "video");
+      d.fStoryboard = getBool(*o, "storyboard");
+      d.fNsfw = getBool(*o, "nsfw");
+      d.fSpotlight = getBool(*o, "spotlight");
+      if (const bjson::value *track = o->if_contains("track_id")) {
+        d.fFeatured = !track->is_null();
+      }
+      if (const bjson::value *g = o->if_contains("genre")) {
+        if (const bjson::object *go = g->if_object()) {
+          d.fGenre = static_cast<int>(getNum(*go, "id"));
+        }
+      }
+      if (const bjson::value *l = o->if_contains("language")) {
+        if (const bjson::object *lo = l->if_object()) {
+          d.fLanguage = static_cast<int>(getNum(*lo, "id"));
+        }
+      }
       if (const bjson::value *bms = o->if_contains("beatmaps")) {
         if (const bjson::array *ba = bms->if_array()) {
           for (const auto &bm : *ba) {
-            if (const bjson::object *bo = bm.if_object()) {
-              if (const bjson::value *sr = bo->if_contains("difficulty_rating");
-                  sr != nullptr && sr->is_number()) {
-                const auto v = static_cast<float>(sr->to_number<double>());
-                if (d.fDiffCount == 0) {
-                  d.fStarsMin = d.fStarsMax = v;
-                } else {
-                  d.fStarsMin = std::min(d.fStarsMin, v);
-                  d.fStarsMax = std::max(d.fStarsMax, v);
-                }
-                ++d.fDiffCount;
-              }
+            const bjson::object *bo = bm.if_object();
+            if (bo == nullptr) {
+              continue;
             }
+            const bjson::value *sr = bo->if_contains("difficulty_rating");
+            if (sr == nullptr || !sr->is_number()) {
+              continue;
+            }
+            const auto v = static_cast<float>(sr->to_number<double>());
+            d.fStars.push_back(v);
+            if (d.fDiffCount == 0) {
+              d.fStarsMin = d.fStarsMax = v;
+            } else {
+              d.fStarsMin = std::min(d.fStarsMin, v);
+              d.fStarsMax = std::max(d.fStarsMax, v);
+            }
+            ++d.fDiffCount;
           }
+          std::ranges::sort(d.fStars);
         }
       }
       fFound.push_back(std::move(d));
     }
-    fDownloadScroll = 0.0f;
-    fDownloadStatus =
-        fSearchQuery.empty()
-            ? std::format("recently ranked - {} maps", fFound.size())
-            : std::format("{} result(s)", fFound.size());
+    fListing.scrollToStart();
+    fDownloadStatus = std::format("{} results", fFound.size());
   }
 
   void requestThumb(std::size_t idx) {
@@ -2244,19 +2318,19 @@ private:
       return;
     }
     auto &d = fFound[idx];
-    if (d.fThumbSt != DownloadEntry::Thumb::kNone) {
+    if (d.fThumbSt != client::listing::Entry::Thumb::kNone) {
       return;
     }
     int inflight = 0;
     for (const auto &e : fFound) {
-      if (e.fThumbSt == DownloadEntry::Thumb::kFetching) {
+      if (e.fThumbSt == client::listing::Entry::Thumb::kFetching) {
         ++inflight;
       }
     }
     if (inflight >= 4) {
       return; // retry on a later frame
     }
-    d.fThumbSt = DownloadEntry::Thumb::kFetching;
+    d.fThumbSt = client::listing::Entry::Thumb::kFetching;
     const long id = d.fSetId;
     auto handle = std::make_shared<client::http::Handle>();
     client::http::get(
@@ -2269,27 +2343,14 @@ private:
             if (r.fOk && r.fBody.size() > 256) {
               std::vector<std::uint8_t> bytes(r.fBody.begin(), r.fBody.end());
               e.fThumb = loadImage(bytes);
-              e.fThumbSt = e.fThumb ? DownloadEntry::Thumb::kReady
-                                    : DownloadEntry::Thumb::kFailed;
+              e.fThumbSt = e.fThumb ? client::listing::Entry::Thumb::kReady
+                                    : client::listing::Entry::Thumb::kFailed;
             } else {
-              e.fThumbSt = DownloadEntry::Thumb::kFailed;
+              e.fThumbSt = client::listing::Entry::Thumb::kFailed;
             }
             break;
           }
         });
-  }
-
-  [[nodiscard]] static skia::SkColor statusColorFor(std::string_view st) {
-    if (st == "ranked" || st == "approved") {
-      return skia::colorSetARGB(255, 102, 204, 255);
-    }
-    if (st == "loved") {
-      return skia::colorSetARGB(255, 255, 102, 170);
-    }
-    if (st == "qualified") {
-      return skia::colorSetARGB(255, 255, 204, 102);
-    }
-    return skia::colorSetARGB(255, 140, 140, 155);
   }
 
   void startDownload(std::size_t idx) {
@@ -2297,21 +2358,24 @@ private:
       return;
     }
     auto &d = fFound[idx];
-    if (d.fSt == DownloadEntry::St::kFetching ||
-        d.fSt == DownloadEntry::St::kDone) {
+    if (d.fSt == client::listing::Entry::St::kFetching ||
+        d.fSt == client::listing::Entry::St::kDone) {
       return;
     }
-    d.fSt = DownloadEntry::St::kFetching;
-    d.fHandle = std::make_shared<client::http::Handle>();
+    d.fSt = client::listing::Entry::St::kFetching;
     const long id = d.fSetId;
-    client::http::get(std::format("{}/d/{}", kMirror, id), d.fHandle,
+    auto handle = std::make_shared<client::http::Handle>();
+    fTransfers[id] = handle;
+    d.fProgress = 0.0f;
+    client::http::get(std::format("{}/d/{}", kMirror, id), std::move(handle),
                       [this, id](client::http::Response r) {
                         this->onDownloadDone(id, std::move(r));
                       });
   }
 
   void onDownloadDone(long id, client::http::Response r) {
-    DownloadEntry *d = nullptr;
+    fTransfers.erase(id);
+    client::listing::Entry *d = nullptr;
     for (auto &e : fFound) {
       if (e.fSetId == id) {
         d = &e;
@@ -2320,7 +2384,7 @@ private:
     }
     if (!r.fOk || r.fBody.size() < 1024) {
       if (d != nullptr) {
-        d->fSt = DownloadEntry::St::kError;
+        d->fSt = client::listing::Entry::St::kError;
       }
       fDownloadStatus =
           "Download failed: " + (r.fError.empty() ? "empty file" : r.fError);
@@ -2337,12 +2401,12 @@ private:
 #endif
     if (this->addOszToLibrary(path, true)) {
       if (d != nullptr) {
-        d->fSt = DownloadEntry::St::kDone;
+        d->fSt = client::listing::Entry::St::kDone;
       }
       fDownloadStatus = "Added to library: " +
                         (d != nullptr ? d->fTitle : std::to_string(id));
     } else if (d != nullptr) {
-      d->fSt = DownloadEntry::St::kError;
+      d->fSt = client::listing::Entry::St::kError;
     }
   }
 
@@ -4131,147 +4195,37 @@ private:
                            skia::kWhite, 0.75f);
   }
 
-  // ---- Download screen --------------------------------------------------
+  // ---- Download screen ---------------------------------------------------
+  //
+  // The whole listing -- header, filters, sort bar and cards -- is drawn by
+  // client.listing; here it only gets the data and the transfer state.
 
   void frameDownload() {
     auto *canvas = fSurface->getCanvas();
-    this->drawScreenBackground(canvas);
-
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
-
-    this->drawTextClipped(canvas, "beatmap listing", 24.0f, 44.0f, sw - 48.0f,
-                          26.0f, skia::kWhite);
-
-    // Search box.
-    const skia::SkRect box =
-        skia::SkRect::MakeXYWH(24.0f, 62.0f, sw - 48.0f, 44.0f);
-    this->fillRounded(canvas, box, 10.0f, kCardBg);
-    this->strokeRounded(canvas, box, 10.0f, kAccent, 2.0f);
-    const bool caretOn =
-        std::fmod(wallMs(), 1000.0) < 600.0;
-    if (fSearchQuery.empty()) {
-      this->drawTextClipped(canvas,
-                            std::string(caretOn ? "_" : " ") +
-                                "  type to search, Enter to submit",
-                            40.0f, 90.0f, sw - 80.0f, 18.0f, skia::kWhite,
-                            0.45f);
-    } else {
-      this->drawTextClipped(canvas, fSearchQuery + (caretOn ? "_" : " "),
-                            40.0f, 90.0f, sw - 80.0f, 18.0f, skia::kWhite);
-    }
-
-    this->drawTextClipped(canvas, fDownloadStatus, 24.0f, 130.0f, sw - 48.0f,
-                          14.0f, kAccent2, 0.9f);
-
-    // Result cards.
-    fFoundHits.clear();
-    fFoundHits.resize(fFound.size(), skia::SkRect::MakeEmpty());
-    const float listTop = 148.0f;
-    const float cardH = 76.0f;
-    const float gap = 10.0f;
-    const float viewH = sh - listTop - 52.0f;
-    const float totalH =
-        static_cast<float>(fFound.size()) * (cardH + gap);
-    fDownloadScroll =
-        std::clamp(fDownloadScroll, 0.0f, std::max(0.0f, totalH - viewH));
-
-    canvas->save();
-    canvas->clipIRect(skia::SkIRect::MakeXYWH(
-        0, static_cast<int>(listTop) - 4, static_cast<int>(sw),
-        static_cast<int>(viewH) + 8));
-    float y = listTop - fDownloadScroll;
-    for (std::size_t i = 0; i < fFound.size(); ++i) {
-      const auto &d = fFound[i];
-      const skia::SkRect card =
-          skia::SkRect::MakeXYWH(24.0f, y, sw - 48.0f, cardH);
-      if (y + cardH >= listTop && y <= sh) {
-        const bool hover = card.contains(fMouseX, fMouseY);
-        this->fillRounded(canvas, card, 10.0f, hover ? kCardSel : kCardBg);
-
-        // Cover art as the card background, lazer-style.
-        this->requestThumb(i);
-        if (d.fThumbSt == DownloadEntry::Thumb::kReady && d.fThumb) {
-          canvas->save();
-          canvas->clipRRect(skia::SkRRect::MakeRectXY(card, 10.0f, 10.0f),
-                            true);
-          canvas->drawImageRect(
-              d.fThumb.get(), card,
-              skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
-          skia::SkPaint dark;
-          dark.setColor(
-              skia::colorSetARGB(hover ? 120 : 150, 12, 10, 18));
-          canvas->drawRect(card, dark);
-          canvas->restore();
-        }
-
-        this->drawTextClipped(canvas,
-                              std::format("{} - {}", d.fArtist, d.fTitle),
-                              40.0f, y + 26.0f, sw - 320.0f, 17.0f,
-                              skia::kWhite);
-        this->drawTextClipped(canvas,
-                              std::format("mapped by {}", d.fCreator), 40.0f,
-                              y + 47.0f, sw - 320.0f, 13.0f, skia::kWhite,
-                              0.75f);
-        if (d.fDiffCount > 0) {
-          this->drawTextClipped(
-              canvas,
-              d.fDiffCount == 1
-                  ? std::format("{:.1f}* - 1 difficulty", d.fStarsMin)
-                  : std::format("{:.1f}*..{:.1f}* - {} difficulties",
-                                d.fStarsMin, d.fStarsMax, d.fDiffCount),
-              40.0f, y + 66.0f, sw - 320.0f, 12.0f,
-              starColor(d.fStarsMax), 0.95f);
-        }
-        if (!d.fRankStatus.empty()) {
-          const float pillW = 86.0f;
-          const skia::SkRect pill = skia::SkRect::MakeXYWH(
-              sw - 44.0f - pillW, y + 10.0f, pillW, 20.0f);
-          this->fillRounded(canvas, pill, 10.0f,
-                            statusColorFor(d.fRankStatus));
-          this->drawTextCentered(canvas, d.fRankStatus, pill.centerX(),
-                                 pill.centerY() + 4.0f, 11.0f,
-                                 skia::colorSetARGB(255, 20, 16, 26));
-        }
-        std::string status;
-        skia::SkColor statusColor = kAccent2;
-        switch (d.fSt) {
-        case DownloadEntry::St::kIdle:
-          status = "download";
-          break;
-        case DownloadEntry::St::kFetching: {
-          const float p =
-              d.fHandle ? d.fHandle->fProgress.load(std::memory_order_relaxed)
-                        : 0.0f;
-          status = std::format("{:.0f}%", static_cast<double>(p) * 100.0);
-          break;
-        }
-        case DownloadEntry::St::kDone:
-          status = "in library";
-          statusColor = skia::colorSetARGB(255, 120, 220, 120);
-          break;
-        case DownloadEntry::St::kError:
-          status = "failed - retry?";
-          statusColor = skia::colorSetARGB(255, 255, 120, 120);
-          break;
-        }
-        fFont.setSize(15.0f);
-        const float statusW = fFont.measureText(status.c_str(), status.size(),
-                                                skia::SkTextEncoding::kUTF8);
-        skia::SkPaint sp;
-        sp.setAntiAlias(true);
-        sp.setColor(statusColor);
-        canvas->drawString(status.c_str(), sw - 44.0f - statusW, y + 52.0f,
-                           fFont, sp);
-        fFoundHits[i] = card;
+    // Progress lives on the transfer handles; the view just reads a float.
+    for (auto &e : fFound) {
+      const auto it = fTransfers.find(e.fSetId);
+      if (it != fTransfers.end() && it->second) {
+        e.fProgress = it->second->fProgress.load(std::memory_order_relaxed);
       }
-      y += cardH + gap;
     }
-    canvas->restore();
-
-    this->drawBottomBar(canvas,
-                        "Type to search, Enter to submit    Click a card to "
-                        "download    Esc back");
+    client::listing::Listing::Ctx ctx;
+    ctx.fCanvas = canvas;
+    ctx.fFont = &fFont;
+    ctx.fWidth = static_cast<float>(fScreenW);
+    ctx.fHeight = static_cast<float>(fScreenH);
+    ctx.fMouseX = fMouseX;
+    ctx.fMouseY = fMouseY;
+    ctx.fNowMs = wallMs();
+    ctx.fDtMs = fUiDt;
+    ctx.fEntries = fFound;
+    ctx.fLoading = fSearchPending;
+    fListing.tick(wallMs());
+    fListing.draw(ctx);
+    // Covers are only fetched for what is on screen.
+    for (const int idx : fListing.visible()) {
+      this->requestThumb(static_cast<std::size_t>(idx));
+    }
     this->drawScreenFadeIn(canvas);
     this->present();
   }
