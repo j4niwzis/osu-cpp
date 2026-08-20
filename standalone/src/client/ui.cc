@@ -342,7 +342,15 @@ private:
 };
 
 inline FontStack &fonts() {
-  static FontStack stack;
+  // One per thread rather than one per process. It carries caches -- measured
+  // widths, which typeface covers which codepoint -- and it mutates the SkFont
+  // it is handed, so two threads drawing text through one of these would be
+  // writing to the same caches at the same time. Only the render thread draws
+  // today, so this costs nothing today; it is what lets a second thread draw
+  // at all, which is what rendering a video export off the render thread
+  // needs. Typefaces underneath are refcounted and shared, so the second
+  // stack is a set of caches rather than a second copy of the fonts.
+  static thread_local FontStack stack;
   return stack;
 }
 
