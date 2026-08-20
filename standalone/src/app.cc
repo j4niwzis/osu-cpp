@@ -137,6 +137,8 @@ private:
   // may set it; a toggle in the settings parks the value here.
   std::atomic<int> fSwapIntervalRequest{-1};
   int fSwapInterval = -1;
+  int fRefreshHz = 60; // the monitor's, sampled where GLFW allows the query
+  std::chrono::steady_clock::time_point fNextFrame{};
   double fFpsPrevWall = 0.0;
   double fFpsFrameMs = 0.0;
 
@@ -216,6 +218,7 @@ private:
   std::map<long, std::shared_ptr<client::http::Handle>> fTransfers;
   bool fSearchPending = false;
   int fSearchOffset = 0;        // how much of the current search is loaded
+  std::uint32_t fSearchGeneration = 0; // results from older queries are dropped
   bool fMoreAvailable = true;   // a full page came back, so ask for the next
   bool fSwallowChar = false; // the 'D' that opened the screen also arrives
                              // as a char event; it must not enter the query
@@ -493,6 +496,9 @@ private:
     const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
     fScreenW = mode->width;
     fScreenH = mode->height;
+    if (mode->refreshRate > 0) {
+      fRefreshHz = mode->refreshRate;
+    }
 
     fWindow = glfw::glfwCreateWindow(fScreenW, fScreenH, "osu_client", monitor,
                                      nullptr);
@@ -1276,7 +1282,42 @@ private:
     }
     fSwapInterval = wanted;
     glfw::glfwSwapInterval(wanted);
-    std::println(std::cerr, "[gfx] swap interval {}", wanted);
+    fNextFrame = std::chrono::steady_clock::now();
+    std::println(std::cerr, "[gfx] swap interval {} (monitor {} Hz)", wanted,
+                 fRefreshHz);
+#endif
+  }
+
+  // Plenty of drivers and compositors ignore the swap interval outright, so
+  // asking for it is not enough: with vsync on, the loop is also paced to the
+  // monitor's refresh here. When the driver does honour the interval the swap
+  // has already blocked and this sleeps for nothing.
+  void limitFrameRate() {
+#ifndef __EMSCRIPTEN__
+    if (fSwapInterval <= 0 || fRefreshHz <= 0) {
+      return;
+    }
+    using clock = std::chrono::steady_clock;
+    const auto period = std::chrono::nanoseconds(
+        static_cast<std::int64_t>(1'000'000'000.0 / fRefreshHz));
+    const auto now = clock::now();
+    if (fNextFrame.time_since_epoch().count() == 0 ||
+        now > fNextFrame + period * 4) {
+      fNextFrame = now + period; // first frame, or too far behind to catch up
+      return;
+    }
+    if (now < fNextFrame) {
+      // Sleep short of the target and spin the remainder: the scheduler
+      // overshoots by more than a frame is worth.
+      const auto slack = std::chrono::microseconds(1200);
+      if (fNextFrame - now > slack) {
+        std::this_thread::sleep_until(fNextFrame - slack);
+      }
+      while (clock::now() < fNextFrame) {
+        std::this_thread::yield();
+      }
+    }
+    fNextFrame += period;
 #endif
   }
 
@@ -1312,6 +1353,7 @@ private:
       this->frameResults();
       break;
     }
+    this->limitFrameRate();
   }
 
   // lazer's FPSCounter sits in the corner of every screen, and shows the
@@ -2476,6 +2518,10 @@ private:
   void startSearch() {
     fSearchOffset = 0;
     fMoreAvailable = true;
+    // Pages already in flight belong to the previous query; without this they
+    // arrive afterwards and are appended to the new results.
+    ++fSearchGeneration;
+    fSearchPending = false;
     fListing.resetSortForSearch();
     fListing.scrollToStart();
     fFound.clear();
@@ -2490,9 +2536,13 @@ private:
     fSearchPending = true;
     fDownloadStatus = fSearchOffset == 0 ? "Searching..." : "Loading more...";
     const int offset = fSearchOffset;
+    const std::uint32_t generation = fSearchGeneration;
     auto handle = std::make_shared<client::http::Handle>();
     client::http::get(this->searchUrl(offset), std::move(handle),
-                      [this, offset](client::http::Response r) {
+                      [this, offset, generation](client::http::Response r) {
+                        if (generation != fSearchGeneration) {
+                          return; // the query moved on while this was in flight
+                        }
                         this->onSearchDone(offset, std::move(r));
                       });
   }

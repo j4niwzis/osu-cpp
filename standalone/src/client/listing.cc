@@ -281,14 +281,14 @@ private:
       return {Action::kSearch}; // and by status
     case Kind::kGenre:
       fFilters.fGenre = static_cast<Genre>(hit.fValue);
-      return {Action::kRefilter};
+      return {Action::kSearch};
     case Kind::kLanguage:
       fFilters.fLanguage = static_cast<Language>(hit.fValue);
-      return {Action::kRefilter};
+      return {Action::kSearch};
     case Kind::kExtra:
       fFilters.fExtra[static_cast<std::size_t>(hit.fValue)] =
           !fFilters.fExtra[static_cast<std::size_t>(hit.fValue)];
-      return {Action::kRefilter};
+      return {Action::kSearch};
     case Kind::kRank:
       fFilters.fRanks[static_cast<std::size_t>(hit.fValue)] =
           !fFilters.fRanks[static_cast<std::size_t>(hit.fValue)];
@@ -298,18 +298,20 @@ private:
       return {Action::kRefilter};
     case Kind::kExplicit:
       fFilters.fExplicit = static_cast<Explicit>(hit.fValue);
-      return {Action::kRefilter};
+      return {Action::kSearch};
     case Kind::kSort: {
       const auto sort = static_cast<Sort>(hit.fValue);
       // Clicking the active criterion flips the direction, as SortTabControl
-      // does; picking another resets to descending.
+      // does; picking another resets to descending. Either way the mirror
+      // sorts, so the query is asked again rather than the loaded pages being
+      // reshuffled among themselves.
       if (sort == fFilters.fSort) {
         fFilters.fDescending = !fFilters.fDescending;
       } else {
         fFilters.fSort = sort;
         fFilters.fDescending = true;
       }
-      return {Action::kRefilter};
+      return {Action::kSearch};
     }
     case Kind::kCardSize:
       fFilters.fCardSize = static_cast<CardSize>(hit.fValue);
