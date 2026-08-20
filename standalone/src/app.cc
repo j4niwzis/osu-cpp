@@ -162,7 +162,10 @@ private:
   double fCostLogWall = 0.0;
   std::vector<skia::SkIRect> fFrameClip;
   bool fFrameClipFull = true;
+  // What each of the last few frames repainted, since the buffer being drawn
+  // into is missing exactly that.
   std::vector<std::vector<skia::SkIRect>> fBlitHistory;
+  const bool fPartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
   double fFpsPrevWall = 0.0;
@@ -1455,39 +1458,47 @@ private:
   // have -- the screens repaint from state, so a clipped repaint of a region
   // is the same pixels -- only the work outside the clip is skipped.
   void beginFrame() {
-    // Take the accumulator as this frame's clip and hand a fresh one to the
+    // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
     fFrameClipFull = fFullDamage || fDamage.empty();
     fFrameClip.clear();
-    if (fFrameClipFull) {
-      fFrameClip.push_back(skia::SkIRect::MakeWH(fScreenW, fScreenH));
-    } else {
+    if (!fFrameClipFull) {
       fFrameClip = fDamage;
     }
     fDamage.clear();
     fFullDamage = false;
+    this->rememberBlitRegion();
 
     if (!fSurface) {
       return;
     }
     auto *canvas = fSurface->getCanvas();
     fFrameSave = canvas->save();
-    if (!fFrameClipFull) {
-      // Several disjoint rectangles: a region, not a bounding box, or the
-      // clip would be their union again.
-      skia::SkRegion region;
-      for (const auto &rect : fFrameClip) {
-        region.op(rect, skia::SkRegion::kUnion_Op);
-      }
-      canvas->clipRegion(region);
+
+    // Partial repainting draws straight into the window: there is no second
+    // surface and nothing is copied. The buffer being drawn into is one of
+    // several the window cycles through, so it is missing everything the last
+    // few frames changed -- clipping to their union is what makes drawing
+    // less than a whole frame produce a correct one.
+    //
+    // Whether it wins depends on where the frame's cost is. On a software
+    // rasteriser pixels are CPU time, so painting a strip instead of a screen
+    // is a real saving. On a GPU the cost is the number of draw calls, which
+    // clipping does not reduce -- which is why it is asked for rather than
+    // assumed.
+    if (!fPartialRedraw || this->blitRegionFull()) {
+      return;
     }
-    // The surface keeps what is not repainted, so a repainted region starts
-    // clean: a translucent overlay drawn over it every frame -- the settings
-    // dim, for one -- would otherwise darken it a little more each time until
-    // it went black. A full repaint needs no clearing, since every screen
-    // covers the screen with its background first, and gameplay is exempt
-    // either way: it manages its own surface content.
-    if (!fFrameClipFull && fState != State::kPlaying) {
+    skia::SkRegion region;
+    for (const auto &frame : fBlitHistory) {
+      for (const auto &area : frame) {
+        region.op(area, skia::SkRegion::kUnion_Op);
+      }
+    }
+    canvas->clipRegion(region);
+    // What is repainted starts clean: the buffer holds an older frame, and
+    // anything translucent drawn over it would otherwise stack up.
+    if (fState != State::kPlaying) {
       canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
     }
   }
@@ -1672,37 +1683,11 @@ private:
     this->drawDeleteConfirmation(canvas);
     this->drawToast(canvas);
     this->drawFpsCounter(canvas);
+    this->showDamage(canvas);
     canvas->restoreToCount(fFrameSave);
-    fContext->flushAndSubmit(fSurface.get());
     fBlitStart = std::chrono::steady_clock::now();
+    fContext->flushAndSubmit(fSurface.get());
 
-    // The window's back buffer is a different one each swap, so it always
-    // takes the whole surface; the saving is in what was drawn into the
-    // surface, not in what is copied out of it.
-    if (fWindowSurface) {
-      auto *window = fWindowSurface->getCanvas();
-      // Copying the whole surface every frame costs more than drawing into
-      // it. The window alternates between a small number of back buffers, so
-      // the one being drawn into is missing whatever was repainted over the
-      // last few frames -- that, and only that, has to be copied.
-      this->rememberBlitRegion();
-      const int saved = window->save();
-      if (!this->blitRegionFull()) {
-        skia::SkRegion region;
-        for (const auto &frame : fBlitHistory) {
-          for (const auto &area : frame) {
-            region.op(area, skia::SkRegion::kUnion_Op);
-          }
-        }
-        window->clipRegion(region);
-      }
-      fSurface->draw(window, 0.0f, 0.0f);
-      window->restoreToCount(saved);
-      // Drawn onto the window rather than into the surface: the surface keeps
-      // what is not repainted, so an outline drawn there would pile up.
-      this->showDamage(window);
-      fContext->flushAndSubmit(fWindowSurface.get());
-    }
     const auto beforeSwap = std::chrono::steady_clock::now();
     glfw::glfwSwapBuffers(fWindow);
     this->reportFrameCost(frameStart, beforeSwap);
@@ -6252,18 +6237,8 @@ private:
     fWindowSurface = skia::WrapBackendRenderTarget(
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);
-
-    // Everything is drawn into a surface of our own, which survives from
-    // frame to frame; the window's back buffer does not, because swapping
-    // alternates between two of them. That is what makes it possible to
-    // repaint only the part of the screen that changed and still put a whole
-    // frame in front of the user: the damaged area is redrawn here, and this
-    // surface is then blitted to the window in one textured quad.
-    fSurface = skia::RenderTarget(
-        fContext.get(), skia::kNo,
-        skia::SkImageInfo::Make(fScreenW, fScreenH,
-                                skia::kRGBA_8888_SkColorType,
-                                skia::kPremul_SkAlphaType));
+    fSurface = fWindowSurface;
+    fBlitHistory.clear();
     this->damageAll("resize");
     fView.invalidate();
     fView.preScaleBackground(this->gameplayCtx(nullptr));
