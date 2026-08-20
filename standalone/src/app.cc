@@ -183,6 +183,11 @@ private:
   const bool fForcePartialRedraw =
       std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
+  // OSU_BUFFER_AGE=N: what to believe when the window system will not say.
+  const int fAssumedBufferAge = [] {
+    const char *value = std::getenv("OSU_BUFFER_AGE");
+    return value != nullptr ? std::atoi(value) : 0;
+  }();
   std::vector<skia::SkIRect> fComputedClip; // what the frame would have used
   bool fComputedClipFull = true;
 
@@ -1679,6 +1684,13 @@ private:
     // window system rather than from a constant of mine. -1 when nobody will
     // say, which is when the constants come back.
     fBufferAge = this->partialRedraw() ? present::bufferAge() : -1;
+    // Nobody will say, but the answer may still be knowable: a driver that
+    // swaps by copying leaves the back buffer holding the last frame, which
+    // is an age of one, and a repaint of this frame's damage alone. Asserted
+    // rather than guessed, because getting it wrong looks like smearing.
+    if (fBufferAge < 0 && fAssumedBufferAge > 0 && this->partialRedraw()) {
+      fBufferAge = fAssumedBufferAge;
+    }
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
     //
