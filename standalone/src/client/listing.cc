@@ -978,21 +978,25 @@ private:
       // Main content, inset 10 horizontal and 4 vertical.
       const float tx = card.fLeft + h + 10.0f - kCardCorner;
       const float tw = main.fRight - tx - 10.0f;
-      float ty = card.fTop + 4.0f + 18.0f; // Padding: horizontal 10, vertical 4
+      // Five rows have to fit in eighty pixels, and the bottom two are boxes
+      // rather than text: the status pill is 15 tall and sits from the
+      // baseline less 11, and the statistics line above it needs its own 11.
+      // Counted from the bottom up, which is the only way this comes out.
+      float ty = card.fTop + 17.0f;
       paint::textClipped(canvas, font,
                          e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode,
                          tx, ty, tw, 18.0f, kContent1, true, alpha);
-      ty += 17.0f;
+      ty += 15.0f;
       paint::textClipped(canvas, font,
                          "by " + (e.fArtistUnicode.empty() ? e.fArtist
                                                            : e.fArtistUnicode),
                          tx, ty, tw, 14.0f, kContent1, true, alpha);
       if (extra) {
-        ty += 14.0f;
+        ty += 13.0f;
         paint::textClipped(canvas, font, e.fSource, tx, ty, tw, 11.0f,
                            kContent2, true, alpha);
       } else {
-        ty += 12.0f;
+        ty += 13.0f;
         const std::string mapped = "mapped by ";
         paint::text(canvas, font, mapped, tx, ty, 11.0f, kContent2, true,
                     alpha);
@@ -1001,7 +1005,7 @@ private:
                            tw, 11.0f, kContent1, true, alpha);
       }
 
-      const float bottom = card.fBottom - 6.0f;
+      const float bottom = card.fBottom - 8.0f;
       if (e.fSt == Entry::St::kFetching) {
         // BeatmapCardDownloadProgressBar: 5 high, across the bottom content.
         const skia::SkRect bar =
@@ -1025,7 +1029,7 @@ private:
         // AlwaysPresent, over there -- so the line above it is laid out
         // clear of it instead of being run into when a card is hovered.
         if (fExpand > 0.01f) {
-          this->drawStatistics(canvas, font, tx, bottom - 18.0f, tw, e,
+          this->drawStatistics(canvas, font, tx, bottom - 15.0f, tw, e,
                                alpha * fExpand);
         }
         this->drawExtraInfoRow(canvas, font, tx, bottom, tw, e, alpha);
