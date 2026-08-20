@@ -180,22 +180,35 @@ using HitObject = std::variant<Circle, Slider, Spinner>;
   return std::visit([](const auto &o) { return o.fTime; }, obj);
 }
 
-[[nodiscard]] constexpr double circleScale(double cs) noexcept {
-  return (1.0 - 0.7 * (cs - 5.0) / 5.0) / 2.0;
+// osu! builds up to 2013-05-04 rounded the gamefield down, which made circles
+// come out slightly larger; the ratio was kept afterwards so that replays from
+// before the fix still land, and it applies to every beatmap. It is part of
+// the object's scale, so it reaches the radius, the stack offsets and every
+// normalised distance in the difficulty calculation.
+inline constexpr double kGamefieldRoundingAllowance = 1.00041;
+
+// Computed in the precision it is computed in on the other side: the scale is
+// a float there, and the difference shows up in the eighth digit of every
+// position in a stack.
+[[nodiscard]] inline double circleScale(double cs) noexcept {
+  const float size = static_cast<float>(cs);
+  return static_cast<double>(
+      static_cast<float>(1.0f - 0.7f * (size - 5.0f) / 5.0f) / 2.0f *
+      static_cast<float>(kGamefieldRoundingAllowance));
 }
 
-[[nodiscard]] constexpr Vec2 stackOffset(int stack, double cs) noexcept {
+[[nodiscard]] inline Vec2 stackOffset(int stack, double cs) noexcept {
   const double shift = stack * circleScale(cs) * 6.4;
   return {-shift, -shift};
 }
 
-[[nodiscard]] constexpr Vec2 stackedPosition(const Circle &c,
-                                             double cs) noexcept {
+[[nodiscard]] inline Vec2 stackedPosition(const Circle &c,
+                                          double cs) noexcept {
   return c.fPos + stackOffset(c.fStack, cs);
 }
 
-[[nodiscard]] constexpr Vec2 stackedPosition(const Slider &s,
-                                             double cs) noexcept {
+[[nodiscard]] inline Vec2 stackedPosition(const Slider &s,
+                                          double cs) noexcept {
   return s.fPos + stackOffset(s.fStack, cs);
 }
 

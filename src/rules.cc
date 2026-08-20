@@ -193,23 +193,11 @@ inline double clampArOd(double ar, double rate) noexcept {
   return std::min(800.0, preemptTime(ar));
 }
 
-// OsuHitObject.Radius: 64 units of object radius times the scale the circle
-// size gives, and that scale carries a "broken gamefield rounding allowance"
-// of 1.00041 -- osu! builds before 2013 rounded the playfield down, and the
-// allowance keeps old replays working. lazer applies it to every beatmap, so
-// every circle is that fraction larger than the plain formula says, and every
-// normalised distance in the difficulty calculation is that fraction smaller.
-inline constexpr double kGamefieldRoundingAllowance = 1.00041;
-
+// OsuHitObject.Radius: the object radius of 64 times the scale a circle size
+// gives, which is where the rounding allowance lives. One source for both
+// this and the stack offsets, since lazer computes them from the same Scale.
 [[nodiscard]] inline double circleRadius(double cs) noexcept {
-  // CalculateScaleFromCircleSize, in the precision it is computed in:
-  // (1 - 0.7 * (cs - 5) / 5) / 2, times the allowance, times the object
-  // radius of 64.
-  const float size = static_cast<float>(cs);
-  const float scale =
-      static_cast<float>(1.0f - 0.7f * (size - 5.0f) / 5.0f) / 2.0f *
-      static_cast<float>(kGamefieldRoundingAllowance);
-  return static_cast<double>(64.0f * scale);
+  return static_cast<double>(64.0f * static_cast<float>(circleScale(cs)));
 }
 
 [[nodiscard]] inline double spinnerRotationsPerSecond(double od) noexcept {
