@@ -179,6 +179,44 @@ static sf_count_t sndfileTell(void *user) {
 
 export namespace audio {
 
+// libsndfile's own float-to-short conversion wraps.
+//
+// Its Ogg/Vorbis reader multiplies the decoded float by 32767 and stores the
+// result in a short without limiting it, and SFC_SET_CLIPPING -- which is
+// accepted, and which SFC_GET_CLIPPING then confirms as enabled -- does not
+// reach that path. Vorbis decodes to float and modern masters run past full
+// scale (this preview peaks at 1.31, some 2.3 dB over), so every peak came
+// back with its sign flipped: the sound tore exactly where it was loudest.
+//
+// Reading floats and converting here gives samples identical to ffmpeg's,
+// and it is done in chunks because a float copy of a whole track would cost
+// four times what the result does.
+[[nodiscard]] inline std::vector<std::int16_t>
+readAsShort(SNDFILE *file, sf_count_t frames, int channels) {
+  std::vector<std::int16_t> out;
+  if (channels <= 0) {
+    return out;
+  }
+  const auto stride = static_cast<std::size_t>(channels);
+  out.reserve(static_cast<std::size_t>(frames) * stride);
+
+  constexpr sf_count_t kChunkFrames = 1 << 15;
+  std::vector<float> chunk(static_cast<std::size_t>(kChunkFrames) * stride);
+  while (true) {
+    const sf_count_t read = sf_readf_float(file, chunk.data(), kChunkFrames);
+    if (read <= 0) {
+      break;
+    }
+    const auto count = static_cast<std::size_t>(read) * stride;
+    for (std::size_t i = 0; i < count; ++i) {
+      const float scaled = chunk[i] * 32767.0f;
+      const float limited = std::clamp(scaled, -32768.0f, 32767.0f);
+      out.push_back(static_cast<std::int16_t>(std::lrintf(limited)));
+    }
+  }
+  return out;
+}
+
 [[nodiscard]] inline std::vector<std::int16_t>
 decode_sndfile(const std::filesystem::path &path, int &rate, int &channels) {
   std::cerr << "[audio] decode_sndfile: opening " << path << '\n';
@@ -188,24 +226,12 @@ decode_sndfile(const std::filesystem::path &path, int &rate, int &channels) {
     std::cerr << "[audio] decode_sndfile: sf_open failed\n";
     return {};
   }
-  // libsndfile converts float data to short without clipping unless it is
-  // asked to: a sample above full scale wraps instead of being limited, so
-  // the loudest peaks come back inverted. Ogg Vorbis (which is what osu!
-  // serves previews as, and what plenty of beatmap audio is) decodes to
-  // float, and modern masters sit at or above 0 dBFS, so this is heard as
-  // the sound tearing at its loudest -- as if it were cut off, leaving only
-  // what was quiet enough to survive.
-  sf_command(file, SFC_SET_CLIPPING, nullptr, SF_TRUE);
-
   rate = info.samplerate;
   channels = info.channels;
   const auto frames = static_cast<sf_count_t>(info.frames);
   std::cerr << "[audio] decode_sndfile: " << frames << " frames, " << rate
             << " Hz, " << channels << " ch\n";
-  std::vector<std::int16_t> out(
-      static_cast<std::size_t>(frames * info.channels));
-  const auto read = sf_readf_short(file, out.data(), frames);
-  out.resize(static_cast<std::size_t>(read * info.channels));
+  auto out = readAsShort(file, frames, info.channels);
   sf_close(file);
   std::cerr << "[audio] decode_sndfile: returned " << out.size()
             << " samples\n";
@@ -316,24 +342,12 @@ decode_sndfile_memory(std::span<const std::uint8_t> data, int &rate,
     std::cerr << "[audio] decode_sndfile_memory: sf_open_virtual failed\n";
     return {};
   }
-  // libsndfile converts float data to short without clipping unless it is
-  // asked to: a sample above full scale wraps instead of being limited, so
-  // the loudest peaks come back inverted. Ogg Vorbis (which is what osu!
-  // serves previews as, and what plenty of beatmap audio is) decodes to
-  // float, and modern masters sit at or above 0 dBFS, so this is heard as
-  // the sound tearing at its loudest -- as if it were cut off, leaving only
-  // what was quiet enough to survive.
-  sf_command(file, SFC_SET_CLIPPING, nullptr, SF_TRUE);
-
   rate = info.samplerate;
   channels = info.channels;
   const auto frames = static_cast<sf_count_t>(info.frames);
   std::cerr << "[audio] decode_sndfile_memory: " << frames << " frames, "
             << rate << " Hz, " << channels << " ch\n";
-  std::vector<std::int16_t> out(
-      static_cast<std::size_t>(frames * info.channels));
-  const auto read = sf_readf_short(file, out.data(), frames);
-  out.resize(static_cast<std::size_t>(read * info.channels));
+  auto out = readAsShort(file, frames, info.channels);
   sf_close(file);
   if (mem.clamped) {
     std::cerr << "[audio] decode_sndfile_memory: reads outside the buffer "
@@ -449,6 +463,7 @@ inline void report_pcm_level(std::span<const std::int16_t> samples,
   int peak = 0;
   std::size_t hot = 0;
   std::size_t jumps = 0;
+  std::size_t lastTearFrame = 0;
   for (std::size_t i = 0; i < samples.size(); ++i) {
     const int value = samples[i];
     const int magnitude = value == -32768 ? 32767 : (value < 0 ? -value : value);
@@ -462,6 +477,15 @@ inline void report_pcm_level(std::span<const std::int16_t> samples,
       const int delta = value - samples[i - stride];
       if (delta > 32000 || delta < -32000) {
         ++jumps;
+        // Where the tears sit says what made them: a regular spacing points
+        // at block boundaries, a random one at the conversion.
+        if (jumps <= 6) {
+          std::cerr << "[audio]   tear at frame " << (i / stride) << " ch "
+                    << (i % stride) << ": " << samples[i - stride] << " -> "
+                    << value << " (gap " << (i / stride - lastTearFrame)
+                    << " frames)\n";
+        }
+        lastTearFrame = i / stride;
       }
     }
   }
