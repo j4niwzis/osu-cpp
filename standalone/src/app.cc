@@ -5562,9 +5562,12 @@ private:
       if (job.fSurface->readPixels(info, pixels.data(), rowBytes, 0, 0)) {
         job.fExporter->addFrame(pixels);
       }
+      // Tenths rather than whole per cent: at 4K a single per cent is
+      // several seconds, and the dialog only repaints when this number
+      // changes -- so a coarse number is a screen that looks stopped.
       job.fPercent.store(
           static_cast<int>(std::clamp(now / std::max(1.0, end), 0.0, 1.0) *
-                           100.0),
+                           1000.0),
           std::memory_order_relaxed);
     }
 
@@ -5582,8 +5585,11 @@ private:
     }
     ExportJob &job = *fExportJob;
     if (!job.fFinished.load(std::memory_order_acquire)) {
-      fExportDialog.setStatus(std::format(
-          "rendering {}%", job.fPercent.load(std::memory_order_relaxed)));
+      const int tenths = job.fPercent.load(std::memory_order_relaxed);
+      fExportDialog.setStatus(
+          std::format("rendering {:.1f}%   {}x{}",
+                      static_cast<double>(tenths) / 10.0, job.fOpts.fWidth,
+                      job.fOpts.fHeight));
       return;
     }
     if (job.fThread.joinable()) {
