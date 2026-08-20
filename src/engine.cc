@@ -485,6 +485,67 @@ private:
     this->emit(i, HitKind::kBasic, j, hit, delta);
   }
 
+  // StartTimeOrderedHitPolicy. Only circles and slider heads block -- ticks,
+  // tails and spinners do not -- and the rule is about the *last* one before
+  // the object being hit: if it is still unjudged and the press came before
+  // its start time, the press does nothing at all. lazer shakes the object to
+  // say so.
+  [[nodiscard]] bool blocksLaterHits(std::size_t i) const noexcept {
+    return !std::holds_alternative<Spinner>(fMap.fObjects[i]);
+  }
+
+  [[nodiscard]] bool headJudged(std::size_t i) const noexcept {
+    return std::holds_alternative<Slider>(fMap.fObjects[i])
+               ? fStates[i].fHeadJudged
+               : fStates[i].fJudged;
+  }
+
+  [[nodiscard]] std::optional<std::size_t>
+  lastBlockingBefore(std::size_t i) const {
+    const double target = startTime(fMap.fObjects[i]);
+    std::optional<std::size_t> last;
+    for (std::size_t n = fProcessedObjects; n < i; ++n) {
+      if (startTime(fMap.fObjects[n]) >= target) {
+        break;
+      }
+      if (this->blocksLaterHits(n)) {
+        last = n;
+      }
+    }
+    return last;
+  }
+
+  [[nodiscard]] bool allowedToHit(std::size_t i, double time) const {
+    const auto blocking = this->lastBlockingBefore(i);
+    if (!blocking) {
+      return true;
+    }
+    // Hits at exactly the blocking object's time are allowed, for maps with
+    // simultaneous objects.
+    return this->headJudged(*blocking) ||
+           time >= startTime(fMap.fObjects[*blocking]);
+  }
+
+  // Hitting an object misses everything before it that was still waiting.
+  void missEarlierBlocking(std::size_t i, double time) {
+    const double target = startTime(fMap.fObjects[i]);
+    for (std::size_t n = fProcessedObjects; n < i; ++n) {
+      if (startTime(fMap.fObjects[n]) >= target) {
+        break;
+      }
+      if (!this->blocksLaterHits(n) || this->headJudged(n)) {
+        continue;
+      }
+      if (std::holds_alternative<Slider>(fMap.fObjects[n])) {
+        fStates[n].fHeadJudged = true;
+        this->emit(n, HitKind::kBasic, judgement::Miss{}, false,
+                   time - startTime(fMap.fObjects[n]));
+      } else {
+        this->judge(n, judgement::Miss{}, time - startTime(fMap.fObjects[n]));
+      }
+    }
+  }
+
   void tryHitHead(double time, Vec2 pos) {
     for (std::size_t i = fProcessedObjects; i < fMap.fObjects.size(); ++i) {
       if (fStates[i].fJudged)
@@ -531,6 +592,32 @@ private:
             return false; // spinner is finalized by rotation, not by head hit
           },
       };
+      // Whether this object could take the press at all, before letting it.
+      const bool wouldHit = std::visit(
+          Overloaded{
+              [&](const Circle &) {
+                return !fStates[i].fJudged &&
+                       pos.distanceTo(this->circlePosition(i)) <=
+                           circleRadius(fDiff.fCs) &&
+                       std::abs(time - startTime(fMap.fObjects[i])) <=
+                           windowMeh(fDiff.fOd);
+              },
+              [&](const Slider &) {
+                return !fStates[i].fHeadJudged &&
+                       pos.distanceTo(this->circlePosition(i)) <=
+                           circleRadius(fDiff.fCs) &&
+                       std::abs(time - startTime(fMap.fObjects[i])) <=
+                           windowMeh(fDiff.fOd);
+              },
+              [](const Spinner &) { return false; },
+          },
+          fMap.fObjects[i]);
+      if (wouldHit && !this->allowedToHit(i, time)) {
+        return; // note lock: the press is swallowed, nothing is judged
+      }
+      if (wouldHit) {
+        this->missEarlierBlocking(i, time);
+      }
       if (std::visit(visitor, fMap.fObjects[i])) {
         while (fProcessedObjects < fMap.fObjects.size() &&
                fStates[fProcessedObjects].fJudged) {
