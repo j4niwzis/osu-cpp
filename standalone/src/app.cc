@@ -3298,6 +3298,12 @@ private:
         }
       }
     }
+    // And then into the same order the cached list is in. A difficulty is
+    // chosen by its position in that list, so a set loaded in another order
+    // means playing one difficulty while the client thinks it is another --
+    // which is what made a difficulty's own replays invisible until it had
+    // been played again.
+    std::ranges::stable_sort(set.fBeatmaps, {}, &osu::BeatmapInfo::fStars);
   }
 
   void touchLoaded(int index) {

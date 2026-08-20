@@ -137,7 +137,14 @@ loadBeatmapSet(const std::filesystem::path &path, bool computeStars = true) {
         // Skip non-standard difficulties (taiko, catch, mania).
       }
     }
-    std::ranges::sort(set.fBeatmaps, {}, &osu::BeatmapInfo::fStars);
+    if (computeStars) {
+      // Ordered by difficulty, which is the order everything else assumes --
+      // the picker, the cache, and an index into either. Without the ratings
+      // this sort has nothing to order by and would shuffle the difficulties
+      // into an arbitrary order instead, so the caller fills the ratings in
+      // from its cache and sorts then.
+      std::ranges::sort(set.fBeatmaps, {}, &osu::BeatmapInfo::fStars);
+    }
   }
 
   if (set.fBeatmaps.empty()) {
