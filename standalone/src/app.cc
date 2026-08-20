@@ -151,6 +151,7 @@ private:
   bool fDrawing = false;      // inside a frame: damage reported now is not
   int fFullRepaintsOwed = 0;  // buffers still holding an older screen
   int fBufferAge = -1;        // frames since this buffer last held a frame
+  bool fBufferAgeAssumed = false; // ...or what we were told to believe
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
   skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
   bool fDrewOnRaster = false;               // this frame went to the CPU one
@@ -183,8 +184,8 @@ private:
   const bool fForcePartialRedraw =
       std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-  // OSU_BUFFER_AGE=N: what to believe when the window system will not say.
-  const int fAssumedBufferAge = [] {
+  // OSU_BUFFER_AGE=N overrides the setting of the same meaning, for measuring.
+  const int fForcedBufferAge = [] {
     const char *value = std::getenv("OSU_BUFFER_AGE");
     return value != nullptr ? std::atoi(value) : 0;
   }();
@@ -1688,8 +1689,15 @@ private:
     // swaps by copying leaves the back buffer holding the last frame, which
     // is an age of one, and a repaint of this frame's damage alone. Asserted
     // rather than guessed, because getting it wrong looks like smearing.
-    if (fBufferAge < 0 && fAssumedBufferAge > 0 && this->partialRedraw()) {
-      fBufferAge = fAssumedBufferAge;
+    if (fBufferAge < 0 && this->partialRedraw()) {
+      const int assumed = fForcedBufferAge > 0 ? fForcedBufferAge
+                                               : fSettings.choice("bufferage");
+      if (assumed > 0) {
+        fBufferAge = assumed;
+        fBufferAgeAssumed = true;
+      }
+    } else {
+      fBufferAgeAssumed = false;
     }
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
@@ -2212,8 +2220,11 @@ private:
                                                fScreenW * fScreenH),
                  std::string(fDrewOnRaster ? " [cpu]" : " [gpu]") +
                      (this->partialRedraw()
-                          ? std::format(" (partial redraw, buffer age {} via {})",
-                                        fBufferAge, present::backend())
+                          ? std::format(
+                                " (partial redraw, buffer age {} via {})",
+                                fBufferAge,
+                                fBufferAgeAssumed ? "assumption"
+                                                  : present::backend())
                           : ""));
     fCostLogWall = wallMs();
     fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;

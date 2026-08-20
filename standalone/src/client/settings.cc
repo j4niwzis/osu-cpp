@@ -60,6 +60,14 @@ public:
                SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 0.0f, ""});
     this->add({1, "damageoverlay", "Outline repainted regions",
                SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 0.0f, ""});
+    // How old the contents of the buffer being drawn into are. The window
+    // system answers this where it can (EGL_EXT_buffer_age and its GLX twin);
+    // where it cannot -- a driver without DRI3, say -- it can be asserted,
+    // and a driver that swaps by copying is always one. Too low a number
+    // leaves the last frames' leftovers on screen, which is unmistakable.
+    this->add({1, "bufferage", "Assume buffer age", SettingKind::kChoice, 0.0f,
+               3.0f, 1.0f, 0.0f, "",
+               {"ask the driver", "1 (swap copies)", "2", "3"}});
     // Section 2: Gameplay
     this->add({2, "cursorsize", "Cursor size", SettingKind::kSlider, 0.5f,
                2.0f, 0.01f, 1.0f, "x"});
