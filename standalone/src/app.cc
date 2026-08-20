@@ -5311,6 +5311,7 @@ private:
     int fSavedW = 0;
     int fSavedH = 0;
     std::vector<std::uint8_t> fPixels; // one frame, reused
+    bool fReadFailed = false;          // said once, not once per frame
   };
 
   // Said in both places: the dialog is where it belongs, and the log is where
@@ -5409,10 +5410,25 @@ private:
       const skia::SkImageInfo info = skia::SkImageInfo::Make(
           job.fOpts.fWidth, job.fOpts.fHeight, skia::kRGBA_8888_SkColorType,
           skia::kPremul_SkAlphaType);
-      if (fSurface->readPixels(info, job.fPixels.data(),
-                               static_cast<std::size_t>(job.fOpts.fWidth) * 4u,
-                               0, 0)) {
+      const std::size_t rowBytes =
+          static_cast<std::size_t>(job.fOpts.fWidth) * 4u;
+      bool read = fSurface->readPixels(info, job.fPixels.data(), rowBytes, 0, 0);
+      if (!read) {
+        // Some surfaces will not be read directly and will hand over an image
+        // that can be. Asking twice costs a snapshot on the frames where the
+        // first way works, which is none of them if it does not.
+        if (auto image = fSurface->makeImageSnapshot()) {
+          read = image->readPixels(fContext.get(), info, job.fPixels.data(),
+                                   rowBytes, 0, 0);
+        }
+      }
+      if (read) {
         job.fExporter->addFrame(job.fPixels);
+      } else if (!job.fReadFailed) {
+        job.fReadFailed = true;
+        std::println(std::cerr,
+                     "[export] cannot read the rendered frame back ({}x{})",
+                     job.fOpts.fWidth, job.fOpts.fHeight);
       }
       job.fTime += job.fStep;
 
