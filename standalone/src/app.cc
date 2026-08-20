@@ -413,6 +413,10 @@ private:
   bool fLogoPlaced = false;
   float fLogoHover = 0.0f;
   float fLogoPunch = 0.0f; // click/beat impact, decays
+  float fLogoAmp = 0.0f;    // beat amplitude the logo settled at
+  float fLogoRadius = 0.0f;
+  float fLogoBase = 0.0f;   // unscaled radius for this screen size
+  float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
   skia::SkRect fDrawnLogoDamage = skia::SkRect::MakeEmpty();
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
@@ -1856,6 +1860,8 @@ private:
       this->updateSongSelect();
     } else if (fState == State::kPaused) {
       this->updatePause();
+    } else if (fState == State::kMainMenu) {
+      this->updateMainMenu();
     }
     // A transition dims the whole screen, so a frame drawn during one has to
     // repaint whole: clipped to a region, everything outside it would stay
@@ -1872,13 +1878,14 @@ private:
     if (fFullDamage || !fDamage.empty() || fFullRepaintsOwed > 0) {
       return false;
     }
-    if (fState != State::kDownload && fState != State::kSongSelect) {
+    if (fState != State::kDownload && fState != State::kSongSelect &&
+        fState != State::kMainMenu) {
       // The screens still drawn immediately cannot answer this. Their state
       // advances while they draw -- an eased hover, a logo settling -- so a
       // frame skipped for want of damage is a frame in which nothing moves,
-      // which produces no damage, which skips the next one. The main menu
-      // froze exactly that way. A screen may only be skipped once it settles
-      // in an update pass that runs whether or not the frame is drawn.
+      // which produces no damage, which skips the next one. A screen may only
+      // be skipped once it settles in a pass that runs whether or not the
+      // frame is drawn, which is what the update half is for.
       return false;
     }
     // Anything drawn over the screen repaints whole and does not report a
@@ -4578,18 +4585,19 @@ private:
   }
 
 
-  void frameMainMenu() {
+  // ---- Main menu ---------------------------------------------------------
+  //
+  // Split the way the ported screens are: everything that decides what the
+  // menu looks like happens here, with nothing drawn, so that what changed is
+  // known before the client commits to a frame.
+
+  void updateMainMenu() {
     this->ensureMenuButtons();
     this->updateMenuSpectrum();
 
-    auto *canvas = fSurface->getCanvas();
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
 
-    // lazer's main menu shows the beatmap background at full brightness --
-    // MainMenu.cs fades it to Gray(1) at the logo-only state and Gray(0.8)
-    // once the buttons are out. There is no triangle overlay over artwork;
-    // triangles are only the fallback background when no art exists at all.
     if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
       // setFor() is asynchronous: only mark the background as up to date once
       // the set has actually arrived, otherwise the first frame consumes the
@@ -4599,27 +4607,8 @@ private:
         this->requestBackground(fSelSet, set);
       }
     }
-    const float dimTarget =
-        fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
+    const float dimTarget = fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
     fMenuDim = this->approach(fMenuDim, dimTarget, 220.0f);
-
-    if (fView.hasBackground()) {
-      fView.drawBackground(this->gameplayCtx(canvas), canvas);
-      if (fMenuDim < 0.999f) {
-        skia::SkPaint dim;
-        dim.setColor(skia::colorSetARGB(
-            static_cast<std::uint8_t>((1.0f - fMenuDim) * 255.0f), 0, 0, 0));
-        canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
-      }
-    } else if (fLibrary.empty()) {
-      // Only with no beatmaps at all does lazer's default (triangle)
-      // background show; while artwork is still loading, stay dark.
-      canvas->clear(skia::colorSetARGB(255, 32, 24, 44));
-      this->ensureTriangles();
-      this->updateAndDrawTriangles(canvas);
-    } else {
-      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
-    }
 
     // What moves here is the logo with its visualiser and the buttons; the
     // background is the beatmap's artwork, which sits still. The dim fade and
@@ -4628,8 +4617,9 @@ private:
     // counting as a change, or this fires on every frame for ever.
     if (std::abs(fMenuDim - fDrawnMenuDim) > 0.001f) {
       this->damageAll("menu dim");
-    } else if (!fView.hasBackground()) {
-      this->damageAll("no artwork: triangles or flat fill");
+    } else if (!fView.hasBackground() && fLibrary.empty() &&
+               fSettings.flag("menutriangles")) {
+      this->damageAll("triangle background, drifting");
     }
     fDrawnMenuDim = fMenuDim;
 
@@ -4638,7 +4628,7 @@ private:
     const float btnW = 150.0f * uiScale;
     const float btnH = 96.0f * uiScale;
     const float btnGap = 6.0f * uiScale;
-    const float wedge = 20.0f * uiScale; // lazer's parallelogram shear
+    fMenuWedge = 20.0f * uiScale; // lazer's parallelogram shear
 
     int rightCount = 0;
     int leftCount = 0;
@@ -4653,11 +4643,10 @@ private:
       }
     }
 
-    const float logoBase = std::min(sw, sh) * 0.17f;
+    fLogoBase = std::min(sw, sh) * 0.17f;
     const float logoR =
-        logoBase * (fMenuState == MenuState::kInitial ? 1.0f : 0.62f);
-    const float rightW =
-        static_cast<float>(rightCount) * (btnW + btnGap);
+        fLogoBase * (fMenuState == MenuState::kInitial ? 1.0f : 0.62f);
+    const float rightW = static_cast<float>(rightCount) * (btnW + btnGap);
     const float leftW = static_cast<float>(leftCount) * (btnW + btnGap);
     const float groupW = leftW + 2.0f * logoR + 28.0f * uiScale + rightW;
 
@@ -4665,10 +4654,9 @@ private:
         fMenuState == MenuState::kInitial
             ? sw * 0.5f
             : (sw - groupW) * 0.5f + leftW + logoR;
-    const float targetLogoY = sh * (fMenuState == MenuState::kInitial ? 0.46f
-                                                                     : 0.5f);
-    const float targetScale =
-        fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
+    const float targetLogoY =
+        sh * (fMenuState == MenuState::kInitial ? 0.46f : 0.5f);
+    const float targetScale = fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
 
     if (!fLogoPlaced) {
       fLogoX = targetLogoX;
@@ -4680,10 +4668,10 @@ private:
     fLogoY = this->approach(fLogoY, targetLogoY, 140.0f);
     fLogoScale = this->approach(fLogoScale, targetScale, 140.0f);
 
-    // ---- Buttons: animate, lay out, draw.
+    // ---- Buttons: animate and lay out, without drawing any of them.
     const float rowY = fLogoY - btnH * 0.5f;
-    float xRight = fLogoX + logoBase * fLogoScale + 28.0f * uiScale;
-    float xLeft = fLogoX - logoBase * fLogoScale - 28.0f * uiScale;
+    float xRight = fLogoX + fLogoBase * fLogoScale + 28.0f * uiScale;
+    float xLeft = fLogoX - fLogoBase * fLogoScale - 28.0f * uiScale;
 
     for (auto &b : fMenuBtns) {
       const bool visible = b.fVisible == fMenuState;
@@ -4708,30 +4696,28 @@ private:
 
       const bool hovered = visible && rect.contains(fMouseX, fMouseY);
       b.fHover = this->approach(b.fHover, hovered ? 1.0f : 0.0f, 110.0f);
-
-      this->drawMenuWedge(canvas, b, wedge);
     }
 
-    // ---- Logo on top of the visualiser.
-    this->drawLogo(canvas, logoBase);
+    this->settleLogo(fLogoBase);
+
     // How far the bars actually reach this frame. A flat guess of three
-    // quarters of the logo's width was covering 40% of the screen on its
-    // own, which with the counter in the opposite corner pushed the frame
-    // over the "repaint it whole" threshold and saved nothing at all.
+    // quarters of the logo's width was covering 40% of the screen on its own,
+    // which with the counter in the opposite corner pushed the frame over the
+    // "repaint it whole" threshold and saved nothing at all.
     float loudest = 0.0f;
     for (const float amp : fSettings.flag("visualiser") ? fSpectrum.bars()
                                                         : this->stillBars()) {
       loudest = std::max(loudest, amp);
     }
-    const float logoRadius = fLogoRect.width() * 0.5f;
-    const float reach = logoRadius * 2.0f * (600.0f / 480.0f) * loudest;
+    const float reach = fLogoRadius * 2.0f * (600.0f / 480.0f) * loudest;
     skia::SkRect moving = fLogoRect;
     moving.outset(reach + 4.0f, reach + 4.0f);
     // Marked while something in there is actually moving -- a live
     // visualiser, drifting triangles inside the logo, or the logo itself
     // having shifted. Marking it every frame regardless is a repaint of the
     // busiest part of the screen for a picture that is identical.
-    if (fSettings.flag("menutriangles") || moving != fDrawnLogoDamage) {
+    if (fSettings.flag("menutriangles") || fSettings.flag("visualiser") ||
+        moving != fDrawnLogoDamage) {
       this->damage(fDrawnLogoDamage); // where it was
       this->damage(moving);           // and where it is now
       fDrawnLogoDamage = moving;
@@ -4743,7 +4729,6 @@ private:
     // shear plus a margin -- and by the rectangle it occupied before, or a
     // button that moved leaves its old self behind.
     for (auto &b : fMenuBtns) {
-      const bool visible = b.fVisible == fMenuState && b.fExpand > 0.001f;
       // Eased values approach their target without reaching it; comparing
       // them exactly kept every button "changing" for ever, which is what
       // held the repainted region open around the whole row.
@@ -4759,26 +4744,53 @@ private:
         if (area.isEmpty()) {
           return;
         }
-        area.outset(wedge + 12.0f, 12.0f);
+        area.outset(fMenuWedge + 12.0f, 12.0f);
         this->damage(area);
       };
       mark(b.fDrawnRect);
-      if (visible) {
-        mark(b.fRect);
-      }
+      mark(b.fRect);
       b.fDrawnExpand = b.fExpand;
       b.fDrawnHover = b.fHover;
       b.fDrawnFlash = b.fFlash;
-      b.fDrawnRect = visible ? b.fRect : skia::SkRect::MakeEmpty();
+      b.fDrawnRect = b.fRect;
+    }
+  }
+
+  void frameMainMenu() {
+    auto *canvas = fSurface->getCanvas();
+    const float sw = static_cast<float>(fScreenW);
+    const float sh = static_cast<float>(fScreenH);
+
+    // lazer's main menu shows the beatmap background at full brightness --
+    // MainMenu.cs fades it to Gray(1) at the logo-only state and Gray(0.8)
+    // once the buttons are out. There is no triangle overlay over artwork;
+    // triangles are only the fallback background when no art exists at all.
+    if (fView.hasBackground()) {
+      fView.drawBackground(this->gameplayCtx(canvas), canvas);
+      if (fMenuDim < 0.999f) {
+        skia::SkPaint dim;
+        dim.setColor(skia::colorSetARGB(
+            static_cast<std::uint8_t>((1.0f - fMenuDim) * 255.0f), 0, 0, 0));
+        canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
+      }
+    } else if (fLibrary.empty()) {
+      // Only with no beatmaps at all does lazer's default (triangle)
+      // background show; while artwork is still loading, stay dark.
+      canvas->clear(skia::colorSetARGB(255, 32, 24, 44));
+      this->ensureTriangles();
+      this->updateAndDrawTriangles(canvas);
+    } else {
+      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
 
-    const char *hint = fMenuState == MenuState::kInitial
-                           ? "click the logo    Esc quit"
-                       : fMenuState == MenuState::kTopLevel
-                           ? "P play   B browse   I import   Q exit   "
-                             "Ctrl+O settings"
-                           : "S solo    R random    Esc back";
-    this->drawBottomBar(canvas, hint);
+    for (auto &b : fMenuBtns) {
+      if (b.fExpand < 0.01f) {
+        continue;
+      }
+      this->drawMenuWedge(canvas, b, fMenuWedge);
+    }
+
+    this->drawLogo(canvas, fLogoBase);
     this->drawScreenFadeIn(canvas);
     this->present();
   }
@@ -4832,8 +4844,8 @@ private:
   // top, a ripple of the same shape that scales out and fades on each beat,
   // and a white impact ring that only appears when the logo is struck. There
   // is no permanent halo -- the earlier glow ring was invented.
-  void drawLogo(skia::SkCanvas *canvas, float logoBase) {
-    const float wall = static_cast<float>(wallMs());
+  // Where the logo is and how big, worked out without drawing anything.
+  void settleLogo(float logoBase) {
     const bool hovered =
         (fMouseX - fLogoX) * (fMouseX - fLogoX) +
             (fMouseY - fLogoY) * (fMouseY - fLogoY) <=
@@ -4845,11 +4857,19 @@ private:
     // menu has not loaded, so bass energy stands in. Switched off with the
     // visualiser, or the logo would keep breathing on a screen that has
     // stopped drawing frames and would jump whenever one happened.
-    const float amp = fSettings.flag("visualiser") ? fSpectrum.bass() : 0.0f;
-    const float beat = 1.0f - 0.02f * amp;
-    const float r = logoBase * fLogoScale * beat *
-                    (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
-    fLogoRect = skia::SkRect::MakeXYWH(fLogoX - r, fLogoY - r, r * 2, r * 2);
+    fLogoAmp = fSettings.flag("visualiser") ? fSpectrum.bass() : 0.0f;
+    const float beat = 1.0f - 0.02f * fLogoAmp;
+    fLogoRadius = logoBase * fLogoScale * beat *
+                  (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
+    fLogoRect = skia::SkRect::MakeXYWH(fLogoX - fLogoRadius,
+                                       fLogoY - fLogoRadius, fLogoRadius * 2,
+                                       fLogoRadius * 2);
+  }
+
+  void drawLogo(skia::SkCanvas *canvas, float) {
+    const float wall = static_cast<float>(wallMs());
+    const float amp = fLogoAmp;
+    const float r = fLogoRadius;
 
     this->drawVisualiser(canvas, r);
 
