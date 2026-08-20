@@ -80,13 +80,18 @@ class FontStack {
 public:
   void setPrimary(skia::Sp<skia::SkTypeface> face) {
     fPrimary = std::move(face);
-    fCoverage.clear();
+    this->invalidateCaches();
   }
   void addFallback(skia::Sp<skia::SkTypeface> face) {
     if (face) {
       fFallbacks.push_back(std::move(face));
-      fCoverage.clear();
+      this->invalidateCaches();
     }
+  }
+  void invalidateCaches() {
+    fCoverage.clear();
+    fAsciiCovered.clear();
+    fWidths.clear();
   }
   [[nodiscard]] const skia::Sp<skia::SkTypeface> &primary() const noexcept {
     return fPrimary;
@@ -97,18 +102,39 @@ public:
 
   [[nodiscard]] float measure(const skia::SkFont &font,
                               std::string_view text) const {
+    if (text.empty()) {
+      return 0.0f;
+    }
+    // Measuring is the hot part of drawing a menu: the same labels are
+    // measured every frame, at the same sizes, by every screen. The answer
+    // only depends on the text, the size, the weight and the face.
+    const std::uint64_t key = cacheKey(font, text);
+    if (const auto it = fWidths.find(key); it != fWidths.end()) {
+      return it->second;
+    }
     float width = 0.0f;
     this->forEachRun(font, text,
                      [&](const skia::SkFont &runFont, std::string_view run) {
                        width += runFont.measureText(
                            run.data(), run.size(), skia::SkTextEncoding::kUTF8);
                      });
+    if (fWidths.size() > kMaxCachedWidths) {
+      fWidths.clear(); // a whole screen's worth of labels fits many times over
+    }
+    fWidths.emplace(key, width);
     return width;
   }
 
   void draw(skia::SkCanvas *canvas, const skia::SkFont &font,
             std::string_view text, float x, float y,
             const skia::SkPaint &paint) const {
+    // Nothing to split when every byte is plain ASCII and the primary face
+    // covers it, which is most of the text this client draws.
+    if (isAscii(text) && this->asciiCovered(font.getTypeface())) {
+      canvas->drawSimpleText(text.data(), text.size(),
+                             skia::SkTextEncoding::kUTF8, x, y, font, paint);
+      return;
+    }
     this->forEachRun(font, text,
                      [&](const skia::SkFont &runFont, std::string_view run) {
                        canvas->drawSimpleText(run.data(), run.size(),
@@ -120,6 +146,46 @@ public:
   }
 
 private:
+  static constexpr std::size_t kMaxCachedWidths = 8192;
+
+  [[nodiscard]] static bool isAscii(std::string_view text) {
+    for (const char c : text) {
+      if (static_cast<unsigned char>(c) >= 0x80) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Whether a face can draw the printable ASCII range, asked once per face.
+  [[nodiscard]] bool asciiCovered(const skia::SkTypeface *face) const {
+    if (face == nullptr) {
+      return false;
+    }
+    const auto it = fAsciiCovered.find(face);
+    if (it != fAsciiCovered.end()) {
+      return it->second;
+    }
+    bool covered = true;
+    for (std::int32_t cp = 0x20; cp < 0x7f; ++cp) {
+      if (face->unicharToGlyph(cp) == 0) {
+        covered = false;
+        break;
+      }
+    }
+    fAsciiCovered.emplace(face, covered);
+    return covered;
+  }
+
+  [[nodiscard]] static std::uint64_t cacheKey(const skia::SkFont &font,
+                                              std::string_view text) {
+    std::uint64_t hash = std::hash<std::string_view>{}(text);
+    hash ^= std::hash<const void *>{}(font.getTypeface()) * 0x9e3779b97f4a7c15ull;
+    hash ^= static_cast<std::uint64_t>(font.getSize() * 64.0f) << 17;
+    hash ^= static_cast<std::uint64_t>(font.isEmbolden()) << 61;
+    return hash;
+  }
+
   // -1 is the font the caller handed in; anything else indexes fFallbacks.
   [[nodiscard]] int faceFor(std::int32_t codepoint,
                             const skia::SkTypeface *base) const {
@@ -221,6 +287,8 @@ private:
   skia::Sp<skia::SkTypeface> fPrimary;
   std::vector<skia::Sp<skia::SkTypeface>> fFallbacks;
   mutable std::unordered_map<std::int32_t, int> fCoverage;
+  mutable std::unordered_map<const skia::SkTypeface *, bool> fAsciiCovered;
+  mutable std::unordered_map<std::uint64_t, float> fWidths;
 };
 
 inline FontStack &fonts() {

@@ -4994,7 +4994,7 @@ private:
     const skia::SkRect screen = skia::SkRect::MakeWH(
         static_cast<float>(fScreenW), static_cast<float>(fScreenH));
     fConfirmScene->updateTree(wallMs());
-    fConfirmScene->layout(screen);
+    fConfirmScene->layoutIfNeeded(screen);
     fConfirmScene->setHover(fMouseX, fMouseY);
     fConfirmScene->draw(canvas);
   }

@@ -49,18 +49,31 @@ public:
   Text(std::string text, float size, skia::SkColor colour, bool bold = false)
       : fText(std::move(text)), fSize(size), fColour(colour), fBold(bold) {}
 
-  void setText(std::string text) { fText = std::move(text); }
+  void setText(std::string text) {
+    if (text == fText) {
+      return;
+    }
+    fText = std::move(text);
+    fMeasuredSize = -1.0f;
+    this->invalidateLayout();
+  }
   void setColour(skia::SkColor colour) { fColour = colour; }
   [[nodiscard]] const std::string &text() const noexcept { return fText; }
 
   // Set to clip instead of auto-sizing: the text is cut to the given width.
-  void setMaxWidth(float width) { fMaxWidth = width; }
+  void setMaxWidth(float width) {
+    fMaxWidth = width;
+    fMeasuredSize = -1.0f;
+  }
 
   static void setFont(skia::SkFont *font) { fontSlot() = font; }
 
 protected:
   // Text sizes itself: a flow then reads the size off like any other child.
   void measure() override {
+    if (fMeasuredSize == fSize) {
+      return; // already measured at this size, and the text has not changed
+    }
     skia::SkFont *font = fontSlot();
     if (font == nullptr) {
       return;
@@ -71,6 +84,7 @@ protected:
     font->setEmbolden(false);
     fWidth = fMaxWidth > 0.0f ? std::min(fMaxWidth, measured) : measured;
     fHeight = fSize * 1.25f;
+    fMeasuredSize = fSize;
   }
 
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
@@ -107,6 +121,7 @@ private:
   skia::SkColor fColour;
   bool fBold;
   float fMaxWidth = 0.0f;
+  float fMeasuredSize = -1.0f; // the size the cached width was measured at
 };
 
 // An image, cropped to fill its box rather than squashed into it.
@@ -257,11 +272,19 @@ protected:
   void update(double nowMs) override {
     const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
     fLastMs = nowMs;
+    const float previous = fCurrent;
     fCurrent = client::ui::approach(fCurrent, fTarget, 30.0f, dt);
+    if (std::abs(fCurrent - fTarget) < 0.05f) {
+      fCurrent = fTarget; // settle, so a still list stops re-laying out
+    }
+    if (fCurrent != previous) {
+      this->invalidateLayout();
+    }
   }
 
   bool onScroll(float ticks) override {
     fTarget = std::clamp(fTarget - ticks * 60.0f, 0.0f, fExtent);
+    this->invalidateLayout();
     return true;
   }
 

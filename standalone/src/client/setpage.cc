@@ -207,12 +207,11 @@ public:
 
     const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
     fScene->updateTree(ctx.fNowMs);
-    fScene->layout(screen);
     if (fScrollTicks != 0.0f) {
       fScene->scroll(ctx.fMouseX, ctx.fMouseY, fScrollTicks);
       fScrollTicks = 0.0f;
-      fScene->layout(screen);
     }
+    fScene->layoutIfNeeded(screen);
     fScene->setHover(ctx.fMouseX, ctx.fMouseY);
     fScene->draw(ctx.fCanvas);
   }

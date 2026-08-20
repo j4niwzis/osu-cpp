@@ -175,11 +175,46 @@ public:
 
   // Advances every transform in the tree and drops the finished ones.
   void updateTree(double nowMs) {
+    if (!fTransforms.empty()) {
+      fLayoutValid = false; // a moving drawable needs placing again
+    }
     this->updateTransforms(nowMs);
     this->update(nowMs);
     for (auto &child : fChildren) {
       child->updateTree(nowMs);
     }
+  }
+
+  // Re-lays the tree only when it can have changed: the box it sits in
+  // differs from last time, something is animating, or a screen said so.
+  // A menu that is standing still costs nothing but a draw.
+  bool layoutIfNeeded(const skia::SkRect &parent) {
+    if (fLayoutValid && parent == fLastParent && !this->animatingTree()) {
+      return false;
+    }
+    fLastParent = parent;
+    this->layout(parent);
+    return true;
+  }
+
+  // Marks this drawable, and everything under it, as needing layout again.
+  void invalidateLayout() {
+    fLayoutValid = false;
+    for (auto &child : fChildren) {
+      child->invalidateLayout();
+    }
+  }
+
+  [[nodiscard]] bool animatingTree() const {
+    if (!fTransforms.empty()) {
+      return true;
+    }
+    for (const auto &child : fChildren) {
+      if (child->animatingTree()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Places this drawable inside `parent` (already absolute) and its children
@@ -223,6 +258,7 @@ public:
     fBounds = skia::SkRect::MakeXYWH(left, top, width, height);
 
     this->layoutChildren();
+    fLayoutValid = true;
   }
 
   // The box children are laid out in: this drawable, less its padding.
@@ -301,13 +337,25 @@ public:
     return this->onScroll(ticks);
   }
 
+  // Walked only when the pointer actually moved: hover state cannot change
+  // by itself, and this is a whole-tree traversal.
   void setHover(float x, float y) {
-    fHovered = fVisible && fBounds.contains(x, y);
-    for (auto &child : fChildren) {
-      child->setHover(x, y);
+    if (x == fLastHoverX && y == fLastHoverY && fHoverSeen) {
+      return;
     }
+    fLastHoverX = x;
+    fLastHoverY = y;
+    fHoverSeen = true;
+    this->applyHover(x, y);
   }
   [[nodiscard]] bool hovered() const noexcept { return fHovered; }
+
+  void applyHover(float x, float y) {
+    fHovered = fVisible && fBounds.contains(x, y);
+    for (auto &child : fChildren) {
+      child->applyHover(x, y);
+    }
+  }
 
 protected:
   virtual void drawSelf(skia::SkCanvas *, float) {}
@@ -341,6 +389,8 @@ protected:
 
   std::vector<std::unique_ptr<Drawable>> fChildren;
   bool fHovered = false;
+  float fLastHoverX = 0.0f, fLastHoverY = 0.0f;
+  bool fHoverSeen = false;
 
 private:
   void transformTo(Property property, float from, float to, double durationMs,
@@ -395,6 +445,8 @@ private:
   std::vector<Transform> fTransforms;
   double fPendingStartMs = 0.0;
   double fDelayMs = 0.0;
+  bool fLayoutValid = false;
+  skia::SkRect fLastParent = skia::SkRect::MakeEmpty();
 };
 
 } // namespace client::scene
