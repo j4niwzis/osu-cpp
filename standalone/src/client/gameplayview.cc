@@ -676,11 +676,13 @@ public:
                      c.fCursorSize / c.fScale);
   }
 
-  // Judgement text, ported from webosu-2's playback.js: bitmap text tinted per
-  // result, no outline, fading over 500 ms (800 for a miss, which also drops
-  // and rotates), and -- the characteristic part -- the letters spread apart
-  // as it fades, letterSpacing = 70 * ((t/1800 - 1)^5 + 1).
-  void drawPopups(const Ctx &c, skia::SkCanvas *canvas, double now, double cs) {
+  // Judgement text, ported from webosu-2's playback.js. The node there is a
+  // BitmapText at fontSize 20 with anchor 0.5, scaled by
+  // (0.85 * hitSpriteScale, hitSpriteScale), tinted per result, and its
+  // letterSpacing -- expressed in the node's own units, so 70 is 3.5x the
+  // font size -- runs 70 * ((t/1800 - 1)^5 + 1) as it fades.
+  void drawPopups(const Ctx &c, skia::SkCanvas *canvas, double now,
+                  double cs) {
     const double hitSpriteScale = osu::circleRadius(cs) / 60.0;
     auto it = fPopups.begin();
     while (it != fPopups.end()) {
@@ -696,7 +698,7 @@ public:
       double alpha = 0.0;
       float yOffset = 0.0f;
       float rotation = 0.0f;
-      float spacing = 0.0f;
+      float spacingUnits = 0.0f;
       if (isMiss) {
         alpha = age < 100.0   ? age / 100.0
                 : age < 600.0 ? 1.0
@@ -706,56 +708,66 @@ public:
         rotation = static_cast<float>(0.7 * k);
       } else {
         alpha = age < 100.0 ? age / 100.0 : 1.0 - (age - 100.0) / 400.0;
-        spacing = static_cast<float>(
+        spacingUnits = static_cast<float>(
             70.0 * (std::pow(age / 1800.0 - 1.0, 5.0) + 1.0));
       }
       alpha = std::clamp(alpha, 0.0, 1.0);
 
-      const auto [text, color] = popupInfo(it->fResult);
+      const auto [label, color] = popupInfo(it->fResult);
+      // Venera is an all-caps display face; the same words in a normal face
+      // have to be set in capitals to read the same way.
+      std::string str(label);
+      std::ranges::transform(str, str.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+      });
+
       const float x = static_cast<float>(it->fPos.fX);
       const float y = static_cast<float>(it->fPos.fY) + yOffset;
 
-      // webosu-2 scales the text 0.85 horizontally against 1.0 vertically.
-      const float fontSize = static_cast<float>(20.0 * hitSpriteScale);
+      // Everything below is in node units (font size 20); the canvas
+      // transform applies the sprite scale, as PIXI's node scale does.
+      constexpr float kBaseSize = 20.0f;
       skia::SkFont &font = c.fDisplayFont ? *c.fDisplayFont : *c.fFont;
-      font.setSize(fontSize);
-      const float letterSpacing =
-          spacing * static_cast<float>(hitSpriteScale) * 0.01f * fontSize;
+      font.setSize(kBaseSize);
 
-      // Measure with the spacing applied so the string stays centred.
-      const std::string str(text);
       float total = 0.0f;
       for (std::size_t k = 0; k < str.size(); ++k) {
-        total += font.measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) *
-                 0.85f;
+        total += font.measureText(&str[k], 1, skia::SkTextEncoding::kUTF8);
         if (k + 1 < str.size()) {
-          total += letterSpacing;
+          total += spacingUnits;
         }
       }
+
+      // anchor 0.5 centres vertically too, so shift by half the cap height
+      // rather than sitting on the baseline.
+      skia::SkFontMetrics metrics;
+      font.getMetrics(&metrics);
+      const float centreOffset = -(metrics.fAscent + metrics.fDescent) * 0.5f;
 
       skia::SkPaint paint;
       paint.setAntiAlias(true);
       paint.setColor(color);
       paint.setAlphaf(static_cast<float>(alpha));
-      // webosu-2 renders these in Venera, a heavy display face. The bundled
-      // UI font is far lighter, so thicken the glyphs with a stroke of the
-      // same colour rather than leaving them looking spindly.
-      paint.setStyle(skia::kStrokeAndFillStyle);
-      paint.setStrokeWidth(fontSize * (c.fDisplayFont ? 0.03f : 0.10f));
-      paint.setStrokeJoin(skia::kRoundJoin);
+      if (!c.fDisplayFont) {
+        // Without the heavy face, thicken the light UI font a little.
+        paint.setStyle(skia::kStrokeAndFillStyle);
+        paint.setStrokeWidth(kBaseSize * 0.06f);
+        paint.setStrokeJoin(skia::kRoundJoin);
+      }
 
       canvas->save();
       canvas->translate(x, y);
       if (rotation != 0.0f) {
         canvas->rotate(rotation * 180.0f / std::numbers::pi_v<float>);
       }
-      canvas->scale(0.85f, 1.0f);
-      float pen = -total / 0.85f * 0.5f;
+      canvas->scale(0.85f * static_cast<float>(hitSpriteScale),
+                    static_cast<float>(hitSpriteScale));
+      float pen = -total * 0.5f;
       for (std::size_t k = 0; k < str.size(); ++k) {
         canvas->drawSimpleText(&str[k], 1, skia::SkTextEncoding::kUTF8, pen,
-                               0.0f, font, paint);
+                               centreOffset, font, paint);
         pen += font.measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) +
-               letterSpacing / 0.85f;
+               spacingUnits;
       }
       canvas->restore();
       ++it;

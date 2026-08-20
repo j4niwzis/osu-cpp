@@ -12,6 +12,7 @@ module;
 #include <skia/core/SkColorSpace.h>
 #include <skia/core/SkData.h>
 #include <skia/core/SkFont.h>
+#include <skia/core/SkFontMetrics.h>
 #include <skia/core/SkFontMgr.h>
 #include <skia/core/SkFontStyle.h>
 #include <skia/core/SkImage.h>
@@ -61,6 +62,7 @@ using ::SkColorType;
 using ::SkData;
 using ::SkFilterMode;
 using ::SkFont;
+using ::SkFontMetrics;
 using ::SkFontMgr;
 using ::SkFontStyle;
 using ::SkFontStyleSet;
