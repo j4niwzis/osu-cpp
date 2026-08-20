@@ -328,6 +328,12 @@ private:
     float fHover = 0.0f;     // eased hover weight
     float fFlash = 0.0f;     // click flash, decays
     skia::SkRect fRect = skia::SkRect::MakeEmpty();
+    // What was last put on screen, so a button that has stopped moving stops
+    // asking to be repainted.
+    float fDrawnExpand = -1.0f;
+    float fDrawnHover = -1.0f;
+    float fDrawnFlash = -1.0f;
+    skia::SkRect fDrawnRect = skia::SkRect::MakeEmpty();
   };
   std::vector<MenuBtn> fMenuBtns;
   MenuState fMenuState = MenuState::kInitial;
@@ -369,7 +375,9 @@ private:
   float fTriangleScale = 2.4f;    // TrianglesV2 uses much larger shapes
   float fSpawnRatio = 1.0f;       // TrianglesV2.SpawnRatio
   float fTriangleVelocity = 1.0f; // TrianglesV2.Velocity
-  float fMenuDim = 1.0f; // MainMenu.cs: Gray(1) idle, Gray(0.8) with buttons
+  float fMenuDim = 1.0f;
+  // MainMenu.cs: Gray(1) idle, Gray(0.8) with buttons.
+  float fDrawnMenuDim = -1.0f; // the dim the screen currently shows
   std::mt19937 fUiRng{0xC0FFEEu};
 
   [[nodiscard]] static float easeOutQuint(float t) {
@@ -3273,6 +3281,7 @@ private:
     }
     if (bytes.empty()) {
       fView.setBackground(nullptr);
+      this->damageAll();
       return;
     }
     auto image = std::make_shared<skia::Sp<skia::SkImage>>();
@@ -3286,10 +3295,13 @@ private:
                      }
                      fView.setBackground(*image);
                      fView.preScaleBackground(this->gameplayCtx(nullptr));
+                     this->damageAll(); // the artwork is the whole backdrop
+                     this->requestRedraw(400.0);
                    });
   }
 
   void loadSelectBackground(const osu::BeatmapSet &set) {
+    this->damageAll(); // whatever it ends up with, the backdrop changes
     for (const auto &info : set.fBeatmaps) {
       if (!info.fMeta.fBackground.empty()) {
         const auto bytes = set.findFile(info.fMeta.fBackground);
@@ -3608,9 +3620,10 @@ private:
     // What moves here is the logo with its visualiser and the buttons; the
     // background is the beatmap's artwork, which sits still. The dim fade and
     // the triangle fallback do cover the screen, so those say so.
-    if (std::abs(fMenuDim - dimTarget) > 0.001f || !fView.hasBackground()) {
+    if (fMenuDim != fDrawnMenuDim || !fView.hasBackground()) {
       this->damageAll();
     }
+    fDrawnMenuDim = fMenuDim;
 
     // ---- Layout: logo plus the visible button row, centred as a group.
     const float uiScale = std::clamp(sh / 900.0f, 0.75f, 1.6f);
@@ -3693,17 +3706,39 @@ private:
 
     // ---- Logo on top of the visualiser.
     this->drawLogo(canvas, logoBase);
-    // The bars reach bar_length beyond the logo's circumference, and the
-    // buttons move whenever the menu state or a hover does.
+    // The bars reach bar_length beyond the logo's circumference.
     skia::SkRect moving = fLogoRect;
     moving.outset(fLogoRect.width() * 0.75f, fLogoRect.width() * 0.75f);
     this->damage(moving);
-    for (const auto &b : fMenuBtns) {
-      if (b.fVisible == fMenuState && b.fExpand > 0.001f) {
-        skia::SkRect area = b.fRect;
-        area.outset(8.0f, 8.0f);
-        this->damage(area);
+
+    // A button only needs repainting while something about it changes. Its
+    // drawn shape is a parallelogram sheared by the wedge, and the label and
+    // glow reach past that, so the marked area is its rectangle grown by the
+    // shear plus a margin -- and by the rectangle it occupied before, or a
+    // button that moved leaves its old self behind.
+    for (auto &b : fMenuBtns) {
+      const bool visible = b.fVisible == fMenuState && b.fExpand > 0.001f;
+      const bool changed = b.fExpand != b.fDrawnExpand ||
+                           b.fHover != b.fDrawnHover ||
+                           b.fFlash != b.fDrawnFlash || b.fRect != b.fDrawnRect;
+      if (!changed) {
+        continue;
       }
+      const auto mark = [&](skia::SkRect area) {
+        if (area.isEmpty()) {
+          return;
+        }
+        area.outset(wedge + 12.0f, 12.0f);
+        this->damage(area);
+      };
+      mark(b.fDrawnRect);
+      if (visible) {
+        mark(b.fRect);
+      }
+      b.fDrawnExpand = b.fExpand;
+      b.fDrawnHover = b.fHover;
+      b.fDrawnFlash = b.fFlash;
+      b.fDrawnRect = visible ? b.fRect : skia::SkRect::MakeEmpty();
     }
 
     const char *hint = fMenuState == MenuState::kInitial
