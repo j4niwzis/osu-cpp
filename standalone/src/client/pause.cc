@@ -199,7 +199,7 @@ private:
 
       // The glow behind it, which lazer fades in with the selection.
       if (eased > 0.01f) {
-        this->fillSheared(canvas, this->inflated(bar, 1.08f), fColour,
+        this->fillSheared(canvas, this->widened(bar, 1.08f), fColour,
                           alpha * 0.35f * eased);
       }
       const skia::SkRRect rounded =
@@ -242,12 +242,16 @@ private:
     }
 
   private:
-    [[nodiscard]] static skia::SkRect inflated(const skia::SkRect &rect,
-                                               float scale) {
+    // Wider, not taller: lazer's glow is a container whose width is 1.08 of
+    // the bar's and whose height is the button's. Growing it vertically too
+    // put it outside the button's box -- which is the box that gets marked as
+    // needing a repaint, so the few pixels above and below were painted once
+    // and never cleaned up.
+    [[nodiscard]] static skia::SkRect widened(const skia::SkRect &rect,
+                                              float scale) {
       const float dx = rect.width() * (scale - 1.0f) * 0.5f;
-      const float dy = rect.height() * (scale - 1.0f) * 0.5f;
-      return skia::SkRect::MakeLTRB(rect.fLeft - dx, rect.fTop - dy,
-                                    rect.fRight + dx, rect.fBottom + dy);
+      return skia::SkRect::MakeLTRB(rect.fLeft - dx, rect.fTop,
+                                    rect.fRight + dx, rect.fBottom);
     }
 
     // The shear lazer applies to the whole button, corners included, about
