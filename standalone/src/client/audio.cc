@@ -60,6 +60,25 @@ private:
     }
     audio::alcMakeContextCurrent(fContext);
     audio::alListenerf(audio::kListenerGain, 1.0f);
+
+    // What the device actually gave us, which is not necessarily what was
+    // asked for: a mismatched rate means everything is resampled, and the
+    // source counts say whether the pools above will fit.
+    audio::ALCint frequency = 0;
+    audio::ALCint refresh = 0;
+    audio::ALCint mono = 0;
+    audio::ALCint stereo = 0;
+    audio::alcGetIntegerv(fDevice, audio::kAlcFrequency, 1, &frequency);
+    audio::alcGetIntegerv(fDevice, audio::kAlcRefresh, 1, &refresh);
+    audio::alcGetIntegerv(fDevice, audio::kAlcMonoSources, 1, &mono);
+    audio::alcGetIntegerv(fDevice, audio::kAlcStereoSources, 1, &stereo);
+    const char *name =
+        audio::alcGetString(fDevice, audio::kAlcDeviceSpecifier);
+    std::println(std::cerr,
+                 "[audio] device \"{}\": {} Hz, refresh {}, {} mono / {} "
+                 "stereo sources",
+                 name != nullptr ? name : "?", frequency, refresh, mono,
+                 stereo);
   }
 
   void shutdown() {
@@ -129,6 +148,7 @@ decodePcm(std::span<const std::uint8_t> data, std::string_view ext, int &rate,
     }
   }
   audio::report_pcm_level(samples, "decoded");
+  audio::dump_pcm(samples, rate, channels);
   return samples;
 }
 
@@ -183,6 +203,7 @@ public:
       return false;
     }
     this->shutdown();
+    audio::report_pcm_level(pcm.fSamples, "uploading");
     return this->upload(pcm.fSamples, pcm.fRate, pcm.fChannels);
   }
 

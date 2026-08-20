@@ -31,6 +31,7 @@ using ::alcCloseDevice;
 using ::alcCreateContext;
 using ::alcDestroyContext;
 using ::alcGetError;
+using ::alcGetIntegerv;
 using ::alcGetString;
 using ::alcMakeContextCurrent;
 using ::alcOpenDevice;
@@ -57,6 +58,10 @@ using ::mpg123_handle;
 // Constants
 inline constexpr ALenum kNoError = AL_NO_ERROR;
 inline constexpr ALCint kAlcMonoSources = ALC_MONO_SOURCES;
+inline constexpr ALCenum kAlcFrequency = ALC_FREQUENCY;
+inline constexpr ALCenum kAlcRefresh = ALC_REFRESH;
+inline constexpr ALCenum kAlcSync = ALC_SYNC;
+inline constexpr ALCenum kAlcDeviceSpecifier = ALC_DEVICE_SPECIFIER;
 inline constexpr ALCint kAlcStereoSources = ALC_STEREO_SOURCES;
 inline constexpr ALenum kFormatMono8 = AL_FORMAT_MONO8;
 inline constexpr ALenum kFormatMono16 = AL_FORMAT_MONO16;
@@ -405,9 +410,14 @@ decode_mp3_memory(std::span<const std::uint8_t> data, int &rate,
   return out;
 }
 
-// How hot the decoded material is. A track mastered to full scale plus a
-// generous gain is what an output limiter reacts to, and that is heard as
-// the sound ducking; this says which side the problem is on.
+// What the decoded material looks like before anything plays it.
+//
+// Two numbers separate the two possible culprits. The peak (and how much of
+// the material sits near full scale) says whether the source is hot enough
+// for a mixer to react to it. The discontinuity count -- adjacent samples
+// that jump by more than half of full scale -- says whether the samples
+// themselves are torn: wrapped conversions and mis-sized reads leave a trail
+// of those, while clean audio has almost none however loud it is.
 inline void report_pcm_level(std::span<const std::int16_t> samples,
                              const char *what) {
   if (samples.empty()) {
@@ -415,17 +425,53 @@ inline void report_pcm_level(std::span<const std::int16_t> samples,
   }
   int peak = 0;
   std::size_t hot = 0;
+  std::size_t jumps = 0;
+  int previous = samples[0];
   for (const std::int16_t s : samples) {
     const int magnitude = s == -32768 ? 32767 : (s < 0 ? -s : s);
     peak = magnitude > peak ? magnitude : peak;
     if (magnitude > 32000) {
       ++hot;
     }
+    const int delta = s - previous;
+    if (delta > 32000 || delta < -32000) {
+      ++jumps;
+    }
+    previous = s;
   }
-  std::cerr << "[audio] " << what << ": peak " << peak << " ("
+  std::cerr << "[audio] " << what << ": peak " << peak << ", "
             << (100.0 * static_cast<double>(hot) /
                 static_cast<double>(samples.size()))
-            << "% near full scale)\n";
+            << "% near full scale, " << jumps << " discontinuities in "
+            << samples.size() << " samples\n";
+}
+
+// Writes what was decoded, so it can be listened to outside the client: a
+// clean file means the tearing happens downstream of the decoder. Off unless
+// OSU_AUDIO_DUMP names a directory.
+inline void dump_pcm(std::span<const std::int16_t> samples, int rate,
+                     int channels) {
+  const char *dir = std::getenv("OSU_AUDIO_DUMP");
+  if (dir == nullptr || samples.empty() || channels <= 0) {
+    return;
+  }
+  static int counter = 0;
+  const std::string path =
+      std::string(dir) + "/decoded-" + std::to_string(counter++) + ".wav";
+  SF_INFO info{};
+  info.samplerate = rate;
+  info.channels = channels;
+  info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+  SNDFILE *file = sf_open(path.c_str(), SFM_WRITE, &info);
+  if (file == nullptr) {
+    std::cerr << "[audio] dump: cannot write " << path << '\n';
+    return;
+  }
+  sf_writef_short(file, samples.data(),
+                  static_cast<sf_count_t>(samples.size() /
+                                          static_cast<std::size_t>(channels)));
+  sf_close(file);
+  std::cerr << "[audio] dump: wrote " << path << '\n';
 }
 
 } // namespace audio
