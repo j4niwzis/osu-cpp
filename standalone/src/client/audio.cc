@@ -166,6 +166,12 @@ public:
   }
   [[nodiscard]] int sampleRate() const noexcept { return fRate; }
 
+  [[nodiscard]] double durationSec() const noexcept {
+    return fRate > 0 ? static_cast<double>(fMono.size()) /
+                           static_cast<double>(fRate)
+                     : 0.0;
+  }
+
   [[nodiscard]] double positionSec() const {
     if (fSource == 0)
       return 0.0;

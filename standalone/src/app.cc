@@ -29,6 +29,7 @@ import client.settingspanel;
 import client.overlays;
 import client.filtercontrol;
 import client.listing;
+import client.setpage;
 import client.gameplayview;
 import client.mods;
 import client.video;
@@ -200,6 +201,12 @@ private:
 
   // Download screen (mirror search + .osz fetch).
   client::listing::Listing fListing;
+  client::setpage::SetPage fSetPage;
+  // Track previews come from osu!'s own preview endpoint and play on their
+  // own source, so the menu music is untouched.
+  client::AudioPlayer fPreview;
+  long fPreviewId = -1;
+  bool fPreviewPending = false;
   std::vector<client::listing::Entry> fFound;
   // Transfers in flight, so progress can be polled without the view knowing
   // anything about HTTP.
@@ -746,7 +753,11 @@ private:
         fCarouselScroll -= ev.fX * 90.0f;
         fUserScrolled = true;
       } else if (fState == State::kDownload) {
-        fListing.scroll(ev.fX);
+        if (fSetPage.open()) {
+          fSetPage.scroll(ev.fX);
+        } else {
+          fListing.scroll(ev.fX);
+        }
       }
       break;
     case EventType::kChar:
@@ -762,7 +773,7 @@ private:
         break;
       }
       if (fState == State::kDownload) {
-        if (fSwallowChar) {
+        if (fSwallowChar || fSetPage.open()) {
           fSwallowChar = false;
           break;
         }
@@ -958,6 +969,12 @@ private:
 
   void keyDownload(int key) {
     if (key == glfw::kKeyEscape) {
+      if (fSetPage.open()) {
+        fSetPage.close(); // back to the listing, as the overlay stacks
+        return;
+      }
+      fPreview.stop();
+      fPreviewId = -1;
       this->switchState(State::kSongSelect);
       return;
     }
@@ -1085,6 +1102,16 @@ private:
       }
       break;
     case State::kDownload: {
+      if (fSetPage.open()) {
+        const auto page = fSetPage.click(x, y);
+        using PageAction = client::setpage::SetPage::Action;
+        if (page.fAction == PageAction::kDownload) {
+          this->startDownloadForSet(fSetPage.setId());
+        } else if (page.fAction == PageAction::kPreview) {
+          this->togglePreviewForSet(fSetPage.setId());
+        }
+        return; // the page covers the listing underneath
+      }
       const auto result = fListing.click(x, y);
       switch (result.fAction) {
       case client::listing::Listing::Action::kSearch:
@@ -1092,6 +1119,14 @@ private:
         break;
       case client::listing::Listing::Action::kDownload:
         this->startDownload(result.fIndex);
+        break;
+      case client::listing::Listing::Action::kOpen:
+        if (result.fIndex < fFound.size()) {
+          fSetPage.show(fFound[result.fIndex]);
+        }
+        break;
+      case client::listing::Listing::Action::kPreview:
+        this->togglePreview(result.fIndex);
         break;
       case client::listing::Listing::Action::kRefilter:
       case client::listing::Listing::Action::kNone:
@@ -1429,6 +1464,8 @@ private:
   }
 
   void startPlay(int setIdx, int diffIdx) {
+    fPreview.stop();
+    fPreviewId = -1;
     if (setIdx < 0 || setIdx >= static_cast<int>(fLibrary.size())) {
       return;
     }
@@ -2558,6 +2595,11 @@ private:
             diff.fVersion = getStr(*bo, "version");
             diff.fMode = static_cast<int>(getNum(*bo, "mode_int"));
             diff.fLengthMs = getNum(*bo, "total_length") * 1000.0;
+            diff.fCs = getNum(*bo, "cs");
+            diff.fAr = getNum(*bo, "ar");
+            diff.fOd = getNum(*bo, "accuracy");
+            diff.fHp = getNum(*bo, "drain");
+            diff.fMaxCombo = static_cast<int>(getNum(*bo, "max_combo"));
             d.fDiffs.push_back(std::move(diff));
             if (d.fDiffCount == 0) {
               d.fStarsMin = d.fStarsMax = v;
@@ -2577,6 +2619,53 @@ private:
     fSearchOffset = offset + kSearchPageSize;
     fMoreAvailable = added >= static_cast<std::size_t>(kSearchPageSize) / 2;
     fDownloadStatus = std::format("{} results", fFound.size());
+  }
+
+  // PlayButton on the card thumbnail: fetches the 10-second preview osu!
+  // serves for every set and plays it on its own source.
+  void togglePreview(std::size_t idx) {
+    if (idx >= fFound.size()) {
+      return;
+    }
+    const long id = fFound[idx].fSetId;
+    if (fPreviewId == id) {
+      fPreview.stop();
+      fPreviewId = -1;
+      return;
+    }
+    fPreview.stop();
+    fPreviewId = -1;
+    if (fPreviewPending) {
+      return;
+    }
+    fPreviewPending = true;
+    auto handle = std::make_shared<client::http::Handle>();
+    client::http::get(std::format("https://b.ppy.sh/preview/{}.mp3", id),
+                      std::move(handle),
+                      [this, id](client::http::Response r) {
+                        fPreviewPending = false;
+                        if (!r.fOk || r.fBody.size() < 1024) {
+                          return;
+                        }
+                        const std::vector<std::uint8_t> bytes(r.fBody.begin(),
+                                                              r.fBody.end());
+                        if (!fPreview.load(bytes, ".mp3")) {
+                          return;
+                        }
+                        fPreview.setVolume(fSettings.value("master") *
+                                           fSettings.value("music"));
+                        fPreview.play();
+                        fPreviewId = id;
+                      });
+  }
+
+  // How far through the preview is, for the ring around the play button.
+  [[nodiscard]] float previewProgress() const {
+    const double duration = fPreview.durationSec();
+    if (fPreviewId < 0 || duration <= 0.0) {
+      return 0.0f;
+    }
+    return static_cast<float>(fPreview.positionSec() / duration);
   }
 
   void requestThumb(std::size_t idx) {
@@ -2618,6 +2707,18 @@ private:
           }
         });
   }
+
+  [[nodiscard]] std::size_t indexOfSet(long id) const {
+    for (std::size_t i = 0; i < fFound.size(); ++i) {
+      if (fFound[i].fSetId == id) {
+        return i;
+      }
+    }
+    return fFound.size();
+  }
+
+  void startDownloadForSet(long id) { this->startDownload(this->indexOfSet(id)); }
+  void togglePreviewForSet(long id) { this->togglePreview(this->indexOfSet(id)); }
 
   void startDownload(std::size_t idx) {
     if (idx >= fFound.size()) {
@@ -3531,6 +3632,7 @@ private:
   void applyAudioSettings() {
     const float master = fSettings.value("master");
     fAudio.setVolume(master * fSettings.value("music"));
+    fPreview.setVolume(master * fSettings.value("music"));
     for (auto &[name, player] : fSamples) {
       player.setVolume(master * fSettings.value("effect"));
     }
@@ -4497,7 +4599,26 @@ private:
     ctx.fEntries = fFound;
     ctx.fLoading = fSearchPending;
     fListing.tick(wallMs());
+    fListing.setPreview(fPreviewId, this->previewProgress());
     fListing.draw(ctx);
+    if (fSetPage.open()) {
+      const std::size_t idx = this->indexOfSet(fSetPage.setId());
+      if (idx >= fFound.size()) {
+        fSetPage.close(); // the set fell out of the results
+      }
+      client::setpage::SetPage::Ctx page;
+      page.fEntry = idx < fFound.size() ? &fFound[idx] : nullptr;
+      page.fCanvas = canvas;
+      page.fFont = &fFont;
+      page.fWidth = ctx.fWidth;
+      page.fHeight = ctx.fHeight;
+      page.fMouseX = fMouseX;
+      page.fMouseY = fMouseY;
+      page.fDtMs = fUiDt;
+      page.fPreviewPlaying = fPreviewId == fSetPage.setId();
+      page.fPreviewProgress = this->previewProgress();
+      fSetPage.draw(page);
+    }
     // Covers are only fetched for what is on screen.
     for (const int idx : fListing.visible()) {
       this->requestThumb(static_cast<std::size_t>(idx));

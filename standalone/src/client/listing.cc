@@ -21,6 +21,7 @@ inline constexpr skia::SkColor kContent2 = skia::colorSetARGB(255, 219, 233, 240
 inline constexpr skia::SkColor kLight1 = skia::colorSetARGB(255, 184, 211, 224);
 inline constexpr skia::SkColor kLight2 = skia::colorSetARGB(255, 166, 200, 217);
 inline constexpr skia::SkColor kLight3 = skia::colorSetARGB(255, 148, 189, 209);
+inline constexpr skia::SkColor kColour3 = skia::colorSetARGB(255, 51, 153, 204);
 inline constexpr skia::SkColor kDark3 = skia::colorSetARGB(255, 51, 68, 76);
 inline constexpr skia::SkColor kDark6 = skia::colorSetARGB(255, 20, 27, 31);
 inline constexpr skia::SkColor kForeground1 = skia::colorSetARGB(255, 143, 156, 163);
@@ -107,6 +108,8 @@ struct Entry {
     float fStars = 0.0f;
     int fMode = 0;
     double fLengthMs = 0.0;
+    double fCs = 0.0, fAr = 0.0, fOd = 0.0, fHp = 0.0;
+    int fMaxCombo = 0;
   };
   std::vector<Difficulty> fDiffs; // sorted by star rating, as lazer lists them
   float fStarsMin = 0.0f, fStarsMax = 0.0f;
@@ -160,11 +163,17 @@ public:
     std::span<Entry> fEntries;
     bool fLoading = false;
   };
-  enum class Action { kNone, kSearch, kRefilter, kDownload };
+  enum class Action { kNone, kSearch, kRefilter, kDownload, kOpen, kPreview };
   struct Result {
     Action fAction = Action::kNone;
     std::size_t fIndex = 0; // entry index for kDownload
   };
+
+  // Which set the preview is playing, and how far through it is.
+  void setPreview(long setId, float progress) {
+    fPreviewId = setId;
+    fPreviewProgress = progress;
+  }
 
   [[nodiscard]] Filters &filters() { return fFilters; }
   [[nodiscard]] const Filters &filters() const { return fFilters; }
@@ -244,7 +253,7 @@ private:
   // What a recorded rectangle stands for.
   enum class Kind : std::uint8_t {
     kGeneral, kRuleset, kCategory, kGenre, kLanguage, kExtra, kRank, kPlayed,
-    kExplicit, kSort, kCardSize, kCard, kDownload
+    kExplicit, kSort, kCardSize, kCard, kDownload, kPreview
   };
   struct Hit {
     skia::SkRect fRect;
@@ -300,8 +309,12 @@ private:
       fFilters.fCardSize = static_cast<CardSize>(hit.fValue);
       return {Action::kRefilter};
     case Kind::kCard:
+      // Clicking a card opens its page, as it opens BeatmapSetOverlay.
+      return {Action::kOpen, static_cast<std::size_t>(hit.fValue)};
     case Kind::kDownload:
       return {Action::kDownload, static_cast<std::size_t>(hit.fValue)};
+    case Kind::kPreview:
+      return {Action::kPreview, static_cast<std::size_t>(hit.fValue)};
     }
     return {};
   }
@@ -322,6 +335,25 @@ private:
     p.setAlphaf(alpha);
     fCanvas->drawRRect(skia::SkRRect::MakeRectXY(r, radius, radius), p);
   }
+  // FillMode.Fill: the source is cropped to the destination's aspect ratio
+  // instead of being squashed into it, which is what the covers were doing.
+  void imageFilled(const skia::SkImage *image, const skia::SkRect &dst) {
+    const float iw = static_cast<float>(image->width());
+    const float ih = static_cast<float>(image->height());
+    if (iw <= 0.0f || ih <= 0.0f) {
+      return;
+    }
+    const float scale = std::max(dst.width() / iw, dst.height() / ih);
+    const float srcW = dst.width() / scale;
+    const float srcH = dst.height() / scale;
+    const skia::SkRect src = skia::SkRect::MakeXYWH(
+        (iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
+    fCanvas->drawImageRect(image, src, dst,
+                           skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
+                           nullptr,
+                           skia::SkCanvas::kStrict_SrcRectConstraint);
+  }
+
   [[nodiscard]] float measure(const std::string &s, float size, bool bold) {
     fFont->setSize(size);
     fFont->setEmbolden(bold);
@@ -603,37 +635,60 @@ private:
     return top + kSortBarHeight;
   }
 
+  // The cards flow left to right and wrap, inside panelTarget's 20px padding.
   float drawCards(float w, float top, const Ctx &ctx) {
     const float cardH = fFilters.fCardSize == CardSize::kNormal
                             ? kCardNormalHeight
                             : kCardExtraHeight;
     float y = top + 15.0f; // createCardContainerFor: Top = 15
     if (fVisible.empty()) {
-      // NotFoundDrawable: 250 high, centred text.
-      this->text(ctx.fLoading ? "searching..."
-                              : "no beatmaps match your criteria!",
-                 w * 0.5f - this->measure("no beatmaps match your criteria!",
-                                          16.0f, false) * 0.5f,
+      // NotFoundDrawable: 250 high, its text centred.
+      const std::string text = ctx.fLoading ? "searching..."
+                                            : "no beatmaps match your criteria!";
+      this->text(text, w * 0.5f - this->measure(text, 16.0f, false) * 0.5f,
                  y + 125.0f, 16.0f, kContent2);
       return y + 250.0f;
     }
-    const float cardX = (w - kCardWidth) * 0.5f; // Anchor.TopCentre
+
+    const float available = w - kPanelPadding * 2.0f;
+    const int columns = std::max(
+        1, static_cast<int>((available + kCardSpacing) /
+                            (kCardWidth + kCardSpacing)));
+    const float rowWidth = static_cast<float>(columns) * kCardWidth +
+                           static_cast<float>(columns - 1) * kCardSpacing;
+    const float rowLeft = (w - rowWidth) * 0.5f;
+
+    int column = 0;
+    float rowExpansion = 0.0f; // the tallest expanded panel in this row
     for (const int idx : fVisible) {
       Entry &e = ctx.fEntries[static_cast<std::size_t>(idx)];
+      const float x = rowLeft + static_cast<float>(column) *
+                                    (kCardWidth + kCardSpacing);
       const skia::SkRect card =
-          skia::SkRect::MakeXYWH(cardX, y, kCardWidth, cardH);
+          skia::SkRect::MakeXYWH(x, y, kCardWidth, cardH);
       if (y - fScroll < ctx.fHeight + cardH && y - fScroll + cardH > -cardH) {
         this->drawCard(card, e, idx, ctx);
       }
       fHits.push_back({card, Kind::kCard, idx});
-      y += cardH + kCardSpacing;
+
+      // An expanded card pushes the whole row down, not just itself.
       const auto &state = fCardState[static_cast<std::size_t>(idx)];
       if (state.fExpanded > 0.01f) {
         const float full =
             std::min(kExpandedMaxHeight,
                      static_cast<float>(e.fDiffs.size()) * 20.0f + 20.0f);
-        y += full * client::ui::outQuint(state.fExpanded);
+        rowExpansion = std::max(rowExpansion,
+                                full * client::ui::outQuint(state.fExpanded));
       }
+
+      if (++column == columns) {
+        column = 0;
+        y += cardH + kCardSpacing + rowExpansion;
+        rowExpansion = 0.0f;
+      }
+    }
+    if (column != 0) {
+      y += cardH + kCardSpacing + rowExpansion;
     }
     return y + 20.0f;
   }
@@ -674,20 +729,14 @@ private:
         skia::SkRRect::MakeRectXY(main, kCardCorner, kCardCorner), true);
     this->rect(main, kBackground3);
     if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
-      fCanvas->drawImageRect(
+      this->imageFilled(
           e.fThumb.get(),
           skia::SkRect::MakeXYWH(card.fLeft + h - kCardCorner, card.fTop,
-                                 main.width() - h + kCardCorner, h),
-          skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
+                                 main.width() - h + kCardCorner, h));
       this->rect(skia::SkRect::MakeLTRB(card.fLeft + h - kCardCorner,
                                         card.fTop, main.fRight, card.fBottom),
                  kBackground6, hover ? 0.9f : 0.8f);
-      fCanvas->drawImageRect(e.fThumb.get(), thumb,
-                             skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
-                             nullptr);
-      if (hover) {
-        this->rect(thumb, skia::colorSetARGB(255, 0, 0, 0), 0.4f);
-      }
+      this->imageFilled(e.fThumb.get(), thumb);
     }
     fCanvas->restore();
 
@@ -739,12 +788,52 @@ private:
       this->drawExtraInfoRow(tx, bottom, tw, e);
     }
 
+    this->drawThumbnailPlay(thumb, e, index, hover);
     this->drawCardButtons(card, main, state.fExpand, e, index);
 
     // The expanded content: the difficulty list, under the card.
     if (state.fExpanded > 0.01f) {
       this->drawExpandedContent(card, e, state.fExpanded);
     }
+  }
+
+  // BeatmapCardThumbnail's PlayButton: it fades in over the cover on hover
+  // and while the preview is playing, with a CircularProgress around it.
+  void drawThumbnailPlay(const skia::SkRect &thumb, const Entry &e, int index,
+                         bool hover) {
+    const bool playing = fPreviewId == e.fSetId;
+    if (hover || playing) {
+      this->rect(thumb, kBackground6, 0.6f);
+      skia::SkPaint paint;
+      paint.setAntiAlias(true);
+      paint.setColor(kContent1);
+      const float cx = thumb.centerX();
+      const float cy = thumb.centerY();
+      if (playing) {
+        // Pause glyph while this preview is the one playing.
+        this->rect(skia::SkRect::MakeXYWH(cx - 6.0f, cy - 8.0f, 4.0f, 16.0f),
+                   kContent1);
+        this->rect(skia::SkRect::MakeXYWH(cx + 2.0f, cy - 8.0f, 4.0f, 16.0f),
+                   kContent1);
+        skia::SkPaint ring;
+        ring.setAntiAlias(true);
+        ring.setStyle(skia::kStrokeStyle);
+        ring.setStrokeWidth(3.0f);
+        ring.setColor(kColour1);
+        const float r = 18.0f;
+        fCanvas->drawArc(
+            skia::SkRect::MakeXYWH(cx - r, cy - r, r * 2.0f, r * 2.0f), -90.0f,
+            360.0f * std::clamp(fPreviewProgress, 0.0f, 1.0f), false, ring);
+      } else {
+        skia::SkPathBuilder tri;
+        tri.moveTo(cx - 6.0f, cy - 9.0f)
+            .lineTo(cx + 9.0f, cy)
+            .lineTo(cx - 6.0f, cy + 9.0f)
+            .close();
+        fCanvas->drawPath(tri.detach(), paint);
+      }
+    }
+    fHits.push_back({thumb, Kind::kPreview, index});
   }
 
   void drawCardButtons(const skia::SkRect &card, const skia::SkRect &main,
@@ -965,6 +1054,8 @@ private:
   float fMouseX = 0.0f, fMouseY = 0.0f;
   float fScroll = 0.0f, fScrollTarget = 0.0f, fMaxScroll = 0.0f;
   double fBlink = 0.0;
+  long fPreviewId = -1;
+  float fPreviewProgress = 0.0f;
 
 public:
   void tick(double nowMs) { fBlink = nowMs; }
