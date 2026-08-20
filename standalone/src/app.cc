@@ -31,6 +31,7 @@ import client.filtercontrol;
 import client.listing;
 import client.carousel;
 import client.pause;
+import client.mainmenu;
 import present;
 import client.setpage;
 import client.scene;
@@ -417,7 +418,7 @@ private:
   float fLogoRadius = 0.0f;
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
   float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
-  skia::SkRect fDrawnLogoDamage = skia::SkRect::MakeEmpty();
+  client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
   skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
   client::Spectrum fSpectrum;
 
@@ -1315,16 +1316,29 @@ private:
     switch (fState) {
     case State::kMainMenu: {
       this->ensureMenuButtons();
-      const float dx = x - fLogoRect.centerX();
-      const float dy = y - fLogoRect.centerY();
-      const float r = fLogoRect.width() * 0.5f;
-      if (r > 0.0f && dx * dx + dy * dy <= r * r) {
-        this->triggerLogo();
-        return;
-      }
-      for (auto &b : fMenuBtns) {
-        if (b.fVisible == fMenuState && b.fExpand > 0.5f &&
-            b.fRect.contains(x, y)) {
+      const int piece = fMenu.hit(x, y);
+      if (piece == client::mainmenu::Menu::kLogo) {
+        // The logo's box is square, reaches as far as its visualiser does,
+        // and the logo is a circle inside it -- so the circle has the last
+        // word, and a miss falls through to the buttons the box covers.
+        const float dx = x - fLogoRect.centerX();
+        const float dy = y - fLogoRect.centerY();
+        const float r = fLogoRect.width() * 0.5f;
+        if (r > 0.0f && dx * dx + dy * dy <= r * r) {
+          this->triggerLogo();
+          return;
+        }
+        for (auto &b : fMenuBtns) {
+          if (b.fVisible == fMenuState && b.fExpand > 0.5f &&
+              b.fRect.contains(x, y)) {
+            this->menuTrigger(b);
+            return;
+          }
+        }
+      } else if (piece >= 0 &&
+                 piece < static_cast<int>(fMenuBtns.size())) {
+        auto &b = fMenuBtns[static_cast<std::size_t>(piece)];
+        if (b.fVisible == fMenuState && b.fExpand > 0.5f) {
           this->menuTrigger(b);
           return;
         }
@@ -4700,6 +4714,9 @@ private:
 
     this->settleLogo(fLogoBase);
 
+    fMenu.ensure(fMenuBtns.size(), skia::SkRect::MakeWH(sw, sh));
+    fMenu.setPointer(fMouseX, fMouseY);
+
     // How far the bars actually reach this frame. A flat guess of three
     // quarters of the logo's width was covering 40% of the screen on its own,
     // which with the counter in the opposite corner pushed the frame over the
@@ -4716,11 +4733,9 @@ private:
     // visualiser, drifting triangles inside the logo, or the logo itself
     // having shifted. Marking it every frame regardless is a repaint of the
     // busiest part of the screen for a picture that is identical.
-    if (fSettings.flag("menutriangles") || fSettings.flag("visualiser") ||
-        moving != fDrawnLogoDamage) {
-      this->damage(fDrawnLogoDamage); // where it was
-      this->damage(moving);           // and where it is now
-      fDrawnLogoDamage = moving;
+    fMenu.placeLogo(moving);
+    if (fSettings.flag("menutriangles") || fSettings.flag("visualiser")) {
+      fMenu.markLogo(); // something inside the same box is moving
     }
 
     // A button only needs repainting while something about it changes. Its
@@ -4729,6 +4744,14 @@ private:
     // shear plus a margin -- and by the rectangle it occupied before, or a
     // button that moved leaves its old self behind.
     for (auto &b : fMenuBtns) {
+      // The box a button occupies, grown by the shear and a margin: its
+      // parallelogram leans out of its rectangle, and the label and glow
+      // reach past that.
+      skia::SkRect box = b.fRect;
+      if (!box.isEmpty()) {
+        box.outset(fMenuWedge + 12.0f, 12.0f);
+      }
+      fMenu.placeButton(static_cast<std::size_t>(&b - fMenuBtns.data()), box);
       // Eased values approach their target without reaching it; comparing
       // them exactly kept every button "changing" for ever, which is what
       // held the repainted region open around the whole row.
@@ -4740,31 +4763,22 @@ private:
       if (!changed) {
         continue;
       }
-      const auto mark = [&](skia::SkRect area) {
-        if (area.isEmpty()) {
-          return;
-        }
-        area.outset(fMenuWedge + 12.0f, 12.0f);
-        this->damage(area);
-      };
-      mark(b.fDrawnRect);
-      mark(b.fRect);
+      fMenu.markButton(static_cast<std::size_t>(&b - fMenuBtns.data()));
       b.fDrawnExpand = b.fExpand;
       b.fDrawnHover = b.fHover;
       b.fDrawnFlash = b.fFlash;
       b.fDrawnRect = b.fRect;
     }
+    this->damage(fMenu.takeDamage());
   }
 
-  void frameMainMenu() {
-    auto *canvas = fSurface->getCanvas();
+  // lazer's main menu shows the beatmap background at full brightness --
+  // MainMenu.cs fades it to Gray(1) at the logo-only state and Gray(0.8)
+  // once the buttons are out. There is no triangle overlay over artwork;
+  // triangles are only the fallback background when no art exists at all.
+  void drawMenuBackground(skia::SkCanvas *canvas) {
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
-
-    // lazer's main menu shows the beatmap background at full brightness --
-    // MainMenu.cs fades it to Gray(1) at the logo-only state and Gray(0.8)
-    // once the buttons are out. There is no triangle overlay over artwork;
-    // triangles are only the fallback background when no art exists at all.
     if (fView.hasBackground()) {
       fView.drawBackground(this->gameplayCtx(canvas), canvas);
       if (fMenuDim < 0.999f) {
@@ -4782,15 +4796,11 @@ private:
     } else {
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
     }
+  }
 
-    for (auto &b : fMenuBtns) {
-      if (b.fExpand < 0.01f) {
-        continue;
-      }
-      this->drawMenuWedge(canvas, b, fMenuWedge);
-    }
-
-    this->drawLogo(canvas, fLogoBase);
+  void frameMainMenu() {
+    auto *canvas = fSurface->getCanvas();
+    fMenu.render(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
   }
@@ -7073,6 +7083,21 @@ private:
     client::nodes::CachedContainer::setContext(fContext.get());
     // The carousel owns where a panel is and when it has to be repainted; the
     // client still owns what one looks like, and hands it over here.
+    // The menu's pieces: the tree owns where they are and what has to be
+    // repainted; what they look like stays here.
+    fMenu.setPainters(
+        [this](skia::SkCanvas *canvas, const skia::SkRect &, int) {
+          this->drawMenuBackground(canvas);
+        },
+        [this](skia::SkCanvas *canvas, const skia::SkRect &, int index) {
+          if (index >= 0 && index < static_cast<int>(fMenuBtns.size())) {
+            this->drawMenuWedge(canvas, fMenuBtns[static_cast<std::size_t>(index)],
+                                fMenuWedge);
+          }
+        },
+        [this](skia::SkCanvas *canvas, const skia::SkRect &, int) {
+          this->drawLogo(canvas, fLogoBase);
+        });
     fCarousel.setPainter([this](skia::SkCanvas *canvas,
                                 const skia::SkRect &rect,
                                 const client::carousel::Row &row, bool selected,
