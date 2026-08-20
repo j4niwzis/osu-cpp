@@ -1487,10 +1487,13 @@ private:
   void beginFrame() {
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
-    // What the frame would repaint, before the overlay has its say.
-    fComputedClipFull = fFullDamage || fDamage.empty();
+    // What the frame would repaint, before the overlay has its say. An empty
+    // set means nothing asked to be repainted -- which is a different answer
+    // from "everything", and reporting it as red was what made an idle
+    // listing look like it was repainting itself continuously.
+    fComputedClipFull = fFullDamage;
     fComputedClip = fDamage;
-    fFrameClipFull = fComputedClipFull;
+    fFrameClipFull = fFullDamage || fDamage.empty();
     fFrameClip.clear();
     if (!fFrameClipFull) {
       fFrameClip = fDamage;
@@ -1818,7 +1821,7 @@ private:
     fCostSwapUs += us(beforeSwap, now);
     if (fComputedClipFull) {
       fCostClipArea += static_cast<std::int64_t>(fScreenW) * fScreenH;
-    } else {
+    } else if (!fComputedClip.empty()) {
       for (const auto &rect : fComputedClip) {
         fCostClipArea +=
             static_cast<std::int64_t>(rect.width()) * rect.height();
@@ -1886,6 +1889,9 @@ private:
     // Magenta around each region the frame would have been clipped to; a red
     // border when it would have repainted everything, with the reason,
     // because "why is it full again" is the question that keeps coming up.
+    if (!fComputedClipFull && fComputedClip.empty()) {
+      return; // nothing asked to be repainted: nothing to outline
+    }
     if (fComputedClipFull) {
       skia::SkPaint paint;
       paint.setStyle(skia::kStrokeStyle);

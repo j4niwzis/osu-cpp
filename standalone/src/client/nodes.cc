@@ -252,6 +252,13 @@ public:
     fTarget = 0.0f;
     fCurrent = 0.0f;
   }
+
+  // Carried across a rebuild: a list that grew a page should stay where the
+  // reader left it, not jump back to the top.
+  void setCurrent(float offset) {
+    fCurrent = offset;
+    fTarget = offset;
+  }
   [[nodiscard]] float current() const noexcept { return fCurrent; }
   [[nodiscard]] float extent() const noexcept { return fExtent; }
 

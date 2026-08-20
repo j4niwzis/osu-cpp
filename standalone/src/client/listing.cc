@@ -341,8 +341,14 @@ public:
     // The tree is rebuilt when what it shows changes, and reused otherwise.
     const std::string shape = this->treeShape(ctx);
     if (!fScene || shape != fShape) {
+      // A page arriving changes the shape, but not where the reader is: the
+      // offset is carried over to the tree that replaces this one.
+      const float offset = fScroll != nullptr ? fScroll->current() : 0.0f;
       fShape = shape;
       fScene = this->build();
+      if (fScroll != nullptr && offset > 0.0f && !fScrollToStart) {
+        fScroll->setCurrent(offset);
+      }
     }
 
     const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
