@@ -605,11 +605,19 @@ private:
       int fProfile;
       int fCreation;
     };
+    // OSU_EGL asks for the context through EGL rather than GLX. On X11 the
+    // native path is GLX, which has the buffer age extension but no way to
+    // hand the compositor a damage region; EGL has both. Kept behind a switch
+    // because changing how the context is created is not something to do
+    // quietly on every machine.
+    const int desktopCreation = std::getenv("OSU_EGL") != nullptr
+                                    ? glfw::kEglContextApi
+                                    : glfw::kNativeContextApi;
     const ContextChoice choices[] = {
         {"gl 4.1 core", glfw::kOpenGLApi, 4, 1, glfw::kOpenGLCoreProfile,
-         glfw::kNativeContextApi},
+         desktopCreation},
         {"gl 3.0", glfw::kOpenGLApi, 3, 0, glfw::kOpenGLAnyProfile,
-         glfw::kNativeContextApi},
+         desktopCreation},
         {"gles 3.0", glfw::kOpenGLEsApi, 3, 0, glfw::kOpenGLAnyProfile,
          glfw::kEglContextApi},
         {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,

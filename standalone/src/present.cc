@@ -99,12 +99,21 @@ struct Loaded {
 
 [[nodiscard]] Loaded resolve() {
   Loaded out;
+  // Said out loud, once: "via none" is three different answers -- the library
+  // is not there, nothing is current on this thread, or the driver does not
+  // have the extension -- and they call for three different next moves.
+  const auto note = [](std::string_view what) {
+    std::println(std::cerr, "[present] {}", what);
+  };
 
   // The libraries are already in the process if the context came from them;
   // RTLD_NOLOAD would be tidier but is not portable, and loading them again
   // is harmless.
-  if (void *lib = ::dlopen("libEGL.so.1", RTLD_LAZY | RTLD_LOCAL);
-      lib != nullptr) {
+  void *eglLib = ::dlopen("libEGL.so.1", RTLD_LAZY | RTLD_LOCAL);
+  if (eglLib == nullptr) {
+    note("libEGL.so.1 did not load");
+  }
+  if (void *lib = eglLib; lib != nullptr) {
     auto &egl = out.fEgl;
     egl.getCurrentDisplay =
         reinterpret_cast<decltype(egl.getCurrentDisplay)>(
@@ -122,6 +131,9 @@ struct Loaded {
     if (egl.getCurrentDisplay != nullptr && egl.querySurface != nullptr &&
         egl.queryString != nullptr) {
       const EGLDisplay display = egl.getCurrentDisplay();
+      if (display == nullptr) {
+        note("egl: no display current on this thread (a GLX context, then)");
+      }
       if (display != nullptr) {
         const char *extensions = egl.queryString(display, kEglExtensions);
         egl.fHasAge = mentions(extensions, "EGL_EXT_buffer_age") ||
@@ -139,6 +151,10 @@ struct Loaded {
                     egl.getProcAddress(name));
           }
         }
+        std::println(std::cerr,
+                     "[present] egl: buffer age {}, swap with damage {}",
+                     egl.fHasAge ? "yes" : "no",
+                     egl.swapWithDamage != nullptr ? "yes" : "no");
         if (egl.fHasAge || egl.swapWithDamage != nullptr) {
           out.fBackend = "egl";
           return out;
@@ -149,8 +165,11 @@ struct Loaded {
 
   // GLX has the same question and no answer for the second half: there is no
   // swap-with-damage there, only the age.
-  if (void *lib = ::dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
-      lib != nullptr) {
+  void *glLib = ::dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
+  if (glLib == nullptr) {
+    note("libGL.so.1 did not load");
+  }
+  if (void *lib = glLib; lib != nullptr) {
     auto &glx = out.fGlx;
     glx.getCurrentDisplay = reinterpret_cast<decltype(glx.getCurrentDisplay)>(
         ::dlsym(lib, "glXGetCurrentDisplay"));
@@ -161,12 +180,19 @@ struct Loaded {
     glx.queryExtensionsString =
         reinterpret_cast<decltype(glx.queryExtensionsString)>(
             ::dlsym(lib, "glXQueryExtensionsString"));
-    if (glx.getCurrentDisplay != nullptr && glx.queryDrawable != nullptr &&
-        glx.queryExtensionsString != nullptr) {
+    if (glx.getCurrentDisplay == nullptr || glx.queryDrawable == nullptr ||
+        glx.queryExtensionsString == nullptr) {
+      note("glx: the entry points are not in libGL");
+    } else {
       XDisplay *display = glx.getCurrentDisplay();
-      if (display != nullptr) {
-        glx.fHasAge =
-            mentions(glx.queryExtensionsString(display, 0), "GLX_EXT_buffer_age");
+      if (display == nullptr) {
+        note("glx: no display current on this thread");
+      } else {
+        const char *extensions = glx.queryExtensionsString(display, 0);
+        glx.fHasAge = mentions(extensions, "GLX_EXT_buffer_age");
+        std::println(std::cerr, "[present] glx: buffer age {}{}",
+                     glx.fHasAge ? "yes" : "no",
+                     extensions == nullptr ? " (no extension string)" : "");
         if (glx.fHasAge) {
           out.fBackend = "glx";
           return out;
