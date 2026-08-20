@@ -147,7 +147,7 @@ decodePcm(std::span<const std::uint8_t> data, std::string_view ext, int &rate,
       samples = audio::decode_mp3_memory(data, rate, channels);
     }
   }
-  audio::report_pcm_level(samples, "decoded");
+  audio::report_pcm_level(samples, "decoded", channels);
   audio::dump_pcm(samples, rate, channels);
   return samples;
 }
@@ -203,7 +203,7 @@ public:
       return false;
     }
     this->shutdown();
-    audio::report_pcm_level(pcm.fSamples, "uploading");
+    audio::report_pcm_level(pcm.fSamples, "uploading", pcm.fChannels);
     return this->upload(pcm.fSamples, pcm.fRate, pcm.fChannels);
   }
 

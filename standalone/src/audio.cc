@@ -114,6 +114,7 @@ private:
 struct SndfileMemory {
   std::span<const std::uint8_t> data;
   sf_count_t offset = 0;
+  bool clamped = false; // libsndfile asked for something outside the buffer
 };
 
 static sf_count_t sndfileGetFilelen(void *user) {
@@ -123,17 +124,26 @@ static sf_count_t sndfileGetFilelen(void *user) {
 
 static sf_count_t sndfileSeek(sf_count_t offset, int whence, void *user) {
   auto *m = static_cast<SndfileMemory *>(user);
+  const auto size = static_cast<sf_count_t>(m->data.size());
+  sf_count_t target = m->offset;
   switch (whence) {
   case SEEK_SET:
-    m->offset = offset;
+    target = offset;
     break;
   case SEEK_CUR:
-    m->offset += offset;
+    target += offset;
     break;
   case SEEK_END:
-    m->offset = static_cast<sf_count_t>(m->data.size()) + offset;
+    target = size + offset;
     break;
   }
+  // A real file lets the cursor sit past its end and reads nothing there;
+  // this has to behave the same. Without the clamp the offset goes out of
+  // range and the read below computes a negative count.
+  if (target < 0 || target > size) {
+    m->clamped = true;
+  }
+  m->offset = std::clamp(target, sf_count_t{0}, size);
   return m->offset;
 }
 
@@ -141,7 +151,15 @@ static sf_count_t sndfileRead(void *ptr, sf_count_t count, void *user) {
   auto *m = static_cast<SndfileMemory *>(user);
   const sf_count_t available =
       static_cast<sf_count_t>(m->data.size()) - m->offset;
-  const sf_count_t toRead = std::min(count, available);
+  // Anything but a count in [0, requested] is a lie to libsndfile: it takes
+  // the return value as the number of bytes it may now read out of the
+  // buffer it handed over, so a negative or clamped-wrong value leaves it
+  // decoding whatever that buffer happened to contain.
+  if (available < 0) {
+    m->clamped = true;
+  }
+  const sf_count_t toRead =
+      std::max(sf_count_t{0}, std::min(count, available));
   if (toRead > 0) {
     std::memcpy(ptr, m->data.data() + m->offset,
                 static_cast<std::size_t>(toRead));
@@ -317,6 +335,10 @@ decode_sndfile_memory(std::span<const std::uint8_t> data, int &rate,
   const auto read = sf_readf_short(file, out.data(), frames);
   out.resize(static_cast<std::size_t>(read * info.channels));
   sf_close(file);
+  if (mem.clamped) {
+    std::cerr << "[audio] decode_sndfile_memory: reads outside the buffer "
+                 "were requested and refused\n";
+  }
   std::cerr << "[audio] decode_sndfile_memory: returned " << out.size()
             << " samples\n";
   return out;
@@ -419,25 +441,29 @@ decode_mp3_memory(std::span<const std::uint8_t> data, int &rate,
 // themselves are torn: wrapped conversions and mis-sized reads leave a trail
 // of those, while clean audio has almost none however loud it is.
 inline void report_pcm_level(std::span<const std::int16_t> samples,
-                             const char *what) {
+                             const char *what, int channels = 1) {
   if (samples.empty()) {
     return;
   }
+  const auto stride = static_cast<std::size_t>(channels > 0 ? channels : 1);
   int peak = 0;
   std::size_t hot = 0;
   std::size_t jumps = 0;
-  int previous = samples[0];
-  for (const std::int16_t s : samples) {
-    const int magnitude = s == -32768 ? 32767 : (s < 0 ? -s : s);
+  for (std::size_t i = 0; i < samples.size(); ++i) {
+    const int value = samples[i];
+    const int magnitude = value == -32768 ? 32767 : (value < 0 ? -value : value);
     peak = magnitude > peak ? magnitude : peak;
     if (magnitude > 32000) {
       ++hot;
     }
-    const int delta = s - previous;
-    if (delta > 32000 || delta < -32000) {
-      ++jumps;
+    // Neighbours within a channel; comparing across the interleave would
+    // count ordinary stereo width as tearing.
+    if (i >= stride) {
+      const int delta = value - samples[i - stride];
+      if (delta > 32000 || delta < -32000) {
+        ++jumps;
+      }
     }
-    previous = s;
   }
   std::cerr << "[audio] " << what << ": peak " << peak << ", "
             << (100.0 * static_cast<double>(hot) /
