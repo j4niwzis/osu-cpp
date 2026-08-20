@@ -257,41 +257,40 @@ public:
     return d / (1.0 - kDW);
   }
 
+  // getReducedStrainPeaks. The awkward part is that lazer walks the very list
+  // it is appending to: the chunks it emits for a peak land at the end of
+  // that same list, and when the original peaks run out before the first four
+  // seconds are accounted for, it starts chunking its own chunks. That only
+  // happens on maps with a handful of objects -- but there it doubles the
+  // answer, and this is meant to be the same calculator lazer is.
   std::vector<Pk> reduced() const {
     constexpr int kChunk = 20;
-    constexpr int kReducedTime = 4000;
+    constexpr double kReducedTime = 4000.0;
     constexpr double kBase = 0.727;
 
-    std::vector<Pk> all = fPks;
-    all.push_back({fSecP, std::round(fSecE - fSecB)});
-    for (auto it = all.begin(); it != all.end();)
-      if (it->v <= 0)
-        it = all.erase(it);
-      else
-        ++it;
-    std::ranges::sort(all, [](const Pk &a, const Pk &b) { return a.v > b.v; });
+    std::vector<Pk> strains = fPks; // kept sorted by value as they are saved
+    strains.push_back({fSecP, std::round(fSecE - fSecB)});
+    std::erase_if(strains, [](const Pk &p) { return p.v <= 0; });
+    std::ranges::sort(strains,
+                      [](const Pk &a, const Pk &b) { return a.v > b.v; });
 
-    std::vector<Pk> result;
-    result.reserve(all.size() + 200);
-    double timeSum = 0;
-    int skip = 0;
-    for (const auto &p : all) {
-      if (skip >= static_cast<int>(all.size()) || timeSum >= kReducedTime)
-        break;
-      for (int added = 0; added < static_cast<int>(p.l); added += kChunk) {
-        double scale = std::log10(
-            std::clamp((timeSum + added) / static_cast<double>(kReducedTime),
-                       0.0, 1.0) *
-                9.0 +
-            1.0);
-        double m = kBase + (1.0 - kBase) * scale;
-        result.push_back(
-            {p.v * m, std::min(static_cast<double>(kChunk), p.l - added)});
+    double time = 0.0;
+    std::size_t skip = 0;
+    while (strains.size() > skip && time < kReducedTime) {
+      const Pk strain = strains[skip]; // by value: the vector grows below
+      for (double added = 0; added < strain.l; added += kChunk) {
+        const double scale = std::log10(
+            std::clamp((time + added) / kReducedTime, 0.0, 1.0) * 9.0 + 1.0);
+        strains.push_back(
+            {strain.v * (kBase + (1.0 - kBase) * scale),
+             std::round(std::min(static_cast<double>(kChunk), strain.l - added))});
       }
-      timeSum += p.l;
+      time += strain.l;
       ++skip;
     }
-    result.insert(result.end(), all.begin() + skip, all.end());
+
+    std::vector<Pk> result(strains.begin() + static_cast<std::ptrdiff_t>(skip),
+                           strains.end());
     std::ranges::sort(result,
                       [](const Pk &a, const Pk &b) { return a.v > b.v; });
     return result;
