@@ -3,18 +3,21 @@ export module client.setpage;
 import std;
 import skia;
 import client.ui;
+import client.scene;
+import client.nodes;
 import client.listing;
 
 // osu!lazer's BeatmapSetOverlay: the page a beatmap card opens.
 //
-// Sources: osu.Game/Overlays/BeatmapSetOverlay.cs and
+// Built as a scene tree. Sources: osu.Game/Overlays/BeatmapSetOverlay.cs and
 // Overlays/BeatmapSet/{BeatmapSetHeaderContent,BeatmapPicker,BasicStats,
 // Info}.cs. Their numbers: Y_PADDING 25, RIGHT_WIDTH 275, HORIZONTAL_PADDING
-// 50, buttons 45 high and 5 apart, title 30 semibold italic, artist 20 medium
-// italic, difficulty tiles 40.
+// 50, buttons 45 high and 5 apart, title 30, artist 20, difficulty tiles 40.
 export namespace client::setpage {
 
 using listing::Entry;
+namespace scene = client::scene;
+namespace nodes = client::nodes;
 
 inline constexpr float kYPadding = 25.0f;
 inline constexpr float kRightWidth = 275.0f;
@@ -23,6 +26,123 @@ inline constexpr float kButtonsHeight = 45.0f;
 inline constexpr float kButtonsSpacing = 5.0f;
 inline constexpr float kTileSize = 40.0f;
 inline constexpr float kTileSpacing = 2.0f;
+inline constexpr float kHeaderHeight = 250.0f;
+
+// The cover's darkening, which the header text sits on: black at the left,
+// clear at the right.
+class CoverGradient : public scene::Drawable {
+protected:
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    constexpr int kSteps = 24;
+    skia::SkPaint paint;
+    const float step = fBounds.width() / static_cast<float>(kSteps);
+    for (int i = 0; i < kSteps; ++i) {
+      const float t = static_cast<float>(i) / static_cast<float>(kSteps);
+      paint.setColor(skia::colorSetARGB(255, 0, 0, 0));
+      paint.setAlphaf(alpha * 0.85f * (1.0f - t * 0.75f));
+      canvas->drawRect(skia::SkRect::MakeXYWH(fBounds.fLeft + step *
+                                                                static_cast<float>(i),
+                                              fBounds.fTop, step + 1.0f,
+                                              fBounds.height()),
+                       paint);
+    }
+  }
+};
+
+// The play/pause glyph with CircularProgress around it, as the header shows
+// while a preview runs.
+class PreviewGlyph : public scene::Drawable {
+public:
+  bool fPlaying = false;
+  float fProgress = 0.0f;
+
+protected:
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setColor(listing::kContent1);
+    paint.setAlphaf(alpha);
+    const float cx = fBounds.centerX();
+    const float cy = fBounds.centerY();
+    if (!fPlaying) {
+      skia::SkPathBuilder tri;
+      tri.moveTo(cx - 7.0f, cy - 10.0f)
+          .lineTo(cx + 10.0f, cy)
+          .lineTo(cx - 7.0f, cy + 10.0f)
+          .close();
+      canvas->drawPath(tri.detach(), paint);
+      return;
+    }
+    canvas->drawRect(skia::SkRect::MakeXYWH(cx - 7.0f, cy - 9.0f, 5.0f, 18.0f),
+                     paint);
+    canvas->drawRect(skia::SkRect::MakeXYWH(cx + 2.0f, cy - 9.0f, 5.0f, 18.0f),
+                     paint);
+    skia::SkPaint ring;
+    ring.setAntiAlias(true);
+    ring.setStyle(skia::kStrokeStyle);
+    ring.setStrokeWidth(2.5f);
+    ring.setColor(listing::kColour1);
+    ring.setAlphaf(alpha);
+    const float r = fBounds.width() * 0.42f;
+    canvas->drawArc(skia::SkRect::MakeXYWH(cx - r, cy - r, r * 2.0f, r * 2.0f),
+                    -90.0f, 360.0f * std::clamp(fProgress, 0.0f, 1.0f), false,
+                    ring);
+  }
+};
+
+// UserRatings: the positive/negative split bar over the 1..10 histogram.
+class Ratings : public scene::Drawable {
+public:
+  explicit Ratings(std::vector<int> counts) : fCounts(std::move(counts)) {
+    fCounts.resize(10, 0);
+  }
+
+protected:
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    const int negative = fCounts[0] + fCounts[1] + fCounts[2] + fCounts[3] +
+                         fCounts[4];
+    const int positive = fCounts[5] + fCounts[6] + fCounts[7] + fCounts[8] +
+                         fCounts[9];
+    const int total = negative + positive;
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setAlphaf(alpha);
+
+    const skia::SkRect bar =
+        skia::SkRect::MakeXYWH(fBounds.fLeft, fBounds.fTop, fBounds.width(), 5.0f);
+    paint.setColor(skia::colorSetARGB(255, 255, 102, 102));
+    canvas->drawRRect(skia::SkRRect::MakeRectXY(bar, 2.5f, 2.5f), paint);
+    if (total > 0) {
+      const float share =
+          static_cast<float>(positive) / static_cast<float>(total);
+      paint.setColor(listing::kColour1);
+      canvas->drawRRect(
+          skia::SkRRect::MakeRectXY(
+              skia::SkRect::MakeXYWH(bar.fLeft + bar.width() * (1.0f - share),
+                                     bar.fTop, bar.width() * share, 5.0f),
+              2.5f, 2.5f),
+          paint);
+    }
+
+    const float graphTop = fBounds.fTop + 26.0f;
+    const float graphH = fBounds.height() - 34.0f;
+    const float slot = fBounds.width() / 10.0f;
+    const int peak = std::max(1, *std::ranges::max_element(fCounts));
+    paint.setColor(listing::kColour1);
+    paint.setAlphaf(alpha * 0.8f);
+    for (std::size_t i = 0; i < fCounts.size(); ++i) {
+      const float h = graphH * static_cast<float>(fCounts[i]) /
+                      static_cast<float>(peak);
+      const skia::SkRect column = skia::SkRect::MakeXYWH(
+          fBounds.fLeft + static_cast<float>(i) * slot + 2.0f,
+          graphTop + graphH - h, slot - 4.0f, std::max(1.0f, h));
+      canvas->drawRRect(skia::SkRRect::MakeRectXY(column, 2.0f, 2.0f), paint);
+    }
+  }
+
+private:
+  std::vector<int> fCounts;
+};
 
 class SetPage {
 public:
@@ -31,7 +151,7 @@ public:
     skia::SkFont *fFont = nullptr;
     float fWidth = 0.0f, fHeight = 0.0f;
     float fMouseX = 0.0f, fMouseY = 0.0f;
-    double fDtMs = 16.0;
+    double fNowMs = 0.0;
     bool fPreviewPlaying = false;
     float fPreviewProgress = 0.0f;
     const Entry *fEntry = nullptr; // looked up by id each frame
@@ -52,100 +172,161 @@ public:
     fSelected = entry.fDiffs.empty()
                     ? 0
                     : static_cast<int>(entry.fDiffs.size()) - 1; // hardest
-    fScroll = 0.0f;
+    fScene.reset();
+    fFingerprint.clear();
   }
+
   void close() {
     fOpen = false;
     fSetId = -1;
+    fScene.reset();
   }
-  void scroll(float ticks) {
-    fScrollTarget = std::max(0.0f, fScrollTarget - ticks * 60.0f);
-  }
+
+  void scroll(float ticks) { fScrollTicks += ticks; }
 
   void draw(const Ctx &ctx) {
     if (!fOpen || ctx.fEntry == nullptr) {
       return;
     }
-    fCanvas = ctx.fCanvas;
-    fFont = ctx.fFont;
-    fMouseX = ctx.fMouseX;
-    fMouseY = ctx.fMouseY;
-    fHits.clear();
     const Entry &e = *ctx.fEntry;
-    const float w = ctx.fWidth;
-    const float h = ctx.fHeight;
     fSelected = std::clamp(fSelected, 0,
                            std::max(0, static_cast<int>(e.fDiffs.size()) - 1));
 
-    this->rect(skia::SkRect::MakeXYWH(0, 0, w, h), listing::kBackground6);
-    fScroll = client::ui::approach(fScroll, fScrollTarget, 30.0f, ctx.fDtMs);
-    fCanvas->save();
-    fCanvas->translate(0.0f, -fScroll);
+    // The tree is rebuilt when what it shows changes -- a selected
+    // difficulty, an arriving cover, another percent of a download -- and
+    // reused otherwise.
+    const std::string fingerprint = this->fingerprintFor(e, ctx);
+    if (!fScene || fingerprint != fFingerprint) {
+      fFingerprint = fingerprint;
+      fScene = this->build(e, ctx);
+    }
+    if (fPreviewGlyph != nullptr) {
+      fPreviewGlyph->fPlaying = ctx.fPreviewPlaying;
+      fPreviewGlyph->fProgress = ctx.fPreviewProgress;
+    }
 
-    const float headerH = this->drawHeader(e, w, ctx);
-    const float bottom = this->drawInfo(e, w, headerH);
-
-    fCanvas->restore();
-    fMaxScroll = std::max(0.0f, bottom - h + 40.0f);
-    fScrollTarget = std::min(fScrollTarget, fMaxScroll);
+    const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
+    fScene->updateTree(ctx.fNowMs);
+    fScene->layout(screen);
+    if (fScrollTicks != 0.0f) {
+      fScene->scroll(ctx.fMouseX, ctx.fMouseY, fScrollTicks);
+      fScrollTicks = 0.0f;
+      fScene->layout(screen);
+    }
+    fScene->setHover(ctx.fMouseX, ctx.fMouseY);
+    fScene->draw(ctx.fCanvas);
   }
 
   [[nodiscard]] Result click(float x, float y) {
-    if (!fOpen) {
+    if (!fOpen || !fScene) {
       return {};
     }
-    for (const auto &hit : fHits) {
-      if (hit.fRect.contains(x, y + fScroll)) {
-        if (hit.fAction == Action::kSelectDiff) {
-          fSelected = hit.fValue;
-        }
-        return {hit.fAction, hit.fValue};
-      }
-    }
-    return {};
+    fPending = {};
+    fScene->click(x, y);
+    return fPending;
   }
 
 private:
-  struct Hit {
-    skia::SkRect fRect;
-    Action fAction;
-    int fValue;
-  };
+  [[nodiscard]] std::string fingerprintFor(const Entry &e,
+                                           const Ctx &ctx) const {
+    return std::format("{}|{}|{}|{}|{:.0f}|{}x{}", e.fSetId, fSelected,
+                       static_cast<int>(e.fSt),
+                       e.fPageCoverSt == Entry::Cover::kReady ? 1 : 0,
+                       static_cast<double>(e.fProgress) * 100.0,
+                       static_cast<int>(ctx.fWidth),
+                       static_cast<int>(ctx.fHeight));
+  }
 
-  // BeatmapSetHeaderContent: the cover with a gradient over it, the title and
-  // artist on the left, the download and preview buttons under them, and the
-  // difficulty tiles with the set's statistics on the right.
-  float drawHeader(const Entry &e, float w, const Ctx &ctx) {
-    const float height = 250.0f;
-    const skia::SkRect cover = skia::SkRect::MakeXYWH(0, 0, w, height);
-    this->rect(cover, listing::kBackground5);
+  // ---- tree ---------------------------------------------------------------
+  [[nodiscard]] std::unique_ptr<scene::Drawable> build(const Entry &e,
+                                                       const Ctx &ctx) {
+    fPreviewGlyph = nullptr;
+
+    auto root = std::make_unique<nodes::Box>(listing::kBackground6);
+    root->fRelativeSizeAxes = scene::Axes::kBoth;
+    root->fWidth = 1.0f;
+    root->fHeight = 1.0f;
+
+    auto scroll = std::make_unique<nodes::ScrollContainer>();
+    scroll->fRelativeSizeAxes = scene::Axes::kBoth;
+    scroll->fWidth = 1.0f;
+    scroll->fHeight = 1.0f;
+
+    auto column = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kVertical);
+    column->fRelativeSizeAxes = scene::Axes::kX;
+    column->fWidth = 1.0f;
+    column->fAutoSizeAxes = scene::Axes::kY;
+
+    column->add(this->buildHeader(e, ctx));
+    column->add(this->buildInfo(e, ctx));
+
+    scroll->add(std::move(column));
+    root->add(std::move(scroll));
+    return root;
+  }
+
+  [[nodiscard]] std::unique_ptr<scene::Drawable> buildHeader(const Entry &e,
+                                                             const Ctx &ctx) {
+    auto header = std::make_unique<nodes::Box>(listing::kBackground5);
+    header->fRelativeSizeAxes = scene::Axes::kX;
+    header->fWidth = 1.0f;
+    header->fHeight = kHeaderHeight;
+    header->fMasking = true;
+
     if (e.fPageCoverSt == Entry::Cover::kReady && e.fPageCover) {
-      this->imageFilled(e.fPageCover.get(), cover);
+      auto cover = std::make_unique<nodes::Sprite>(e.fPageCover);
+      cover->fRelativeSizeAxes = scene::Axes::kBoth;
+      cover->fWidth = 1.0f;
+      cover->fHeight = 1.0f;
+      header->add(std::move(cover));
     } else if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
-      this->imageFilled(e.fThumb.get(), cover); // until the big one arrives
+      auto cover = std::make_unique<nodes::Sprite>(e.fThumb);
+      cover->fRelativeSizeAxes = scene::Axes::kBoth;
+      cover->fWidth = 1.0f;
+      cover->fHeight = 1.0f;
+      header->add(std::move(cover));
     }
-    // coverGradient: black at the left, transparent at the right.
-    for (int i = 0; i < 24; ++i) {
-      const float t = static_cast<float>(i) / 24.0f;
-      this->rect(skia::SkRect::MakeXYWH(w * t, 0.0f, w / 24.0f + 1.0f, height),
-                 skia::colorSetARGB(255, 0, 0, 0), 0.85f * (1.0f - t * 0.75f));
-    }
+    auto gradient = std::make_unique<CoverGradient>();
+    gradient->fRelativeSizeAxes = scene::Axes::kBoth;
+    gradient->fWidth = 1.0f;
+    gradient->fHeight = 1.0f;
+    header->add(std::move(gradient));
 
-    const float left = kHorizontalPadding;
-    float y = kYPadding + 30.0f;
-    const std::string title =
-        e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode;
-    this->text(title, left, y, 30.0f, listing::kContent1, true);
-    // The badges lazer puts beside the title.
-    float badgeX = left + this->measure(title, 30.0f, true) + 10.0f;
+    header->add(this->buildHeaderLeft(e));
+    header->add(this->buildPicker(e));
+    return header;
+  }
+
+  [[nodiscard]] std::unique_ptr<scene::Drawable>
+  buildHeaderLeft(const Entry &e) {
+    auto left = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kVertical);
+    left->fRelativeSizeAxes = scene::Axes::kX;
+    left->fWidth = 1.0f;
+    left->fAutoSizeAxes = scene::Axes::kY;
+    left->fPadding = {kYPadding, kRightWidth + kHorizontalPadding + 10.0f,
+                      kYPadding, kHorizontalPadding};
+    left->setSpacing(0.0f, 4.0f);
+
+    auto title = std::make_unique<nodes::Text>(
+        e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, 30.0f,
+        listing::kContent1, true);
+    left->add(std::move(title));
+
+    auto badges = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kHorizontal);
+    badges->fAutoSizeAxes = scene::Axes::kBoth;
+    badges->setSpacing(4.0f, 0.0f);
+    badges->fWrap = false;
     const auto badge = [&](const char *label, skia::SkColor colour) {
-      const float w = this->measure(label, 10.0f, true) + 12.0f;
-      const skia::SkRect r =
-          skia::SkRect::MakeXYWH(badgeX, y - 12.0f, w, 16.0f);
-      this->rounded(r, 3.0f, colour);
-      this->text(label, badgeX + 6.0f, y - 1.0f, 10.0f,
-                 listing::kBackground6, true);
-      badgeX += w + 4.0f;
+      auto box = std::make_unique<nodes::Box>(colour);
+      box->fAutoSizeAxes = scene::Axes::kBoth;
+      box->fCornerRadius = 3.0f;
+      box->fPadding = {2.0f, 6.0f, 2.0f, 6.0f};
+      box->add(std::make_unique<nodes::Text>(label, 10.0f,
+                                             listing::kBackground6, true));
+      badges->add(std::move(box));
     };
     if (e.fVideo) {
       badge("VIDEO", listing::kContent2);
@@ -162,37 +343,63 @@ private:
     if (e.fFeatured) {
       badge("FEATURED ARTIST", skia::colorSetARGB(255, 255, 204, 102));
     }
-    y += 28.0f;
-    this->text(e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, left, y,
-               20.0f, listing::kContent1);
-    y += 24.0f;
-    const std::string mapped = "mapped by ";
-    this->text(mapped, left, y, 14.0f, listing::kContent2);
-    this->text(e.fCreator, left + this->measure(mapped, 14.0f, false), y, 14.0f,
-               listing::kContent1, true);
-    const std::string status = e.fStatus.empty() ? "unknown" : e.fStatus;
-    const float pillW = this->measure(status, 11.0f, true) + 20.0f;
-    const skia::SkRect pill =
-        skia::SkRect::MakeXYWH(left, y + 8.0f, pillW, 18.0f);
-    this->rounded(pill, 9.0f, listing::kColour3);
-    this->textCentered(status, pill.centerX(), pill.fBottom - 5.0f, 11.0f,
-                       listing::kBackground6, true);
+    left->add(std::move(badges));
 
-    // Buttons: the preview toggle is the square one, then download.
-    y += 40.0f;
-    const skia::SkRect play = skia::SkRect::MakeXYWH(left, y, kButtonsHeight,
-                                                     kButtonsHeight);
-    this->rounded(play, 6.0f, listing::kBackground3);
-    this->drawPreviewGlyph(play, ctx);
-    fHits.push_back({play, Action::kPreview, 0});
+    left->add(std::make_unique<nodes::Text>(
+        e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, 20.0f,
+        listing::kContent1, false));
 
-    const skia::SkRect download = skia::SkRect::MakeXYWH(
-        play.fRight + kButtonsSpacing, y, 240.0f, kButtonsHeight);
-    const bool hover = download.contains(fMouseX, fMouseY + fScroll);
+    auto mapper = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kHorizontal);
+    mapper->fAutoSizeAxes = scene::Axes::kBoth;
+    mapper->fWrap = false;
+    mapper->add(std::make_unique<nodes::Text>("mapped by ", 14.0f,
+                                              listing::kContent2, false));
+    mapper->add(std::make_unique<nodes::Text>(e.fCreator, 14.0f,
+                                              listing::kContent1, true));
+    left->add(std::move(mapper));
+
+    auto status = std::make_unique<nodes::Box>(listing::kColour3);
+    status->fAutoSizeAxes = scene::Axes::kBoth;
+    status->fCornerRadius = 9.0f;
+    status->fPadding = {2.0f, 10.0f, 2.0f, 10.0f};
+    status->fMargin = {6.0f, 0.0f, 0.0f, 0.0f};
+    status->add(std::make_unique<nodes::Text>(
+        e.fStatus.empty() ? "unknown" : e.fStatus, 11.0f,
+        listing::kBackground6, true));
+    left->add(std::move(status));
+
+    left->add(this->buildButtons(e));
+    return left;
+  }
+
+  [[nodiscard]] std::unique_ptr<scene::Drawable> buildButtons(const Entry &e) {
+    auto row = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kHorizontal);
+    row->fAutoSizeAxes = scene::Axes::kBoth;
+    row->setSpacing(kButtonsSpacing, 0.0f);
+    row->fWrap = false;
+    row->fMargin = {10.0f, 0.0f, 0.0f, 0.0f};
+
+    auto play = std::make_unique<nodes::Clickable>(
+        [this] { fPending = {Action::kPreview, 0}; });
+    play->fWidth = kButtonsHeight;
+    play->fHeight = kButtonsHeight;
+    auto playBg = std::make_unique<nodes::Box>(listing::kBackground3);
+    playBg->fRelativeSizeAxes = scene::Axes::kBoth;
+    playBg->fWidth = 1.0f;
+    playBg->fHeight = 1.0f;
+    playBg->fCornerRadius = 6.0f;
+    play->add(std::move(playBg));
+    auto glyph = std::make_unique<PreviewGlyph>();
+    glyph->fRelativeSizeAxes = scene::Axes::kBoth;
+    glyph->fWidth = 1.0f;
+    glyph->fHeight = 1.0f;
+    fPreviewGlyph = glyph.get();
+    play->add(std::move(glyph));
+    row->add(std::move(play));
+
     const bool done = e.fSt == Entry::St::kDone;
-    this->rounded(download, 6.0f,
-                  done ? listing::kBackground3
-                       : (hover ? listing::kColour1 : listing::kColour3));
     std::string label = "Download";
     if (e.fSt == Entry::St::kFetching) {
       label = std::format("Downloading {:.0f}%",
@@ -202,242 +409,221 @@ private:
     } else if (e.fVideo) {
       label = "Download with video";
     }
-    this->textCentered(label, download.centerX(), download.centerY() + 6.0f,
-                       16.0f, done ? listing::kContent2 : listing::kBackground6,
-                       true);
-    fHits.push_back({download, Action::kDownload, 0});
-    y += kButtonsHeight;
-
-    // The right column: BeatmapPicker's tiles over the set statistics.
-    this->drawPicker(e, w);
-    return std::max(height, y + kYPadding);
+    auto download = std::make_unique<nodes::Clickable>(
+        [this] { fPending = {Action::kDownload, 0}; });
+    download->fWidth = 240.0f;
+    download->fHeight = kButtonsHeight;
+    auto downloadBg = std::make_unique<nodes::Box>(
+        done ? listing::kBackground3 : listing::kColour3);
+    downloadBg->fRelativeSizeAxes = scene::Axes::kBoth;
+    downloadBg->fWidth = 1.0f;
+    downloadBg->fHeight = 1.0f;
+    downloadBg->fCornerRadius = 6.0f;
+    download->add(std::move(downloadBg));
+    auto text = std::make_unique<nodes::Text>(
+        label, 16.0f, done ? listing::kContent2 : listing::kBackground6, true);
+    text->fAnchor = scene::Anchor::kCentre;
+    text->fOrigin = scene::Anchor::kCentre;
+    download->add(std::move(text));
+    row->add(std::move(download));
+    return row;
   }
 
-  void drawPreviewGlyph(const skia::SkRect &box, const Ctx &ctx) {
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
-    paint.setColor(listing::kContent1);
-    const float cx = box.centerX();
-    const float cy = box.centerY();
-    if (ctx.fPreviewPlaying) {
-      this->rect(skia::SkRect::MakeXYWH(cx - 7.0f, cy - 9.0f, 5.0f, 18.0f),
-                 listing::kContent1);
-      this->rect(skia::SkRect::MakeXYWH(cx + 2.0f, cy - 9.0f, 5.0f, 18.0f),
-                 listing::kContent1);
-      skia::SkPaint ring;
-      ring.setAntiAlias(true);
-      ring.setStyle(skia::kStrokeStyle);
-      ring.setStrokeWidth(2.5f);
-      ring.setColor(listing::kColour1);
-      const float r = box.width() * 0.42f;
-      fCanvas->drawArc(
-          skia::SkRect::MakeXYWH(cx - r, cy - r, r * 2.0f, r * 2.0f), -90.0f,
-          360.0f * std::clamp(ctx.fPreviewProgress, 0.0f, 1.0f), false, ring);
-    } else {
-      skia::SkPathBuilder tri;
-      tri.moveTo(cx - 7.0f, cy - 10.0f)
-          .lineTo(cx + 10.0f, cy)
-          .lineTo(cx - 7.0f, cy + 10.0f)
-          .close();
-      fCanvas->drawPath(tri.detach(), paint);
-    }
-  }
+  // BeatmapPicker: a tile per difficulty over the set's counts.
+  [[nodiscard]] std::unique_ptr<scene::Drawable> buildPicker(const Entry &e) {
+    auto right = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kVertical);
+    right->fWidth = kRightWidth;
+    right->fAutoSizeAxes = scene::Axes::kY;
+    right->fAnchor = scene::Anchor::kTopRight;
+    right->fOrigin = scene::Anchor::kTopRight;
+    right->fMargin = {kYPadding, kHorizontalPadding, 0.0f, 0.0f};
+    right->setSpacing(0.0f, 6.0f);
 
-  // BeatmapPicker: one 40px tile per difficulty, 2 apart, the selected one
-  // named underneath, with the set's play and favourite counts above.
-  void drawPicker(const Entry &e, float w) {
-    const float right = w - kHorizontalPadding;
-    const float x0 = right - kRightWidth;
-    float y = kYPadding + 16.0f;
+    right->add(std::make_unique<nodes::Text>(
+        std::format("{} plays    {} favourites", e.fPlayCount,
+                    e.fFavouriteCount),
+        12.0f, listing::kContent2, false));
 
-    this->text(std::format("{} plays    {} favourites", e.fPlayCount,
-                           e.fFavouriteCount),
-               x0, y, 12.0f, listing::kContent2);
-    y += 18.0f;
-
-    float x = x0;
+    auto tiles = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kHorizontal);
+    tiles->fWidth = kRightWidth;
+    tiles->fAutoSizeAxes = scene::Axes::kY;
+    tiles->setSpacing(kTileSpacing, kTileSpacing);
     for (std::size_t i = 0; i < e.fDiffs.size(); ++i) {
-      if (x + kTileSize > right) {
-        x = x0;
-        y += kTileSize + kTileSpacing;
-      }
       const auto &diff = e.fDiffs[i];
-      const skia::SkRect tile =
-          skia::SkRect::MakeXYWH(x, y, kTileSize, kTileSize);
       const bool selected = static_cast<int>(i) == fSelected;
-      const bool hover = tile.contains(fMouseX, fMouseY + fScroll);
-      this->rounded(tile, 4.0f,
-                    selected || hover ? listing::kBackground3
-                                      : listing::kBackground5);
-      this->circle(tile.centerX(), tile.centerY() - 3.0f, 8.0f,
-                   client::ui::starColor(diff.fStars));
-      this->textCentered(std::format("{:.1f}", diff.fStars), tile.centerX(),
-                         tile.fBottom - 5.0f, 10.0f,
-                         selected ? listing::kContent1 : listing::kContent2,
-                         selected);
-      fHits.push_back({tile, Action::kSelectDiff, static_cast<int>(i)});
-      x += kTileSize + kTileSpacing;
+      const int index = static_cast<int>(i);
+      auto tile = std::make_unique<nodes::Clickable>([this, index] {
+        fSelected = index;
+        fPending = {Action::kSelectDiff, index};
+      });
+      tile->fWidth = kTileSize;
+      tile->fHeight = kTileSize;
+      auto bg = std::make_unique<nodes::Box>(
+          selected ? listing::kBackground3 : listing::kBackground5);
+      bg->fRelativeSizeAxes = scene::Axes::kBoth;
+      bg->fWidth = 1.0f;
+      bg->fHeight = 1.0f;
+      bg->fCornerRadius = 4.0f;
+      tile->add(std::move(bg));
+      auto dot = std::make_unique<nodes::Box>(client::ui::starColor(diff.fStars));
+      dot->fWidth = 16.0f;
+      dot->fHeight = 16.0f;
+      dot->fCornerRadius = 8.0f;
+      dot->fAnchor = scene::Anchor::kTopCentre;
+      dot->fOrigin = scene::Anchor::kTopCentre;
+      dot->fY = 6.0f;
+      tile->add(std::move(dot));
+      auto stars = std::make_unique<nodes::Text>(
+          std::format("{:.1f}", diff.fStars), 10.0f,
+          selected ? listing::kContent1 : listing::kContent2, selected);
+      stars->fAnchor = scene::Anchor::kBottomCentre;
+      stars->fOrigin = scene::Anchor::kBottomCentre;
+      stars->fY = -3.0f;
+      tile->add(std::move(stars));
+      tiles->add(std::move(tile));
     }
-    y += kTileSize + 8.0f;
+    right->add(std::move(tiles));
+
     if (!e.fDiffs.empty()) {
-      const auto &diff = e.fDiffs[static_cast<std::size_t>(fSelected)];
-      this->text(diff.fVersion, x0, y, 16.0f, listing::kContent1, true);
+      right->add(std::make_unique<nodes::Text>(
+          e.fDiffs[static_cast<std::size_t>(fSelected)].fVersion, 16.0f,
+          listing::kContent1, true));
     }
+    return right;
   }
 
-  // Info: the selected difficulty's numbers on the left, the metadata and the
-  // ratings histogram in the right column, over Background5.
-  float drawInfo(const Entry &e, float w, float top) {
-    const float height = 330.0f;
-    this->rect(skia::SkRect::MakeXYWH(0, top, w, height), listing::kBackground5);
-    const float left = kHorizontalPadding;
-    const float rightX = w - kHorizontalPadding - kRightWidth;
-    const float leftW = rightX - left - 30.0f;
-    float y = top + kYPadding + 8.0f;
+  // Info: the selected difficulty's numbers, the metadata, the ratings.
+  [[nodiscard]] std::unique_ptr<scene::Drawable> buildInfo(const Entry &e,
+                                                           const Ctx &ctx) {
+    auto section = std::make_unique<nodes::Box>(listing::kBackground5);
+    section->fRelativeSizeAxes = scene::Axes::kX;
+    section->fWidth = 1.0f;
+    section->fAutoSizeAxes = scene::Axes::kY;
+    section->fPadding = {kYPadding, kHorizontalPadding, kYPadding,
+                         kHorizontalPadding};
 
-    // The difficulty name over its own stats, as the picker's caption.
+    auto left = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kVertical);
+    left->fWidth = std::max(200.0f, ctx.fWidth - kHorizontalPadding * 2.0f -
+                                        kRightWidth - 30.0f);
+    left->fAutoSizeAxes = scene::Axes::kY;
+    left->setSpacing(0.0f, 8.0f);
+
     if (!e.fDiffs.empty()) {
       const auto &diff = e.fDiffs[static_cast<std::size_t>(fSelected)];
-      const std::string starText = std::format("{:.2f}", diff.fStars);
-      const float starW = this->measure(starText, 12.0f, true) + 26.0f;
-      const skia::SkRect star =
-          skia::SkRect::MakeXYWH(left, y - 13.0f, starW, 18.0f);
-      this->rounded(star, 9.0f, client::ui::starColor(diff.fStars));
-      this->circle(star.fLeft + 10.0f, star.centerY(), 4.0f,
-                   listing::kBackground6);
-      this->text(starText, star.fLeft + 18.0f, y, 12.0f,
-                 listing::kBackground6, true);
-      this->text(diff.fVersion, star.fRight + 8.0f, y, 16.0f,
-                 listing::kContent1, true);
-      y += 26.0f;
+      auto heading = std::make_unique<nodes::FillFlow>(
+          nodes::FillFlow::Direction::kHorizontal);
+      heading->fAutoSizeAxes = scene::Axes::kBoth;
+      heading->setSpacing(8.0f, 0.0f);
+      heading->fWrap = false;
+      auto pill = std::make_unique<nodes::Box>(client::ui::starColor(diff.fStars));
+      pill->fAutoSizeAxes = scene::Axes::kBoth;
+      pill->fCornerRadius = 9.0f;
+      pill->fPadding = {1.0f, 8.0f, 1.0f, 8.0f};
+      pill->add(std::make_unique<nodes::Text>(
+          std::format("{:.2f}", diff.fStars), 12.0f, listing::kBackground6,
+          true));
+      heading->add(std::move(pill));
+      heading->add(std::make_unique<nodes::Text>(diff.fVersion, 16.0f,
+                                                 listing::kContent1, true));
+      left->add(std::move(heading));
 
-      // BasicStats: a row of labelled numbers over their own strip.
-      const skia::SkRect strip =
-          skia::SkRect::MakeXYWH(left, y, leftW, 116.0f);
-      this->rounded(strip, 6.0f, listing::kBackground4);
-      const struct {
-        const char *fLabel;
-        std::string fValue;
-        float fBar; // 0..1, drawn under the value like the difficulty bars
-      } stats[] = {
-          {"Length", formatLength(diff.fLengthMs), 0.0f},
-          {"BPM", std::format("{:.0f}", e.fBpm), 0.0f},
-          {"Max Combo", std::format("{}", diff.fMaxCombo), 0.0f},
-          {"Circle Size", std::format("{:.1f}", diff.fCs),
-           static_cast<float>(diff.fCs / 10.0)},
-          {"HP Drain", std::format("{:.1f}", diff.fHp),
-           static_cast<float>(diff.fHp / 10.0)},
-          {"Accuracy", std::format("{:.1f}", diff.fOd),
-           static_cast<float>(diff.fOd / 10.0)},
-          {"Approach Rate", std::format("{:.1f}", diff.fAr),
-           static_cast<float>(diff.fAr / 10.0)},
-          {"Star Rating", std::format("{:.2f}", diff.fStars),
-           static_cast<float>(std::min(1.0, diff.fStars / 10.0))},
+      auto stats = std::make_unique<nodes::FillFlow>(
+          nodes::FillFlow::Direction::kHorizontal);
+      stats->fRelativeSizeAxes = scene::Axes::kX;
+      stats->fWidth = 1.0f;
+      stats->fAutoSizeAxes = scene::Axes::kY;
+      stats->setSpacing(0.0f, 10.0f);
+      const float cellWidth = left->fWidth / 4.0f - 1.0f;
+      const auto stat = [&](const char *label, std::string value, float bar) {
+        auto cell = std::make_unique<nodes::FillFlow>(
+            nodes::FillFlow::Direction::kVertical);
+        cell->fWidth = cellWidth;
+        cell->fAutoSizeAxes = scene::Axes::kY;
+        cell->setSpacing(0.0f, 2.0f);
+        cell->add(std::make_unique<nodes::Text>(label, 11.0f,
+                                                listing::kContent2, false));
+        cell->add(std::make_unique<nodes::Text>(std::move(value), 17.0f,
+                                                listing::kContent1, true));
+        if (bar > 0.0f) {
+          auto track = std::make_unique<nodes::Box>(listing::kBackground6);
+          track->fWidth = cellWidth - 16.0f;
+          track->fHeight = 4.0f;
+          track->fCornerRadius = 2.0f;
+          auto fill = std::make_unique<nodes::Box>(listing::kColour1);
+          fill->fRelativeSizeAxes = scene::Axes::kBoth;
+          fill->fWidth = std::clamp(bar, 0.0f, 1.0f);
+          fill->fHeight = 1.0f;
+          fill->fCornerRadius = 2.0f;
+          track->add(std::move(fill));
+          cell->add(std::move(track));
+        }
+        stats->add(std::move(cell));
       };
-      const float cellW = (leftW - 24.0f) / 4.0f;
-      float cx = left + 12.0f;
-      float cy = y + 26.0f;
-      int column = 0;
-      for (const auto &stat : stats) {
-        this->text(stat.fLabel, cx, cy, 11.0f, listing::kContent2);
-        this->text(stat.fValue, cx, cy + 20.0f, 17.0f, listing::kContent1,
-                   true);
-        if (stat.fBar > 0.0f) {
-          const skia::SkRect bar =
-              skia::SkRect::MakeXYWH(cx, cy + 28.0f, cellW - 16.0f, 4.0f);
-          this->rounded(bar, 2.0f, listing::kBackground6);
-          this->rounded(skia::SkRect::MakeXYWH(bar.fLeft, bar.fTop,
-                                               bar.width() * stat.fBar, 4.0f),
-                        2.0f, listing::kColour1);
-        }
-        cx += cellW;
-        if (++column == 4) {
-          column = 0;
-          cx = left + 12.0f;
-          cy += 58.0f;
-        }
-      }
-      y += 132.0f;
+      stat("Length", formatLength(diff.fLengthMs), 0.0f);
+      stat("BPM", std::format("{:.0f}", e.fBpm), 0.0f);
+      stat("Max Combo", std::format("{}", diff.fMaxCombo), 0.0f);
+      stat("Star Rating", std::format("{:.2f}", diff.fStars),
+           static_cast<float>(std::min(1.0, diff.fStars / 10.0)));
+      stat("Circle Size", std::format("{:.1f}", diff.fCs),
+           static_cast<float>(diff.fCs / 10.0));
+      stat("HP Drain", std::format("{:.1f}", diff.fHp),
+           static_cast<float>(diff.fHp / 10.0));
+      stat("Accuracy", std::format("{:.1f}", diff.fOd),
+           static_cast<float>(diff.fOd / 10.0));
+      stat("Approach Rate", std::format("{:.1f}", diff.fAr),
+           static_cast<float>(diff.fAr / 10.0));
+      left->add(std::move(stats));
     }
 
-    // Metadata, the way Info's MetadataSection stacks it.
-    const struct {
-      const char *fLabel;
-      std::string fValue;
-    } meta[] = {
-        {"Source", e.fSource.empty() ? "-" : e.fSource},
-        {"Genre", listing::kGenreLabels[genreIndex(e.fGenre)]},
-        {"Language", listing::kLanguageLabels[languageIndex(e.fLanguage)]},
-        {"Tags", e.fTags.empty() ? "-" : e.fTags},
-        {"Last updated", e.fUpdated},
+    const auto metaRow = [&](const char *label, std::string value) {
+      auto row = std::make_unique<nodes::FillFlow>(
+          nodes::FillFlow::Direction::kHorizontal);
+      row->fRelativeSizeAxes = scene::Axes::kX;
+      row->fWidth = 1.0f;
+      row->fAutoSizeAxes = scene::Axes::kY;
+      row->fWrap = false;
+      auto name = std::make_unique<nodes::Text>(label, 11.0f,
+                                                listing::kContent2, false);
+      name->fWidth = 110.0f;
+      name->setMaxWidth(110.0f);
+      row->add(std::move(name));
+      auto text = std::make_unique<nodes::Text>(std::move(value), 13.0f,
+                                                listing::kContent1, false);
+      text->setMaxWidth(left->fWidth - 120.0f);
+      row->add(std::move(text));
+      left->add(std::move(row));
     };
-    for (const auto &row : meta) {
-      this->text(row.fLabel, left, y, 11.0f, listing::kContent2);
-      fCanvas->save();
-      fCanvas->clipIRect(skia::SkIRect::MakeXYWH(
-          static_cast<int>(left + 110.0f), static_cast<int>(y - 14.0f),
-          static_cast<int>(leftW - 110.0f), 20));
-      this->text(row.fValue, left + 110.0f, y, 13.0f, listing::kContent1);
-      fCanvas->restore();
-      y += 22.0f;
-    }
+    metaRow("Source", e.fSource.empty() ? "-" : e.fSource);
+    metaRow("Genre", listing::kGenreLabels[genreIndex(e.fGenre)]);
+    metaRow("Language", listing::kLanguageLabels[languageIndex(e.fLanguage)]);
+    metaRow("Tags", e.fTags.empty() ? "-" : e.fTags);
+    metaRow("Last updated", e.fUpdated);
 
-    this->drawRatings(e, rightX, top + kYPadding + 8.0f);
-    return std::max(top + height, y + kYPadding);
-  }
+    section->add(std::move(left));
 
-  // UserRatings: the 1..10 histogram with the positive share above it.
-  void drawRatings(const Entry &e, float x, float y) {
-    this->text("User Rating", x, y, 12.0f, listing::kContent2);
-    y += 14.0f;
-    std::vector<int> counts(10, 0);
+    auto right = std::make_unique<nodes::FillFlow>(
+        nodes::FillFlow::Direction::kVertical);
+    right->fWidth = kRightWidth;
+    right->fAutoSizeAxes = scene::Axes::kY;
+    right->fAnchor = scene::Anchor::kTopRight;
+    right->fOrigin = scene::Anchor::kTopRight;
+    right->setSpacing(0.0f, 6.0f);
+    right->add(std::make_unique<nodes::Text>("User Rating", 12.0f,
+                                             listing::kContent2, false));
     // osu! returns eleven buckets, the first unused.
+    std::vector<int> counts(10, 0);
     for (std::size_t i = 1; i < e.fRatings.size() && i <= 10; ++i) {
       counts[i - 1] = e.fRatings[i];
     }
-    const int negative = counts[0] + counts[1] + counts[2] + counts[3] +
-                         counts[4];
-    const int positive = counts[5] + counts[6] + counts[7] + counts[8] +
-                         counts[9];
-    const int total = negative + positive;
-
-    // The split bar: negative on the left, positive on the right.
-    const skia::SkRect bar = skia::SkRect::MakeXYWH(x, y, kRightWidth, 5.0f);
-    this->rounded(bar, 2.5f, skia::colorSetARGB(255, 255, 102, 102));
-    if (total > 0) {
-      const float share = static_cast<float>(positive) /
-                          static_cast<float>(total);
-      this->rounded(skia::SkRect::MakeXYWH(bar.fLeft + bar.width() *
-                                                          (1.0f - share),
-                                           bar.fTop, bar.width() * share, 5.0f),
-                    2.5f, listing::kColour1);
-    }
-    y += 16.0f;
-    this->text(std::format("{} negative", negative), x, y, 11.0f,
-               listing::kContent2);
-    const std::string pos = std::format("{} positive", positive);
-    this->text(pos, x + kRightWidth - this->measure(pos, 11.0f, false), y,
-               11.0f, listing::kContent2);
-    y += 12.0f;
-
-    // The histogram itself, tallest bucket filling the height.
-    const float graphH = 70.0f;
-    const float slot = kRightWidth / 10.0f;
-    const int peak = std::max(1, *std::ranges::max_element(counts));
-    for (std::size_t i = 0; i < counts.size(); ++i) {
-      const float h = graphH * static_cast<float>(counts[i]) /
-                      static_cast<float>(peak);
-      const skia::SkRect column = skia::SkRect::MakeXYWH(
-          x + static_cast<float>(i) * slot + 2.0f, y + graphH - h,
-          slot - 4.0f, std::max(1.0f, h));
-      this->rounded(column, 2.0f, listing::kColour1, 0.8f);
-    }
-    y += graphH + 6.0f;
-    for (int i = 0; i < 10; ++i) {
-      this->textCentered(std::format("{}", i + 1),
-                         x + static_cast<float>(i) * slot + slot * 0.5f, y,
-                         9.0f, listing::kContent2);
-    }
+    auto ratings = std::make_unique<Ratings>(std::move(counts));
+    ratings->fWidth = kRightWidth;
+    ratings->fHeight = 110.0f;
+    right->add(std::move(ratings));
+    section->add(std::move(right));
+    return section;
   }
 
   [[nodiscard]] static std::string formatLength(double ms) {
@@ -465,76 +651,14 @@ private:
     return 0;
   }
 
-  // ---- drawing helpers ----------------------------------------------------
-  void rect(const skia::SkRect &r, skia::SkColor color, float alpha = 1.0f) {
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    fCanvas->drawRect(r, p);
-  }
-  void rounded(const skia::SkRect &r, float radius, skia::SkColor color,
-               float alpha = 1.0f) {
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    fCanvas->drawRRect(skia::SkRRect::MakeRectXY(r, radius, radius), p);
-  }
-  void circle(float cx, float cy, float r, skia::SkColor color) {
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    fCanvas->drawCircle(cx, cy, r, p);
-  }
-  void imageFilled(const skia::SkImage *image, const skia::SkRect &dst) {
-    const float iw = static_cast<float>(image->width());
-    const float ih = static_cast<float>(image->height());
-    if (iw <= 0.0f || ih <= 0.0f) {
-      return;
-    }
-    const float scale = std::max(dst.width() / iw, dst.height() / ih);
-    const float srcW = dst.width() / scale;
-    const float srcH = dst.height() / scale;
-    const skia::SkRect src = skia::SkRect::MakeXYWH(
-        (iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
-    fCanvas->drawImageRect(image, src, dst,
-                           skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
-                           nullptr,
-                           skia::SkCanvas::kStrict_SrcRectConstraint);
-  }
-  [[nodiscard]] float measure(const std::string &s, float size, bool bold) {
-    fFont->setSize(size);
-    fFont->setEmbolden(bold);
-    const float w = client::ui::fonts().measure(*fFont, s);
-    fFont->setEmbolden(false);
-    return w;
-  }
-  void text(const std::string &s, float x, float y, float size,
-            skia::SkColor color, bool bold = false, float alpha = 1.0f) {
-    fFont->setSize(size);
-    fFont->setEmbolden(bold);
-    skia::SkPaint p;
-    p.setAntiAlias(true);
-    p.setColor(color);
-    p.setAlphaf(alpha);
-    client::ui::fonts().draw(fCanvas, *fFont, s, x, y, p);
-    fFont->setEmbolden(false);
-  }
-  void textCentered(const std::string &s, float cx, float y, float size,
-                    skia::SkColor color, bool bold = false) {
-    this->text(s, cx - this->measure(s, size, bold) * 0.5f, y, size, color,
-               bold);
-  }
-
   long fSetId = -1;
   bool fOpen = false;
   int fSelected = 0;
-  std::vector<Hit> fHits;
-  skia::SkCanvas *fCanvas = nullptr;
-  skia::SkFont *fFont = nullptr;
-  float fMouseX = 0.0f, fMouseY = 0.0f;
-  float fScroll = 0.0f, fScrollTarget = 0.0f, fMaxScroll = 0.0f;
+  float fScrollTicks = 0.0f;
+  Result fPending;
+  std::string fFingerprint;
+  std::unique_ptr<scene::Drawable> fScene;
+  PreviewGlyph *fPreviewGlyph = nullptr; // owned by the tree
 };
 
 } // namespace client::setpage

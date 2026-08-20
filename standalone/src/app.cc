@@ -5097,7 +5097,7 @@ private:
       page.fHeight = ctx.fHeight;
       page.fMouseX = fMouseX;
       page.fMouseY = fMouseY;
-      page.fDtMs = fUiDt;
+      page.fNowMs = wallMs();
       page.fPreviewPlaying = fPreviewId == fSetPage.setId();
       page.fPreviewProgress = this->previewProgress();
       fSetPage.draw(page);
