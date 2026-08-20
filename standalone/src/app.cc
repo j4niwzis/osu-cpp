@@ -146,11 +146,16 @@ private:
   // Two distinct things, which sharing one variable confused: what the next
   // frame has to repaint (filled in while this one draws) and what this frame
   // is clipped to (taken from that accumulator when the frame starts).
-  skia::SkIRect fDamage = skia::SkIRect::MakeEmpty();
+  //
+  // A list rather than one rectangle: the logo and the FPS counter sit in
+  // opposite corners, and their union is half the screen.
+  static constexpr std::size_t kMaxDamageRects = 6;
+  std::vector<skia::SkIRect> fDamage;
   bool fFullDamage = true;
+  const char *fFullDamageReason = "start";
   bool fOverlayShown = false; // an overlay covered the screen last frame
   double fDamageLogWall = 0.0;
-  skia::SkIRect fFrameClip = skia::SkIRect::MakeEmpty();
+  std::vector<skia::SkIRect> fFrameClip;
   bool fFrameClipFull = true;
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
