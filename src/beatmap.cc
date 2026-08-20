@@ -596,7 +596,16 @@ inline Beatmap parseBeatmap(std::string_view text) {
         if (fields.size() > 6)
           s.fRepeat = std::max(1, detail::toInt(fields[6], 1));
         if (fields.size() > 7)
-          s.fPixelLength = detail::toDouble(fields[7]);
+          s.fPixelLength = std::max(0.0, detail::toDouble(fields[7]));
+        if (s.fPixelLength <= 0.0) {
+          // ConvertHitObjectParser: a length of zero means "no expected
+          // distance", and the slider is as long as its control points make
+          // it. Taking the zero literally gives a slider of no duration, no
+          // ticks and no tail -- which is what this did, and it cost the
+          // combo, the judgements and the star rating on any map that has
+          // one.
+          s.fPixelLength = SliderPath(s.fCurveType, s.fControl, 0.0).length();
+        }
         if (fields.size() > 8) {
           const auto edges = detail::split(fields[8], '|');
           for (const auto &e : edges)

@@ -228,7 +228,12 @@ public:
     double s = strainOf(c);
     if (s > fSecP) {
       fQ.clear();
-      save(fSecE - fSecB);
+      // The section that just ended is as long as the time spent in it, not
+      // a whole nominal section: saveCurrentPeak(StartTime - sectionBegin).
+      // Handing it the full length stretched every peak that a higher strain
+      // cut short, and since DifficultyValue weights a peak by its length,
+      // the aim value came out over.
+      save(c.fStart - fSecB);
       fSecB = c.fStart;
       fSecE = fSecB + kSL;
       fSecP = s;
