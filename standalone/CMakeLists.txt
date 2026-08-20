@@ -140,7 +140,7 @@ endif()
 option(OSU_VIDEO_LIBAV "Encode exported video with libavcodec" OFF)
 if(OSU_VIDEO_LIBAV)
   pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
-    libavcodec libavformat libavutil libswscale)
+    libavcodec libavformat libavutil libswresample libswscale)
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_VIDEO_LIBAV=1)
   target_link_libraries(${PROJECT_NAME} PkgConfig::LIBAV)
 endif()
