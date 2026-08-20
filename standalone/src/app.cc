@@ -167,7 +167,14 @@ private:
   // What each of the last few frames repainted, since the buffer being drawn
   // into is missing exactly that.
   std::vector<std::vector<skia::SkIRect>> fBlitHistory;
-  const bool fPartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
+  // The setting decides; the variable is there for a run before settings
+  // exist, and to force it on while measuring.
+  const bool fForcePartialRedraw =
+      std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
+
+  [[nodiscard]] bool partialRedraw() const {
+    return fForcePartialRedraw || fSettings.flag("partial");
+  }
   int fFrameSave = 0; // canvas save count taken while the damage clip is up
   std::chrono::steady_clock::time_point fNextFrame{};
   std::int64_t fLastSwapUs = 0; // reported by the frame breakdown
@@ -1494,7 +1501,7 @@ private:
     // Clipped to one rectangle rather than to a region of several: a region
     // takes Skia off its analytic clip path and onto clip masks, which are
     // paid per draw call and cost more than the pixels they save.
-    if (!fPartialRedraw || this->blitRegionFull()) {
+    if (!this->partialRedraw() || this->blitRegionFull()) {
       return;
     }
     skia::SkIRect bounds = skia::SkIRect::MakeEmpty();
@@ -1800,7 +1807,7 @@ private:
                  static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0,
                  fCostFrames,
                  std::string(fDrewOnRaster ? " [cpu]" : " [gpu]") +
-                     (fPartialRedraw ? " (partial redraw)" : ""));
+                     (this->partialRedraw() ? " (partial redraw)" : ""));
     fCostLogWall = wallMs();
     fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
     fCostFrames = 0;

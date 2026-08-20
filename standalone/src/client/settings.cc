@@ -54,6 +54,10 @@ public:
     this->add({1, "renderer", "Renderer", SettingKind::kChoice, 0.0f, 1.0f,
                1.0f, 0.0f, "",
                {"GPU (OpenGL)", "CPU (Skia raster)"}});
+    // Off by default: it wins where pixels cost, which is the CPU renderer,
+    // and loses where draw calls do.
+    this->add({1, "partial", "Repaint only what changed",
+               SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 0.0f, ""});
     // Section 2: Gameplay
     this->add({2, "cursorsize", "Cursor size", SettingKind::kSlider, 0.5f,
                2.0f, 0.01f, 1.0f, "x"});
