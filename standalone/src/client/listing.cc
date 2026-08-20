@@ -970,10 +970,15 @@ private:
           skia::SkRRect::MakeRectXY(main, kCardCorner, kCardCorner), true);
       paint::rect(canvas, main, kBackground3, alpha);
       if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
+        // Laid out across the whole card and clipped to the main area, so
+        // the button strip slides over the artwork rather than squeezing it.
+        // lazer resizes the area the cover fills, which re-crops it -- a few
+        // per cent of zoom on a 900x250 cover, and rather more than that on
+        // whatever a mirror hands us.
         paint::imageFilled(
             canvas, e.fThumb.get(),
             skia::SkRect::MakeXYWH(card.fLeft + h - kCardCorner, card.fTop,
-                                   main.width() - h + kCardCorner, h));
+                                   card.width() - h + kCardCorner, h));
         paint::rect(canvas,
                     skia::SkRect::MakeLTRB(card.fLeft + h - kCardCorner,
                                            card.fTop, main.fRight,
@@ -986,7 +991,7 @@ private:
       // Main content, inset 10 horizontal and 4 vertical.
       const float tx = card.fLeft + h + 10.0f - kCardCorner;
       const float tw = main.fRight - tx - 10.0f;
-      float ty = card.fTop + 4.0f + 18.0f;
+      float ty = card.fTop + 4.0f + 18.0f; // Padding: horizontal 10, vertical 4
       paint::textClipped(canvas, font,
                          e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode,
                          tx, ty, tw, 18.0f, kContent1, true, alpha);
@@ -1000,7 +1005,7 @@ private:
         paint::textClipped(canvas, font, e.fSource, tx, ty, tw, 11.0f,
                            kContent2, true, alpha);
       } else {
-        ty += 14.0f;
+        ty += 12.0f;
         const std::string mapped = "mapped by ";
         paint::text(canvas, font, mapped, tx, ty, 11.0f, kContent2, true,
                     alpha);
@@ -1029,8 +1034,11 @@ private:
         this->drawStatistics(canvas, font, tx, bottom - 20.0f, tw, e, alpha);
         this->drawExtraInfoRow(canvas, font, tx, bottom, tw, e, alpha);
       } else {
+        // The statistics row keeps its place whether or not it is showing --
+        // AlwaysPresent, over there -- so the line above it is laid out
+        // clear of it instead of being run into when a card is hovered.
         if (fExpand > 0.01f) {
-          this->drawStatistics(canvas, font, tx, bottom - 15.0f, tw, e,
+          this->drawStatistics(canvas, font, tx, bottom - 18.0f, tw, e,
                                alpha * fExpand);
         }
         this->drawExtraInfoRow(canvas, font, tx, bottom, tw, e, alpha);
