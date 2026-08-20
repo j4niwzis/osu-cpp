@@ -1,3 +1,9 @@
+module;
+
+// popen/pclose: POSIX rather than standard, so they come in through the
+// global fragment rather than through import std.
+#include <cstdio>
+
 export module client.video;
 
 import std;
@@ -7,10 +13,15 @@ export namespace client {
 
 // Replay-to-video export.
 //
-// Frames are rendered offscreen at the requested resolution, written out as
-// a PNG sequence, and handed to ffmpeg together with the beatmap audio. There
-// is no encoder in this stack, so ffmpeg is required; its absence is reported
-// rather than guessed at.
+// Frames are rendered offscreen at the requested resolution and fed to ffmpeg
+// down a pipe as raw pixels. There is no encoder in this stack -- Skia
+// rasterises, it does not compress moving pictures -- so ffmpeg is required,
+// and its absence is reported rather than guessed at.
+//
+// Raw down a pipe rather than a PNG sequence on disk, which is what this did
+// before: a minute of 1080p is three and a half thousand frames, and PNG
+// compressing every one of them cost more than the rendering did and left
+// gigabytes in the temporary directory to be cleaned up afterwards.
 struct VideoOptions {
   int fWidth = 1920;
   int fHeight = 1080;
@@ -29,59 +40,65 @@ public:
   [[nodiscard]] bool begin(const VideoOptions &opts) {
     fOpts = opts;
     fFrame = 0;
-    std::error_code ec;
-    fDir = std::filesystem::temp_directory_path(ec) / "osu_client_export";
-    std::filesystem::remove_all(fDir, ec);
-    std::filesystem::create_directories(fDir, ec);
-    if (ec) {
-      fError = "cannot create a temporary directory";
-      return false;
-    }
     if (!ffmpegAvailable()) {
       fError = "ffmpeg not found in PATH";
+      return false;
+    }
+    // The frames arrive on stdin; the audio, if there is any, is a second
+    // input read from the file it was written to.
+    std::string cmd = std::format(
+        "ffmpeg -y -loglevel error -f rawvideo -pixel_format rgba "
+        "-video_size {}x{} -framerate {} -i -",
+        opts.fWidth, opts.fHeight, opts.fFps);
+    if (!opts.fAudio.empty() && std::filesystem::exists(opts.fAudio)) {
+      cmd += std::format(" -ss {:.3f} -i '{}' -c:a aac -shortest",
+                         opts.fAudioOffsetSec, opts.fAudio.string());
+    }
+    cmd += std::format(
+        " -c:v libx264 -pix_fmt yuv420p -crf 18 -preset medium '{}'",
+        opts.fOutput.string());
+
+    fPipe = ::popen(cmd.c_str(), "w");
+    if (fPipe == nullptr) {
+      fError = "could not start ffmpeg";
       return false;
     }
     return true;
   }
 
-  // Called once per rendered frame with the offscreen image.
-  void addFrame(const skia::Sp<skia::SkImage> &image) {
-    if (!image) {
+  // Called once per rendered frame with the pixels as they came off the
+  // surface: tightly packed RGBA, top row first, which is what ffmpeg was
+  // told to expect.
+  void addFrame(std::span<const std::uint8_t> rgba) {
+    if (fPipe == nullptr || rgba.empty()) {
       return;
     }
-    auto png = skia::png::Encode(nullptr, image.get(), skia::png::Options{});
-    if (!png || png->isEmpty()) {
+    if (std::fwrite(rgba.data(), 1, rgba.size(), fPipe) != rgba.size()) {
+      fError = "ffmpeg stopped reading frames";
+      ::pclose(fPipe);
+      fPipe = nullptr;
       return;
     }
-    const auto path = fDir / std::format("frame_{:06}.png", fFrame++);
-    std::ofstream out(path, std::ios::binary);
-    out.write(static_cast<const char *>(png->data()),
-              static_cast<std::streamsize>(png->size()));
+    ++fFrame;
   }
 
   [[nodiscard]] std::size_t frameCount() const noexcept { return fFrame; }
   [[nodiscard]] const std::string &error() const noexcept { return fError; }
 
-  // Mux the sequence (and audio, when given) into the output file.
+  // Close the pipe and wait for the encoder to finish writing the file.
   [[nodiscard]] bool finish() {
+    if (fPipe == nullptr) {
+      if (fError.empty()) {
+        fError = "the encoder was never started";
+      }
+      return false;
+    }
+    const int rc = ::pclose(fPipe);
+    fPipe = nullptr;
     if (fFrame == 0) {
       fError = "no frames were rendered";
       return false;
     }
-    std::string cmd = std::format(
-        "ffmpeg -y -loglevel error -framerate {} -i '{}/frame_%06d.png'",
-        fOpts.fFps, fDir.string());
-    if (!fOpts.fAudio.empty() && std::filesystem::exists(fOpts.fAudio)) {
-      cmd += std::format(" -ss {:.3f} -i '{}' -c:a aac -shortest",
-                         fOpts.fAudioOffsetSec, fOpts.fAudio.string());
-    }
-    cmd += std::format(
-        " -c:v libx264 -pix_fmt yuv420p -crf 18 -preset medium '{}'",
-        fOpts.fOutput.string());
-
-    const int rc = std::system(cmd.c_str());
-    std::error_code ec;
-    std::filesystem::remove_all(fDir, ec);
     if (rc != 0) {
       fError = std::format("ffmpeg exited with {}", rc);
       return false;
@@ -89,9 +106,15 @@ public:
     return true;
   }
 
+  ~VideoExporter() {
+    if (fPipe != nullptr) {
+      ::pclose(fPipe); // an export abandoned midway still lets go of ffmpeg
+    }
+  }
+
 private:
   VideoOptions fOpts;
-  std::filesystem::path fDir;
+  std::FILE *fPipe = nullptr;
   std::size_t fFrame = 0;
   std::string fError;
 };

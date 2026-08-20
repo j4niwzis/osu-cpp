@@ -5310,6 +5310,7 @@ private:
     std::size_t fEvent = 0;
     int fSavedW = 0;
     int fSavedH = 0;
+    std::vector<std::uint8_t> fPixels; // one frame, reused
   };
 
   // Said in both places: the dialog is where it belongs, and the log is where
@@ -5396,7 +5397,23 @@ private:
       fEngine.emplace(*job.fEngine); // the view draws the state it is handed
       fView.render(this->gameplayCtx(fSurface->getCanvas()), job.fTime);
       fContext->flushAndSubmit(fSurface.get());
-      job.fExporter->addFrame(fSurface->makeImageSnapshot());
+      // Read straight off the surface into a buffer the job keeps: a
+      // snapshot per frame would allocate an image and copy it, and the
+      // encoder wants the raw pixels either way.
+      const std::size_t needed = static_cast<std::size_t>(job.fOpts.fWidth) *
+                                 static_cast<std::size_t>(job.fOpts.fHeight) *
+                                 4u;
+      if (job.fPixels.size() != needed) {
+        job.fPixels.resize(needed);
+      }
+      const skia::SkImageInfo info = skia::SkImageInfo::Make(
+          job.fOpts.fWidth, job.fOpts.fHeight, skia::kRGBA_8888_SkColorType,
+          skia::kPremul_SkAlphaType);
+      if (fSurface->readPixels(info, job.fPixels.data(),
+                               static_cast<std::size_t>(job.fOpts.fWidth) * 4u,
+                               0, 0)) {
+        job.fExporter->addFrame(job.fPixels);
+      }
       job.fTime += job.fStep;
 
       const auto spent = std::chrono::steady_clock::now() - sliceStart;
