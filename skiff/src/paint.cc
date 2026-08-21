@@ -325,6 +325,20 @@ inline FontStack &fonts() {
   return static_cast<float>((color >> 24) & 0xffu) / 255.0f * alpha;
 }
 
+// Colour4.Lighten: each channel scaled towards white, alpha left alone. What
+// a hovered tab or row is drawn in.
+[[nodiscard]] inline skia::SkColor lighten(skia::SkColor colour,
+                                           float amount) {
+  const auto channel = [amount](std::uint32_t v) {
+    return static_cast<std::uint8_t>(
+        std::min(255.0f, static_cast<float>(v) * (1.0f + amount)));
+  };
+  return skia::colorSetARGB((colour >> 24) & 0xffu,
+                            channel((colour >> 16) & 0xffu),
+                            channel((colour >> 8) & 0xffu),
+                            channel(colour & 0xffu));
+}
+
 // ---- Drawing helpers -----------------------------------------------------
 //
 // A thin wrapper around the canvas and the shared font, so screens do not
@@ -358,6 +372,10 @@ public:
   void fillRect(const skia::SkRect &rect, skia::SkColor color,
                 float alpha = 1.0f) const {
     skia::SkPaint p;
+    // Antialiased like everything else here. It was not, which only showed
+    // once the listing's own rect() -- which was -- started coming through
+    // this one: a bar at a fractional scroll offset picked up a hard edge.
+    p.setAntiAlias(true);
     p.setColor(color);
     p.setAlphaf(combinedAlpha(color, alpha));
     fCanvas->drawRect(rect, p);
@@ -372,47 +390,83 @@ public:
     fCanvas->drawCircle(cx, cy, r, p);
   }
 
-  [[nodiscard]] float measure(const std::string &text, float size) const {
+  // bold sits after alpha rather than beside size, where it would read
+  // better, because these had callers before they could embolden anything
+  // and moving it would have turned every alpha silently into a weight.
+  [[nodiscard]] float measure(const std::string &text, float size,
+                              bool bold = false) const {
     fFont->setSize(size);
-    return fonts().measure(*fFont, text);
+    fonts().applyWeight(*fFont, bold);
+    const float width = fonts().measure(*fFont, text);
+    fonts().applyWeight(*fFont, false);
+    return width;
   }
 
   void text(const std::string &str, float x, float y, float size,
-            skia::SkColor color, float alpha = 1.0f) const {
+            skia::SkColor color, float alpha = 1.0f, bool bold = false) const {
     fFont->setSize(size);
+    fonts().applyWeight(*fFont, bold);
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
     p.setAlphaf(combinedAlpha(color, alpha));
     fonts().draw(fCanvas, *fFont, str, x, y, p);
+    fonts().applyWeight(*fFont, false);
   }
 
   void textClipped(const std::string &str, float x, float y, float maxW,
-                   float size, skia::SkColor color, float alpha = 1.0f) const {
+                   float size, skia::SkColor color, float alpha = 1.0f,
+                   bool bold = false) const {
     fCanvas->save();
     fCanvas->clipIRect(skia::SkIRect::MakeXYWH(
         static_cast<int>(x), static_cast<int>(y - size * 1.2f),
         static_cast<int>(maxW), static_cast<int>(size * 1.8f)));
-    this->text(str, x, y, size, color, alpha);
+    this->text(str, x, y, size, color, alpha, bold);
     fCanvas->restore();
   }
 
   // Centred, but clipped to a width so a long title cannot run past a panel.
   void textCenteredClipped(const std::string &str, float cx, float y,
                            float maxW, float size, skia::SkColor color,
-                           float alpha = 1.0f) const {
+                           float alpha = 1.0f, bool bold = false) const {
     fCanvas->save();
     fCanvas->clipIRect(skia::SkIRect::MakeXYWH(
         static_cast<int>(cx - maxW * 0.5f), static_cast<int>(y - size * 1.2f),
         static_cast<int>(maxW), static_cast<int>(size * 1.8f)));
-    this->textCentered(str, cx, y, size, color, alpha);
+    this->textCentered(str, cx, y, size, color, alpha, bold);
     fCanvas->restore();
   }
 
   void textCentered(const std::string &str, float cx, float y, float size,
-                    skia::SkColor color, float alpha = 1.0f) const {
-    const float w = this->measure(str, size);
-    this->text(str, cx - w * 0.5f, y, size, color, alpha);
+                    skia::SkColor color, float alpha = 1.0f,
+                    bool bold = false) const {
+    const float w = this->measure(str, size, bold);
+    this->text(str, cx - w * 0.5f, y, size, color, alpha, bold);
+  }
+
+  // FillMode.Fill: the image is cropped to the destination's aspect ratio
+  // rather than squashed into it, which is what a cover or a thumbnail wants
+  // and what drawImageRect on its own will not do.
+  void imageFilled(const skia::SkImage *image, const skia::SkRect &dst,
+                   float alpha = 1.0f) const {
+    if (image == nullptr) {
+      return;
+    }
+    const float iw = static_cast<float>(image->width());
+    const float ih = static_cast<float>(image->height());
+    if (iw <= 0.0f || ih <= 0.0f) {
+      return;
+    }
+    const float scale = std::max(dst.width() / iw, dst.height() / ih);
+    const float srcW = dst.width() / scale;
+    const float srcH = dst.height() / scale;
+    const skia::SkRect src = skia::SkRect::MakeXYWH(
+        (iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
+    skia::SkPaint p;
+    p.setAlphaf(alpha);
+    fCanvas->drawImageRect(
+        image, src, dst, skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
+        alpha < 1.0f ? &p : nullptr, skia::SkCanvas::kStrict_SrcRectConstraint);
   }
 
   // Text with a soft shadow, the way lazer draws judgements and HUD numbers.

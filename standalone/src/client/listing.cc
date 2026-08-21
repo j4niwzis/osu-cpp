@@ -162,100 +162,9 @@ inline constexpr float kExpandDelayMs = 100.0f;     // BeatmapCardContent.Expand
 
 namespace scene = skiff::scene;
 namespace nodes = skiff::nodes;
+namespace paint = skiff::paint;
 
-// Painting shared by the nodes below. Free functions rather than methods,
-// because every node needs them and none of them owns them.
-namespace paint {
-
-inline void rect(skia::SkCanvas *canvas, const skia::SkRect &r,
-                 skia::SkColor colour, float alpha = 1.0f) {
-  skia::SkPaint p;
-  p.setAntiAlias(true);
-  p.setColor(colour);
-  p.setAlphaf(alpha);
-  canvas->drawRect(r, p);
-}
-
-inline void rounded(skia::SkCanvas *canvas, const skia::SkRect &r,
-                    float radius, skia::SkColor colour, float alpha = 1.0f) {
-  skia::SkPaint p;
-  p.setAntiAlias(true);
-  p.setColor(colour);
-  p.setAlphaf(alpha);
-  canvas->drawRRect(skia::SkRRect::MakeRectXY(r, radius, radius), p);
-}
-
-// FillMode.Fill: cropped to the destination's aspect ratio, not squashed.
-inline void imageFilled(skia::SkCanvas *canvas, const skia::SkImage *image,
-                        const skia::SkRect &dst) {
-  const float iw = static_cast<float>(image->width());
-  const float ih = static_cast<float>(image->height());
-  if (iw <= 0.0f || ih <= 0.0f) {
-    return;
-  }
-  const float scale = std::max(dst.width() / iw, dst.height() / ih);
-  const float srcW = dst.width() / scale;
-  const float srcH = dst.height() / scale;
-  const skia::SkRect src = skia::SkRect::MakeXYWH((iw - srcW) * 0.5f,
-                                                  (ih - srcH) * 0.5f, srcW,
-                                                  srcH);
-  canvas->drawImageRect(image, src, dst,
-                        skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
-                        nullptr, skia::SkCanvas::kStrict_SrcRectConstraint);
-}
-
-inline float measure(skia::SkFont &font, const std::string &s, float size,
-                     bool bold) {
-  font.setSize(size);
-  skiff::paint::fonts().applyWeight(font, bold);
-  const float w = skiff::paint::fonts().measure(font, s);
-  skiff::paint::fonts().applyWeight(font, false);
-  return w;
-}
-
-inline void text(skia::SkCanvas *canvas, skia::SkFont &font,
-                 const std::string &s, float x, float y, float size,
-                 skia::SkColor colour, bool bold = false, float alpha = 1.0f) {
-  font.setSize(size);
-  skiff::paint::fonts().applyWeight(font, bold);
-  skia::SkPaint p;
-  p.setAntiAlias(true);
-  p.setColor(colour);
-  p.setAlphaf(alpha);
-  skiff::paint::fonts().draw(canvas, font, s, x, y, p);
-  skiff::paint::fonts().applyWeight(font, false);
-}
-
-inline void textClipped(skia::SkCanvas *canvas, skia::SkFont &font,
-                        const std::string &s, float x, float y, float maxW,
-                        float size, skia::SkColor colour, bool bold = false,
-                        float alpha = 1.0f) {
-  canvas->save();
-  canvas->clipIRect(skia::SkIRect::MakeXYWH(
-      static_cast<int>(x), static_cast<int>(y - size * 1.3f),
-      static_cast<int>(maxW), static_cast<int>(size * 1.9f)));
-  text(canvas, font, s, x, y, size, colour, bold, alpha);
-  canvas->restore();
-}
-
-inline void textCentered(skia::SkCanvas *canvas, skia::SkFont &font,
-                         const std::string &s, float cx, float y, float size,
-                         skia::SkColor colour, bool bold = false,
-                         float alpha = 1.0f) {
-  text(canvas, font, s, cx - measure(font, s, size, bold) * 0.5f, y, size,
-       colour, bold, alpha);
-}
-
-// Colour4.Lighten, as FilterTabItem applies on hover.
-inline skia::SkColor lighten(skia::SkColor c, float amount) {
-  const auto ch = [amount](std::uint32_t v) {
-    return static_cast<std::uint8_t>(
-        std::min(255.0f, static_cast<float>(v) * (1.0f + amount)));
-  };
-  return skia::colorSetARGB(255, ch((c >> 16) & 0xffu), ch((c >> 8) & 0xffu),
-                            ch(c & 0xffu));
-}
-
+// BeatmapSetOnlineStatus, in the colours the website gives it.
 inline skia::SkColor statusColour(std::string_view status) {
   if (status == "ranked" || status == "approved" || status == "qualified") {
     return skia::colorSetARGB(255, 102, 204, 255);
@@ -268,8 +177,6 @@ inline skia::SkColor statusColour(std::string_view status) {
   }
   return skia::colorSetARGB(255, 179, 217, 68);
 }
-
-} // namespace paint
 
 // The listing screen, as a tree.
 //
@@ -495,7 +402,7 @@ public:
   }
 
   // Whether anything in the tree is still moving. Eased values announce
-  // themselves through skiff::paint::approach; transforms do not, so they are
+  // themselves through paint::approach; transforms do not, so they are
   // asked directly.
   [[nodiscard]] bool animating() const {
     return fTicking || (fScene && fScene->animatingTree());
@@ -551,7 +458,8 @@ private:
   protected:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       auto &font = *fOwner->fFont;
-      paint::rounded(canvas, fBounds, 5.0f, kBackground4, alpha);
+      const paint::Painter p(canvas, font);
+      p.fillRounded(fBounds, 5.0f, kBackground4, alpha);
       skia::SkPaint icon;
       icon.setAntiAlias(true);
       icon.setStyle(skia::kStrokeStyle);
@@ -565,21 +473,17 @@ private:
 
       const auto &query = fOwner->fFilters.fQuery;
       if (query.empty()) {
-        paint::text(canvas, font, "type in keywords...", fBounds.fLeft + 32.0f,
-                    fBounds.centerY() + 6.0f, 16.0f, kLight3, false,
-                    alpha * 0.6f);
+        p.text("type in keywords...", fBounds.fLeft + 32.0f,
+               fBounds.centerY() + 6.0f, 16.0f, kLight3, alpha * 0.6f);
       } else {
-        paint::textClipped(canvas, font, query, fBounds.fLeft + 32.0f,
-                           fBounds.centerY() + 6.0f, fBounds.width() - 44.0f,
-                           16.0f, kContent1, false, alpha);
+        p.textClipped(query, fBounds.fLeft + 32.0f, fBounds.centerY() + 6.0f,
+                      fBounds.width() - 44.0f, 16.0f, kContent1, alpha);
       }
       if (fCaretShown) {
-        const float cx = fBounds.fLeft + 32.0f +
-                         paint::measure(font, query, 16.0f, false) + 2.0f;
-        paint::rect(canvas,
-                    skia::SkRect::MakeXYWH(cx, fBounds.centerY() - 9.0f, 1.5f,
-                                           18.0f),
-                    kContent1, alpha * 0.8f);
+        const float cx = fBounds.fLeft + 32.0f + p.measure(query, 16.0f) + 2.0f;
+        p.fillRect(
+            skia::SkRect::MakeXYWH(cx, fBounds.centerY() - 9.0f, 1.5f, 18.0f),
+            kContent1, alpha * 0.8f);
       }
     }
 
@@ -604,6 +508,7 @@ private:
     // known, and the positions are kept for drawing and for hit testing.
     void measure(const skia::SkRect &parent) override {
       auto &font = *fOwner->fFont;
+      const paint::Painter p(nullptr, font);
       const float width = parent.width();
       const float tabsX = kRowLabelWidth;
       float cx = tabsX;
@@ -613,7 +518,7 @@ private:
         const std::string label = fLabels[i];
         // Measured bold either way, so toggling a filter does not shuffle
         // the row around.
-        const float w = paint::measure(font, label, kFilterFontSize, true);
+        const float w = p.measure(label, kFilterFontSize, true);
         if (cx > tabsX && cx + w > width) {
           cx = tabsX;
           cy += kFilterLineHeight;
@@ -644,9 +549,9 @@ private:
 
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       auto &font = *fOwner->fFont;
-      paint::text(canvas, font, fHeader, fBounds.fLeft,
-                  fBounds.fTop + kFilterFontSize, kFilterFontSize, kContent2,
-                  false, alpha);
+      const paint::Painter p(canvas, font);
+      p.text(fHeader, fBounds.fLeft, fBounds.fTop + kFilterFontSize,
+             kFilterFontSize, kContent2, alpha);
       for (std::size_t i = 0; i < fTabs.size(); ++i) {
         const bool active = fOwner->filterActive(fKind, fTabs[i].fValue);
         const skia::SkRect box = this->tabBounds(i);
@@ -655,9 +560,8 @@ private:
         if (hovered) {
           colour = paint::lighten(colour, 0.2f);
         }
-        paint::text(canvas, font, fLabels[fTabs[i].fValue], box.fLeft,
-                    box.fTop + kFilterFontSize, kFilterFontSize, colour,
-                    active, alpha);
+        p.text(fLabels[fTabs[i].fValue], box.fLeft, box.fTop + kFilterFontSize,
+               kFilterFontSize, colour, alpha, active);
       }
     }
 
@@ -706,6 +610,7 @@ private:
   protected:
     void measure(const skia::SkRect &parent) override {
       auto &font = *fOwner->fFont;
+      const paint::Painter p(nullptr, font);
       fSorts.clear();
       float x = 20.0f;
       for (int i = 0; i < static_cast<int>(std::size(kSortLabels)); ++i) {
@@ -713,8 +618,7 @@ private:
         if (!fOwner->sortAvailable(sort)) {
           continue;
         }
-        const float w = paint::measure(font, kSortLabels[i], kFilterFontSize,
-                                       true);
+        const float w = p.measure(kSortLabels[i], kFilterFontSize, true);
         fSorts.push_back({skia::SkRect::MakeXYWH(x, 0.0f, w, kSortBarHeight),
                           i});
         x += w + kTabSpacing * 1.5f +
@@ -757,7 +661,8 @@ private:
 
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       auto &font = *fOwner->fFont;
-      paint::rect(canvas, fBounds, kBackground4, alpha);
+      const paint::Painter p(canvas, font);
+      p.fillRect(fBounds, kBackground4, alpha);
       const float baseline = fBounds.fTop + kSortBarHeight * 0.5f + 5.0f;
       for (const auto &item : fSorts) {
         const bool active =
@@ -768,8 +673,8 @@ private:
         if (hovered) {
           colour = paint::lighten(colour, 0.2f);
         }
-        paint::text(canvas, font, kSortLabels[item.fValue], box.fLeft,
-                    baseline, kFilterFontSize, colour, active, alpha);
+        p.text(kSortLabels[item.fValue], box.fLeft, baseline, kFilterFontSize,
+               colour, alpha, active);
         if (!active) {
           continue;
         }
@@ -802,22 +707,22 @@ private:
         const bool active =
             static_cast<int>(fOwner->fFilters.fCardSize) == item.fValue;
         const bool hovered = box.contains(fOwner->fMouseX, fOwner->fMouseY);
-        skia::SkPaint p;
-        p.setAntiAlias(true);
-        p.setStyle(skia::kStrokeStyle);
-        p.setStrokeWidth(1.6f);
-        p.setColor(active ? kContent1 : (hovered ? kLight1 : kLight3));
-        p.setAlphaf(alpha);
+        skia::SkPaint stroke;
+        stroke.setAntiAlias(true);
+        stroke.setStyle(skia::kStrokeStyle);
+        stroke.setStrokeWidth(1.6f);
+        stroke.setColor(active ? kContent1 : (hovered ? kLight1 : kLight3));
+        stroke.setAlphaf(alpha);
         const float ix = box.fLeft + 2.0f;
         const float iy = box.centerY();
         if (item.fValue == 0) { // normal: two stacked bars
-          canvas->drawRect(
-              skia::SkRect::MakeXYWH(ix, iy - 7.0f, 14.0f, 5.0f), p);
-          canvas->drawRect(
-              skia::SkRect::MakeXYWH(ix, iy + 2.0f, 14.0f, 5.0f), p);
+          canvas->drawRect(skia::SkRect::MakeXYWH(ix, iy - 7.0f, 14.0f, 5.0f),
+                           stroke);
+          canvas->drawRect(skia::SkRect::MakeXYWH(ix, iy + 2.0f, 14.0f, 5.0f),
+                           stroke);
         } else { // extra: one taller bar
-          canvas->drawRect(
-              skia::SkRect::MakeXYWH(ix, iy - 7.0f, 14.0f, 14.0f), p);
+          canvas->drawRect(skia::SkRect::MakeXYWH(ix, iy - 7.0f, 14.0f, 14.0f),
+                           stroke);
         }
       }
     }
@@ -887,7 +792,7 @@ private:
       const float full =
           std::min(kExpandedMaxHeight,
                    static_cast<float>(e.fDiffs.size()) * 20.0f + 20.0f);
-      return full * skiff::paint::outQuint(fExpanded);
+      return full * paint::outQuint(fExpanded);
     }
     [[nodiscard]] float expansion() const noexcept { return fExpanded; }
     [[nodiscard]] int entry() const noexcept { return fEntry; }
@@ -902,8 +807,8 @@ private:
       const bool hovered = fHovered || fOwner->expansionHovered(this);
       const float previousExpand = fExpand;
       const float previousExpanded = fExpanded;
-      fExpand = skiff::paint::approach(fExpand, hovered ? 1.0f : 0.0f,
-                                     kTransitionMs / 6.0f, dt);
+      fExpand = paint::approach(fExpand, hovered ? 1.0f : 0.0f,
+                                kTransitionMs / 6.0f, dt);
       // Hovering the bottom of the card opens it after a moment, as
       // BeatmapCardContent.ExpandAfterDelay does.
       const bool overInfo = hovered && !e.fDiffs.empty() &&
@@ -919,8 +824,8 @@ private:
       if (overInfo && !wantExpanded) {
         fOwner->fTicking = true;
       }
-      fExpanded = skiff::paint::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
-                                       kTransitionMs / 5.0f, dt);
+      fExpanded = paint::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
+                                  kTransitionMs / 5.0f, dt);
       // Which card owns the dropdown outlives the pass that decides it: a
       // card asks whether the dropdown under it is hovered, and clearing this
       // before the passes ran meant the answer was always no -- so moving the
@@ -943,6 +848,7 @@ private:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       Entry &e = fOwner->fEntries[static_cast<std::size_t>(fEntry)];
       auto &font = *fOwner->fFont;
+      const paint::Painter p(canvas, font);
       const bool extra = fOwner->fFilters.fCardSize == CardSize::kExtra;
       const skia::SkRect card = skia::SkRect::MakeXYWH(
           fBounds.fLeft, fBounds.fTop, kCardWidth, fCardHeight);
@@ -950,7 +856,7 @@ private:
       const float buttonsW = kButtonsCollapsed +
                              (kButtonsExpanded - kButtonsCollapsed) * fExpand;
 
-      paint::rounded(canvas, card, kCardCorner, kBackground2, alpha);
+      p.fillRounded(card, kCardCorner, kBackground2, alpha);
       const skia::SkRect main = skia::SkRect::MakeLTRB(
           card.fLeft, card.fTop, card.fRight - buttonsW, card.fBottom);
 
@@ -961,23 +867,21 @@ private:
       canvas->save();
       canvas->clipRRect(
           skia::SkRRect::MakeRectXY(main, kCardCorner, kCardCorner), true);
-      paint::rect(canvas, main, kBackground3, alpha);
+      p.fillRect(main, kBackground3, alpha);
       if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
         // Laid out across the whole card and clipped to the main area, so
         // the button strip slides over the artwork rather than squeezing it.
         // lazer resizes the area the cover fills, which re-crops it -- a few
         // per cent of zoom on a 900x250 cover, and rather more than that on
         // whatever a mirror hands us.
-        paint::imageFilled(
-            canvas, e.fThumb.get(),
+        p.imageFilled(
+            e.fThumb.get(),
             skia::SkRect::MakeXYWH(card.fLeft + h - kCardCorner, card.fTop,
                                    card.width() - h + kCardCorner, h));
-        paint::rect(canvas,
-                    skia::SkRect::MakeLTRB(card.fLeft + h - kCardCorner,
-                                           card.fTop, main.fRight,
-                                           card.fBottom),
-                    kBackground6, alpha * (fHovered ? 0.9f : 0.8f));
-        paint::imageFilled(canvas, e.fThumb.get(), thumb);
+        p.fillRect(skia::SkRect::MakeLTRB(card.fLeft + h - kCardCorner,
+                                          card.fTop, main.fRight, card.fBottom),
+                   kBackground6, alpha * (fHovered ? 0.9f : 0.8f));
+        p.imageFilled(e.fThumb.get(), thumb);
       }
       canvas->restore();
 
@@ -989,26 +893,21 @@ private:
       // baseline less 11, and the statistics line above it needs its own 11.
       // Counted from the bottom up, which is the only way this comes out.
       float ty = card.fTop + 17.0f;
-      paint::textClipped(canvas, font,
-                         e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode,
-                         tx, ty, tw, 18.0f, kContent1, true, alpha);
+      p.textClipped(e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, tx,
+                    ty, tw, 18.0f, kContent1, alpha, true);
       ty += 15.0f;
-      paint::textClipped(canvas, font,
-                         "by " + (e.fArtistUnicode.empty() ? e.fArtist
-                                                           : e.fArtistUnicode),
-                         tx, ty, tw, 14.0f, kContent1, true, alpha);
+      p.textClipped(
+          "by " + (e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode), tx,
+          ty, tw, 14.0f, kContent1, alpha, true);
       if (extra) {
         ty += 13.0f;
-        paint::textClipped(canvas, font, e.fSource, tx, ty, tw, 11.0f,
-                           kContent2, true, alpha);
+        p.textClipped(e.fSource, tx, ty, tw, 11.0f, kContent2, alpha, true);
       } else {
         ty += 13.0f;
         const std::string mapped = "mapped by ";
-        paint::text(canvas, font, mapped, tx, ty, 11.0f, kContent2, true,
-                    alpha);
-        paint::textClipped(canvas, font, e.fCreator,
-                           tx + paint::measure(font, mapped, 11.0f, true), ty,
-                           tw, 11.0f, kContent1, true, alpha);
+        p.text(mapped, tx, ty, 11.0f, kContent2, alpha, true);
+        p.textClipped(e.fCreator, tx + p.measure(mapped, 11.0f, true), ty, tw,
+                      11.0f, kContent1, alpha, true);
       }
 
       const float bottom = card.fBottom - 8.0f;
@@ -1016,18 +915,15 @@ private:
         // BeatmapCardDownloadProgressBar: 5 high, across the bottom content.
         const skia::SkRect bar =
             skia::SkRect::MakeXYWH(tx, card.fBottom - 9.0f, tw, 5.0f);
-        paint::rounded(canvas, bar, 2.5f, kBackground6, alpha);
-        paint::rounded(canvas,
-                       skia::SkRect::MakeXYWH(bar.fLeft, bar.fTop,
-                                              bar.width() * e.fProgress, 5.0f),
-                       2.5f, kColour1, alpha);
+        p.fillRounded(bar, 2.5f, kBackground6, alpha);
+        p.fillRounded(skia::SkRect::MakeXYWH(bar.fLeft, bar.fTop,
+                                             bar.width() * e.fProgress, 5.0f),
+                      2.5f, kColour1, alpha);
       } else if (extra) {
         const std::string mapped = "mapped by ";
-        paint::text(canvas, font, mapped, tx, bottom - 34.0f, 11.0f, kContent2,
-                    true, alpha);
-        paint::textClipped(canvas, font, e.fCreator,
-                           tx + paint::measure(font, mapped, 11.0f, true),
-                           bottom - 34.0f, tw, 11.0f, kContent1, true, alpha);
+        p.text(mapped, tx, bottom - 34.0f, 11.0f, kContent2, alpha, true);
+        p.textClipped(e.fCreator, tx + p.measure(mapped, 11.0f, true),
+                      bottom - 34.0f, tw, 11.0f, kContent1, alpha, true);
         this->drawStatistics(canvas, font, tx, bottom - 20.0f, tw, e, alpha);
         this->drawExtraInfoRow(canvas, font, tx, bottom, tw, e, alpha);
       } else {
@@ -1076,24 +972,24 @@ private:
     void drawStatistics(skia::SkCanvas *canvas, skia::SkFont &font, float x,
                         float baseline, float maxW, const Entry &e,
                         float alpha) {
-      paint::textClipped(
-          canvas, font,
-          std::format("{} plays    {} favourites    {}", e.fPlayCount,
-                      e.fFavouriteCount, e.fUpdated),
-          x, baseline, maxW, 11.0f, kContent2, false, alpha);
+      const paint::Painter p(canvas, font);
+      p.textClipped(std::format("{} plays    {} favourites    {}", e.fPlayCount,
+                                e.fFavouriteCount, e.fUpdated),
+                    x, baseline, maxW, 11.0f, kContent2, alpha);
     }
 
     // BeatmapCardExtraInfoRow: the status pill and the difficulty spectrum.
     void drawExtraInfoRow(skia::SkCanvas *canvas, skia::SkFont &font, float x,
                           float baseline, float maxW, const Entry &e,
                           float alpha) {
+      const paint::Painter p(canvas, font);
       const std::string status = e.fStatus.empty() ? "unknown" : e.fStatus;
-      const float pillW = paint::measure(font, status, 11.0f, true) + 12.0f;
+      const float pillW = p.measure(status, 11.0f, true) + 12.0f;
       const skia::SkRect pill =
           skia::SkRect::MakeXYWH(x, baseline - 11.0f, pillW, 15.0f);
-      paint::rounded(canvas, pill, 7.5f, paint::statusColour(status), alpha);
-      paint::text(canvas, font, status, x + 6.0f, baseline - 1.0f, 11.0f,
-                  skia::colorSetARGB(255, 20, 24, 26), true, alpha);
+      p.fillRounded(pill, 7.5f, statusColour(status), alpha);
+      p.text(status, x + 6.0f, baseline - 1.0f, 11.0f,
+             skia::colorSetARGB(255, 20, 24, 26), alpha, true);
 
       // DifficultySpectrumDisplay: 5x10 dots, 1px apart, in star order.
       float dx = x + pillW + 8.0f;
@@ -1101,10 +997,8 @@ private:
         if (dx + 6.0f > x + maxW) {
           break;
         }
-        paint::rounded(canvas,
-                       skia::SkRect::MakeXYWH(dx, baseline - 10.0f, 5.0f,
-                                              10.0f),
-                       1.0f, client::palette::starColor(diff.fStars), alpha);
+        p.fillRounded(skia::SkRect::MakeXYWH(dx, baseline - 10.0f, 5.0f, 10.0f),
+                      1.0f, client::palette::starColor(diff.fStars), alpha);
         dx += 6.0f;
       }
     }
@@ -1112,15 +1006,16 @@ private:
     // BeatmapCardThumbnail's PlayButton, with its CircularProgress.
     void drawThumbnailPlay(skia::SkCanvas *canvas, const skia::SkRect &thumb,
                            const Entry &e, float alpha) {
+      const paint::Painter p(canvas, *fOwner->fFont);
       const bool playing = fOwner->fPreviewId == e.fSetId;
       if (!fHovered && !playing) {
         return;
       }
-      paint::rect(canvas, thumb, kBackground6, alpha * 0.6f);
-      skia::SkPaint p;
-      p.setAntiAlias(true);
-      p.setColor(kContent1);
-      p.setAlphaf(alpha);
+      p.fillRect(thumb, kBackground6, alpha * 0.6f);
+      skia::SkPaint glyph;
+      glyph.setAntiAlias(true);
+      glyph.setColor(kContent1);
+      glyph.setAlphaf(alpha);
       const float cx = thumb.centerX();
       const float cy = thumb.centerY();
       if (!playing) {
@@ -1129,15 +1024,13 @@ private:
             .lineTo(cx + 9.0f, cy)
             .lineTo(cx - 6.0f, cy + 9.0f)
             .close();
-        canvas->drawPath(tri.detach(), p);
+        canvas->drawPath(tri.detach(), glyph);
         return;
       }
-      paint::rect(canvas,
-                  skia::SkRect::MakeXYWH(cx - 6.0f, cy - 8.0f, 4.0f, 16.0f),
-                  kContent1, alpha);
-      paint::rect(canvas,
-                  skia::SkRect::MakeXYWH(cx + 2.0f, cy - 8.0f, 4.0f, 16.0f),
-                  kContent1, alpha);
+      p.fillRect(skia::SkRect::MakeXYWH(cx - 6.0f, cy - 8.0f, 4.0f, 16.0f),
+                 kContent1, alpha);
+      p.fillRect(skia::SkRect::MakeXYWH(cx + 2.0f, cy - 8.0f, 4.0f, 16.0f),
+                 kContent1, alpha);
       skia::SkPaint ring;
       ring.setAntiAlias(true);
       ring.setStyle(skia::kStrokeStyle);
@@ -1153,14 +1046,14 @@ private:
 
     void drawButtons(skia::SkCanvas *canvas, const skia::SkRect &card,
                      const skia::SkRect &main, const Entry &e, float alpha) {
+      const paint::Painter p(canvas, *fOwner->fFont);
       const skia::SkRect buttons = skia::SkRect::MakeLTRB(
           main.fRight, card.fTop, card.fRight, card.fBottom);
-      paint::rounded(canvas, buttons, kCardCorner, kBackground3, alpha);
-      paint::rect(canvas,
-                  skia::SkRect::MakeXYWH(buttons.fLeft - kCardCorner,
-                                         buttons.fTop, kCardCorner,
-                                         buttons.height()),
-                  kBackground3, alpha);
+      p.fillRounded(buttons, kCardCorner, kBackground3, alpha);
+      p.fillRect(skia::SkRect::MakeXYWH(buttons.fLeft - kCardCorner,
+                                        buttons.fTop, kCardCorner,
+                                        buttons.height()),
+                 kBackground3, alpha);
       if (fExpand <= 0.4f) {
         return;
       }
@@ -1195,13 +1088,13 @@ private:
     // BeatmapCardDifficultyList: one row per difficulty under the card.
     void drawExpanded(skia::SkCanvas *canvas, skia::SkFont &font,
                       const skia::SkRect &card, const Entry &e, float alpha) {
+      const paint::Painter p(canvas, font);
       const float rowH = 20.0f;
       const float height = fBounds.fBottom - card.fBottom;
       const skia::SkRect panel = skia::SkRect::MakeXYWH(
           card.fLeft, card.fBottom - kCardCorner, card.width(),
           height + kCardCorner);
-      paint::rounded(canvas, panel, kCardCorner, kBackground4,
-                     alpha * fExpanded);
+      p.fillRounded(panel, kCardCorner, kBackground4, alpha * fExpanded);
       canvas->save();
       canvas->clipRect(panel);
       float y = card.fBottom + 10.0f; // Padding: horizontal 8, vertical 10
@@ -1210,17 +1103,16 @@ private:
           break;
         }
         const std::string stars = std::format("{:.2f}", diff.fStars);
-        const float pillW = paint::measure(font, stars, 11.0f, true) + 16.0f;
+        const float pillW = p.measure(stars, 11.0f, true) + 16.0f;
         const skia::SkRect pill =
             skia::SkRect::MakeXYWH(card.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
-        paint::rounded(canvas, pill, 8.0f, client::palette::starColor(diff.fStars),
-                       alpha * fExpanded);
-        paint::text(canvas, font, stars, pill.fLeft + 8.0f, y, 11.0f,
-                    skia::colorSetARGB(255, 20, 24, 26), true,
-                    alpha * fExpanded);
-        paint::textClipped(canvas, font, diff.fVersion, pill.fRight + 6.0f, y,
-                           card.width() - pillW - 24.0f, 14.0f, kContent1,
-                           true, alpha * fExpanded);
+        p.fillRounded(pill, 8.0f, client::palette::starColor(diff.fStars),
+                      alpha * fExpanded);
+        p.text(stars, pill.fLeft + 8.0f, y, 11.0f,
+               skia::colorSetARGB(255, 20, 24, 26), alpha * fExpanded, true);
+        p.textClipped(diff.fVersion, pill.fRight + 6.0f, y,
+                      card.width() - pillW - 24.0f, 14.0f, kContent1,
+                      alpha * fExpanded, true);
         y += rowH;
       }
       canvas->restore();
@@ -1267,10 +1159,11 @@ private:
         return;
       }
       auto &font = *fOwner->fFont;
+      const paint::Painter p(canvas, font);
       const Entry &e =
           fOwner->fEntries[static_cast<std::size_t>(card->entry())];
       const float open = alpha * card->expansion();
-      paint::rounded(canvas, fBounds, kCardCorner, kBackground4, open);
+      p.fillRounded(fBounds, kCardCorner, kBackground4, open);
       // ExpandedContentScrollContainer: 8 either side, 10 top and bottom.
       float y = fBounds.fTop + kCardCorner + 10.0f;
       for (const auto &diff : e.fDiffs) {
@@ -1278,16 +1171,16 @@ private:
           break;
         }
         const std::string stars = std::format("{:.2f}", diff.fStars);
-        const float pillW = paint::measure(font, stars, 11.0f, true) + 16.0f;
+        const float pillW = p.measure(stars, 11.0f, true) + 16.0f;
         const skia::SkRect pill = skia::SkRect::MakeXYWH(
             fBounds.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
-        paint::rounded(canvas, pill, 8.0f, client::palette::starColor(diff.fStars),
-                       open);
-        paint::text(canvas, font, stars, pill.fLeft + 8.0f, y, 11.0f,
-                    skia::colorSetARGB(255, 20, 24, 26), true, open);
-        paint::textClipped(canvas, font, diff.fVersion, pill.fRight + 6.0f, y,
-                           fBounds.width() - pillW - 24.0f, 14.0f, kContent1,
-                           true, open);
+        p.fillRounded(pill, 8.0f, client::palette::starColor(diff.fStars),
+                      open);
+        p.text(stars, pill.fLeft + 8.0f, y, 11.0f,
+               skia::colorSetARGB(255, 20, 24, 26), open, true);
+        p.textClipped(diff.fVersion, pill.fRight + 6.0f, y,
+                      fBounds.width() - pillW - 24.0f, 14.0f, kContent1, open,
+                      true);
         y += 20.0f;
       }
     }
@@ -1330,7 +1223,8 @@ private:
   protected:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       auto &font = *fOwner->fFont;
-      paint::rect(canvas, fBounds, kBackground5, alpha);
+      const paint::Painter p(canvas, font);
+      p.fillRect(fBounds, kBackground5, alpha);
       const float iconSize = 30.0f;
       const float x = fBounds.fLeft + kHorizontalPadding;
       skia::SkPaint icon;
@@ -1344,12 +1238,10 @@ private:
       canvas->drawCircle(cx, fBounds.centerY(), iconSize * 0.12f, icon);
       const std::string title = "beatmap listing";
       const float titleX = x + iconSize + 10.0f;
-      paint::text(canvas, font, title, titleX, fBounds.centerY() + 7.0f, 20.0f,
-                  kContent1, false, alpha);
-      paint::text(canvas, font, "browse for new beatmaps",
-                  titleX + paint::measure(font, title, 20.0f, false) + 12.0f,
-                  fBounds.centerY() + 6.0f, 14.0f, kContent2, false,
-                  alpha * 0.8f);
+      p.text(title, titleX, fBounds.centerY() + 7.0f, 20.0f, kContent1, alpha);
+      p.text("browse for new beatmaps",
+             titleX + p.measure(title, 20.0f) + 12.0f, fBounds.centerY() + 6.0f,
+             14.0f, kContent2, alpha * 0.8f);
     }
 
   private:
@@ -1367,12 +1259,11 @@ private:
 
   protected:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      paint::textCentered(canvas, *fOwner->fFont,
-                          fOwner->fLoading
-                              ? "searching..."
-                              : "no beatmaps match your criteria!",
-                          fBounds.centerX(), fBounds.centerY(), 16.0f,
-                          kContent2, false, alpha);
+      const paint::Painter p(canvas, *fOwner->fFont);
+      p.textCentered(fOwner->fLoading ? "searching..."
+                                      : "no beatmaps match your criteria!",
+                     fBounds.centerX(), fBounds.centerY(), 16.0f, kContent2,
+                     alpha);
     }
 
   private:
