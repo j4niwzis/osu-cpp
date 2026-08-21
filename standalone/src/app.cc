@@ -442,6 +442,9 @@ private:
   };
   std::vector<MenuBtn> fMenuBtns;
   MenuState fMenuState = MenuState::kInitial;
+  // Set while anything in the menu is still easing towards a target, so the
+  // frames that carry it there are asked for rather than waited for.
+  bool fMenuMoving = false;
   float fLogoX = 0.0f;
   float fLogoY = 0.0f;
   float fLogoScale = 1.0f;
@@ -2320,6 +2323,11 @@ private:
     // whole menu out of the conversation.
     if (fState == State::kMainMenu &&
         (fSettings.flag("visualiser") || fSettings.flag("menutriangles"))) {
+      return true;
+    }
+    // Something in the menu is part-way to where it is going. Set by the last
+    // update, which is the only thing that knows.
+    if (fState == State::kMainMenu && fMenuMoving) {
       return true;
     }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
@@ -5142,10 +5150,23 @@ private:
     float xRight = fLogoX + fLogoBase * fLogoScale + 28.0f * uiScale;
     float xLeft = fLogoX - fLogoBase * fLogoScale - 28.0f * uiScale;
 
+    // Whether anything here is still on its way somewhere. Damage says what
+    // changed; it cannot say that the next frame will differ too, and an
+    // eased value on its way to a target is exactly that. Without this the
+    // frame that moves a button marks its damage, the frame consumes it, and
+    // nothing asks for another -- so the ease crawls along on the half-second
+    // safety net, and moving the pointer speeds it up because every event
+    // owes frames.
+    constexpr float kMoving = 0.002f;
+    bool moving = std::abs(fMenuDim - dimTarget) > kMoving;
+
     for (auto &b : fMenuBtns) {
       const bool visible = b.fVisible == fMenuState;
       b.fExpand = this->approach(b.fExpand, visible ? 1.0f : 0.0f, 95.0f);
       b.fFlash = this->approach(b.fFlash, 0.0f, 160.0f);
+      moving = moving ||
+               std::abs(b.fExpand - (visible ? 1.0f : 0.0f)) > kMoving ||
+               b.fFlash > kMoving;
 
       if (b.fExpand < 0.01f) {
         b.fRect = skia::SkRect::MakeEmpty();
@@ -5165,7 +5186,13 @@ private:
 
       const bool hovered = visible && rect.contains(fMouseX, fMouseY);
       b.fHover = this->approach(b.fHover, hovered ? 1.0f : 0.0f, 110.0f);
+      moving = moving || std::abs(b.fHover - (hovered ? 1.0f : 0.0f)) > kMoving;
     }
+
+    moving = moving || std::abs(fLogoX - targetLogoX) > kMoving ||
+             std::abs(fLogoY - targetLogoY) > kMoving ||
+             std::abs(fLogoScale - targetScale) > kMoving;
+    fMenuMoving = moving;
 
     this->settleLogo(fLogoBase);
 
