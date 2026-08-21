@@ -407,21 +407,59 @@ private:
   skia::SkFontHinting fHinting;
 };
 
-// A two-stop gradient down a rectangle, and across one. The draw itself is in
-// the Skia wrapper, which is the file that knows whether this Skia's gradient
-// shader is reachable.
+// A two-stop gradient, drawn as a stack of bands. Skia's gradient shader is
+// the obvious way and its header is not in this build's include set, so this
+// is the way that needs nothing but a rectangle and a colour. One
+// implementation, here, rather than one per screen: the beatmap cover and the
+// logo each had their own, with their own step counts.
+inline void bandedGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                           skia::SkColor start, skia::SkColor end,
+                           bool vertical, float alpha) {
+  if (canvas == nullptr || rect.isEmpty()) {
+    return;
+  }
+  // Enough that the seams are under a pixel on anything the client draws
+  // gradients across, which is a logo and a header strip.
+  constexpr int kBands = 48;
+  const auto lerp = [](std::uint32_t a, std::uint32_t b, float t) {
+    return static_cast<std::uint8_t>(
+        static_cast<float>(a) +
+        (static_cast<float>(b) - static_cast<float>(a)) * t);
+  };
+  skia::SkPaint p;
+  p.setAntiAlias(false);
+  for (int i = 0; i < kBands; ++i) {
+    const float t = static_cast<float>(i) / static_cast<float>(kBands - 1);
+    const skia::SkColor colour =
+        skia::colorSetARGB(lerp((start >> 24) & 0xffu, (end >> 24) & 0xffu, t),
+                           lerp((start >> 16) & 0xffu, (end >> 16) & 0xffu, t),
+                           lerp((start >> 8) & 0xffu, (end >> 8) & 0xffu, t),
+                           lerp(start & 0xffu, end & 0xffu, t));
+    p.setColor(colour);
+    p.setAlphaf(combinedAlpha(colour, alpha));
+    const float from = static_cast<float>(i) / static_cast<float>(kBands);
+    const float to = static_cast<float>(i + 1) / static_cast<float>(kBands);
+    canvas->drawRect(
+        vertical ? skia::SkRect::MakeLTRB(
+                       rect.fLeft, rect.fTop + rect.height() * from,
+                       rect.fRight, rect.fTop + rect.height() * to + 1.0f)
+                 : skia::SkRect::MakeLTRB(
+                       rect.fLeft + rect.width() * from, rect.fTop,
+                       rect.fLeft + rect.width() * to + 1.0f, rect.fBottom),
+        p);
+  }
+}
+
 inline void verticalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
                              skia::SkColor top, skia::SkColor bottom,
                              float alpha = 1.0f) {
-  skia::linearGradient(canvas, rect, {rect.fLeft, rect.fTop},
-                       {rect.fLeft, rect.fBottom}, top, bottom, alpha);
+  bandedGradient(canvas, rect, top, bottom, true, alpha);
 }
 
 inline void horizontalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
                                skia::SkColor left, skia::SkColor right,
                                float alpha = 1.0f) {
-  skia::linearGradient(canvas, rect, {rect.fLeft, rect.fTop},
-                       {rect.fRight, rect.fTop}, left, right, alpha);
+  bandedGradient(canvas, rect, left, right, false, alpha);
 }
 
 // ---- Drawing helpers -----------------------------------------------------

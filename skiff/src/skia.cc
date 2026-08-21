@@ -27,22 +27,6 @@ module;
 #include <skia/core/SkRefCnt.h>
 #include <skia/core/SkSamplingOptions.h>
 #include <skia/core/SkShader.h>
-// Not every Skia install lays its headers out the same way, and a gradient is
-// not worth failing to build over: where the shader is not reachable the
-// gradient is drawn as a stack of bands instead, which is what the screens
-// were doing by hand before this.
-#if __has_include(<skia/effects/SkGradientShader.h>)
-#include <skia/effects/SkGradientShader.h>
-#define SKIFF_GRADIENT_SHADER 1
-#elif __has_include(<skia/core/SkGradientShader.h>)
-#include <skia/core/SkGradientShader.h>
-#define SKIFF_GRADIENT_SHADER 1
-#elif __has_include(<skia/SkGradientShader.h>)
-#include <skia/SkGradientShader.h>
-#define SKIFF_GRADIENT_SHADER 1
-#else
-#define SKIFF_GRADIENT_SHADER 0
-#endif
 #include <skia/core/SkRegion.h>
 #include <skia/core/SkStream.h>
 #include <skia/core/SkString.h>
@@ -150,56 +134,6 @@ inline constexpr SkColor colorSetARGB(uint8_t a, uint8_t r, uint8_t g,
          (static_cast<SkColor>(g) << 8) | static_cast<SkColor>(b);
 }
 
-// A two-stop linear gradient between two points, in one draw where Skia's
-// gradient shader is reachable and in bands where it is not. Here rather than
-// in the painter because this is the file that knows what this Skia has.
-inline void linearGradient(SkCanvas *canvas, const SkRect &rect, SkPoint from,
-                           SkPoint to, SkColor start, SkColor end,
-                           float alpha = 1.0f) {
-  if (canvas == nullptr || rect.isEmpty()) {
-    return;
-  }
-#if SKIFF_GRADIENT_SHADER
-  const SkPoint ends[2] = {from, to};
-  const SkColor stops[2] = {start, end};
-  SkPaint p;
-  p.setAntiAlias(true);
-  p.setAlphaf(alpha);
-  p.setShader(::SkGradientShader::MakeLinear(ends, stops, nullptr, 2,
-                                             SkTileMode::kClamp));
-  canvas->drawRect(rect, p);
-#else
-  constexpr int kSteps = 32;
-  const float dy = to.fY - from.fY < 0.0f ? from.fY - to.fY : to.fY - from.fY;
-  const float dx = to.fX - from.fX < 0.0f ? from.fX - to.fX : to.fX - from.fX;
-  const bool vertical = dy >= dx;
-  const auto lerp = [](std::uint32_t a, std::uint32_t b, float t) {
-    return static_cast<std::uint8_t>(
-        static_cast<float>(a) +
-        (static_cast<float>(b) - static_cast<float>(a)) * t);
-  };
-  SkPaint p;
-  p.setAntiAlias(false);
-  for (int i = 0; i < kSteps; ++i) {
-    const float t = static_cast<float>(i) / static_cast<float>(kSteps - 1);
-    p.setColor(colorSetARGB(lerp((start >> 24) & 0xffu, (end >> 24) & 0xffu, t),
-                            lerp((start >> 16) & 0xffu, (end >> 16) & 0xffu, t),
-                            lerp((start >> 8) & 0xffu, (end >> 8) & 0xffu, t),
-                            lerp(start & 0xffu, end & 0xffu, t)));
-    p.setAlphaf(p.getAlphaf() * alpha);
-    const float a = static_cast<float>(i) / static_cast<float>(kSteps);
-    const float b = static_cast<float>(i + 1) / static_cast<float>(kSteps);
-    canvas->drawRect(
-        vertical ? SkRect::MakeLTRB(rect.fLeft, rect.fTop + rect.height() * a,
-                                    rect.fRight,
-                                    rect.fTop + rect.height() * b + 1.0f)
-                 : SkRect::MakeLTRB(rect.fLeft + rect.width() * a, rect.fTop,
-                                    rect.fLeft + rect.width() * b + 1.0f,
-                                    rect.fBottom),
-        p);
-  }
-#endif
-}
 
 inline constexpr GrGLenum kGlRgba8 = GL_RGBA8;
 
