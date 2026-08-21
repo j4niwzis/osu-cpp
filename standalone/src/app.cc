@@ -2651,6 +2651,43 @@ private:
     // carried over, and the number stops.
     this->drawFpsCounter(canvas);
     fBlitStart = std::chrono::steady_clock::now();
+
+    // Everything about this frame, for the four hundred milliseconds after a
+    // size event: what the client thinks the screen is, what the two surfaces
+    // actually are, what was repainted and what is carried to the window.
+    // Four fixes have been aimed at this from four theories and none of them
+    // was measured; this is all of the state at once so the next one is not a
+    // fifth theory.
+    if (fTraceRepaint && wallMs() - fLastResizeWall < 400.0) {
+      const auto dims = [](const skia::Sp<skia::SkSurface> &surface) {
+        return surface
+                   ? std::format("{}x{}", surface->width(), surface->height())
+                   : std::string("none");
+      };
+      std::string clip = "whole";
+      if (!fComputedClipFull && !fComputedClip.empty()) {
+        const skia::SkIRect &r = fComputedClip.front();
+        clip =
+            std::format("{}+{}+{}x{}", r.fLeft, r.fTop, r.width(), r.height());
+        if (fComputedClip.size() > 1) {
+          clip += std::format(" and {} more", fComputedClip.size() - 1);
+        }
+      }
+      std::string blit = "whole";
+      if (!fBlitRegions.empty()) {
+        const skia::SkIRect &r = fBlitRegions.front();
+        blit =
+            std::format("{}+{}+{}x{}", r.fLeft, r.fTop, r.width(), r.height());
+      }
+      std::println(std::cerr,
+                   "[frame] +{:4.0f} ms  screen {}x{}  raster {}  window {}  "
+                   "{}  repaint {}  blit {}  {}",
+                   wallMs() - fLastResizeWall, fScreenW, fScreenH,
+                   dims(fRasterSurface), dims(fWindowSurface),
+                   fDrewOnRaster ? "cpu" : "gpu", clip, blit,
+                   fComputedClipFull ? fFullDamageReason : "");
+    }
+
     if (fDrewOnRaster && fWindowSurface) {
       // The CPU frame lives in main memory; the window wants it as pixels.
       // Only the part that was repainted is carried over: the window's buffer
