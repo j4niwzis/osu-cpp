@@ -430,6 +430,8 @@ private:
   float fSliderBodyScale = 0.0f;
   bool fSliderBodiesStale = false;
   double fLastResizeWall = 0.0;
+  // Set when a map is loaded and cleared by the frame that first shows it.
+  bool fAwaitingFirstFrame = false;
   float fLogoAmp = 0.0f;    // beat amplitude the logo settled at
   float fLogoRadius = 0.0f;
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
@@ -613,10 +615,22 @@ private:
       }
     }
 
-    fStartMs = glfw::glfwGetTime() * 1000.0;
+    // The clock is not started here. Everything between this point and the
+    // first frame actually being on screen would be charged to the map: the
+    // rest of the load, the pacing sleep, and the first frame itself, which
+    // repaints the whole window and warms every cache it touches. Audio waits
+    // with it, since it does not begin the instant it is asked to either.
+    fAudio.setVolume(this->musicGain());
+    fAwaitingFirstFrame = true;
+  }
+
+  // Called at the end of the first gameplay frame, once it has been handed to
+  // the window. From here the map and the music start together.
+  void startGameplayClock() {
+    fAwaitingFirstFrame = false;
+    fStartMs = wallMs();
     fClock.reset(fStartMs, 0.0);
     fLastClockSyncWall = std::numeric_limits<double>::lowest();
-    fAudio.setVolume(this->musicGain());
     fAudio.play();
   }
 
@@ -2719,7 +2733,9 @@ private:
 
   void framePlaying() {
     using clock = std::chrono::steady_clock;
-    const double now = this->nowMs();
+    // Zero until the first frame has been through, so that nothing before it
+    // counts against the map.
+    const double now = fAwaitingFirstFrame ? 0.0 : this->nowMs();
     if (this->shouldStop(now)) {
       this->finishPlay();
       this->frameResults();
@@ -2759,6 +2775,10 @@ private:
       p.swapUs = static_cast<double>(fLastSwapUs);
       p.flushUs = std::max(0.0, us(t2, t3) - static_cast<double>(fLastSwapUs));
       fView.advanceProfile();
+    }
+
+    if (fAwaitingFirstFrame) {
+      this->startGameplayClock();
     }
   }
 
