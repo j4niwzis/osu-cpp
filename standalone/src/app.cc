@@ -423,6 +423,13 @@ private:
   float fLogoHover = 0.0f;
   float fLogoPunch = 0.0f; // click/beat impact, decays
   float fLogoBaseRadius = 0.0f; // radius before beat, hover and punch
+  // Slider bodies are rasterised once, at the scale the playfield had when
+  // the map was loaded. A resize changes that scale and leaves them behind,
+  // to be stretched by the blit -- so they are rebuilt, but not while the
+  // window is still being dragged.
+  float fSliderBodyScale = 0.0f;
+  bool fSliderBodiesStale = false;
+  double fLastResizeWall = 0.0;
   float fLogoAmp = 0.0f;    // beat amplitude the logo settled at
   float fLogoRadius = 0.0f;
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
@@ -567,6 +574,8 @@ private:
     this->loadComboInfo();
     fSkin.setComboColors(fMap->fComboColors);
     fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get());
+    fSliderBodyScale = fScale;
+    fSliderBodiesStale = false;
     if (fSettings.choice("renderer") == 1) {
       // Built on the GPU either way, since that is what SkSL is for; moved
       // into memory now so the CPU rasteriser does not read them back on
@@ -2716,6 +2725,7 @@ private:
       return;
     }
     this->submitAutoplay(now);
+    this->rebuildSliderBodiesIfStale();
 
     // One frame path, measured or not. There were two of these, and the one
     // taken under --profile called flushAndSubmit and glfwSwapBuffers itself
@@ -2749,6 +2759,26 @@ private:
       p.flushUs = std::max(0.0, us(t2, t3) - static_cast<double>(fLastSwapUs));
       fView.advanceProfile();
     }
+  }
+
+  // A rasterised body is only as sharp as the scale it was built at. Rebuilt
+  // after a resize has settled rather than during it: this costs on the order
+  // of a second on a map with hundreds of sliders, and a window being dragged
+  // delivers a resize per frame.
+  void rebuildSliderBodiesIfStale() {
+    if (!fSliderBodiesStale || !fMap) {
+      return;
+    }
+    if (wallMs() - fLastResizeWall < 250.0) {
+      return;
+    }
+    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get());
+    if (fSettings.choice("renderer") == 1) {
+      fSkin.flattenBodiesToRaster(fContext.get());
+    }
+    fSliderBodyScale = fScale;
+    fSliderBodiesStale = false;
+    this->damageAll("slider bodies rebuilt");
   }
 
   // The renderer holds no back-reference to the app; each frame it is handed
@@ -7828,6 +7858,11 @@ private:
     // drawing on that way. The frame that needs it makes it.
     fRasterSurface.reset();
     fBlitHistory.clear();
+    fLastResizeWall = wallMs();
+    if (fSliderBodyScale > 0.0f &&
+        std::abs(fScale - fSliderBodyScale) > fSliderBodyScale * 0.01f) {
+      fSliderBodiesStale = true;
+    }
     this->damageAll("resize", /*buffersGone=*/true);
     fView.invalidate();
     fView.preScaleBackground(this->gameplayCtx(nullptr));
