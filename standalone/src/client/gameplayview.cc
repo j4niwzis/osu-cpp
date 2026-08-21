@@ -45,6 +45,9 @@ public:
     // OsuSetting.HitLighting. With it off, DrawableOsuJudgement leaves the
     // lighting at zero alpha and never animates it.
     bool fHitLighting = true;
+    // What the play is worth so far, priced by the app: the view draws it and
+    // does not know how it was arrived at.
+    double fPp = 0.0;
     bool fShowProfile = false;
   };
 
@@ -100,6 +103,9 @@ public:
   // What twelve device pixels came to at 1080p, which is the size these were
   // tuned at. Kept as the playfield-relative figure it always meant.
   static constexpr float kTrailWidthUnits = 12.0f / 2.25f;
+  // What a brand-new trail point is drawn at; the fade runs from here to
+  // nothing, and the width follows the same number.
+  static constexpr float kTrailPeakAlpha = 0.6f;
   // LegacyMainCirclePiece's legacy_fade_duration, and DrawableHitCircle's
   // fade on a miss.
   static constexpr double kHitFade = 240.0;
@@ -982,9 +988,30 @@ public:
     // uniform kind it cannot loop or cusp when the samples are unevenly
     // spaced, which is exactly what a pointer that speeds up and slows down
     // produces.
-    const std::vector<TrailPt> pts = this->resampleTrail(raw, 2.0f * scale);
+    std::vector<TrailPt> pts = this->resampleTrail(raw, 2.0f * scale);
     if (pts.size() < 2)
       return;
+
+    // The fade runs along the path, not along the clock. Age is what decides
+    // when a point is dropped, but it is the wrong thing to draw with: points
+    // are kept a couple of units apart, so a pointer that stops and starts
+    // puts two samples next to each other in space and a long way apart in
+    // time. The brightness then falls off over those few pixels instead of
+    // over the trail, which is the flash. Distance behind the head cannot do
+    // that: it is smooth wherever the samples happen to land.
+    {
+      const std::size_t last = pts.size() - 1;
+      std::vector<float> behind(pts.size(), 0.0f);
+      for (std::size_t k = last; k > 0; --k) {
+        const float dx = pts[k].fX - pts[k - 1].fX;
+        const float dy = pts[k].fY - pts[k - 1].fY;
+        behind[k - 1] = behind[k] + std::sqrt(dx * dx + dy * dy);
+      }
+      const float span = std::max(1e-4f, behind[0]);
+      for (std::size_t k = 0; k < pts.size(); ++k) {
+        pts[k].fAlpha = kTrailPeakAlpha * (1.0f - behind[k] / span);
+      }
+    }
 
     // A skin that ships a trail owns the look of it: its texture is stamped
     // along the curve, the way the game does it, rather than being reduced to
@@ -1025,10 +1052,13 @@ public:
         tx = 1.0f;
         ty = 0.0f;
       }
-      // Solid half-width tapers with the same profile as the old stroke
-      // width (which was the *total* width => halve it here).
-      const float t =
-          static_cast<float>(i + 1) / static_cast<float>(n);
+      // Both the width and the brightness follow the age, so that they move
+      // together. Taking the width from the sample's position in the list
+      // instead made it a function of how many samples that stretch happened
+      // to get: the resampler puts them close together where the pointer was
+      // slow, so the trail thickened and thinned by how fast it had been
+      // moving rather than by how old it was.
+      const float t = pts[i].fAlpha / kTrailPeakAlpha;
       const float w = 0.5f * baseW * (0.12f + 0.88f * t * (2.0f - t));
       const float nxCore = -ty * w;
       const float nyCore = tx * w;
@@ -1305,10 +1335,13 @@ public:
 
     // Score, accuracy, grade (top-center).
     (*c.fFont).setSize(22.0f * ui);
+    // pp alongside the score: a performance calculation is arithmetic over
+    // counts this client already has, so it costs nothing to answer it every
+    // frame and it is the number people actually want while playing.
     const std::string statsText =
-        std::format("{:.0f}  {:.2f}%  {}", fDisplayScore,
+        std::format("{:.0f}  {:.2f}%  {}  {:.0f}pp", fDisplayScore,
                     std::clamp(fDisplayAccuracy, 0.0, 1.0) * 100.0,
-                    osu::gradeString(osu::computeGrade(score)));
+                    osu::gradeString(osu::computeGrade(score)), c.fPp);
     client::ui::fonts().draw(canvas, *c.fFont, statsText, 20.0f * ui,
                              90.0f * ui, fHudPaint);
 

@@ -2876,6 +2876,7 @@ private:
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
     c.fHitLighting = fSettings.flag("hitlighting");
+    c.fPp = fEngine ? this->pricePlay(fEngine->score()) : 0.0;
     c.fShowProfile = fShowProfile;
     return c;
   }
@@ -2978,6 +2979,20 @@ private:
     this->setCursorVisible(true);
   }
 
+  // What a score is worth against the map being played. Pure arithmetic over
+  // the counts, so it is cheap enough to ask on every frame.
+  [[nodiscard]] double pricePlay(const osu::ScoreState &sc) const {
+    osu::ScoreInput input;
+    input.fGreat = sc.fGreat;
+    input.fOk = sc.fGood;
+    input.fMeh = sc.fMeh;
+    input.fMiss = sc.fMiss;
+    input.fMaxCombo = sc.fMaxCombo;
+    input.fSliderTailHits = sc.fTailHit;
+    input.fLargeTickHits = sc.fLargeTickHit;
+    return osu::performanceRanked(fPlayAttributes, input).fTotal;
+  }
+
   void captureResult() {
     fResult.fScore = fEngine->score();
     double sum = 0.0;
@@ -3003,16 +3018,7 @@ private:
     // What the play is worth. The counts come straight off the score: the
     // tails and ticks are the ones a performance calculation asks for, and
     // this client has them because it judges them.
-    const auto &sc = fResult.fScore;
-    osu::ScoreInput input;
-    input.fGreat = sc.fGreat;
-    input.fOk = sc.fGood;
-    input.fMeh = sc.fMeh;
-    input.fMiss = sc.fMiss;
-    input.fMaxCombo = sc.fMaxCombo;
-    input.fSliderTailHits = sc.fTailHit;
-    input.fLargeTickHits = sc.fLargeTickHit;
-    fResult.fPp = osu::performanceRanked(fPlayAttributes, input).fTotal;
+    fResult.fPp = this->pricePlay(fResult.fScore);
   }
 
   // With an absolute pointer the desktop cursor stops at the screen edge, so
