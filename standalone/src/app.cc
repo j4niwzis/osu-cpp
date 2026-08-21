@@ -2115,7 +2115,17 @@ private:
     canvas->clipIRect(bounds);
     // Remembered for the blit, which is a different question with a different
     // answer: what the window is missing rather than what this surface is.
-    if (!this->historyShorterThan(this->windowReach())) {
+    //
+    // Only where the window system reports a buffer age. An assumed age is a
+    // claim about the window's buffers that nothing has checked, and carrying
+    // a region across on the strength of it is what leaves the screen black
+    // around whatever moved: the server resizes the window between one frame
+    // and the next, the buffer that comes back has never been painted, and a
+    // frame that carries only its own damage into it fills in a rectangle and
+    // leaves the rest as it found it. Blitting whole costs one window-sized
+    // copy on a renderer that has the whole frame in memory anyway, and the
+    // drawing above is still clipped, which is where the work actually is.
+    if (!fBufferAgeAssumed && !this->historyShorterThan(this->windowReach())) {
       const skia::SkIRect carry = this->damageOver(this->windowReach());
       if (!carry.isEmpty()) {
         fBlitRegions.push_back(carry);
@@ -2734,8 +2744,11 @@ private:
     // over means it can leave the rest of the window alone instead of taking
     // the whole surface every frame -- the other half of what buffer age
     // buys, and the half that lands on the "swap" line of the frame report.
+    // The same claim, made to the compositor instead of to the blit: these
+    // rectangles are what changed since the buffer coming back was last ours,
+    // which is only knowable from a reported age.
     std::vector<std::array<int, 4>> damage;
-    if (!fComputedClipFull && !fComputedClip.empty()) {
+    if (!fBufferAgeAssumed && !fComputedClipFull && !fComputedClip.empty()) {
       damage.reserve(fComputedClip.size());
       for (const auto &rect : fComputedClip) {
         damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
