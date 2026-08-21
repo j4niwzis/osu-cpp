@@ -6,6 +6,7 @@ import skiff.paint;
 import client.palette;
 import skiff.scene;
 import skiff.nodes;
+import skiff.widgets;
 
 // osu!lazer's BeatmapListingOverlay, port of the layout and the palette.
 //
@@ -163,6 +164,23 @@ inline constexpr float kExpandDelayMs = 100.0f;     // BeatmapCardContent.Expand
 namespace scene = skiff::scene;
 namespace nodes = skiff::nodes;
 namespace paint = skiff::paint;
+namespace widgets = skiff::widgets;
+
+// The listing's greys, handed to the widgets rather than baked into them.
+inline const widgets::Theme kTextBoxTheme = {
+    .fSurface = kBackground4,
+    .fSurfaceHover = kBackground3,
+    .fSurfaceActive = kBackground2,
+    .fText = kContent1,
+    .fTextDim = kLight1,
+    .fTextFaint = kLight3,
+    .fAccent = kColour1,
+    .fOnAccent = kBackground6,
+    .fCorner = 5.0f,
+    .fFontSize = 16.0f,
+    .fRowHeight = 40.0f,
+    .fPaddingX = 12.0f,
+};
 
 // BeatmapSetOnlineStatus, in the colours the website gives it.
 inline skia::SkColor statusColour(std::string_view status) {
@@ -251,12 +269,13 @@ public:
   // scrolled is bandwidth, a decode, and a texture, spent on nothing.
   [[nodiscard]] std::span<const int> onScreen() const { return fOnScreen; }
 
-  // The query is edited through the client, which types into the string the
-  // box reads. The box has no way of noticing that, and a client that only
-  // draws what says it changed would never show the letter that was typed.
+  // The query is edited through the client, which types into a string the
+  // box does not own. Handing the result over is what marks the box: a
+  // client that only draws what says it changed would otherwise never show
+  // the letter that was typed.
   void queryEdited() {
     if (fSearchBox != nullptr) {
-      fSearchBox->markDamaged();
+      fSearchBox->setText(fFilters.fQuery);
     }
   }
 
@@ -373,7 +392,8 @@ public:
     // After the layout: whether the box is on screen is a fact about where
     // it ended up, and on the frame a tree is built there is no answer yet.
     if (fSearchBox != nullptr) {
-      fTextBoxBounds = fSearchBox->box();
+      fSearchBox->setText(fFilters.fQuery);
+      fTextBoxBounds = fSearchBox->fBounds;
       fCaretLive = skia::SkRect::Intersects(fTextBoxBounds, screen);
       fSearchBox->tickCaret(ctx.fNowMs, fCaretLive);
     }
@@ -429,68 +449,6 @@ private:
   };
 
   // ---- nodes ---------------------------------------------------------------
-
-  // BeatmapSearchTextBox: OsuTextBox is 40 high with a 5px corner radius.
-  class SearchBoxNode : public scene::Drawable {
-  public:
-    explicit SearchBoxNode(Listing *owner) : fOwner(owner) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fHeight = 40.0f;
-    }
-
-    [[nodiscard]] const skia::SkRect &box() const { return fBounds; }
-
-    // The caret is the one thing on this screen that changes without being
-    // touched. It marks the box when it flips, so the frame that follows
-    // repaints the box and nothing else -- and so that the frames in between
-    // are not drawn at all. Off screen it does not blink: a caret nobody can
-    // see is not worth a frame, and asking for one anyway was the whole
-    // point of not asking for frames.
-    void tickCaret(double nowMs, bool onScreen) {
-      const bool shown = onScreen && std::fmod(nowMs, 1000.0) < 600.0;
-      if (shown != fCaretShown) {
-        fCaretShown = shown;
-        this->markDamaged();
-      }
-    }
-
-  protected:
-    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      auto &font = *fOwner->fFont;
-      const paint::Painter p(canvas, font);
-      p.fillRounded(fBounds, 5.0f, kBackground4, alpha);
-      skia::SkPaint icon;
-      icon.setAntiAlias(true);
-      icon.setStyle(skia::kStrokeStyle);
-      icon.setStrokeWidth(1.8f);
-      icon.setColor(kLight1);
-      icon.setAlphaf(alpha);
-      const float ix = fBounds.fLeft + 18.0f;
-      const float iy = fBounds.centerY();
-      canvas->drawCircle(ix, iy - 1.0f, 5.5f, icon);
-      canvas->drawLine(ix + 4.0f, iy + 3.0f, ix + 8.0f, iy + 7.0f, icon);
-
-      const auto &query = fOwner->fFilters.fQuery;
-      if (query.empty()) {
-        p.text("type in keywords...", fBounds.fLeft + 32.0f,
-               fBounds.centerY() + 6.0f, 16.0f, kLight3, alpha * 0.6f);
-      } else {
-        p.textClipped(query, fBounds.fLeft + 32.0f, fBounds.centerY() + 6.0f,
-                      fBounds.width() - 44.0f, 16.0f, kContent1, alpha);
-      }
-      if (fCaretShown) {
-        const float cx = fBounds.fLeft + 32.0f + p.measure(query, 16.0f) + 2.0f;
-        p.fillRect(
-            skia::SkRect::MakeXYWH(cx, fBounds.centerY() - 9.0f, 1.5f, 18.0f),
-            kContent1, alpha * 0.8f);
-      }
-    }
-
-  private:
-    Listing *fOwner;
-    bool fCaretShown = false;
-  };
 
   // BeatmapSearchFilterRow: a 100px label column beside a wrapping tab flow.
   class FilterRowNode : public scene::Drawable {
@@ -1312,9 +1270,11 @@ private:
     panelColumn->fWidth = 1.0f;
     panelColumn->fAutoSizeAxes = scene::Axes::kY;
     panelColumn->setSpacing(0.0f, 20.0f);
-    auto searchBox = std::make_unique<SearchBoxNode>(this);
-    fSearchBox = searchBox.get();
-    panelColumn->add(std::move(searchBox));
+    // BeatmapSearchTextBox: OsuTextBox is 40 high with a 5px corner radius.
+    fSearchBox = panelColumn->add<widgets::TextBox>(
+        {.fillX = true, .height = 40.0f}, "type in keywords...");
+    fSearchBox->fSearchIcon = true;
+    fSearchBox->fTheme = kTextBoxTheme;
 
     // The filter rows, indented 10 and spaced 5, in lazer's order.
     auto rows =
@@ -1635,7 +1595,7 @@ private:
   CardNode *fExpandedCard = nullptr; // whose dropdown is open, if any
   ExpansionNode *fExpansion = nullptr;
   std::vector<int> fOnScreen; // entries whose cards are within reach
-  SearchBoxNode *fSearchBox = nullptr;
+  widgets::TextBox *fSearchBox = nullptr;
   std::uint64_t fVisibleShape = 0;
   nodes::ScrollContainer *fScroll = nullptr; // owned by the tree
   float fScrollTicks = 0.0f;

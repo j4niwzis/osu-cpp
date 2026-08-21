@@ -117,7 +117,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 if(EMSCRIPTEN_BUILD)
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
-    skiff::skiff
+    skiff::widgets
     ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
     ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
     ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
@@ -128,7 +128,7 @@ if(EMSCRIPTEN_BUILD)
 else()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
-    skiff::skiff
+    skiff::widgets
     Threads::Threads
     OpenGL::GL
     ${GLFW_LDFLAGS} ${GLFW_LIBRARIES}

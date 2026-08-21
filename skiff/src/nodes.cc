@@ -66,7 +66,9 @@ public:
     fMeasuredSize = -1.0f;
   }
 
-  static void setFont(skia::SkFont *font) { fontSlot() = font; }
+  static void setFont(skia::SkFont *font) {
+    skiff::paint::defaultFont() = font;
+  }
 
 protected:
   // Text sizes itself: a flow then reads the size off like any other child.
@@ -74,7 +76,7 @@ protected:
     if (fMeasuredSize == fSize) {
       return; // already measured at this size, and the text has not changed
     }
-    skia::SkFont *font = fontSlot();
+    skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr) {
       return;
     }
@@ -88,7 +90,7 @@ protected:
   }
 
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-    skia::SkFont *font = fontSlot();
+    skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr || fText.empty()) {
       return;
     }
@@ -110,12 +112,6 @@ protected:
   }
 
 private:
-  // One font for the whole tree, handed over by the app at startup.
-  static skia::SkFont *&fontSlot() {
-    static skia::SkFont *font = nullptr;
-    return font;
-  }
-
   std::string fText;
   float fSize;
   skia::SkColor fColour;
@@ -133,24 +129,7 @@ public:
 
 protected:
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-    if (!fImage) {
-      return;
-    }
-    const float iw = static_cast<float>(fImage->width());
-    const float ih = static_cast<float>(fImage->height());
-    if (iw <= 0.0f || ih <= 0.0f) {
-      return;
-    }
-    const float scale = std::max(fBounds.width() / iw, fBounds.height() / ih);
-    const float srcW = fBounds.width() / scale;
-    const float srcH = fBounds.height() / scale;
-    const skia::SkRect src = skia::SkRect::MakeXYWH(
-        (iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
-    skia::SkPaint paint;
-    paint.setAlphaf(alpha);
-    canvas->drawImageRect(fImage.get(), src, fBounds,
-                          skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
-                          &paint, skia::SkCanvas::kStrict_SrcRectConstraint);
+    skiff::paint::imageFilled(canvas, fImage.get(), fBounds, alpha);
   }
 
 private:

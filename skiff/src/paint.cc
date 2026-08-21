@@ -318,6 +318,14 @@ inline FontStack &fonts() {
   return stack;
 }
 
+// One font for everything drawn through here, handed over by the app at
+// startup. It lived in nodes::Text, which was fine until anything other than
+// a Text node wanted to measure a string.
+inline skia::SkFont *&defaultFont() {
+  static skia::SkFont *font = nullptr;
+  return font;
+}
+
 // The alpha a colour already carries, times the one the caller asked for.
 // SkPaint::setAlphaf replaces rather than multiplies, so passing both without
 // combining them turns a translucent colour opaque.
@@ -337,6 +345,32 @@ inline FontStack &fonts() {
                             channel((colour >> 16) & 0xffu),
                             channel((colour >> 8) & 0xffu),
                             channel(colour & 0xffu));
+}
+
+// FillMode.Fill: the image is cropped to the destination's aspect ratio
+// rather than squashed into it, which is what a cover or a thumbnail wants
+// and what drawImageRect will not do on its own.
+inline void imageFilled(skia::SkCanvas *canvas, const skia::SkImage *image,
+                        const skia::SkRect &dst, float alpha = 1.0f) {
+  if (canvas == nullptr || image == nullptr) {
+    return;
+  }
+  const float iw = static_cast<float>(image->width());
+  const float ih = static_cast<float>(image->height());
+  if (iw <= 0.0f || ih <= 0.0f) {
+    return;
+  }
+  const float scale = std::max(dst.width() / iw, dst.height() / ih);
+  const float srcW = dst.width() / scale;
+  const float srcH = dst.height() / scale;
+  const skia::SkRect src =
+      skia::SkRect::MakeXYWH((iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
+  skia::SkPaint p;
+  p.setAlphaf(alpha);
+  canvas->drawImageRect(image, src, dst,
+                        skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
+                        alpha < 1.0f ? &p : nullptr,
+                        skia::SkCanvas::kStrict_SrcRectConstraint);
 }
 
 // ---- Drawing helpers -----------------------------------------------------
@@ -444,29 +478,9 @@ public:
     this->text(str, cx - w * 0.5f, y, size, color, alpha, bold);
   }
 
-  // FillMode.Fill: the image is cropped to the destination's aspect ratio
-  // rather than squashed into it, which is what a cover or a thumbnail wants
-  // and what drawImageRect on its own will not do.
   void imageFilled(const skia::SkImage *image, const skia::SkRect &dst,
                    float alpha = 1.0f) const {
-    if (image == nullptr) {
-      return;
-    }
-    const float iw = static_cast<float>(image->width());
-    const float ih = static_cast<float>(image->height());
-    if (iw <= 0.0f || ih <= 0.0f) {
-      return;
-    }
-    const float scale = std::max(dst.width() / iw, dst.height() / ih);
-    const float srcW = dst.width() / scale;
-    const float srcH = dst.height() / scale;
-    const skia::SkRect src = skia::SkRect::MakeXYWH(
-        (iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
-    skia::SkPaint p;
-    p.setAlphaf(alpha);
-    fCanvas->drawImageRect(
-        image, src, dst, skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
-        alpha < 1.0f ? &p : nullptr, skia::SkCanvas::kStrict_SrcRectConstraint);
+    skiff::paint::imageFilled(fCanvas, image, dst, alpha);
   }
 
   // Text with a soft shadow, the way lazer draws judgements and HUD numbers.
