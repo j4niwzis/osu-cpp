@@ -8,7 +8,7 @@ import skiff.scene;
 // Widgets, as distinct from drawables: skiff.scene and skiff.nodes are the
 // primitives -- a box, a string, a flow, a scroll -- and this is the layer of
 // things a screen is actually made of, already knowing how they behave and
-// what they look like. GTK and libadwaita, in that order.
+// what they look like.
 //
 // A widget draws itself from a Theme rather than from constants baked into
 // it, so a screen restyles by handing over a different Theme and not by

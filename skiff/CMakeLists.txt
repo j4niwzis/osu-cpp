@@ -44,8 +44,8 @@ endif()
 # Two targets, on purpose. skiff is the primitives -- the Skia wrapper, the
 # painter, the graph, the drawables -- and skiff-widgets is the layer of
 # ready-made things a screen is built out of, themed rather than subclassed.
-# GTK and libadwaita, in that order: an application that wants only the graph
-# links the first and never pays for the second.
+# An application that wants only the graph links the first and never pays for
+# the second.
 set(skiff_core_sources
   ${CMAKE_CURRENT_SOURCE_DIR}/src/skia.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/paint.cc
