@@ -870,7 +870,11 @@ public:
   // results a fade in and a hold that lazer does not have.
   void drawPopups(const Ctx &c, skia::SkCanvas *canvas, double now,
                   double cs) {
-    static_cast<void>(cs);
+    // DrawableOsuJudgement carries Scale = HitObject.Scale, so the whole
+    // judgement is drawn at the size of the circles on this map. Dropping
+    // that, which is what porting these to lazer's numbers did, left the text
+    // at nearly twice the size it should be.
+    const double objectScale = osu::circleRadius(cs) / 60.0;
     auto it = fPopups.begin();
     while (it != fPopups.end()) {
       const double age = now - it->fTime;
@@ -946,7 +950,8 @@ public:
       if (rotation != 0.0f) {
         canvas->rotate(rotation * 180.0f / std::numbers::pi_v<float>);
       }
-      canvas->scale(uniform * stretch, uniform);
+      canvas->scale(static_cast<float>(objectScale) * uniform * stretch,
+                    static_cast<float>(objectScale) * uniform);
       canvas->drawSimpleText(str.data(), str.size(),
                              skia::SkTextEncoding::kUTF8, -total * 0.5f,
                              centreOffset, font, paint);

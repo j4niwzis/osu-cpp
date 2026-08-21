@@ -1032,6 +1032,13 @@ float4 main(float2 coords) {
     skia::SkPaint paint =
         detail::tintedPaint(this->tintFilter(this->comboColor(comboIndex)),
                             static_cast<float>(alpha));
+    // DrawableOsuJudgement sets Blending = BlendingParameters.Additive on the
+    // lighting. Without it this is a solid disc laid over the playfield --
+    // which is what it looked like once the alpha stopped being capped at 0.8
+    // and started holding at full for 400ms.
+    if (!fDisableGlow) {
+      paint.setBlendMode(skia::SkBlendMode::kPlus);
+    }
     detail::drawImageCentered(canvas, burst.get(), static_cast<float>(pos.fX),
                               static_cast<float>(pos.fY),
                               static_cast<float>(scale * hitSpriteScale),
