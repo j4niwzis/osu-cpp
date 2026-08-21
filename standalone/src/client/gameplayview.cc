@@ -1091,10 +1091,23 @@ public:
       bounds.fRight = std::max(bounds.fRight, p.fX);
       bounds.fBottom = std::max(bounds.fBottom, p.fY);
     }
-    // The layer meets the playfield additively, which is what makes the
-    // black edges disappear rather than paint themselves on.
+    // The layer is drawn back as an ordinary translucent white: a colour
+    // matrix turns the brightness that was accumulated inside it into the
+    // alpha, and sets the colour to white. Additively would have been simpler
+    // and is not the same thing -- over a mid-tone background a trail of 0.6
+    // comes out 0.95 added against 0.74 blended, so it stops looking
+    // translucent and starts looking like a lamp.
+    //
+    //   R' = G' = B' = 1        white
+    //   A'           = R        the brightness drawn inside the layer
+    constexpr float kLumaToAlpha[20] = {
+        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // R
+        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // G
+        0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // B
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, // A
+    };
     skia::SkPaint layerPaint;
-    layerPaint.setBlendMode(skia::SkBlendMode::kPlus);
+    layerPaint.setColorFilter(skia::SkColorFilters::Matrix(kLumaToAlpha));
     canvas->saveLayer(&bounds, &layerPaint);
     skia::SkPaint paint;
     paint.setBlendMode(skia::SkBlendMode::kLighten);
