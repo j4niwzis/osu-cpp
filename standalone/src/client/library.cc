@@ -29,6 +29,18 @@ enum class Sort : std::uint8_t {
   kLength,
 };
 
+// Library entries hold metadata only. The full BeatmapSet (every file in
+// the archive, decoded audio, images) is loaded on demand and a handful are
+// kept alive at a time -- keeping every set resident made startup slow and
+// the resident set enormous once the library grew.
+struct Entry {
+  std::filesystem::path fPath; // empty for the set passed on the CLI
+  std::vector<osu::BeatmapInfo> fInfos;
+  std::shared_ptr<osu::BeatmapSet> fLoaded; // nullptr until needed
+  skia::Sp<skia::SkImage> fPanelArt;        // lazily fetched cover
+  bool fPanelArtTried = false;
+};
+
 class Library {
 public:
   void configure(Loader &loader, std::filesystem::path mapsDir,
@@ -68,21 +80,11 @@ public:
   }
 
   // Library / song select (lazer-style carousel on the right).
-  // Library entries hold metadata only. The full BeatmapSet (every file in
-  // the archive, decoded audio, images) is loaded on demand and a handful are
-  // kept alive at a time -- keeping every set resident made startup slow and
-  // the resident set enormous once the library grew.
-  struct Entry {
-    std::filesystem::path fPath; // empty for the set passed on the CLI
-    std::vector<osu::BeatmapInfo> fInfos;
-    std::shared_ptr<osu::BeatmapSet> fLoaded; // nullptr until needed
-    skia::Sp<skia::SkImage> fPanelArt;        // lazily fetched cover
-    bool fPanelArtTried = false;
-  };
 
   // The maps this client knows about, which of them are listed, and
   // which one is chosen. Everything the library screens read.
 
+  [[nodiscard]] static std::pair<std::uintmax_t, std::int64_t>
   fileStamp(const std::filesystem::path &path) {
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
@@ -91,6 +93,7 @@ public:
             static_cast<std::int64_t>(writeTime.time_since_epoch().count())};
   }
 
+  [[nodiscard]] std::optional<Entry>
   cachedEntryFor(const std::filesystem::path &path) {
     const auto [size, mtime] = fileStamp(path);
     const auto *cached = fCache.lookup(path.filename().string(), size, mtime);
@@ -105,6 +108,7 @@ public:
     return entry;
   }
 
+  [[nodiscard]] static osu::BeatmapInfo
   infoFromCache(const CachedDifficulty &d) {
     osu::BeatmapInfo info;
     info.fFilename = d.fFilename;
@@ -138,6 +142,7 @@ public:
     return fRanked ? info.fStarsRanked : info.fStars;
   }
 
+  [[nodiscard]] static std::vector<CachedDifficulty>
   cacheRecordFor(const osu::BeatmapSet &set) {
     std::vector<CachedDifficulty> diffs;
     diffs.reserve(set.fBeatmaps.size());
@@ -239,7 +244,7 @@ public:
       return;
     }
     auto result = std::make_shared<std::shared_ptr<osu::BeatmapSet>>();
-    fLoader.submit(
+    fLoader->submit(
         static_cast<std::uint64_t>(index) | (1ull << 32),
         [path, result] {
           *result =
@@ -526,7 +531,8 @@ public:
     return -1;
   }
 
-  bool addOszToLibrary(const std::filesystem::path &path, bool select) {
+  bool addOszToLibrary(const std::filesystem::path &path, bool select,
+                       const Criteria &criteria) {
     const std::size_t before = fSets.size();
     this->scanArchive(path);
     if (fSets.size() == before) {
@@ -584,7 +590,7 @@ public:
     fSync();
     const auto added = fSets.back().fPath;
     this->sortLibrary();
-    this->rebuildVisible();
+    this->rebuildVisible(criteria);
     if (select) {
       for (int i = 0; i < static_cast<int>(fSets.size()); ++i) {
         if (fSets[static_cast<std::size_t>(i)].fPath == added) {
@@ -655,7 +661,7 @@ public:
     // a small PNG read.
     auto image = std::make_shared<skia::Sp<skia::SkImage>>();
     const auto thumb = this->thumbPathFor(path);
-    fLoader.submit(
+    fLoader->submit(
         static_cast<std::uint64_t>(setIndex) | (2ull << 32),
         [path, thumb, image, this] {
           if (std::filesystem::exists(thumb)) {
@@ -694,10 +700,12 @@ public:
     return nullptr;
   }
 
+  [[nodiscard]] std::filesystem::path
   thumbPathFor(const std::filesystem::path &archive) const {
     return fThumbDir / (archive.stem().string() + ".png");
   }
 
+  [[nodiscard]] static skia::Sp<skia::SkImage>
   makeThumbnail(const skia::Sp<skia::SkImage> &src) {
     if (!src) {
       return nullptr;
@@ -727,6 +735,7 @@ public:
     return skia::RasterFromBitmap(bmp);
   }
 
+  [[nodiscard]] static skia::Sp<skia::SkImage>
   decodeSetArt(const osu::BeatmapSet &set) {
     for (const auto &info : set.fBeatmaps) {
       if (info.fMeta.fBackground.empty()) {

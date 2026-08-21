@@ -3260,7 +3260,8 @@ private:
                                         static_cast<int>(id)) >= 0;
                            },
                            [this](const std::filesystem::path &path) {
-                             return fLibrary.addOszToLibrary(path, true);
+                             return fLibrary.addOszToLibrary(path, true,
+                                     client::parseQuery(fFilter.text()));
                            },
                            [this](int entry) { fListing.entryChanged(entry); },
                            [this] {
@@ -3487,16 +3488,7 @@ private:
     fMainMenu.stopped();
   }
 
-  [[nodiscard]] static std::pair<std::uintmax_t, std::int64_t>
-
-      // Library entry straight from the cache, or nothing when it is stale.
-      [[nodiscard]] std::optional<client::library::Entry>
-
-      [[nodiscard]] static osu::BeatmapInfo
-
-      [[nodiscard]] static std::vector<client::CachedDifficulty>
-
-      void syncMapsDir() {
+  void syncMapsDir() {
 #ifdef __EMSCRIPTEN__
     EM_ASM(FS.syncfs(false, function(err){}));
 #endif
@@ -3544,7 +3536,8 @@ private:
       std::println(std::cerr, "[import] copy failed: {}", ec.message());
       return false;
     }
-    if (!fLibrary.addOszToLibrary(dest, true)) {
+    if (!fLibrary.addOszToLibrary(dest, true,
+                                     client::parseQuery(fFilter.text()))) {
       return false;
     }
     std::println(std::cerr, "[import] added {}", dest.filename().string());
@@ -5009,14 +5002,6 @@ private:
     }
   }
 
-
-  [[nodiscard]] std::filesystem::path
-
-  // 512px-wide raster copy: enough for a panel, a fraction of the memory and
-  // disk of the original background.
-  [[nodiscard]] static skia::Sp<skia::SkImage>
-
-  [[nodiscard]] static skia::Sp<skia::SkImage>
 
   void drawDiffPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
                      const osu::BeatmapInfo &info, bool selected, bool hover,
