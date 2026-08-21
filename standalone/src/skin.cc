@@ -359,9 +359,30 @@ public:
     }
   }
 
+  // `key` says which map this is, so that coming back to one already built --
+  // a retry, above all -- costs a lookup instead of a second of work. The
+  // scale belongs in it too: the same map at a different playfield size is a
+  // different set of pictures.
   void precomputeSliderBodies(const osu::Beatmap &map,
                               const osu::ComboInfo &comboInfo, float scale,
-                              skia::GrDirectContext *grContext) {
+                              skia::GrDirectContext *grContext,
+                              const std::string &key = {}) {
+    if (!key.empty()) {
+      for (std::size_t i = 0; i < fBodyCache.size(); ++i) {
+        if (fBodyCache[i].fKey != key) {
+          continue;
+        }
+        if (i != 0) { // to the front: this is the most recently used now
+          auto entry = std::move(fBodyCache[i]);
+          fBodyCache.erase(fBodyCache.begin() +
+                           static_cast<std::ptrdiff_t>(i));
+          fBodyCache.push_front(std::move(entry));
+        }
+        fPrecomputedBodies = fBodyCache.front().fBodies;
+        return;
+      }
+    }
+
     fPrecomputedBodies.clear();
     fBodySegCache.clear();
     for (std::size_t i = 0; i < map.fObjects.size(); ++i) {
@@ -371,6 +392,45 @@ public:
                              map.sliderTickDistance(*s), map.fDiff.fCs,
                              comboInfo.fIndices[i], scale, grContext);
       }
+    }
+    fBodySegCache.clear(); // scratch, and it is per-map by construction
+
+    if (key.empty()) {
+      return;
+    }
+    BodyCacheEntry entry;
+    entry.fKey = key;
+    entry.fBodies = fPrecomputedBodies;
+    entry.fBytes = bodySetBytes(entry.fBodies);
+    fBodyCache.push_front(std::move(entry));
+    this->trimBodyCache();
+  }
+
+  [[nodiscard]] static std::size_t bodySetBytes(const BodySet &bodies) {
+    std::size_t total = 0;
+    for (const auto &[unused, body] : bodies) {
+      if (body.image) {
+        total += static_cast<std::size_t>(body.image->width()) *
+                 static_cast<std::size_t>(body.image->height()) * 4u;
+      }
+    }
+    return total;
+  }
+
+  void trimBodyCache() {
+    const auto over = [this] {
+      if (fBodyCache.size() > kBodyCacheMaps) {
+        return true;
+      }
+      std::size_t total = 0;
+      for (const auto &e : fBodyCache) {
+        total += e.fBytes;
+      }
+      return total > kBodyCacheBytes;
+    };
+    // Never drop the entry in use, which is the one at the front.
+    while (fBodyCache.size() > 1 && over()) {
+      fBodyCache.pop_back();
     }
   }
 
@@ -387,6 +447,11 @@ public:
       if (auto raster = body.image->makeRasterImage(grContext)) {
         body.image = std::move(raster);
       }
+    }
+    // The cached copy is the one the next visit to this map will be handed,
+    // so it has to be flattened too or the work comes back every time.
+    if (!fBodyCache.empty()) {
+      fBodyCache.front().fBodies = fPrecomputedBodies;
     }
   }
 
@@ -1231,7 +1296,27 @@ private:
     float width, height;
     std::vector<skia::SkIRect> tiles;
   };
-  std::unordered_map<std::uint64_t, PrecomputedBody> fPrecomputedBodies;
+  using BodySet = std::unordered_map<std::uint64_t, PrecomputedBody>;
+
+  // Building these costs on the order of a second on a map with hundreds of
+  // sliders, and the commonest thing a player does is retry the map they are
+  // already on. So the last few builds are kept, keyed by which map and at
+  // what scale -- a different scale is a different picture, and keeping one
+  // for a resolution nobody is at any more is waste.
+  //
+  // Bounded by bytes as well as by count, because the count says nothing
+  // about the size: one map is around 43 MB of texture at 1080p and four
+  // times that at 4K, so three of them is a hundred and thirty megabytes on
+  // one screen and half a gigabyte on another.
+  struct BodyCacheEntry {
+    std::string fKey;
+    BodySet fBodies;
+    std::size_t fBytes = 0;
+  };
+  static constexpr std::size_t kBodyCacheMaps = 3;
+  static constexpr std::size_t kBodyCacheBytes = 192u * 1024u * 1024u;
+  std::deque<BodyCacheEntry> fBodyCache; // most recently used at the front
+  BodySet fPrecomputedBodies;            // the active map's, a copy of one
   // Per-map cache of encoded segment textures; keyed by object index, so
   // it MUST be cleared when a different map is precomputed (same index ->
   // different slider). Used to be a function-local static: harmless with

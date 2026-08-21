@@ -573,7 +573,8 @@ private:
     fEngine.emplace(*fMap, fMods, rules);
     this->loadComboInfo();
     fSkin.setComboColors(fMap->fComboColors);
-    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get());
+    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get(),
+                                 this->sliderBodyKey());
     fSliderBodyScale = fScale;
     fSliderBodiesStale = false;
     if (fSettings.choice("renderer") == 1) {
@@ -2761,6 +2762,14 @@ private:
     }
   }
 
+  // Which map, at which playfield scale, and drawn how. All three change the
+  // pictures, so all three are in the name they are filed under.
+  [[nodiscard]] std::string sliderBodyKey() const {
+    // The md5 rather than the file name: two sets can both hold a Normal.osu.
+    return std::format("{}:{}:{:.4f}:{}", this->beatmapMd5(), fBeatmapFilename,
+                       fScale, fSettings.choice("renderer"));
+  }
+
   // A rasterised body is only as sharp as the scale it was built at. Rebuilt
   // after a resize has settled rather than during it: this costs on the order
   // of a second on a map with hundreds of sliders, and a window being dragged
@@ -2772,7 +2781,8 @@ private:
     if (wallMs() - fLastResizeWall < 250.0) {
       return;
     }
-    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get());
+    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get(),
+                                 this->sliderBodyKey());
     if (fSettings.choice("renderer") == 1) {
       fSkin.flattenBodiesToRaster(fContext.get());
     }
