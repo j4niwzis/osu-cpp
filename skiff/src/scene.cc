@@ -34,17 +34,26 @@ enum class Axes : std::uint8_t { kNone, kX, kY, kBoth };
 [[nodiscard]] inline Axes axesUnion(Axes a, Axes b) noexcept {
   const bool x = hasX(a) || hasX(b);
   const bool y = hasY(a) || hasY(b);
-  if (x && y) return Axes::kBoth;
-  if (x) return Axes::kX;
-  if (y) return Axes::kY;
+  if (x && y)
+    return Axes::kBoth;
+  if (x)
+    return Axes::kX;
+  if (y)
+    return Axes::kY;
   return Axes::kNone;
 }
 
 // The nine positions a drawable can be anchored to, as in the framework.
 enum class Anchor : std::uint8_t {
-  kTopLeft, kTopCentre, kTopRight,
-  kCentreLeft, kCentre, kCentreRight,
-  kBottomLeft, kBottomCentre, kBottomRight
+  kTopLeft,
+  kTopCentre,
+  kTopRight,
+  kCentreLeft,
+  kCentre,
+  kCentreRight,
+  kBottomLeft,
+  kBottomCentre,
+  kBottomRight
 };
 
 [[nodiscard]] inline float anchorX(Anchor a) noexcept {
@@ -140,10 +149,15 @@ struct Transform {
 //   auto *bg = row->add<nodes::Box>({.fill = true, .cornerRadius = 6.0f},
 //                                   kBackground);
 //
-// Each member's default is the drawable's own, so an empty spec `{}` changes
-// nothing and every field left out stays at what the class chose. Four of
-// them are shorthands rather than fields of their own, covering the idioms
-// that the screens repeat most:
+// A field left out is not written at all, which is what makes `{}` a no-op
+// and lets a node keep what its constructor chose. That is not a nicety: the
+// first cut wrote every field unconditionally, and a header that anchored
+// itself to the top centre was silently dragged to the top left, while a
+// scroll container that masks by default stopped clipping. Hence the
+// optionals -- "zero" and "not mentioned" are different things.
+//
+// Four members are shorthands rather than fields of their own, covering the
+// idioms the screens repeat most:
 //
 //   place        anchor and origin at once, which is what all but a handful
 //                of call sites want; anchor/origin override it individually
@@ -155,26 +169,33 @@ struct Transform {
 // here is the order a layout is usually thought about: where it sits, how big
 // it is, what surrounds it, then how it looks.
 struct Spec {
-  Anchor place = Anchor::kTopLeft;
+  std::optional<Anchor> place{};
   std::optional<Anchor> anchor{};
   std::optional<Anchor> origin{};
-  float x = 0.0f, y = 0.0f;
+  std::optional<float> x{};
+  std::optional<float> y{};
 
   bool fill = false;
   bool fillX = false;
   bool fillY = false;
-  float width = 0.0f, height = 0.0f;
-  Axes relativeSize = Axes::kNone;
-  Axes autoSize = Axes::kNone;
+  std::optional<float> width{};
+  std::optional<float> height{};
+  std::optional<Axes> relativeSize{};
+  std::optional<Axes> autoSize{};
 
+  // These two are plain, not optional, because std::optional cannot be given
+  // a braced list -- `.padding = {2, 6, 2, 6}` would stop compiling. An
+  // all-zero margin therefore reads as "not mentioned", which costs a node
+  // whose constructor set one the ability to be told to clear it. It can
+  // still say so afterwards, and nothing does.
   Margin margin{};
   Margin padding{};
 
-  float cornerRadius = 0.0f;
-  bool masking = false;
-  float scale = 1.0f;
-  float alpha = 1.0f;
-  bool visible = true;
+  std::optional<float> cornerRadius{};
+  std::optional<bool> masking{};
+  std::optional<float> scale{};
+  std::optional<float> alpha{};
+  std::optional<bool> visible{};
 };
 
 // ---- the node ------------------------------------------------------------
@@ -187,17 +208,17 @@ public:
   virtual ~Drawable() = default;
 
   // -- layout inputs, set by whoever builds the tree
-  float fWidth = 0.0f, fHeight = 0.0f;   // absolute, or a fraction if relative
-  Axes fRelativeSizeAxes = Axes::kNone;  // size is a fraction of the parent
-  Axes fAutoSizeAxes = Axes::kNone;      // size follows the children
-  Anchor fAnchor = Anchor::kTopLeft;     // point in the parent to attach to
-  Anchor fOrigin = Anchor::kTopLeft;     // point in this drawable that lands there
-  Margin fMargin;                        // outside the drawable
-  Margin fPadding;                       // inside, applied to children
-  float fX = 0.0f, fY = 0.0f;            // offset from the anchor
+  float fWidth = 0.0f, fHeight = 0.0f;  // absolute, or a fraction if relative
+  Axes fRelativeSizeAxes = Axes::kNone; // size is a fraction of the parent
+  Axes fAutoSizeAxes = Axes::kNone;     // size follows the children
+  Anchor fAnchor = Anchor::kTopLeft;    // point in the parent to attach to
+  Anchor fOrigin = Anchor::kTopLeft; // point in this drawable that lands there
+  Margin fMargin;                    // outside the drawable
+  Margin fPadding;                   // inside, applied to children
+  float fX = 0.0f, fY = 0.0f;        // offset from the anchor
   float fScale = 1.0f;
   float fAlpha = 1.0f;
-  bool fMasking = false;                 // clip children to these bounds
+  bool fMasking = false; // clip children to these bounds
   float fCornerRadius = 0.0f;
   bool fVisible = true;
 
@@ -208,38 +229,66 @@ public:
   // left as the class set it, which is what makes `{}` a no-op and lets a
   // custom node keep the sizing its constructor chose.
   void apply(const Spec &spec) {
-    fAnchor = spec.anchor.value_or(spec.place);
-    fOrigin = spec.origin.value_or(spec.place);
-    fX = spec.x;
-    fY = spec.y;
+    if (spec.place) {
+      fAnchor = *spec.place;
+      fOrigin = *spec.place;
+    }
+    if (spec.anchor) {
+      fAnchor = *spec.anchor;
+    }
+    if (spec.origin) {
+      fOrigin = *spec.origin;
+    }
+    if (spec.x) {
+      fX = *spec.x;
+    }
+    if (spec.y) {
+      fY = *spec.y;
+    }
 
-    Axes relative = spec.relativeSize;
+    if (spec.width) {
+      fWidth = *spec.width;
+    }
+    if (spec.height) {
+      fHeight = *spec.height;
+    }
+    Axes relative = spec.relativeSize.value_or(Axes::kNone);
     if (spec.fill || spec.fillX) {
       relative = axesUnion(relative, Axes::kX);
       fWidth = 1.0f;
-    } else if (spec.width != 0.0f) {
-      fWidth = spec.width;
     }
     if (spec.fill || spec.fillY) {
       relative = axesUnion(relative, Axes::kY);
       fHeight = 1.0f;
-    } else if (spec.height != 0.0f) {
-      fHeight = spec.height;
     }
     if (relative != Axes::kNone) {
       fRelativeSizeAxes = relative;
     }
-    if (spec.autoSize != Axes::kNone) {
-      fAutoSizeAxes = spec.autoSize;
+    if (spec.autoSize) {
+      fAutoSizeAxes = *spec.autoSize;
     }
 
-    fMargin = spec.margin;
-    fPadding = spec.padding;
-    fCornerRadius = spec.cornerRadius;
-    fMasking = spec.masking;
-    fScale = spec.scale;
-    fAlpha = spec.alpha;
-    fVisible = spec.visible;
+    if (spec.margin.totalX() != 0.0f || spec.margin.totalY() != 0.0f) {
+      fMargin = spec.margin;
+    }
+    if (spec.padding.totalX() != 0.0f || spec.padding.totalY() != 0.0f) {
+      fPadding = spec.padding;
+    }
+    if (spec.cornerRadius) {
+      fCornerRadius = *spec.cornerRadius;
+    }
+    if (spec.masking) {
+      fMasking = *spec.masking;
+    }
+    if (spec.scale) {
+      fScale = *spec.scale;
+    }
+    if (spec.alpha) {
+      fAlpha = *spec.alpha;
+    }
+    if (spec.visible) {
+      fVisible = *spec.visible;
+    }
 
     // Sizing an axis both from the parent and from the children asks for two
     // different numbers at once. The framework throws here; this is a build
@@ -264,8 +313,7 @@ public:
   // of field assignments, the std::move and the .get() kept for later were
   // four separate things to get right per node, and three of them were the
   // same every time.
-  template <class T, class... Args>
-  T *add(const Spec &spec, Args &&...args) {
+  template <class T, class... Args> T *add(const Spec &spec, Args &&...args) {
     auto child = std::make_unique<T>(std::forward<Args>(args)...);
     T *raw = child.get();
     raw->apply(spec);
@@ -275,8 +323,7 @@ public:
 
   // Same, for a node that was already built elsewhere -- returns it typed so
   // that keeping a pointer does not need a separate .get() before the move.
-  template <class T>
-  T *adopt(std::unique_ptr<T> child) {
+  template <class T> T *adopt(std::unique_ptr<T> child) {
     T *raw = child.get();
     this->add(std::move(child));
     return raw;
@@ -444,9 +491,9 @@ public:
     const int saved = canvas->save();
     if (fMasking) {
       if (fCornerRadius > 0.0f) {
-        canvas->clipRRect(skia::SkRRect::MakeRectXY(fBounds, fCornerRadius,
-                                                    fCornerRadius),
-                          true);
+        canvas->clipRRect(
+            skia::SkRRect::MakeRectXY(fBounds, fCornerRadius, fCornerRadius),
+            true);
       } else {
         canvas->clipRect(fBounds, true);
       }
@@ -658,9 +705,8 @@ private:
       const double span = t.fEndMs - t.fStartMs;
       const float progress =
           span > 0.0 ? static_cast<float>((nowMs - t.fStartMs) / span) : 1.0f;
-      this->applyProperty(t.fProperty,
-                          t.fFrom + (t.fTo - t.fFrom) *
-                                        ease(t.fEasing, progress));
+      this->applyProperty(t.fProperty, t.fFrom + (t.fTo - t.fFrom) *
+                                                     ease(t.fEasing, progress));
     }
     std::erase_if(fTransforms,
                   [nowMs](const Transform &t) { return nowMs >= t.fEndMs; });
@@ -668,12 +714,24 @@ private:
 
   void applyProperty(Property property, float value) {
     switch (property) {
-    case Property::kAlpha: fAlpha = value; break;
-    case Property::kX: fX = value; break;
-    case Property::kY: fY = value; break;
-    case Property::kWidth: fWidth = value; break;
-    case Property::kHeight: fHeight = value; break;
-    case Property::kScale: fScale = value; break;
+    case Property::kAlpha:
+      fAlpha = value;
+      break;
+    case Property::kX:
+      fX = value;
+      break;
+    case Property::kY:
+      fY = value;
+      break;
+    case Property::kWidth:
+      fWidth = value;
+      break;
+    case Property::kHeight:
+      fHeight = value;
+      break;
+    case Property::kScale:
+      fScale = value;
+      break;
     }
   }
 
@@ -700,6 +758,5 @@ template <class T, class... Args>
   node->apply(spec);
   return node;
 }
-
 
 } // namespace skiff::scene
