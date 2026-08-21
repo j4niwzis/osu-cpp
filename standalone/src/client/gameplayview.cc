@@ -513,6 +513,15 @@ public:
 
     dirty.join(skia::SkIRect::MakeXYWH(0, 0, c.fScreenW, 160));
 
+    // The frame breakdown sits in the opposite corner from the HUD strip
+    // above, and changes every frame. Without saying so it would be clipped
+    // away and never appear -- which it was not, only because the path that
+    // drew it was not applying the clip properly either.
+    if (c.fShowProfile) {
+      dirty.join(skia::SkIRect::MakeLTRB(c.fScreenW - 320, c.fScreenH - 120,
+                                         c.fScreenW, c.fScreenH));
+    }
+
     return dirty;
   }
 
@@ -1116,6 +1125,28 @@ public:
         avgRest /= static_cast<double>(fProfileNum);
         avgHud /= static_cast<double>(fProfileNum);
       }
+      // Averages hide the thing that is actually felt. A single 40ms frame in
+      // sixty adds half a millisecond to the mean and is invisible there,
+      // while on screen it is a visible hitch and, with vsync, three missed
+      // deadlines. So the worst frame in the window is reported beside the
+      // mean, per stage, and the stage that owns it is named.
+      double maxAdv = 0.0, maxRender = 0.0, maxFlush = 0.0, maxSwap = 0.0;
+      double maxFollow = 0.0, maxObjs = 0.0, maxRest = 0.0, maxHud = 0.0;
+      double maxFrame = 0.0;
+      for (std::size_t i = 0; i < fProfileNum; ++i) {
+        const auto &f = fProfile[i];
+        maxAdv = std::max(maxAdv, f.advUs);
+        maxRender = std::max(maxRender, f.renderUs);
+        maxFlush = std::max(maxFlush, f.flushUs);
+        maxSwap = std::max(maxSwap, f.swapUs);
+        maxFollow = std::max(maxFollow, f.renderFollowUs);
+        maxObjs = std::max(maxObjs, f.renderObjectsUs);
+        maxRest = std::max(maxRest, f.renderRestUs);
+        maxHud = std::max(maxHud, f.renderHudUs);
+        maxFrame = std::max(maxFrame,
+                            f.advUs + f.renderUs + f.flushUs + f.swapUs);
+      }
+
       (*c.fFont).setSize(11.0f);
       fHudPaint.setAlphaf(0.6f);
       const std::string profText =
@@ -1128,6 +1159,16 @@ public:
                       avgFollow, avgObjs, avgRest, avgHud);
       client::ui::fonts().draw(canvas, *c.fFont, subText, sw - 240.0f,
                                sh - 75.0f, fHudPaint);
+      const std::string maxText = std::format(
+          "worst {:.0f} us = adv {:.0f} rend {:.0f} flush {:.0f} swap {:.0f}",
+          maxFrame, maxAdv, maxRender, maxFlush, maxSwap);
+      client::ui::fonts().draw(canvas, *c.fFont, maxText, sw - 240.0f,
+                               sh - 90.0f, fHudPaint);
+      const std::string maxSub = std::format(
+          "worst rend: follow {:.0f} objs {:.0f} rest {:.0f} hud {:.0f}",
+          maxFollow, maxObjs, maxRest, maxHud);
+      client::ui::fonts().draw(canvas, *c.fFont, maxSub, sw - 240.0f,
+                               sh - 105.0f, fHudPaint);
     }
   }
 
