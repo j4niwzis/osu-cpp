@@ -5158,13 +5158,13 @@ private:
     // safety net, and moving the pointer speeds it up because every event
     // owes frames.
     constexpr float kMoving = 0.002f;
-    bool moving = std::abs(fMenuDim - dimTarget) > kMoving;
+    bool easing = std::abs(fMenuDim - dimTarget) > kMoving;
 
     for (auto &b : fMenuBtns) {
       const bool visible = b.fVisible == fMenuState;
       b.fExpand = this->approach(b.fExpand, visible ? 1.0f : 0.0f, 95.0f);
       b.fFlash = this->approach(b.fFlash, 0.0f, 160.0f);
-      moving = moving ||
+      easing = easing ||
                std::abs(b.fExpand - (visible ? 1.0f : 0.0f)) > kMoving ||
                b.fFlash > kMoving;
 
@@ -5186,13 +5186,13 @@ private:
 
       const bool hovered = visible && rect.contains(fMouseX, fMouseY);
       b.fHover = this->approach(b.fHover, hovered ? 1.0f : 0.0f, 110.0f);
-      moving = moving || std::abs(b.fHover - (hovered ? 1.0f : 0.0f)) > kMoving;
+      easing = easing || std::abs(b.fHover - (hovered ? 1.0f : 0.0f)) > kMoving;
     }
 
-    moving = moving || std::abs(fLogoX - targetLogoX) > kMoving ||
+    easing = easing || std::abs(fLogoX - targetLogoX) > kMoving ||
              std::abs(fLogoY - targetLogoY) > kMoving ||
              std::abs(fLogoScale - targetScale) > kMoving;
-    fMenuMoving = moving;
+    fMenuMoving = easing;
 
     this->settleLogo(fLogoBase);
 
