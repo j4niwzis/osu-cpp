@@ -408,6 +408,8 @@ int main(int argc, char **argv) {
                                    attrs.fAimDifficultStrains)
                     << std::format("  speedstrains  {:.13f}\n",
                                    attrs.fSpeedDifficultStrains)
+                    << std::format("  aimsliders    {:.13f}\n",
+                                   attrs.fAimDifficultSliders)
                     << std::format("  windows       {:.4f} {:.4f} {:.4f}\n",
                                    attrs.fGreatWindow, attrs.fOkWindow,
                                    attrs.fMehWindow)

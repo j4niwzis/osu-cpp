@@ -462,6 +462,28 @@ private:
 // counting, as a soft count rather than a threshold. The reference strain is
 // what the top one would be if every object were equally hard, which is the
 // difficulty value times (1 - DecayWeight).
+// The same shape as countTopWeightedStrains, against a reference a tenth of
+// the difficulty value rather than the tenth that the decay weight happens to
+// leave -- they are the same number, written the way each source writes it.
+// Empty means no sliders, which is not the same as sliders that are all easy,
+// so it answers zero either way.
+[[nodiscard]] inline double
+countTopWeightedSliders(const std::vector<double> &sliderStrains,
+                        double difficultyValue) {
+  if (sliderStrains.empty()) {
+    return 0.0;
+  }
+  const double consistentTop = difficultyValue / 10.0;
+  if (consistentTop == 0.0) {
+    return 0.0;
+  }
+  double total = 0.0;
+  for (const double s : sliderStrains) {
+    total += diffutil::logistic(s / consistentTop, 0.88, 10.0, 1.1);
+  }
+  return total;
+}
+
 [[nodiscard]] inline double
 countTopWeightedStrains(const std::vector<double> &strains,
                         double difficultyValue) {
@@ -497,6 +519,13 @@ public:
     fStrain += AimEvaluator::eval(c, fWithSliders) * kSkillMultiplier;
     fPeaks.record(fStrain);
     fObjectStrains.push_back(fStrain);
+    // Aim keeps the strain a slider was reached at, separately. It is not the
+    // same question as how hard the objects are: it is how much of the aim
+    // would be lost if the sliders were not followed, which is what the
+    // performance calculation nerfs when the tails are dropped.
+    if (std::holds_alternative<Slider>(*c.fBase)) {
+      fSliderStrains.push_back(fStrain);
+    }
   }
 
   [[nodiscard]] double difficulty() const { return fPeaks.difficulty(); }
@@ -508,6 +537,9 @@ public:
   [[nodiscard]] const std::vector<double> &objectStrains() const noexcept {
     return fObjectStrains;
   }
+  [[nodiscard]] const std::vector<double> &sliderStrains() const noexcept {
+    return fSliderStrains;
+  }
 
 private:
   static constexpr double kDecayBase = 0.15;
@@ -516,6 +548,7 @@ private:
   double fStrain = 0.0;
   SectionPeaks fPeaks;
   std::vector<double> fObjectStrains;
+  std::vector<double> fSliderStrains;
 };
 
 class SpeedSkill {
@@ -686,11 +719,8 @@ lengthBonus(int totalHits) noexcept {
       std::sqrt(aimNoSlidersValue) * kDifficultyMultiplier;
   out.fSliderFactor = plainAim > 0.0 ? plainAimNoSliders / plainAim : 1.0;
   out.fSpeedNoteCount = speed.relevantNoteCount();
-  // fAimDifficultSliders is not measured yet: it needs the per-slider strains
-  // kept separately, which is its own piece of work. Left at zero, which is
-  // the value that turns the slider nerf off rather than a wrong one that
-  // applies it -- the branch that uses it requires a positive count.
-  out.fAimDifficultSliders = 0.0;
+  out.fAimDifficultSliders =
+      countTopWeightedSliders(aim.sliderStrains(), aimValue);
   out.fAimDifficultStrains =
       countTopWeightedStrains(aim.objectStrains(), aimValue);
   out.fSpeedDifficultStrains =
