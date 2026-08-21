@@ -213,6 +213,7 @@ private:
   // could. OSU_TRACE_RESIZE is the old name and still works.
   const bool fTraceRepaint = std::getenv("OSU_TRACE_REPAINT") != nullptr ||
                              std::getenv("OSU_TRACE_RESIZE") != nullptr;
+  const char *fFrameReason = ""; // what the last frame was drawn for
   bool fTracedClipping = false;
   int fTracedAge = -2;
   std::size_t fTracedHistory = 0;
@@ -2289,18 +2290,30 @@ private:
     return fMouseX != fDrawnMouseX || fMouseY != fDrawnMouseY;
   }
 
+  // Why a frame is happening. needsFrame answers yes from sixteen places and
+  // said which of them only to itself, so "it draws when it should not" and
+  // "it does not draw when it should" were both unanswerable from outside.
+  [[nodiscard]] bool frameBecause(const char *reason) {
+    if (fTraceRepaint && reason != fFrameReason) {
+      std::println(std::cerr, "[frame] {:8.0f} ms  drawn because {}", wallMs(),
+                   reason);
+    }
+    fFrameReason = reason;
+    return true;
+  }
+
   [[nodiscard]] bool needsFrame() {
     // Gameplay is a moving picture by definition, and so is anything with a
     // clock on screen.
     if (fState == State::kPlaying) {
-      return true; // a moving picture by definition
+      return this->frameBecause("gameplay"); // a moving picture by definition
     }
     // The results screen counts up, slides its panels and fades in, all of
     // which end. After that it is a still picture like any other.
     if (fState == State::kResults &&
         (wallMs() - fStateEnterWall < 2500.0 ||
          std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f)) {
-      return true;
+      return this->frameBecause("results settling");
     }
     // The logo tracks the music and the triangles drift, and either is a
     // reason to keep drawing. Neither is a reason to stop: everything below
@@ -2309,55 +2322,60 @@ private:
     // whole menu out of the conversation.
     if (fState == State::kMainMenu &&
         (fSettings.flag("visualiser") || fSettings.flag("menutriangles"))) {
-      return true;
+      return this->frameBecause("menu visualiser or triangles");
     }
     // Something in the menu is part-way to where it is going: the buttons say
     // so through the tree, and the dim and the logo through the flag, since
     // neither of those is a node.
     if (fState == State::kMainMenu && (fMenuMoving || fMenu.animating())) {
-      return true;
+      return this->frameBecause("menu still easing");
     }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
-      return true; // triangles drift inside the buttons, as lazer's do
+      return this->frameBecause(
+          "pause triangles"); // triangles drift inside the buttons, as lazer's
+                              // do
     }
     if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
-      return true; // progress that is being watched
+      return this->frameBecause(
+          "a search, preview or transfer"); // progress that is being watched
     }
     if (fPreviewId >= 0 || fExportDialog.open()) {
-      return true; // a transfer or a dialog with live status in it
+      return this->frameBecause(
+          "a preview or the export dialog"); // a transfer or a dialog with live
+                                             // status in it
     }
     // The replay browser's strip glides to the panel that was picked. It is
     // drawn as an overlay rather than as a screen, so it has nobody else to
     // ask for the frames that carry it there.
     if (fReplayListOpen &&
         std::abs(fPanelScroll - fPanelScrollTarget) > 0.05f) {
-      return true;
+      return this->frameBecause("replay strip gliding");
     }
     // Overlays are drawn while they slide in and out, and after that only
     // when something touches them -- which arrives as an event.
     if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
-      return true;
+      return this->frameBecause("an overlay sliding");
     }
     if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
-      return true;
+      return this->frameBecause("the confirm dialog");
     }
     // Scene trees know whether anything in them is still moving, which is the
     // one thing they cannot express as damage in advance.
     if (fState == State::kDownload &&
         (fListing.animating() || fSetPage.animating())) {
-      return true;
+      return this->frameBecause("the download screen");
     }
     if (fState == State::kSongSelect && fCarousel.animating()) {
-      return true;
+      return this->frameBecause("the carousel");
     }
     const double now = wallMs();
     if (fFramesOwed > 0) {
       --fFramesOwed;
-      return true;
+      return this->frameBecause("frames owed");
     }
     if (fWakeWall > 0.0 && now >= fWakeWall) {
       fWakeWall = 0.0;
-      return true;
+      return this->frameBecause("a screen asked to be woken");
     }
     // Something marked itself outside a frame: an event handler, or work
     // that finished in the background. Damage marked while drawing only says
@@ -2365,14 +2383,16 @@ private:
     // itself whole every time it draws would otherwise be asking for the next
     // frame, every frame, for ever.
     if (fDamageDrives) {
-      return true;
+      return this->frameBecause("something marked itself outside a frame");
     }
     if (now <= fRedrawUntilWall) {
-      return true;
+      return this->frameBecause("redraw window");
     }
     // Safety net: whatever the screens forgot to announce shows up within
     // this long rather than never.
-    return now - fLastDrawWall > 500.0;
+    return now - fLastDrawWall > 500.0
+               ? this->frameBecause("the half-second safety net")
+               : false;
   }
 
   // The part of the window that a screen is actually showing, in the window's
