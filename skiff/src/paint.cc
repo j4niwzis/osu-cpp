@@ -407,42 +407,21 @@ private:
   skia::SkFontHinting fHinting;
 };
 
-// A two-stop gradient down a rectangle, in one draw. Drawn as a stack of
-// bands before this existed, which was two dozen draw calls and a step size
-// to pick.
+// A two-stop gradient down a rectangle, and across one. The draw itself is in
+// the Skia wrapper, which is the file that knows whether this Skia's gradient
+// shader is reachable.
 inline void verticalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
                              skia::SkColor top, skia::SkColor bottom,
                              float alpha = 1.0f) {
-  if (canvas == nullptr || rect.isEmpty()) {
-    return;
-  }
-  const skia::SkPoint ends[2] = {{rect.fLeft, rect.fTop},
-                                 {rect.fLeft, rect.fBottom}};
-  const skia::SkColor stops[2] = {top, bottom};
-  skia::SkPaint p;
-  p.setAntiAlias(true);
-  p.setAlphaf(alpha);
-  p.setShader(skia::SkGradientShader::MakeLinear(ends, stops, nullptr, 2,
-                                                 skia::SkTileMode::kClamp));
-  canvas->drawRect(rect, p);
+  skia::linearGradient(canvas, rect, {rect.fLeft, rect.fTop},
+                       {rect.fLeft, rect.fBottom}, top, bottom, alpha);
 }
 
-// The same across it.
 inline void horizontalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
                                skia::SkColor left, skia::SkColor right,
                                float alpha = 1.0f) {
-  if (canvas == nullptr || rect.isEmpty()) {
-    return;
-  }
-  const skia::SkPoint ends[2] = {{rect.fLeft, rect.fTop},
-                                 {rect.fRight, rect.fTop}};
-  const skia::SkColor stops[2] = {left, right};
-  skia::SkPaint p;
-  p.setAntiAlias(true);
-  p.setAlphaf(alpha);
-  p.setShader(skia::SkGradientShader::MakeLinear(ends, stops, nullptr, 2,
-                                                 skia::SkTileMode::kClamp));
-  canvas->drawRect(rect, p);
+  skia::linearGradient(canvas, rect, {rect.fLeft, rect.fTop},
+                       {rect.fRight, rect.fTop}, left, right, alpha);
 }
 
 // ---- Drawing helpers -----------------------------------------------------
