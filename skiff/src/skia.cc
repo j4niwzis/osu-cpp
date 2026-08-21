@@ -25,14 +25,15 @@ module;
 #include <skia/core/SkPoint.h>
 #include <skia/core/SkRect.h>
 #include <skia/core/SkRefCnt.h>
+#include <skia/core/SkRegion.h>
 #include <skia/core/SkSamplingOptions.h>
 #include <skia/core/SkShader.h>
-#include <skia/core/SkRegion.h>
 #include <skia/core/SkStream.h>
 #include <skia/core/SkString.h>
 #include <skia/core/SkSurface.h>
 #include <skia/core/SkTypeface.h>
 #include <skia/core/SkVertices.h>
+#include <skia/effects/SkGradient.h>
 #include <skia/effects/SkRuntimeEffect.h>
 #include <skia/encode/SkPngEncoder.h>
 #include <skia/gpu/ganesh/GrBackendSurface.h>
@@ -72,6 +73,7 @@ using ::SkFontMetrics;
 using ::SkFontMgr;
 using ::SkFontStyle;
 using ::SkFontStyleSet;
+using ::SkGradient;
 using ::SkImage;
 using ::SkImageInfo;
 using ::SkIRect;
@@ -97,6 +99,7 @@ using ::SkSurface;
 using ::SkSurfaceProps;
 using ::SkTextEncoding;
 using ::SkTileMode;
+using ::SkShaders::LinearGradient;
 
 using ::SkTypeface;
 using ::SkVertices;
@@ -133,7 +136,6 @@ inline constexpr SkColor colorSetARGB(uint8_t a, uint8_t r, uint8_t g,
   return (static_cast<SkColor>(a) << 24) | (static_cast<SkColor>(r) << 16) |
          (static_cast<SkColor>(g) << 8) | static_cast<SkColor>(b);
 }
-
 
 inline constexpr GrGLenum kGlRgba8 = GL_RGBA8;
 

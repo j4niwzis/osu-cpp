@@ -407,59 +407,45 @@ private:
   skia::SkFontHinting fHinting;
 };
 
-// A two-stop gradient, drawn as a stack of bands. Skia's gradient shader is
-// the obvious way and its header is not in this build's include set, so this
-// is the way that needs nothing but a rectangle and a colour. One
-// implementation, here, rather than one per screen: the beatmap cover and the
-// logo each had their own, with their own step counts.
-inline void bandedGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
+// A two-stop gradient between two points, in one draw.
+//
+// Skia m148 spells this SkGradient plus a free function: the colours and the
+// tiling are a SkGradient::Colors, how to interpolate between them is a
+// SkGradient::Interpolation, and SkShaders::LinearGradient turns the pair and
+// two points into a shader. The header is SkGradient.h -- SkGradientShader.h
+// and SkGradientShader::MakeLinear are both gone.
+inline void linearGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                           skia::SkPoint from, skia::SkPoint to,
                            skia::SkColor start, skia::SkColor end,
-                           bool vertical, float alpha) {
+                           float alpha = 1.0f) {
   if (canvas == nullptr || rect.isEmpty()) {
     return;
   }
-  // Enough that the seams are under a pixel on anything the client draws
-  // gradients across, which is a logo and a header strip.
-  constexpr int kBands = 48;
-  const auto lerp = [](std::uint32_t a, std::uint32_t b, float t) {
-    return static_cast<std::uint8_t>(
-        static_cast<float>(a) +
-        (static_cast<float>(b) - static_cast<float>(a)) * t);
-  };
+  const skia::SkPoint points[2] = {from, to};
+  const skia::SkColor4f colours[2] = {skia::SkColor4f::FromColor(start),
+                                      skia::SkColor4f::FromColor(end)};
+  const skia::SkGradient gradient(
+      skia::SkGradient::Colors(colours, skia::SkTileMode::kClamp),
+      skia::SkGradient::Interpolation{});
   skia::SkPaint p;
-  p.setAntiAlias(false);
-  for (int i = 0; i < kBands; ++i) {
-    const float t = static_cast<float>(i) / static_cast<float>(kBands - 1);
-    const skia::SkColor colour =
-        skia::colorSetARGB(lerp((start >> 24) & 0xffu, (end >> 24) & 0xffu, t),
-                           lerp((start >> 16) & 0xffu, (end >> 16) & 0xffu, t),
-                           lerp((start >> 8) & 0xffu, (end >> 8) & 0xffu, t),
-                           lerp(start & 0xffu, end & 0xffu, t));
-    p.setColor(colour);
-    p.setAlphaf(combinedAlpha(colour, alpha));
-    const float from = static_cast<float>(i) / static_cast<float>(kBands);
-    const float to = static_cast<float>(i + 1) / static_cast<float>(kBands);
-    canvas->drawRect(
-        vertical ? skia::SkRect::MakeLTRB(
-                       rect.fLeft, rect.fTop + rect.height() * from,
-                       rect.fRight, rect.fTop + rect.height() * to + 1.0f)
-                 : skia::SkRect::MakeLTRB(
-                       rect.fLeft + rect.width() * from, rect.fTop,
-                       rect.fLeft + rect.width() * to + 1.0f, rect.fBottom),
-        p);
-  }
+  p.setAntiAlias(true);
+  p.setAlphaf(alpha);
+  p.setShader(skia::LinearGradient(points, gradient));
+  canvas->drawRect(rect, p);
 }
 
 inline void verticalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
                              skia::SkColor top, skia::SkColor bottom,
                              float alpha = 1.0f) {
-  bandedGradient(canvas, rect, top, bottom, true, alpha);
+  linearGradient(canvas, rect, {rect.fLeft, rect.fTop},
+                 {rect.fLeft, rect.fBottom}, top, bottom, alpha);
 }
 
 inline void horizontalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
                                skia::SkColor left, skia::SkColor right,
                                float alpha = 1.0f) {
-  bandedGradient(canvas, rect, left, right, false, alpha);
+  linearGradient(canvas, rect, {rect.fLeft, rect.fTop},
+                 {rect.fRight, rect.fTop}, left, right, alpha);
 }
 
 // ---- Drawing helpers -----------------------------------------------------
