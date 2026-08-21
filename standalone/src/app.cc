@@ -975,6 +975,15 @@ private:
   }
 
   [[nodiscard]] double eventGameTime(double wallMs) {
+    // The map's timeline does not exist until a frame of it has been shown,
+    // and input is drained before the frame. Dating an event from the clock
+    // in that window reads an anchor left over from the last map -- or, on
+    // the first play of a session, from process start -- so a single pointer
+    // movement reaches the engine stamped minutes in, and advance() walks the
+    // whole map and misses every object in it.
+    if (fAwaitingFirstFrame) {
+      return 0.0;
+    }
 #ifdef __EMSCRIPTEN__
     return wallMs - fStartMs;
 #else
