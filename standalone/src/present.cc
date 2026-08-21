@@ -29,15 +29,18 @@ export namespace present {
 // everything), N >= 1 when the buffer holds the frame from N swaps ago.
 [[nodiscard]] int bufferAge();
 
-// The size of the drawable actually being drawn into, asked of the window
-// system on the thread that owns the context. False when nobody will say.
+// The size of the drawable being drawn into, asked of the window system on
+// the thread that owns the context. False when nobody will answer.
 //
-// This is not the same question as "what size did the last resize event say":
-// the window is resized by the server, and the event telling this client so
-// travels through another thread and a queue. The frames in between are drawn
-// into a buffer that has already been reallocated at the new size, and a
-// buffer that has just been reallocated holds nothing.
+// Not the same question as "what did the last resize event say". The server
+// resizes the window and reallocates its buffers when it likes; GLFW learns
+// of it in glfwPollEvents on another thread, and every frame drawn between
+// those two moments is drawn into a buffer that is already the new size and
+// has never been painted. Neither the event queue nor an atomic written by
+// the callback is any fresher than the callback itself, which is the mistake
+// that took two attempts. The X server knows now.
 [[nodiscard]] bool surfaceSize(int *width, int *height);
+
 
 // Hands the compositor the rectangles that changed since the last swap, in
 // top-left coordinates. False when the platform will not take them, and the
@@ -78,8 +81,6 @@ constexpr EGLint kEglHeight = 0x3056;
 using XDisplay = void;
 using GLXDrawable = unsigned long;
 constexpr int kGlxBackBufferAge = 0x20F4; // GLX_BACK_BUFFER_AGE_EXT
-constexpr int kGlxWidth = 0x801D;
-constexpr int kGlxHeight = 0x801E;
 
 struct Egl {
   EGLDisplay (*getCurrentDisplay)() = nullptr;
@@ -90,6 +91,15 @@ struct Egl {
   EGLBoolean (*swapWithDamage)(EGLDisplay, EGLSurface, EGLint *, EGLint) =
       nullptr;
   bool fHasAge = false;
+};
+
+struct X11 {
+  // XGetGeometry answers for a plain Window, which glXQueryDrawable does not:
+  // that one is specified for GLXWindow and friends and leaves its outputs
+  // untouched for a drawable it does not recognise.
+  int (*getGeometry)(XDisplay *, GLXDrawable, GLXDrawable *, int *, int *,
+                     unsigned int *, unsigned int *, unsigned int *,
+                     unsigned int *) = nullptr;
 };
 
 struct Glx {
@@ -105,6 +115,7 @@ struct Glx {
 struct Loaded {
   Egl fEgl;
   Glx fGlx;
+  X11 fX11;
   const char *fBackend = "none";
 };
 
@@ -180,6 +191,12 @@ struct Loaded {
 
   // GLX has the same question and no answer for the second half: there is no
   // swap-with-damage there, only the age.
+  if (void *x11 = ::dlopen("libX11.so.6", RTLD_LAZY | RTLD_LOCAL);
+      x11 != nullptr) {
+    out.fX11.getGeometry = reinterpret_cast<decltype(out.fX11.getGeometry)>(
+        ::dlsym(x11, "XGetGeometry"));
+  }
+
   void *glLib = ::dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
   if (glLib == nullptr) {
     note("libGL.so.1 did not load");
@@ -257,9 +274,8 @@ int bufferAge() {
 
 bool surfaceSize(int *width, int *height) {
   const Loaded &state = loaded();
-  // Asked of whichever of the two resolved, extension or no extension: the
-  // size of a surface is not an extension, and a backend that cannot report
-  // a buffer age can still report how big it is.
+  // EGL answers from the client side without a round trip, so it is asked
+  // first where it is current at all.
   if (state.fEgl.getCurrentDisplay != nullptr &&
       state.fEgl.getCurrentSurface != nullptr &&
       state.fEgl.querySurface != nullptr) {
@@ -276,17 +292,24 @@ bool surfaceSize(int *width, int *height) {
       return true;
     }
   }
-  if (state.fGlx.getCurrentDisplay != nullptr &&
-      state.fGlx.getCurrentDrawable != nullptr &&
-      state.fGlx.queryDrawable != nullptr) {
+  // Otherwise the X server, which costs a round trip and is the only thing
+  // that knows the answer at the moment it is asked.
+  if (state.fX11.getGeometry != nullptr &&
+      state.fGlx.getCurrentDisplay != nullptr &&
+      state.fGlx.getCurrentDrawable != nullptr) {
     XDisplay *display = state.fGlx.getCurrentDisplay();
     const GLXDrawable drawable = state.fGlx.getCurrentDrawable();
     if (display != nullptr && drawable != 0) {
+      GLXDrawable root = 0;
+      int x = 0;
+      int y = 0;
       unsigned int w = 0;
       unsigned int h = 0;
-      state.fGlx.queryDrawable(display, drawable, kGlxWidth, &w);
-      state.fGlx.queryDrawable(display, drawable, kGlxHeight, &h);
-      if (w > 0 && h > 0) {
+      unsigned int border = 0;
+      unsigned int depth = 0;
+      if (state.fX11.getGeometry(display, drawable, &root, &x, &y, &w, &h,
+                                 &border, &depth) != 0 &&
+          w > 0 && h > 0) {
         *width = static_cast<int>(w);
         *height = static_cast<int>(h);
         return true;

@@ -961,18 +961,6 @@ private:
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
-    // Said once, because whether it is answered decides which of the two ways
-    // of noticing a resize is doing the work, and guessing at that has cost a
-    // day.
-    {
-      int probeW = 0;
-      int probeH = 0;
-      std::println(std::cerr, "[present] surface size: {}",
-                   present::surfaceSize(&probeW, &probeH)
-                       ? std::format("{}x{}", probeW, probeH)
-                       : "not answered, using the resize callback");
-    }
-
     this->initLibrary();
     // Launched with a beatmap on the command line => skip the main menu and
     // drop straight into song select on the imported set (it sorts to a known
@@ -1040,6 +1028,23 @@ private:
     }
     if (resized && (width != fScreenW || height != fScreenH)) {
       this->resize(width, height);
+    }
+
+    // And the size the server has this instant, which is not the same thing.
+    // A resize reaches this thread through glfwPollEvents on another one, and
+    // every frame drawn in between is drawn into a buffer that is already the
+    // new size and has never been painted -- so a frame that clips to what
+    // moved leaves the rest of it black. Asking here, before the surfaces are
+    // chosen, means such a frame recreates them instead of drawing into the
+    // old ones.
+    //
+    // A round trip to the X server per frame. It is a local socket and the
+    // alternative was two days of this.
+    int liveW = 0;
+    int liveH = 0;
+    if (present::surfaceSize(&liveW, &liveH) &&
+        (liveW != fScreenW || liveH != fScreenH)) {
+      this->resize(liveW, liveH);
     }
   }
 
@@ -1966,18 +1971,11 @@ private:
     // Nothing in the damage bookkeeping can know that, because the whole of
     // it is downstream of the event. So the size is asked of the window
     // system directly, on the thread that is drawing, once a frame.
-    // Asked of the window system where it will answer, and taken from what
-    // the resize callback last reported where it will not -- which is the
-    // case on a driver that reports no buffer age either, since both come
-    // from the same EGL or GLX that was never resolved.
-    int windowW = 0;
-    int windowH = 0;
-    if (!present::surfaceSize(&windowW, &windowH)) {
-      const std::uint64_t reported =
-          fReportedSize.load(std::memory_order_acquire);
-      windowW = static_cast<int>(reported >> 32);
-      windowH = static_cast<int>(reported & 0xffffffffu);
-    }
+    // Second line: a resize that landed after the surfaces were chosen cannot
+    // be acted on within this frame, but it can stop it clipping.
+    const std::uint64_t reported = fReportedSize.load(std::memory_order_acquire);
+    const auto windowW = static_cast<int>(reported >> 32);
+    const auto windowH = static_cast<int>(reported & 0xffffffffu);
     if (windowW > 0 && windowH > 0 &&
         (windowW != fScreenW || windowH != fScreenH)) {
       fBlitHistory.clear();
