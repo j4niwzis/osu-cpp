@@ -24,6 +24,86 @@ export namespace client::mainmenu {
 
 using Paint = std::function<void(skia::SkCanvas *, const skia::SkRect &, int)>;
 
+// ---- Button system (port of lazer's ButtonSystem) ----------------------
+//
+// lazer models the menu as a small state machine (Initial -> TopLevel ->
+// a submenu), with every button owning an expand/contract animation and
+// the logo sliding aside to make room. Same structure here.
+enum class State : std::uint8_t { kInitial, kTopLevel, kPlay };
+
+enum class Action : std::uint8_t {
+  kOpenPlay,
+  kBrowse,
+  kImport,
+  kExit,
+  kSolo,
+  kRandom,
+  kBack,
+  kSettings,
+};
+
+struct Btn {
+  std::string fLabel;
+  std::string fGlyph; // drawn as a text glyph; no icon font here
+  skia::SkColor fColor{};
+  Action fAction{};
+  State fVisible{};       // menu state this button belongs to
+  bool fLeftSide = false; // back button sits left of the logo, as in lazer
+  // How far out, how hovered and how freshly clicked live on the node that
+  // draws the button, which is what asks for the frames they need.
+  skia::SkRect fRect = skia::SkRect::MakeEmpty();
+};
+
+// Where the menu wants the logo; the logo eases towards it and owns
+// everything else about itself.
+struct LogoTarget {
+  float fX = 0.0f, fY = 0.0f, fScale = 1.0f;
+};
+
+[[nodiscard]] inline const char *stateName(State st) {
+  switch (st) {
+  case State::kInitial:
+    return "initial";
+  case State::kTopLevel:
+    return "top-level";
+  case State::kPlay:
+    return "play";
+  }
+  return "?";
+}
+
+// The row itself. ButtonArea's leftmost entry is Settings, present at the
+// top level; the back button sits left of the logo in a submenu. Colours
+// are ButtonSystem's.
+[[nodiscard]] inline std::vector<Btn> defaultButtons() {
+  std::vector<Btn> btns;
+  Btn settings{"settings", "⚙", skia::colorSetARGB(255, 85, 85, 85),
+               Action::kSettings, State::kTopLevel};
+  settings.fLeftSide = true;
+  btns.push_back(std::move(settings));
+
+  btns.push_back({"play", "▶", skia::colorSetARGB(255, 102, 68, 204),
+                  Action::kOpenPlay, State::kTopLevel});
+  btns.push_back({"browse", "↓", skia::colorSetARGB(255, 165, 204, 0),
+                  Action::kBrowse, State::kTopLevel});
+  btns.push_back({"import", "+", skia::colorSetARGB(255, 238, 170, 0),
+                  Action::kImport, State::kTopLevel});
+  btns.push_back({"exit", "×", skia::colorSetARGB(255, 238, 51, 153),
+                  Action::kExit, State::kTopLevel});
+
+  btns.push_back({"solo", "●", skia::colorSetARGB(255, 102, 68, 204),
+                  Action::kSolo, State::kPlay});
+  btns.push_back({"random", "↻", skia::colorSetARGB(255, 94, 63, 186),
+                  Action::kRandom, State::kPlay});
+
+  Btn back{"back", "←", skia::colorSetARGB(255, 51, 58, 94),
+           Action::kBack, State::kPlay};
+  back.fLeftSide = true;
+  btns.push_back(std::move(back));
+  return btns;
+}
+
+
 class Menu {
 public:
   // -1 is nothing, -2 is the logo, anything else is a button's index.

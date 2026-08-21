@@ -441,36 +441,13 @@ private:
 
   // ---- Main menu button system (port of lazer's ButtonSystem) ----------
   //
-  // lazer models the menu as a small state machine (Initial -> TopLevel ->
-  // a submenu), with every button owning an expand/contract animation and
-  // the logo sliding aside to make room. Same structure here.
-  enum class MenuState : std::uint8_t { kInitial, kTopLevel, kPlay };
-  enum class MenuAction : std::uint8_t {
-    kOpenPlay,
-    kBrowse,
-    kImport,
-    kExit,
-    kSolo,
-    kRandom,
-    kBack,
-    kSettings,
-  };
-  struct MenuBtn {
-    std::string fLabel;
-    std::string fGlyph; // drawn as a text glyph; no icon font here
-    skia::SkColor fColor{};
-    MenuAction fAction{};
-    MenuState fVisible{};   // menu state this button belongs to
-    bool fLeftSide = false; // back button sits left of the logo, as in lazer
-    // How far out, how hovered and how freshly clicked live on the node that
-    // draws the button, which is what asks for the frames they need.
-    skia::SkRect fRect = skia::SkRect::MakeEmpty();
-  };
-  // Where the menu wants the logo; the logo eases towards it and owns
-  // everything else about itself.
-  struct LogoTarget {
-    float fX = 0.0f, fY = 0.0f, fScale = 1.0f;
-  };
+  // The state machine, the actions and what a button is live in
+  // client.mainmenu with the tree that draws them; these are the names the
+  // rest of this class already calls them by.
+  using MenuState = client::mainmenu::State;
+  using MenuAction = client::mainmenu::Action;
+  using MenuBtn = client::mainmenu::Btn;
+  using LogoTarget = client::mainmenu::LogoTarget;
   // The main menu screen: which level it is on, where the logo is going,
   // the buttons and the dim behind them. What moves out with the menu.
   struct MenuUi {
@@ -5015,53 +4992,12 @@ private:
 
   // ---- Main menu button system (port of lazer's ButtonSystem) -----------
 
+  // The row is built once and then belongs to the menu; the pointer and the
+  // keyboard both look themselves up in it.
   void ensureMenuButtons() {
-    if (!fMenuUi.fMenuBtns.empty()) {
-      return;
+    if (fMenuUi.fMenuBtns.empty()) {
+      fMenuUi.fMenuBtns = client::mainmenu::defaultButtons();
     }
-    // Colours lifted from lazer's ButtonSystem so the palette reads familiar.
-    // ButtonArea's leftmost entry is Settings, present at the top level.
-    MenuBtn settings{"settings", "⚙", skia::colorSetARGB(255, 85, 85, 85),
-                     MenuAction::kSettings, MenuState::kTopLevel};
-    settings.fLeftSide = true;
-    fMenuUi.fMenuBtns.push_back(std::move(settings));
-
-    fMenuUi.fMenuBtns.push_back({"play", "▶",
-                                 skia::colorSetARGB(255, 102, 68, 204),
-                                 MenuAction::kOpenPlay, MenuState::kTopLevel});
-    fMenuUi.fMenuBtns.push_back({"browse", "↓",
-                                 skia::colorSetARGB(255, 165, 204, 0),
-                                 MenuAction::kBrowse, MenuState::kTopLevel});
-    fMenuUi.fMenuBtns.push_back({"import", "+",
-                                 skia::colorSetARGB(255, 238, 170, 0),
-                                 MenuAction::kImport, MenuState::kTopLevel});
-    fMenuUi.fMenuBtns.push_back({"exit", "×",
-                                 skia::colorSetARGB(255, 238, 51, 153),
-                                 MenuAction::kExit, MenuState::kTopLevel});
-
-    fMenuUi.fMenuBtns.push_back({"solo", "●",
-                                 skia::colorSetARGB(255, 102, 68, 204),
-                                 MenuAction::kSolo, MenuState::kPlay});
-    fMenuUi.fMenuBtns.push_back({"random", "↻",
-                                 skia::colorSetARGB(255, 94, 63, 186),
-                                 MenuAction::kRandom, MenuState::kPlay});
-
-    MenuBtn back{"back", "←", skia::colorSetARGB(255, 51, 58, 94),
-                 MenuAction::kBack, MenuState::kPlay};
-    back.fLeftSide = true;
-    fMenuUi.fMenuBtns.push_back(std::move(back));
-  }
-
-  [[nodiscard]] static const char *menuStateName(MenuState st) {
-    switch (st) {
-    case MenuState::kInitial:
-      return "initial";
-    case MenuState::kTopLevel:
-      return "top-level";
-    case MenuState::kPlay:
-      return "play";
-    }
-    return "?";
   }
 
   void setMenuState(MenuState st) {
@@ -5069,7 +5005,8 @@ private:
       return;
     }
     std::println(std::cerr, "[menu] {} -> {}",
-                 menuStateName(fMenuUi.fMenuState), menuStateName(st));
+                 client::mainmenu::stateName(fMenuUi.fMenuState),
+                 client::mainmenu::stateName(st));
     fMenuUi.fMenuState = st;
   }
 
