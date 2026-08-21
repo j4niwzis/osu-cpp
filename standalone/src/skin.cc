@@ -290,10 +290,14 @@ public:
 
   // `sizeScale` is the 1 -> 1.4 the circle grows by as it fades out after a
   // hit (LegacyMainCirclePiece).
+  // `withApproach` is false once the object has been judged: DrawableHitCircle
+  // fades the approach circle out over 50ms at the object's start time, but
+  // UpdateHitStateTransforms calls FadeOut() with no duration the moment it is
+  // hit, so on an early hit it goes at once rather than lingering.
   void drawHitCircle(skia::SkCanvas *canvas, osu::Vec2 pos, double time,
                      double now, double cs, double ar, int comboNumber,
                      std::size_t comboIndex, float alphaScale = 1.0f,
-                     float sizeScale = 1.0f) {
+                     float sizeScale = 1.0f, bool withApproach = true) {
     const double radius = detail::circleVisualRadius(cs) * sizeScale;
     const float x = static_cast<float>(pos.fX);
     const float y = static_cast<float>(pos.fY);
@@ -367,7 +371,7 @@ public:
     // time fades out over 50ms instead of vanishing -- it stays on screen for
     // that long even once the circle has been hit.
     constexpr double kApproachFadeOut = 50.0;
-    if (now <= time + kApproachFadeOut) {
+    if (withApproach && now <= time + kApproachFadeOut) {
       const double approachT = std::clamp((now - time) / preempt, -1.0, 0.0);
       const double approachScale = 1.0 - 3.0 * approachT;
       const double approachElapsed = now - (time - preempt);
@@ -1035,8 +1039,13 @@ float4 main(float2 coords) {
       canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
                          static_cast<float>(fillRadius), fillPaint);
     }
-    // SpinnerCentreLayer, which sits at its own scale on top.
+    // SpinnerCentreLayer. Its pieces -- CirclePiece, RingPiece -- are
+    // OBJECT_DIMENSIONS, a fixed 128 units across, so the centre is one hit
+    // circle wide and does not grow with the disc. Taking a fraction of the
+    // disc's radius instead, which is what this did, opened it out over the
+    // whole spinner.
     if (centreScale > 0.0) {
+      const double centreRadius = 64.0 * centreScale;
       skia::SkPaint centre;
       centre.setColor(skia::kWhite);
       centre.setStyle(skia::kStrokeStyle);
@@ -1044,7 +1053,7 @@ float4 main(float2 coords) {
       centre.setAntiAlias(true);
       centre.setAlphaf(0.8f);
       canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
-                         static_cast<float>(radius * centreScale), centre);
+                         static_cast<float>(centreRadius), centre);
     }
     static_cast<void>(progress);
     if (top) {

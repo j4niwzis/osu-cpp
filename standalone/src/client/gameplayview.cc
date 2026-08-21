@@ -619,7 +619,7 @@ public:
               [&](const osu::Circle &o) {
                 c.fSkin->drawHitCircle(canvas, o.fPos, o.fTime, now, cs, ar,
                                     o.fCombo, (*c.fCombo).fIndices[it->fIndex],
-                                    alpha, sizeScale);
+                                    alpha, sizeScale, /*withApproach=*/false);
               },
               [&](const osu::Slider &o) {
                 const auto [fs, fa] =
