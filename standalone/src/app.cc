@@ -2390,9 +2390,14 @@ private:
     }
     // Safety net: whatever the screens forgot to announce shows up within
     // this long rather than never.
-    return now - fLastDrawWall > 500.0
-               ? this->frameBecause("the half-second safety net")
-               : false;
+    return now - fLastDrawWall >
+           500.0 if (fTraceRepaint && fState == State::kMainMenu &&
+                     now - fLastDrawWall > 500.0) {
+      std::println(std::cerr,
+                   "[menu] idle: moving {} animating {} dt {:.0f} ms",
+                   fMenuMoving, fMenu.animating(), fUiDt);
+    }
+    ? this->frameBecause("the half-second safety net") : false;
   }
 
   // The part of the window that a screen is actually showing, in the window's
@@ -2469,7 +2474,17 @@ private:
     this->drainInput();
     {
       const double wallNow = wallMs();
-      fUiDt = fUiPrevWall > 0.0 ? std::min(50.0, wallNow - fUiPrevWall) : 16.0;
+      // Clamped against a stall -- a debugger, a load, a compositor holding
+      // the window -- and not against a sparse frame. Fifty milliseconds was
+      // the latter: a frame arriving half a second after the last one moved
+      // an ease by a fiftieth of a second, so anything easing while frames
+      // were sparse took ten of them to arrive instead of one. That is what
+      // an animation running at two frames a second for several seconds is.
+      //
+      // An exponential ease is a function of elapsed time, so handing it the
+      // time that elapsed is the whole of its contract; a gap it is given in
+      // full comes out as one large step, which is what it should look like.
+      fUiDt = fUiPrevWall > 0.0 ? std::min(250.0, wallNow - fUiPrevWall) : 16.0;
       fUiPrevWall = wallNow;
     }
     // The music belongs to the client rather than to the screen that happens
