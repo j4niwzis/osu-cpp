@@ -252,6 +252,7 @@ private:
   bool fLibraryLoaded = false;
   int fSelSet = 0;
   int fSelDiff = 0;
+  int fAppliedStarChoice = -1; // forces the first ordering pass
   client::carousel::Carousel fCarousel;
   std::vector<client::carousel::Row> fRows; // what the carousel lays out
   int fBackgroundForSet = -1;
@@ -3021,6 +3022,12 @@ private:
     this->sortLibrary();
     fFilterDirty = true;
     this->rebuildVisible();
+    // Sets come out of the cache and off the disk in whatever order each was
+    // written in; the difficulties within them are put in rating order here,
+    // once, before anything selects one by position.
+    fAppliedStarChoice = fSettings.choice("stars");
+    this->sortLibraryByStars();
+
     // Start on a random set so the menu isn't always greeted by the same
     // track (unless a specific beatmap was passed on the command line).
     if (!fHasInitialSet && !fLibrary.empty()) {
@@ -3336,7 +3343,18 @@ private:
 
   // The library knows the star ratings from its cache, so a set loaded for
   // its objects and its audio takes them from there rather than spending
-  // seconds working them out again.
+  // seconds working them out again -- and is then put into the same order as
+  // that cached list, because a difficulty is chosen by its position in it.
+  //
+  // The order is taken from the list by name, one entry at a time. Sorting
+  // both sides by star rating and trusting them to agree, which is what this
+  // did, only holds while no two difficulties in a set share a rating: a
+  // stable sort leaves ties in the order it was given, and the two sides are
+  // given different orders -- the cached list is in whatever order it was
+  // written in, the loaded set in whatever order the archive lists its files.
+  // A set with two difficulties of the same rating would then play one while
+  // the client believed it was the other, showing the wrong replays, the
+  // wrong difficulty name and saving new replays under the wrong one.
   void adoptCachedStars(int index, osu::BeatmapSet &set) const {
     const auto &known = this->infosFor(index);
     for (auto &info : set.fBeatmaps) {
@@ -3348,12 +3366,28 @@ private:
         }
       }
     }
-    // And then into the same order the cached list is in. A difficulty is
-    // chosen by its position in that list, so a set loaded in another order
-    // means playing one difficulty while the client thinks it is another --
-    // which is what made a difficulty's own replays invisible until it had
-    // been played again.
-    std::ranges::stable_sort(set.fBeatmaps, {}, &osu::BeatmapInfo::fStars);
+
+    std::vector<osu::BeatmapInfo> ordered;
+    ordered.reserve(set.fBeatmaps.size());
+    std::vector<bool> taken(set.fBeatmaps.size(), false);
+    for (const auto &cached : known) {
+      for (std::size_t i = 0; i < set.fBeatmaps.size(); ++i) {
+        if (!taken[i] && set.fBeatmaps[i].fFilename == cached.fFilename) {
+          ordered.push_back(std::move(set.fBeatmaps[i]));
+          taken[i] = true;
+          break;
+        }
+      }
+    }
+    // Anything the cache does not know about keeps its own order behind the
+    // rest, which is the only place it can go without shifting a position the
+    // cached list has already claimed.
+    for (std::size_t i = 0; i < set.fBeatmaps.size(); ++i) {
+      if (!taken[i]) {
+        ordered.push_back(std::move(set.fBeatmaps[i]));
+      }
+    }
+    set.fBeatmaps = std::move(ordered);
   }
 
   void touchLoaded(int index) {
@@ -5320,7 +5354,54 @@ private:
            audio_client::kEffectHeadroom;
   }
 
+  // Difficulties are ordered by the rating being shown, which means the
+  // order changes when that setting does. Safe now that the loaded set is
+  // matched to the cached list by name rather than by re-sorting it, but the
+  // selection is a position in that list, so it is carried across by name.
+  void applyStarOrder() {
+    const int chosen = fSettings.choice("stars");
+    if (chosen == fAppliedStarChoice) {
+      return;
+    }
+    fAppliedStarChoice = chosen;
+    this->sortLibraryByStars();
+  }
+
+  void sortLibraryByStars() {
+    std::string selected;
+    if (fSelSet >= 0 && fSelSet < static_cast<int>(fLibrary.size())) {
+      const auto &infos = this->infosFor(fSelSet);
+      if (fSelDiff >= 0 && fSelDiff < static_cast<int>(infos.size())) {
+        selected = infos[static_cast<std::size_t>(fSelDiff)].fFilename;
+      }
+    }
+    for (std::size_t i = 0; i < fLibrary.size(); ++i) {
+      auto &entry = fLibrary[i];
+      std::ranges::stable_sort(entry.fInfos, {},
+                               [this](const osu::BeatmapInfo &info) {
+                                 return this->shownStars(info);
+                               });
+      // A set already in memory is put back in step with its list rather than
+      // dropped: the set given on the command line has no path to load it
+      // from again, and dropping it would lose it for the rest of the run.
+      if (entry.fLoaded) {
+        this->adoptCachedStars(static_cast<int>(i), *entry.fLoaded);
+      }
+    }
+    if (!selected.empty() && fSelSet >= 0 &&
+        fSelSet < static_cast<int>(fLibrary.size())) {
+      const auto &infos = this->infosFor(fSelSet);
+      for (std::size_t i = 0; i < infos.size(); ++i) {
+        if (infos[i].fFilename == selected) {
+          fSelDiff = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+  }
+
   void applySettings() {
+    this->applyStarOrder();
     this->applyAudioSettings();
     const float dim = fSettings.value("dim");
     if (std::abs(dim - fAppliedDim) > 1e-4f) {
