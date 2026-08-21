@@ -9,3 +9,4 @@ export import osu.autopilot;
 export import osu.replay;
 export import osu.replay_file;
 export import osu.stars;
+export import osu.pp;

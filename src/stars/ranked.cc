@@ -686,6 +686,11 @@ lengthBonus(int totalHits) noexcept {
       std::sqrt(aimNoSlidersValue) * kDifficultyMultiplier;
   out.fSliderFactor = plainAim > 0.0 ? plainAimNoSliders / plainAim : 1.0;
   out.fSpeedNoteCount = speed.relevantNoteCount();
+  // fAimDifficultSliders is not measured yet: it needs the per-slider strains
+  // kept separately, which is its own piece of work. Left at zero, which is
+  // the value that turns the slider nerf off rather than a wrong one that
+  // applies it -- the branch that uses it requires a positive count.
+  out.fAimDifficultSliders = 0.0;
   out.fAimDifficultStrains =
       countTopWeightedStrains(aim.objectStrains(), aimValue);
   out.fSpeedDifficultStrains =

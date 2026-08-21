@@ -28,7 +28,14 @@ struct StarRating {
   int fCircles = 0;
   int fSliders = 0;
   int fSpinners = 0;
+  // Both depend on the nested objects the engine builds, so both are left for
+  // whoever holds one; building them here to count them would be a second
+  // implementation of the same thing.
   int fMaxCombo = 0;
+  int fLargeTicks = 0;
+  // Sliders whose aim is hard enough to be worth nerfing when they are not
+  // followed. Zero from a calculator that does not measure it.
+  double fAimDifficultSliders = 0.0;
 };
 
 namespace diffutil {
