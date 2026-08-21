@@ -2,7 +2,12 @@ export module client.filtercontrol;
 
 import std;
 import skia;
-import client.ui;
+import skiff.paint;
+import client.palette;
+
+// skiff::paint is the framework's drawing side; the short name keeps
+// the lines below at the width they were written at.
+namespace paint = skiff::paint;
 
 export namespace client {
 
@@ -140,7 +145,7 @@ public:
             double nowMs) {
     fMouseX = mouseX;
     fMouseY = mouseY;
-    const ui::Painter p(canvas, font);
+    const paint::Painter p(canvas, font);
     const float sw = static_cast<float>(screenW);
     const float panelW = std::min(760.0f, sw * 0.56f);
     const float left = sw - panelW;
@@ -171,7 +176,7 @@ public:
                       skia::colorSetARGB(255, 40, 32, 52));
     p.strokeRounded(fSearchBoxRect, 6.0f,
                         fFilterText.empty() ? skia::colorSetARGB(255, 70, 58, 88)
-                                            : ui::kAccent,
+                                            : palette::kAccent,
                         2.0f);
     const bool caret = std::fmod(nowMs, 1000.0) < 600.0;
     if (fFilterText.empty()) {
@@ -224,7 +229,7 @@ public:
     }
   }
 
-  void drawDifficultyRange(const ui::Painter &p, const skia::SkRect &r) {
+  void drawDifficultyRange(const paint::Painter &p, const skia::SkRect &r) {
     p.textClipped("Difficulty", r.fLeft, r.fTop + 2.0f, 90.0f,
                           12.0f, skia::kWhite, 0.6f);
     const skia::SkRect track =
@@ -235,7 +240,7 @@ public:
     p.fillRounded(
         skia::SkRect::MakeLTRB(track.fLeft + track.width() * t0, track.fTop,
                                track.fLeft + track.width() * t1, track.fBottom),
-        3.0f, ui::kAccent);
+        3.0f, palette::kAccent);
     p.circle(track.fLeft + track.width() * t0, track.centerY(), 7.0f,
              skia::kWhite);
     p.circle(track.fLeft + track.width() * t1, track.centerY(), 7.0f,
@@ -245,17 +250,17 @@ public:
             ? std::format("{:.1f} - ∞", fDiffRangeMin)
             : std::format("{:.1f} - {:.1f}", fDiffRangeMin, fDiffRangeMax);
     p.textClipped(label, r.fRight - 96.0f, r.fTop + 2.0f, 96.0f,
-                          12.0f, ui::kAccent2, 0.9f);
+                          12.0f, palette::kAccent2, 0.9f);
   }
 
-  void drawDropdown(const ui::Painter &p, const skia::SkRect &r,
+  void drawDropdown(const paint::Painter &p, const skia::SkRect &r,
                     const char *label, const char *value, bool open) {
     const bool hover = r.contains(fMouseX, fMouseY);
     p.fillRounded(r, 6.0f,
                       hover || open ? skia::colorSetARGB(255, 56, 46, 72)
                                     : skia::colorSetARGB(255, 40, 32, 52));
     p.strokeRounded(r, 6.0f,
-                        open ? ui::kAccent : skia::colorSetARGB(255, 70, 58, 88),
+                        open ? palette::kAccent : skia::colorSetARGB(255, 70, 58, 88),
                         open ? 2.0f : 1.0f);
     p.textClipped(label, r.fLeft + 10.0f, r.centerY() + 4.0f,
                           52.0f, 12.0f, skia::kWhite, 0.5f);
@@ -282,7 +287,7 @@ public:
     p.canvas()->drawPath(c.detach(), tri);
   }
 
-  void drawDropdownItems(const ui::Painter &p, const skia::SkRect &anchor,
+  void drawDropdownItems(const paint::Painter &p, const skia::SkRect &anchor,
                          std::span<const char *const> items, int current,
                          std::vector<skia::SkRect> &out) {
     const float itemH = 26.0f;
@@ -290,7 +295,7 @@ public:
         anchor.fLeft, anchor.fBottom + 4.0f, anchor.width(),
         itemH * static_cast<float>(items.size()) + 8.0f);
     p.fillRounded(box, 6.0f, skia::colorSetARGB(248, 30, 24, 40));
-    p.strokeRounded(box, 6.0f, ui::kAccent, 1.5f);
+    p.strokeRounded(box, 6.0f, palette::kAccent, 1.5f);
     for (std::size_t i = 0; i < items.size(); ++i) {
       const skia::SkRect row = skia::SkRect::MakeXYWH(
           box.fLeft + 4.0f, box.fTop + 4.0f + static_cast<float>(i) * itemH,
@@ -300,7 +305,8 @@ public:
       const bool active = static_cast<int>(i) == current;
       if (hover || active) {
         p.fillRounded(row, 4.0f,
-                          active ? ui::kAccent : skia::colorSetARGB(255, 52, 42, 66));
+                          active ? palette::kAccent
+                                 : skia::colorSetARGB(255, 52, 42, 66));
       }
       p.textClipped(items[i], row.fLeft + 10.0f,
                             row.centerY() + 4.0f, row.width() - 20.0f, 13.0f,

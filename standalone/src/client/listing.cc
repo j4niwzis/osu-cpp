@@ -2,7 +2,8 @@ export module client.listing;
 
 import std;
 import skia;
-import client.ui;
+import skiff.paint;
+import client.palette;
 import skiff.scene;
 import skiff.nodes;
 
@@ -206,9 +207,9 @@ inline void imageFilled(skia::SkCanvas *canvas, const skia::SkImage *image,
 inline float measure(skia::SkFont &font, const std::string &s, float size,
                      bool bold) {
   font.setSize(size);
-  client::ui::fonts().applyWeight(font, bold);
-  const float w = client::ui::fonts().measure(font, s);
-  client::ui::fonts().applyWeight(font, false);
+  skiff::paint::fonts().applyWeight(font, bold);
+  const float w = skiff::paint::fonts().measure(font, s);
+  skiff::paint::fonts().applyWeight(font, false);
   return w;
 }
 
@@ -216,13 +217,13 @@ inline void text(skia::SkCanvas *canvas, skia::SkFont &font,
                  const std::string &s, float x, float y, float size,
                  skia::SkColor colour, bool bold = false, float alpha = 1.0f) {
   font.setSize(size);
-  client::ui::fonts().applyWeight(font, bold);
+  skiff::paint::fonts().applyWeight(font, bold);
   skia::SkPaint p;
   p.setAntiAlias(true);
   p.setColor(colour);
   p.setAlphaf(alpha);
-  client::ui::fonts().draw(canvas, font, s, x, y, p);
-  client::ui::fonts().applyWeight(font, false);
+  skiff::paint::fonts().draw(canvas, font, s, x, y, p);
+  skiff::paint::fonts().applyWeight(font, false);
 }
 
 inline void textClipped(skia::SkCanvas *canvas, skia::SkFont &font,
@@ -494,7 +495,7 @@ public:
   }
 
   // Whether anything in the tree is still moving. Eased values announce
-  // themselves through client::ui::approach; transforms do not, so they are
+  // themselves through skiff::paint::approach; transforms do not, so they are
   // asked directly.
   [[nodiscard]] bool animating() const {
     return fTicking || (fScene && fScene->animatingTree());
@@ -886,7 +887,7 @@ private:
       const float full =
           std::min(kExpandedMaxHeight,
                    static_cast<float>(e.fDiffs.size()) * 20.0f + 20.0f);
-      return full * client::ui::outQuint(fExpanded);
+      return full * skiff::paint::outQuint(fExpanded);
     }
     [[nodiscard]] float expansion() const noexcept { return fExpanded; }
     [[nodiscard]] int entry() const noexcept { return fEntry; }
@@ -901,7 +902,7 @@ private:
       const bool hovered = fHovered || fOwner->expansionHovered(this);
       const float previousExpand = fExpand;
       const float previousExpanded = fExpanded;
-      fExpand = client::ui::approach(fExpand, hovered ? 1.0f : 0.0f,
+      fExpand = skiff::paint::approach(fExpand, hovered ? 1.0f : 0.0f,
                                      kTransitionMs / 6.0f, dt);
       // Hovering the bottom of the card opens it after a moment, as
       // BeatmapCardContent.ExpandAfterDelay does.
@@ -918,7 +919,7 @@ private:
       if (overInfo && !wantExpanded) {
         fOwner->fTicking = true;
       }
-      fExpanded = client::ui::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
+      fExpanded = skiff::paint::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
                                        kTransitionMs / 5.0f, dt);
       // Which card owns the dropdown outlives the pass that decides it: a
       // card asks whether the dropdown under it is hovered, and clearing this
@@ -1103,7 +1104,7 @@ private:
         paint::rounded(canvas,
                        skia::SkRect::MakeXYWH(dx, baseline - 10.0f, 5.0f,
                                               10.0f),
-                       1.0f, client::ui::starColor(diff.fStars), alpha);
+                       1.0f, client::palette::starColor(diff.fStars), alpha);
         dx += 6.0f;
       }
     }
@@ -1212,7 +1213,7 @@ private:
         const float pillW = paint::measure(font, stars, 11.0f, true) + 16.0f;
         const skia::SkRect pill =
             skia::SkRect::MakeXYWH(card.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
-        paint::rounded(canvas, pill, 8.0f, client::ui::starColor(diff.fStars),
+        paint::rounded(canvas, pill, 8.0f, client::palette::starColor(diff.fStars),
                        alpha * fExpanded);
         paint::text(canvas, font, stars, pill.fLeft + 8.0f, y, 11.0f,
                     skia::colorSetARGB(255, 20, 24, 26), true,
@@ -1280,7 +1281,7 @@ private:
         const float pillW = paint::measure(font, stars, 11.0f, true) + 16.0f;
         const skia::SkRect pill = skia::SkRect::MakeXYWH(
             fBounds.fLeft + 8.0f, y - 12.0f, pillW, 16.0f);
-        paint::rounded(canvas, pill, 8.0f, client::ui::starColor(diff.fStars),
+        paint::rounded(canvas, pill, 8.0f, client::palette::starColor(diff.fStars),
                        open);
         paint::text(canvas, font, stars, pill.fLeft + 8.0f, y, 11.0f,
                     skia::colorSetARGB(255, 20, 24, 26), true, open);

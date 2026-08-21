@@ -2,7 +2,7 @@ export module client.carousel;
 
 import std;
 import skia;
-import client.ui;
+import skiff.paint;
 import skiff.scene;
 
 // osu!lazer's song select carousel, as a scene tree.
@@ -280,7 +280,7 @@ private:
 
   void ease(const Ctx &ctx) {
     fTarget = std::clamp(fTarget, this->minScroll(), this->maxScroll());
-    fScrollAnim = client::ui::approach(fScrollAnim, fTarget, 120.0f, ctx.fDtMs);
+    fScrollAnim = skiff::paint::approach(fScrollAnim, fTarget, 120.0f, ctx.fDtMs);
     fPop = std::min(1.0f, fPop + static_cast<float>(ctx.fDtMs) / 400.0f);
   }
 
@@ -290,7 +290,7 @@ private:
     const float viewTop = fCtx.fTop;
     const float viewBottom = fCtx.fBottom;
     const float halfHeight = fCtx.fHeight * 0.5f;
-    const float pop = client::ui::outQuint(fPop);
+    const float pop = skiff::paint::outQuint(fPop);
     std::size_t used = 0;
     for (std::size_t i = 0; i < fCtx.fRows.size(); ++i) {
       const Row &row = fCtx.fRows[i];

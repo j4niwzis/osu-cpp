@@ -2,7 +2,7 @@ export module client.setpage;
 
 import std;
 import skia;
-import client.ui;
+import client.palette;
 import skiff.scene;
 import skiff.nodes;
 import client.listing;
@@ -446,7 +446,7 @@ private:
                              .width = 16.0f,
                              .height = 16.0f,
                              .cornerRadius = 8.0f},
-                            client::ui::starColor(diff.fStars));
+                            client::palette::starColor(diff.fStars));
       tile->add<nodes::Text>(
           {.place = scene::Anchor::kBottomCentre, .y = -3.0f},
           std::format("{:.1f}", diff.fStars), 10.0f,
@@ -488,7 +488,7 @@ private:
           ->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
                              .padding = {1.0f, 8.0f, 1.0f, 8.0f},
                              .cornerRadius = 9.0f},
-                            client::ui::starColor(diff.fStars))
+                            client::palette::starColor(diff.fStars))
           ->add<nodes::Text>({}, std::format("{:.2f}", diff.fStars), 12.0f,
                              listing::kBackground6, true);
       heading->add<nodes::Text>({}, diff.fVersion, 16.0f, listing::kContent1,

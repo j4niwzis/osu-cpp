@@ -3,9 +3,14 @@ export module client.overlays;
 import std;
 import skia;
 import osu;
-import client.ui;
+import skiff.paint;
+import client.palette;
 import client.mods;
 import client.video;
+
+// skiff::paint is the framework's drawing side; the short name keeps
+// the lines below at the width they were written at.
+namespace paint = skiff::paint;
 
 export namespace client {
 
@@ -83,15 +88,15 @@ public:
   void draw(skia::SkCanvas *canvas, skia::SkFont &font,
             std::span<const ModEntry> entries, osu::ModSet active,
             const Frame &frame) {
-    fSlide = ui::approach(fSlide, fOpen ? 1.0f : 0.0f, 120.0f, frame.fDtMs);
+    fSlide = paint::approach(fSlide, fOpen ? 1.0f : 0.0f, 120.0f, frame.fDtMs);
     fHits.clear();
     if (fSlide < 0.002f) {
       return;
     }
-    const ui::Painter p(canvas, font);
+    const paint::Painter p(canvas, font);
     const float sw = static_cast<float>(frame.fScreenW);
     const float sh = static_cast<float>(frame.fScreenH);
-    const float slide = ui::outQuint(fSlide);
+    const float slide = paint::outQuint(fSlide);
 
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(static_cast<std::uint8_t>(slide * 190.0f), 8,
@@ -107,7 +112,7 @@ public:
           sw * 0.5f + (static_cast<float>(col) - 0.5f) * (colW + 40.0f);
       const float x = cx - colW * 0.5f;
       p.textCentered(kModColumns[static_cast<std::size_t>(col)], cx,
-                     top - 18.0f, 16.0f, ui::kAccent2, slide);
+                     top - 18.0f, 16.0f, palette::kAccent2, slide);
       float y = top;
       for (const auto &m : entries) {
         if (m.fColumn != col) {
@@ -118,7 +123,9 @@ public:
         const bool on = (active & m.fFlag) != osu::mod::kNone;
         const bool hover = r.contains(frame.fMouseX, frame.fMouseY);
         p.fillRounded(r, 12.0f,
-                      on ? ui::kAccent : hover ? ui::kCardSel : ui::kCardBg);
+                      on       ? palette::kAccent
+                      : hover  ? palette::kCardSel
+                               : palette::kCardBg);
         const skia::SkColor ink =
             on ? skia::colorSetARGB(255, 24, 18, 30) : skia::kWhite;
         p.textClipped(m.fAcronym, r.fLeft + 18.0f, r.fTop + 34.0f, 70.0f, 24.0f,
@@ -129,7 +136,7 @@ public:
                       colW - 100.0f, 12.0f, ink, slide * 0.7f);
         p.textClipped(std::format("{:.2f}x", m.fMultiplier), r.fLeft + 84.0f,
                       r.fBottom - 12.0f, 80.0f, 11.0f,
-                      on ? ink : ui::kAccent2, slide * 0.9f);
+                      on ? ink : palette::kAccent2, slide * 0.9f);
         y += panelH + gap;
       }
     }
@@ -303,7 +310,7 @@ public:
     if (!fOpen) {
       return;
     }
-    const ui::Painter p(canvas, font);
+    const paint::Painter p(canvas, font);
     const float sw = static_cast<float>(screenW);
     const float sh = static_cast<float>(screenH);
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
@@ -313,8 +320,8 @@ public:
     const float h = 300.0f;
     const skia::SkRect box =
         skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
-    p.fillRounded(box, 14.0f, ui::kBackground5);
-    p.strokeRounded(box, 14.0f, ui::kAccent, 2.0f);
+    p.fillRounded(box, 14.0f, palette::kBackground5);
+    p.strokeRounded(box, 14.0f, palette::kAccent, 2.0f);
     p.textCentered("export replay as video", box.centerX(), box.fTop + 46.0f,
                    24.0f, skia::kWhite);
     p.textCentered("resolution", box.centerX(), box.fTop + 82.0f, 14.0f,
@@ -327,7 +334,7 @@ public:
           bw - 8.0f, 40.0f);
       fHits.push_back(r);
       const bool active = static_cast<int>(i) == fPreset;
-      p.fillRounded(r, 8.0f, active ? ui::kAccent : ui::kCardBg);
+      p.fillRounded(r, 8.0f, active ? palette::kAccent : palette::kCardBg);
       p.textCentered(kVideoPresets[i].fLabel, r.centerX(), r.centerY() + 5.0f,
                      14.0f,
                      active ? skia::colorSetARGB(255, 24, 18, 30)
@@ -341,7 +348,7 @@ public:
     fHits.push_back(custom);
     const auto [customWidth, customHeight] = this->customSize();
     const bool usingCustom = customWidth > 0;
-    p.fillRounded(custom, 8.0f, usingCustom ? ui::kAccent : ui::kCardBg);
+    p.fillRounded(custom, 8.0f, usingCustom ? palette::kAccent : palette::kCardBg);
     p.textCentered(fCustom.empty() ? "or type a size, like 2560x1440"
                                    : fCustom,
                    custom.centerX(), custom.centerY() + 5.0f, 14.0f,
@@ -354,8 +361,8 @@ public:
                                                    44.0f);
     fHits.push_back(go);
     p.fillRounded(go, 10.0f,
-                  go.contains(mouseX, mouseY) ? ui::kCardSel : ui::kCardBg);
-    p.strokeRounded(go, 10.0f, ui::kAccent2, 2.0f);
+                  go.contains(mouseX, mouseY) ? palette::kCardSel : palette::kCardBg);
+    p.strokeRounded(go, 10.0f, palette::kAccent2, 2.0f);
     p.textCentered("render", go.centerX(), go.centerY() + 6.0f, 17.0f,
                    skia::kWhite);
     p.textCentered(fStatus.empty() ? "requires ffmpeg in PATH    Esc to cancel"

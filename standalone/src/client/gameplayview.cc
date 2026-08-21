@@ -4,7 +4,7 @@ import std;
 import skia;
 import osu;
 import skin;
-import client.ui;
+import skiff.paint;
 
 export namespace client {
 
@@ -1333,7 +1333,7 @@ public:
     (*c.fFont).setSize(48.0f * ui);
     const std::string comboText =
         std::format("{:.0f}x", std::max(0.0, fDisplayCombo));
-    client::ui::fonts().draw(canvas, *c.fFont, comboText, 20.0f * ui,
+    skiff::paint::fonts().draw(canvas, *c.fFont, comboText, 20.0f * ui,
                              60.0f * ui, fHudPaint);
 
     // Score, accuracy, grade (top-center).
@@ -1342,7 +1342,7 @@ public:
         std::format("{:.0f}  {:.2f}%  {}", fDisplayScore,
                     std::clamp(fDisplayAccuracy, 0.0, 1.0) * 100.0,
                     osu::gradeString(osu::computeGrade(score)));
-    client::ui::fonts().draw(canvas, *c.fFont, statsText, 20.0f * ui,
+    skiff::paint::fonts().draw(canvas, *c.fFont, statsText, 20.0f * ui,
                              90.0f * ui, fHudPaint);
 
     // pp across the top, in the middle, where nothing else is, in the same
@@ -1351,10 +1351,10 @@ public:
     // every frame, and it is the figure worth watching while the map is
     // running rather than only after it.
     {
-      const client::ui::Painter p(canvas, *c.fFont);
+      const skiff::paint::Painter p(canvas, *c.fFont);
       const std::string ppText = std::format("{:.0f}pp", c.fPp);
       (*c.fFont).setSize(18.0f * ui);
-      const float textW = client::ui::fonts().measure(*c.fFont, ppText);
+      const float textW = skiff::paint::fonts().measure(*c.fFont, ppText);
       const float boxW = textW + 24.0f * ui;
       const float boxH = 30.0f * ui;
       const skia::SkRect box = skia::SkRect::MakeXYWH(
@@ -1369,7 +1369,7 @@ public:
     const std::string diffText = std::format(
         "CS:{:.1f} AR:{:.1f} OD:{:.1f} HP:{:.1f} {}", c.fMap->fDiff.fCs,
         c.fMap->fDiff.fAr, c.fMap->fDiff.fOd, c.fMap->fDiff.fHp, c.fEngine->mods());
-    client::ui::fonts().draw(canvas, *c.fFont, diffText, 20.0f * ui,
+    skiff::paint::fonts().draw(canvas, *c.fFont, diffText, 20.0f * ui,
                              115.0f * ui, fHudPaint);
 
     // Health bar (top).
@@ -1380,7 +1380,7 @@ public:
     const std::string countsText =
         std::format("Great {}  Good {}  Meh {}  Miss {}", score.fGreat,
                     score.fGood, score.fMeh, score.fMiss);
-    client::ui::fonts().draw(canvas, *c.fFont, countsText, 20.0f * ui,
+    skiff::paint::fonts().draw(canvas, *c.fFont, countsText, 20.0f * ui,
                              140.0f * ui, fHudPaint);
 
     // Time since the map started, top right. It used to sit in the bottom
@@ -1389,8 +1389,8 @@ public:
     (*c.fFont).setSize(14.0f * ui);
     fHudPaint.setAlphaf(0.7f);
     const std::string timeText = std::format("{:.1f}s", now / 1000.0);
-    const float timeWidth = client::ui::fonts().measure(*c.fFont, timeText);
-    client::ui::fonts().draw(canvas, *c.fFont, timeText,
+    const float timeWidth = skiff::paint::fonts().measure(*c.fFont, timeText);
+    skiff::paint::fonts().draw(canvas, *c.fFont, timeText,
                              sw - timeWidth - 20.0f * ui, 34.0f * ui,
                              fHudPaint);
 
@@ -1444,22 +1444,22 @@ public:
       const std::string profText =
           std::format("adv {:.0f}  rend {:.0f}  flush {:.0f}  swap {:.0f} us",
                       avgAdv, avgRender, avgFlush, avgSwap);
-      client::ui::fonts().draw(canvas, *c.fFont, profText, kProfileX,
+      skiff::paint::fonts().draw(canvas, *c.fFont, profText, kProfileX,
                                sh - 60.0f, fHudPaint);
       const std::string subText =
           std::format("follow {:.0f}  objs {:.0f}  rest {:.0f}  hud {:.0f} us",
                       avgFollow, avgObjs, avgRest, avgHud);
-      client::ui::fonts().draw(canvas, *c.fFont, subText, kProfileX,
+      skiff::paint::fonts().draw(canvas, *c.fFont, subText, kProfileX,
                                sh - 75.0f, fHudPaint);
       const std::string maxText = std::format(
           "worst {:.0f} us = adv {:.0f} rend {:.0f} flush {:.0f} swap {:.0f}",
           maxFrame, maxAdv, maxRender, maxFlush, maxSwap);
-      client::ui::fonts().draw(canvas, *c.fFont, maxText, kProfileX,
+      skiff::paint::fonts().draw(canvas, *c.fFont, maxText, kProfileX,
                                sh - 90.0f, fHudPaint);
       const std::string maxSub = std::format(
           "worst rend: follow {:.0f} objs {:.0f} rest {:.0f} hud {:.0f}",
           maxFollow, maxObjs, maxRest, maxHud);
-      client::ui::fonts().draw(canvas, *c.fFont, maxSub, kProfileX,
+      skiff::paint::fonts().draw(canvas, *c.fFont, maxSub, kProfileX,
                                sh - 105.0f, fHudPaint);
       double maxCircles = 0.0, maxSliders = 0.0, maxSpinners = 0.0;
       for (std::size_t i = 0; i < fProfileNum; ++i) {
@@ -1470,7 +1470,7 @@ public:
       const std::string objSub =
           std::format("worst objs: circles {:.0f} sliders {:.0f} spinners {:.0f}",
                       maxCircles, maxSliders, maxSpinners);
-      client::ui::fonts().draw(canvas, *c.fFont, objSub, kProfileX,
+      skiff::paint::fonts().draw(canvas, *c.fFont, objSub, kProfileX,
                                sh - 120.0f, fHudPaint);
     }
   }

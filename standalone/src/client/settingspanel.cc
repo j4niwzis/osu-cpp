@@ -2,7 +2,8 @@ export module client.settingspanel;
 
 import std;
 import skia;
-import client.ui;
+import skiff.paint;
+import client.palette;
 import client.settings;
 import skiff.scene;
 import skiff.nodes;
@@ -11,6 +12,10 @@ import skiff.nodes;
 // writing scene:: and nodes:: as they did when it sat in client::.
 namespace scene = skiff::scene;
 namespace nodes = skiff::nodes;
+
+// skiff::paint is the framework's drawing side; the short name keeps
+// the lines below at the width they were written at.
+namespace paint = skiff::paint;
 
 export namespace client {
 
@@ -92,7 +97,7 @@ public:
 
     const float progress =
         static_cast<float>((frame.fNowMs - fEnterWall) / kTransitionMs);
-    const float eased = ui::outQuint(std::clamp(progress, 0.0f, 1.0f));
+    const float eased = paint::outQuint(std::clamp(progress, 0.0f, 1.0f));
     fSlide = fOpen ? eased : 1.0f - eased;
     const float sw = static_cast<float>(frame.fScreenW);
     const float sh = static_cast<float>(frame.fScreenH);
@@ -307,7 +312,7 @@ private:
     // Where the open list goes: under the control, one row per option, in
     // screen coordinates, for the overlay that draws it.
     [[nodiscard]] skia::SkRect listRect() const {
-      const ui::Painter measurer(nullptr, *fOwner->fFont);
+      const paint::Painter measurer(nullptr, *fOwner->fFont);
       const skia::SkRect box = this->choiceBox(measurer);
       const auto &def = fOwner->fSettings->defs()[fIndex];
       const float height =
@@ -358,7 +363,7 @@ private:
       // The knob slides between its two ends rather than teleporting.
       if (def.fKind == SettingKind::kToggle) {
         const float previous = fKnob;
-        fKnob = ui::approach(fKnob, settings.flag(def.fKey) ? 1.0f : 0.0f,
+        fKnob = paint::approach(fKnob, settings.flag(def.fKey) ? 1.0f : 0.0f,
                              60.0f, dt);
         if (fKnob != previous) {
           this->markDamaged();
@@ -369,7 +374,7 @@ private:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       const Settings &settings = *fOwner->fSettings;
       const auto &def = settings.defs()[fIndex];
-      const ui::Painter p(canvas, *fOwner->fFont);
+      const paint::Painter p(canvas, *fOwner->fFont);
       const skia::SkRect content = this->contentRect();
       const float baseline = fBounds.fTop + 16.0f;
 
@@ -377,7 +382,7 @@ private:
         // The bar in the margin that says "this is not the default".
         p.fillRounded(skia::SkRect::MakeXYWH(content.fLeft - 12.0f,
                                              fBounds.fTop + 4.0f, 4.0f, 22.0f),
-                      2.0f, ui::kAccent, alpha);
+                      2.0f, palette::kAccent, alpha);
       }
 
       p.textClipped(def.fLabel, content.fLeft, baseline, content.width() * 0.62f,
@@ -390,7 +395,7 @@ private:
         p.fillRounded(track, 3.0f, skia::colorSetARGB(255, 58, 48, 70), alpha);
         p.fillRounded(skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
                                              track.width() * t, track.height()),
-                      3.0f, ui::kAccent, alpha);
+                      3.0f, palette::kAccent, alpha);
         p.circle(track.fLeft + track.width() * t, track.centerY(), 7.0f,
                  skia::kWhite, alpha);
         p.textClipped(settings.displayValue(fIndex), content.fRight - 76.0f,
@@ -406,7 +411,7 @@ private:
             index < def.fOptions.size() ? def.fOptions[index]
                                         : def.fOptions.front();
         p.fillRounded(box, 6.0f,
-                      open ? ui::kAccent : skia::colorSetARGB(255, 58, 48, 70),
+                      open ? palette::kAccent : skia::colorSetARGB(255, 58, 48, 70),
                       alpha);
         p.textClipped(option, box.fLeft + 12.0f, box.centerY() + 4.0f,
                       box.width() - 32.0f, 13.0f, skia::kWhite, alpha);
@@ -419,7 +424,7 @@ private:
       const skia::SkRect box = skia::SkRect::MakeXYWH(
           content.fRight - 46.0f, fBounds.fTop + 4.0f, 40.0f, 22.0f);
       p.fillRounded(box, 11.0f,
-                    lerpColour(skia::colorSetARGB(255, 58, 48, 70), ui::kAccent,
+                    lerpColour(skia::colorSetARGB(255, 58, 48, 70), palette::kAccent,
                                fKnob),
                     alpha);
       p.circle(box.fLeft + 11.0f + (box.width() - 22.0f) * fKnob,
@@ -436,7 +441,7 @@ private:
         return true;
       }
       if (def.fKind == SettingKind::kChoice) {
-        const ui::Painter p(nullptr, *fOwner->fFont);
+        const paint::Painter p(nullptr, *fOwner->fFont);
         if (this->choiceBox(p).contains(x, y)) {
           fOwner->fAction = {Action::kChoiceOpen, fIndex, 0};
           return true;
@@ -461,7 +466,7 @@ private:
 
     // Sized to the widest option, so the control does not resize as it is
     // used.
-    [[nodiscard]] skia::SkRect choiceBox(const ui::Painter &p) const {
+    [[nodiscard]] skia::SkRect choiceBox(const paint::Painter &p) const {
       const auto &def = fOwner->fSettings->defs()[fIndex];
       float width = 0.0f;
       for (const auto &candidate : def.fOptions) {
@@ -499,7 +504,7 @@ private:
       fLastMs = nowMs;
       const bool active = fOwner->fActiveSection == static_cast<int>(fIndex);
       const float previous = fGrow;
-      fGrow = ui::approach(fGrow, active ? 1.0f : 0.0f, 90.0f, dt);
+      fGrow = paint::approach(fGrow, active ? 1.0f : 0.0f, 90.0f, dt);
       if (fGrow != previous || fHovered != fDrawnHovered) {
         fDrawnHovered = fHovered;
         this->markDamaged();
@@ -507,9 +512,9 @@ private:
     }
 
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      const ui::Painter p(canvas, *fOwner->fFont);
+      const paint::Painter p(canvas, *fOwner->fFont);
       const bool active = fOwner->fActiveSection == static_cast<int>(fIndex);
-      const float indicatorH = 4.0f + 14.0f * ui::outElasticHalf(fGrow);
+      const float indicatorH = 4.0f + 14.0f * paint::outElasticHalf(fGrow);
       if (fGrow > 0.01f) {
         p.fillRounded(skia::SkRect::MakeXYWH(fBounds.fLeft + 6.0f,
                                              fBounds.centerY() -
@@ -583,7 +588,7 @@ private:
       if (row == nullptr) {
         return;
       }
-      const ui::Painter p(canvas, *fOwner->fFont);
+      const paint::Painter p(canvas, *fOwner->fFont);
       const auto &def =
           fOwner->fSettings->defs()[static_cast<std::size_t>(
               fOwner->fOpenChoice)];
@@ -595,7 +600,7 @@ private:
         const skia::SkRect item = RowNode::optionBox(fBounds, o);
         const bool hovered = item.contains(fOwner->fMouseX, fOwner->fMouseY);
         p.fillRounded(item, 6.0f,
-                      hovered ? ui::kCardSel
+                      hovered ? palette::kCardSel
                               : skia::colorSetARGB(255, 44, 36, 54),
                       alpha);
         p.textClipped(def.fOptions[o], item.fLeft + 12.0f,
@@ -752,7 +757,7 @@ private:
         lastSection = defs[i].fSection;
         auto header = std::make_unique<nodes::Text>(
             Settings::kSections[static_cast<std::size_t>(defs[i].fSection)],
-            18.0f, ui::kAccent);
+            18.0f, palette::kAccent);
         header->fX = kContentMargins;
         fSectionHeaders[static_cast<std::size_t>(defs[i].fSection)] =
             header.get();

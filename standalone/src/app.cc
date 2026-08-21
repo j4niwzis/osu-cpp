@@ -23,7 +23,8 @@ import client.mapcache;
 import client.replaycache;
 import client.filter;
 import client.loader;
-import client.ui;
+import skiff.paint;
+import client.palette;
 import client.settings;
 import client.settingspanel;
 import client.overlays;
@@ -488,7 +489,7 @@ private:
   std::mt19937 fUiRng{std::random_device{}()};
 
   [[nodiscard]] static float easeOutQuint(float t) {
-    return client::ui::outQuint(t);
+    return skiff::paint::outQuint(t);
   }
 
   [[nodiscard]] float screenFade() const {
@@ -513,12 +514,13 @@ private:
                      p);
   }
 
-  // Palette lives in client.ui; these are aliases so call sites stay short.
-  static constexpr auto kAccent = client::ui::kAccent;
-  static constexpr auto kAccent2 = client::ui::kAccent2;
-  static constexpr auto kCardBg = client::ui::kCardBg;
-  static constexpr auto kCardSel = client::ui::kCardSel;
-  static constexpr auto kPanelBg = client::ui::kPanelBg;
+  // Palette lives in client.palette; these are aliases so call sites
+  // stay short.
+  static constexpr auto kAccent = client::palette::kAccent;
+  static constexpr auto kAccent2 = client::palette::kAccent2;
+  static constexpr auto kCardBg = client::palette::kCardBg;
+  static constexpr auto kCardSel = client::palette::kCardSel;
+  static constexpr auto kPanelBg = client::palette::kPanelBg;
 
   // Timing
   double fStartMs = 0.0;
@@ -2415,7 +2417,7 @@ private:
   // lazer's FPSCounter sits in the corner of every screen, and shows the
   // frame time beside the rate. The profiling readout is a separate thing and
   // stays behind --profile.
-  void notify(std::string text, skia::SkColor color = client::ui::kAccent2) {
+  void notify(std::string text, skia::SkColor color = client::palette::kAccent2) {
     this->requestRedraw(4500.0); // the toast has to fade out on its own
     fToast = std::move(text);
     fToastColor = color;
@@ -2429,13 +2431,13 @@ private:
     if (fToast.empty() || age > kLifetimeMs) {
       return;
     }
-    const client::ui::Painter p(canvas, fFont);
+    const skiff::paint::Painter p(canvas, fFont);
     const float alpha = static_cast<float>(
         std::min(1.0, std::min(age / 200.0, (kLifetimeMs - age) / 400.0)));
     const float w = p.measure(fToast, 14.0f) + 32.0f;
     const skia::SkRect box = skia::SkRect::MakeXYWH(
         static_cast<float>(fScreenW) - w - 20.0f, 20.0f, w, 44.0f);
-    p.fillRounded(box, 8.0f, client::ui::kBackground5, alpha * 0.95f);
+    p.fillRounded(box, 8.0f, client::palette::kBackground5, alpha * 0.95f);
     p.fillRect(skia::SkRect::MakeXYWH(box.fLeft, box.fTop, 4.0f, box.height()),
                fToastColor, alpha);
     p.textCentered(fToast, box.centerX() + 2.0f, box.centerY() + 5.0f, 14.0f,
@@ -2454,7 +2456,7 @@ private:
     if (!fSettings.flag("fps") || fFpsFrameMs <= 0.0) {
       return;
     }
-    const client::ui::Painter p(canvas, fFont);
+    const skiff::paint::Painter p(canvas, fFont);
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     const skia::SkRect box =
@@ -4667,30 +4669,30 @@ private:
 
   void fillRounded(skia::SkCanvas *canvas, const skia::SkRect &rect,
                    float radius, skia::SkColor color) {
-    client::ui::Painter(canvas, fFont).fillRounded(rect, radius, color);
+    skiff::paint::Painter(canvas, fFont).fillRounded(rect, radius, color);
   }
 
   void strokeRounded(skia::SkCanvas *canvas, const skia::SkRect &rect,
                      float radius, skia::SkColor color, float width) {
-    client::ui::Painter(canvas, fFont).strokeRounded(rect, radius, color, width);
+    skiff::paint::Painter(canvas, fFont).strokeRounded(rect, radius, color, width);
   }
 
   void drawTextClipped(skia::SkCanvas *canvas, const std::string &text,
                        float x, float y, float maxW, float size,
                        skia::SkColor color, float alpha = 1.0f) {
-    client::ui::Painter(canvas, fFont)
+    skiff::paint::Painter(canvas, fFont)
         .textClipped(text, x, y, maxW, size, color, alpha);
   }
 
   void drawTextCentered(skia::SkCanvas *canvas, const std::string &text,
                         float cx, float y, float size, skia::SkColor color,
                         float alpha = 1.0f) {
-    client::ui::Painter(canvas, fFont)
+    skiff::paint::Painter(canvas, fFont)
         .textCentered(text, cx, y, size, color, alpha);
   }
 
   [[nodiscard]] static skia::SkColor starColor(double stars) {
-    return client::ui::starColor(stars);
+    return client::palette::starColor(stars);
   }
 
   void drawScreenBackground(skia::SkCanvas *canvas) {
@@ -4755,7 +4757,7 @@ private:
   }
 
   [[nodiscard]] float approach(float current, float target, float tauMs) const {
-    return client::ui::approach(current, target, tauMs, fUiDt);
+    return skiff::paint::approach(current, target, tauMs, fUiDt);
   }
 
   void menuTrigger(MenuBtn &b) {
@@ -6019,7 +6021,7 @@ private:
       fPanelBand = skia::SkRect::MakeEmpty();
       return;
     }
-    const client::ui::Painter p(canvas, fFont);
+    const skiff::paint::Painter p(canvas, fFont);
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
@@ -6036,7 +6038,7 @@ private:
       fMenuButtons.push_back({skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f),
                               this->rulesToggleLabel(),
                               this->rulesToggleEnabled()
-                                  ? client::ui::kAccent2
+                                  ? client::palette::kAccent2
                                   : skia::colorSetARGB(255, 120, 120, 130)});
       this->drawMenuButton(canvas, fMenuButtons.back());
       bx += bw + gap;
@@ -6651,19 +6653,19 @@ private:
   // Options; Options opens a popover with the per-beatmap actions. The back
   // button sits on the left, as ScreenBackButton does.
   void drawSelectFooter(skia::SkCanvas *canvas) {
-    const client::ui::Painter p(canvas, fFont);
+    const skiff::paint::Painter p(canvas, fFont);
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     constexpr float kFooterHeight = 60.0f;
     p.fillRect(skia::SkRect::MakeXYWH(0.0f, sh - kFooterHeight, sw,
                                       kFooterHeight),
-               client::ui::kBackground5);
+               client::palette::kBackground5);
 
     // Back button, bottom-left.
     fBackChip = skia::SkRect::MakeXYWH(24.0f, sh - 46.0f, 100.0f, 34.0f);
     const bool backHover = fBackChip.contains(fMouseX, fMouseY);
     p.fillRounded(fBackChip, 17.0f,
-                  backHover ? client::ui::kCardSel : client::ui::kCardBg);
+                  backHover ? client::palette::kCardSel : client::palette::kCardBg);
     p.textCentered("back", fBackChip.centerX(), fBackChip.centerY() + 5.0f,
                    14.0f, skia::kWhite, 0.9f);
 
@@ -6673,7 +6675,7 @@ private:
       skia::SkRect *fHit;
     };
     const FooterBtn btns[] = {
-        {"mods", client::ui::kAccent, &fModsChip},
+        {"mods", client::palette::kAccent, &fModsChip},
         {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
         {"options", skia::colorSetARGB(255, 170, 102, 255), &fOptionsChip},
     };
@@ -6686,7 +6688,7 @@ private:
       *b.fHit = r;
       const bool hover = r.contains(fMouseX, fMouseY);
       p.fillRounded(r, 18.0f,
-                    hover ? client::ui::kCardSel : client::ui::kCardBg);
+                    hover ? client::palette::kCardSel : client::palette::kCardBg);
       p.strokeRounded(r, 18.0f, b.fColor, hover ? 2.0f : 1.0f);
       p.textCentered(b.fLabel, r.centerX(), r.centerY() + 5.0f, 14.0f,
                      hover ? b.fColor : skia::kWhite);
@@ -6698,7 +6700,7 @@ private:
 
   // FooterButtonOptions.Popover: the per-beatmap actions that do not deserve
   // their own footer slot.
-  void drawOptionsPopover(const client::ui::Painter &p, float sw, float sh) {
+  void drawOptionsPopover(const skiff::paint::Painter &p, float sw, float sh) {
     fOptionHits.clear();
     if (!fOptionsOpen) {
       return;
@@ -6711,7 +6713,7 @@ private:
     const float h = itemH * static_cast<float>(kItems.size()) + 12.0f;
     const skia::SkRect box = skia::SkRect::MakeXYWH(
         fOptionsChip.centerX() - w * 0.5f, sh - 60.0f - h - 8.0f, w, h);
-    p.fillRounded(box, 10.0f, client::ui::kBackground4);
+    p.fillRounded(box, 10.0f, client::palette::kBackground4);
     p.strokeRounded(box, 10.0f, skia::colorSetARGB(255, 170, 102, 255), 2.0f);
     for (std::size_t i = 0; i < kItems.size(); ++i) {
       const skia::SkRect r = skia::SkRect::MakeXYWH(
@@ -6719,7 +6721,7 @@ private:
           w - 12.0f, itemH);
       fOptionHits.push_back(r);
       if (r.contains(fMouseX, fMouseY)) {
-        p.fillRounded(r, 8.0f, client::ui::kCardSel);
+        p.fillRounded(r, 8.0f, client::palette::kCardSel);
       }
       p.textClipped(kItems[i], r.fLeft + 14.0f, r.centerY() + 5.0f,
                     r.width() - 28.0f, 14.0f, skia::kWhite, 0.95f);
@@ -6790,7 +6792,7 @@ private:
     root->fWidth = 1.0f;
     root->fHeight = 1.0f;
 
-    auto panel = std::make_unique<nodes::Box>(client::ui::kBackground5);
+    auto panel = std::make_unique<nodes::Box>(client::palette::kBackground5);
     panel->fWidth = 560.0f;
     panel->fHeight = 240.0f;
     panel->fAnchor = scene::Anchor::kCentre;
@@ -6846,7 +6848,7 @@ private:
                                       fConfirmScene.reset();
                                       this->deleteSelectedBeatmap();
                                     }));
-    buttons->add(this->dialogButton("Cancel", client::ui::kAccent2, [this] {
+    buttons->add(this->dialogButton("Cancel", client::palette::kAccent2, [this] {
       fConfirmDelete = false;
       fConfirmScene.reset();
     }));
@@ -6866,7 +6868,7 @@ private:
     button->fWidth = 240.0f;
     button->fHeight = 46.0f;
 
-    auto background = std::make_unique<nodes::Box>(client::ui::kCardBg);
+    auto background = std::make_unique<nodes::Box>(client::palette::kCardBg);
     background->fRelativeSizeAxes = scene::Axes::kBoth;
     background->fWidth = 1.0f;
     background->fHeight = 1.0f;
@@ -7143,12 +7145,12 @@ private:
     std::vector<std::string> labels{"retry", "back to song select",
                                     "export video"};
     std::vector<skia::SkColor> accents{
-        skia::colorSetARGB(255, 255, 204, 102), client::ui::kAccent2,
+        skia::colorSetARGB(255, 255, 204, 102), client::palette::kAccent2,
         skia::colorSetARGB(255, 170, 102, 255)};
     if (rulesToggle) {
       labels.push_back(this->rulesToggleLabel());
       accents.push_back(this->rulesToggleEnabled()
-                            ? client::ui::kAccent2
+                            ? client::palette::kAccent2
                             : skia::colorSetARGB(255, 120, 120, 130));
     }
     for (int i = 0; i < count; ++i) {
@@ -7185,7 +7187,7 @@ private:
     fView.invalidate();
     auto *canvas = fSurface->getCanvas();
     this->drawScreenBackground(canvas);
-    const client::ui::Painter p(canvas, fFont);
+    const skiff::paint::Painter p(canvas, fFont);
 
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
@@ -7210,7 +7212,7 @@ private:
   //
   // `ownScore` marks a leading entry carrying the score in hand (the run just
   // played); the browser has none and shows each replay's own header.
-  void drawScorePanelList(skia::SkCanvas *canvas, const client::ui::Painter &p,
+  void drawScorePanelList(skia::SkCanvas *canvas, const skiff::paint::Painter &p,
                           float sw, float sh, bool ownScore) {
     fPanelHits.clear();
     fPanelOwnScore = ownScore;
@@ -7408,26 +7410,26 @@ private:
 
   // `replay` is null for the score in hand, which is contracted whenever some
   // other panel is expanded.
-  void drawContractedPanel(const client::ui::Painter &p, const skia::SkRect &r,
+  void drawContractedPanel(const skiff::paint::Painter &p, const skia::SkRect &r,
                            const ReplayFile *replayPtr, float scale) {
     const bool hover = r.contains(fMouseX, fMouseY);
     const float h = r.height();
     p.fillRounded(r, 10.0f * scale,
-                  hover ? client::ui::kCardSel : client::ui::kBackground4);
+                  hover ? client::palette::kCardSel : client::palette::kBackground4);
 
     if (replayPtr == nullptr) {
       const auto &sc = fResult.fScore;
       p.textCentered(fResult.fGrade, r.centerX(),
-                     r.fTop + h * 0.17f, 46.0f * scale, client::ui::kAccent);
+                     r.fTop + h * 0.17f, 46.0f * scale, client::palette::kAccent);
       p.textCentered(std::format("{}", sc.fScore), r.centerX(),
                      r.fTop + h * 0.32f, 19.0f * scale, skia::kWhite);
       p.textCentered(std::format("{:.2f}%", sc.accuracy() * 100.0),
                      r.centerX(), r.fTop + h * 0.40f, 14.0f * scale,
-                     client::ui::kAccent2, 0.95f);
+                     client::palette::kAccent2, 0.95f);
       p.textCentered(std::format("{}x", sc.fMaxCombo), r.centerX(),
                      r.fTop + h * 0.47f, 14.0f * scale, skia::kWhite, 0.75f);
       p.textCentered("this play", r.centerX(), r.fBottom - 18.0f * scale,
-                     11.0f * scale, client::ui::kAccent2, 0.8f);
+                     11.0f * scale, client::palette::kAccent2, 0.8f);
       return;
     }
     const ReplayFile &replay = *replayPtr;
@@ -7436,17 +7438,17 @@ private:
     // the date the score was set at the bottom.
     if (replay.fHasScore) {
       p.textCentered(replay.fGrade, r.centerX(), r.fTop + h * 0.17f,
-                     46.0f * scale, client::ui::kAccent);
+                     46.0f * scale, client::palette::kAccent);
       p.textCentered(std::format("{}", replay.fScore.fTotalScore), r.centerX(),
                      r.fTop + h * 0.32f, 19.0f * scale, skia::kWhite);
       p.textCentered(std::format("{:.2f}%", replay.fScore.accuracy() * 100.0),
                      r.centerX(), r.fTop + h * 0.40f, 14.0f * scale,
-                     client::ui::kAccent2, 0.95f);
+                     client::palette::kAccent2, 0.95f);
       p.textCentered(std::format("{}x", replay.fScore.fMaxCombo), r.centerX(),
                      r.fTop + h * 0.47f, 14.0f * scale, skia::kWhite, 0.75f);
     } else {
       p.textCentered("replay", r.centerX(), r.fTop + h * 0.20f, 18.0f * scale,
-                     client::ui::kAccent2, 0.9f);
+                     client::palette::kAccent2, 0.9f);
       p.textCentered("no score stored", r.centerX(), r.fTop + h * 0.28f,
                      11.0f * scale, skia::kWhite, 0.5f);
     }
@@ -7468,10 +7470,10 @@ private:
 
   // The expanded panel: the score in hand when `replay` is null, otherwise the
   // score stored in that replay's header.
-  void drawExpandedPanel(skia::SkCanvas *canvas, const client::ui::Painter &p,
+  void drawExpandedPanel(skia::SkCanvas *canvas, const skiff::paint::Painter &p,
                          const skia::SkRect &panel, float scale,
                          const ReplayFile *replay) {
-    p.fillRounded(panel, 20.0f * scale, client::ui::kBackground5);
+    p.fillRounded(panel, 20.0f * scale, client::palette::kBackground5);
 
     // Values, from whichever score this panel stands for.
     struct Shown {
@@ -7548,7 +7550,7 @@ private:
     // shown outright.
     std::uint64_t shownScore = sh.fTotal;
     if (replay == nullptr) {
-      const float countUp = client::ui::outQuint(
+      const float countUp = skiff::paint::outQuint(
           static_cast<float>((wallMs() - fStateEnterWall) / 900.0));
       shownScore =
           static_cast<std::uint64_t>(static_cast<double>(sh.fTotal) * countUp);
@@ -7565,7 +7567,7 @@ private:
             panel.centerX() - 88.0f * scale, y - 11.0f * scale, 60.0f * scale,
             22.0f * scale);
         p.fillRounded(chip, 11.0f * scale,
-                      client::ui::starColor(this->shownStars(info)));
+                      client::palette::starColor(this->shownStars(info)));
         p.textCentered(std::format("{:.2f}", this->shownStars(info)),
                        chip.centerX(),
                        chip.centerY() + 5.0f * scale, 12.0f * scale,
@@ -7583,10 +7585,10 @@ private:
       skia::SkColor fColor;
     };
     const Stat top[] = {
-        {"300", std::format("{}", sh.f300), client::ui::kGreat},
-        {"100", std::format("{}", sh.f100), client::ui::kGood},
-        {"50", std::format("{}", sh.f50), client::ui::kMeh},
-        {"miss", std::format("{}", sh.fMiss), client::ui::kMiss},
+        {"300", std::format("{}", sh.f300), client::palette::kGreat},
+        {"100", std::format("{}", sh.f100), client::palette::kGood},
+        {"50", std::format("{}", sh.f50), client::palette::kMeh},
+        {"miss", std::format("{}", sh.fMiss), client::palette::kMiss},
     };
     const float cellW = (panel.width() - 32.0f * scale) / 4.0f;
     float cx = panel.fLeft + 16.0f * scale;
@@ -7605,7 +7607,7 @@ private:
          skia::kWhite},
     };
     bottom.push_back({"pp", std::format("{:.0f}", fResult.fPp),
-                      client::ui::kAccent});
+                      client::palette::kAccent});
     if (sh.fDetail) {
       bottom.push_back(
           {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite});
@@ -7617,13 +7619,13 @@ private:
         bottom.push_back({"slider ticks",
                           std::format("{}/{}", sh.fTickHit, sh.fTickTotal),
                           sh.fTickHit == sh.fTickTotal ? skia::kWhite
-                                                       : client::ui::kMiss});
+                                                       : client::palette::kMiss});
       }
       if (sh.fTailTotal > 0) {
         bottom.push_back({"slider ends",
                           std::format("{}/{}", sh.fTailHit, sh.fTailTotal),
                           sh.fTailHit == sh.fTailTotal ? skia::kWhite
-                                                       : client::ui::kMiss});
+                                                       : client::palette::kMiss});
       }
     } else if (replay != nullptr) {
       // A stored replay keeps no hit statistics, only when it was played.
@@ -7648,7 +7650,7 @@ private:
     if (replay != nullptr) {
       p.textCentered("click to watch this replay", panel.centerX(),
                      panel.fBottom - 16.0f * scale, 12.0f * scale,
-                     client::ui::kAccent2, 0.85f);
+                     client::palette::kAccent2, 0.85f);
     }
   }
 
@@ -7657,7 +7659,7 @@ private:
   // rank letter in the middle. Cutoffs are lazer's standard ones.
   void drawAccuracyCircle(skia::SkCanvas *canvas, float cx, float cy, float r,
                           double accuracy) {
-    const client::ui::Painter p(canvas, fFont);
+    const skiff::paint::Painter p(canvas, fFont);
     const float thickness = r * 0.2f; // accuracy_circle_radius
     const skia::SkRect bounds =
         skia::SkRect::MakeXYWH(cx - r, cy - r, r * 2.0f, r * 2.0f);
@@ -7701,7 +7703,7 @@ private:
     }
 
     // Achieved accuracy, animated in with the panel.
-    const float progress = client::ui::outQuint(static_cast<float>(
+    const float progress = skiff::paint::outQuint(static_cast<float>(
         (wallMs() - fStateEnterWall) / 1400.0));
     arc.setColor(skia::kWhite);
     canvas->drawArc(bounds, -90.0f,
@@ -7710,7 +7712,7 @@ private:
 
     // Rank badge in the middle.
     p.textCentered(fResult.fGrade, cx, cy + r * 0.28f, r * 0.72f,
-                   client::ui::kAccent);
+                   client::palette::kAccent);
     p.textCentered(std::format("{:.2f}%", accuracy * 100.0), cx,
                    cy + r * 0.62f, r * 0.16f, skia::kWhite, 0.85f);
   }
@@ -7820,7 +7822,7 @@ private:
   // Any other font dropped into the same directory joins the fallback chain,
   // which is how Chinese or anything else can be added without a rebuild.
   void loadFonts() {
-    auto &stack = client::ui::fonts();
+    auto &stack = skiff::paint::fonts();
     if (std::getenv("OSU_SYSTEM_FONT") != nullptr) {
       // For comparing against what the system provides: when text is what
       // costs, swapping the faces out in one run is worth the branch.
@@ -7860,7 +7862,7 @@ private:
             name == "Montserrat-ExtraBold.ttf") {
           continue;
         }
-        client::ui::fonts().addFallback(this->loadTypeface(name));
+        skiff::paint::fonts().addFallback(this->loadTypeface(name));
       }
       return; // the first directory that exists is the one in use
     }
@@ -7877,7 +7879,7 @@ private:
   }
 
   [[nodiscard]] skia::SkFont loadFont(float size) {
-    if (const auto &primary = client::ui::fonts().primary()) {
+    if (const auto &primary = skiff::paint::fonts().primary()) {
       return skia::SkFont(primary, size);
     }
     // Only reached if the bundled fonts did not install; better a system face

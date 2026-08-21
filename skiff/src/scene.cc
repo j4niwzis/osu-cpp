@@ -138,7 +138,7 @@ struct Transform {
 // node can be written down rather than assembled field by field:
 //
 //   auto *bg = row->add<nodes::Box>({.fill = true, .cornerRadius = 6.0f},
-//                                   ui::kBackground3);
+//                                   kBackground);
 //
 // Each member's default is the drawable's own, so an empty spec `{}` changes
 // nothing and every field left out stays at what the class chose. Four of

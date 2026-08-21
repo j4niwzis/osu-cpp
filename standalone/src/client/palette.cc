@@ -1,24 +1,13 @@
-export module client.ui;
+export module client.palette;
 
 import std;
 import skia;
-import skiff.paint;
 
-// The client's own palette, laid over the framework's painting. Everything
-// declared here is osu!'s: the OverlayColourProvider shades, the judgement
-// colours, the star-rating ramp. The names the screens already draw through
-// -- Painter, fonts(), the easings -- are pulled in from skiff::paint, so a
-// screen still writes client::ui:: for all of it and nothing had to change
-// when the painting moved out.
-export namespace client::ui {
-
-using skiff::paint::approach;
-using skiff::paint::combinedAlpha;
-using skiff::paint::FontStack;
-using skiff::paint::fonts;
-using skiff::paint::outElasticHalf;
-using skiff::paint::outQuint;
-using skiff::paint::Painter;
+// osu!'s colours, and nothing else: the OverlayColourProvider shades the
+// screens are drawn in, the judgement colours and the star-rating ramp. The
+// drawing they are handed to lives in skiff, which has no idea what any of
+// these mean.
+export namespace client::palette {
 
 // osu!lazer's OverlayColourProvider palette (purple scheme) plus the accents
 // used across song select and the menus. Kept in one place so screens do not
@@ -58,4 +47,4 @@ inline constexpr skia::SkColor kMiss = skia::colorSetARGB(255, 237, 17, 33);
   }
   return skia::colorSetARGB(255, 90, 90, 110);
 }
-} // namespace client::ui
+} // namespace client::palette

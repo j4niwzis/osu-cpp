@@ -2,7 +2,7 @@ export module client.pause;
 
 import std;
 import skia;
-import client.ui;
+import skiff.paint;
 import skiff.scene;
 import skiff.nodes;
 import client.triangles;
@@ -187,7 +187,7 @@ private:
       }
       const bool selected = fOwner->fSelected == static_cast<int>(fIndex);
       const float previous = fGrow;
-      fGrow = client::ui::approach(fGrow, selected ? 1.0f : 0.0f,
+      fGrow = skiff::paint::approach(fGrow, selected ? 1.0f : 0.0f,
                                    kHoverMs / 3.0f, dt);
       if (fGrow != previous) {
         this->markDamaged();
@@ -195,7 +195,7 @@ private:
     }
 
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      const float eased = client::ui::outQuint(fGrow);
+      const float eased = skiff::paint::outQuint(fGrow);
       const float width = fBounds.width() * (kIdleWidth +
                                              (kHoverWidth - kIdleWidth) * eased);
       const float cx = fBounds.centerX();
@@ -325,7 +325,7 @@ private:
     }
 
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      const client::ui::Painter p(canvas, *fOwner->fFont);
+      const skiff::paint::Painter p(canvas, *fOwner->fFont);
       const float cx = fBounds.centerX();
       float y = fBounds.fTop + 18.0f;
       const auto line = [&](const std::string &text) {
@@ -384,7 +384,7 @@ private:
       return 0.0f;
     }
     font->setSize(size);
-    return client::ui::fonts().measure(*font, text) +
+    return skiff::paint::fonts().measure(*font, text) +
            spacing * static_cast<float>(text.size());
   }
 
@@ -402,7 +402,7 @@ private:
       return;
     }
     font->setSize(size);
-    client::ui::fonts().applyWeight(*font, true);
+    skiff::paint::fonts().applyWeight(*font, true);
     skia::SkPaint paint;
     paint.setAntiAlias(true);
     paint.setColor(colour);
@@ -419,11 +419,11 @@ private:
         length = 4;
       }
       const std::string glyph = text.substr(i, length);
-      client::ui::fonts().draw(canvas, *font, glyph, cursor, baseline, paint);
-      cursor += client::ui::fonts().measure(*font, glyph) + spacing;
+      skiff::paint::fonts().draw(canvas, *font, glyph, cursor, baseline, paint);
+      cursor += skiff::paint::fonts().measure(*font, glyph) + spacing;
       i += length;
     }
-    client::ui::fonts().applyWeight(*font, false);
+    skiff::paint::fonts().applyWeight(*font, false);
   }
 
   Ctx fCtx;
