@@ -411,8 +411,15 @@ private:
     const int bonus = maximumBonusSpins(duration, fDiff.fOd);
     const int total = required + kBonusSpinsGap + bonus;
     for (int i = 0; i < total; ++i) {
+      // Spinner.CreateNestedHitObjects divides in single precision before
+      // scaling by the duration. Worth a third of a microsecond at most, but
+      // it is free to get right and a tick that lands either side of a frame
+      // is judged in a different frame.
       const double at =
-          s.fTime + static_cast<double>(i + 1) / total * duration;
+          s.fTime +
+          static_cast<double>(static_cast<float>(i + 1) /
+                              static_cast<float>(total)) *
+              duration;
       nested.push_back({at, i < required + kBonusSpinsGap
                                 ? HitKind::kSmallBonus
                                 : HitKind::kLargeBonus});
@@ -598,22 +605,35 @@ private:
     fGameplayEnd = this->objectEnd(fMap.fObjects.size() - 1);
 
     std::vector<std::pair<double, double>> increases;
+    const double basic = healthIncreaseFor(HitKind::kBasic, judgement::Great{},
+                                           true, fDiff.fHp);
     for (std::size_t i = 0; i < fMap.fObjects.size(); ++i) {
       const bool slider = std::holds_alternative<Slider>(fMap.fObjects[i]);
-      double head =
-          healthIncreaseFor(HitKind::kBasic, judgement::Great{}, true,
-                            fDiff.fHp);
-      increases.emplace_back(startTime(fMap.fObjects[i]), head);
+      const bool spinner = std::holds_alternative<Spinner>(fMap.fObjects[i]);
+      // SimulateAutoplay walks an object's nested list before the object
+      // itself, and records each result at its own GetEndTime. For a circle
+      // that is its time, and a slider's head is a nested object at the
+      // slider's time -- but a spinner has no head, and the object being
+      // judged is the spinner, which ends when it ends. Putting its 0.03 at
+      // the spinner's start instead moved it ahead of a couple of seconds of
+      // drain, and on a map with several spinners that was enough to solve
+      // for a different drain rate: it agreed with lazer on four of twelve
+      // generated spinner maps, and on twelve of twelve once moved.
+      if (!spinner) {
+        increases.emplace_back(startTime(fMap.fObjects[i]), basic);
+      }
       for (const auto &n : fStates[i].fNested) {
         if (isBonus(n.fKind)) {
-          continue; // bonus results are left out of the drain rate solve
+          continue; // a spinner's spins are bonus, and bonus is left out
         }
         double amount = healthIncreaseFor(n.fKind, judgement::Great{}, true,
                                           fDiff.fHp,
                                           n.fKind == HitKind::kLargeTick);
         increases.emplace_back(n.fTime, amount);
       }
-      if (slider) {
+      if (spinner) {
+        increases.emplace_back(this->objectEnd(i), basic);
+      } else if (slider) {
         // The slider judges itself once its nested objects are done. It gives
         // no health, but it is an entry in the list all the same, and on a map
         // with breaks that changes which entry swallows the break.
