@@ -96,6 +96,40 @@ struct Margin {
   [[nodiscard]] float totalY() const noexcept { return fTop + fBottom; }
 };
 
+// The box a thing of that size occupies when its `origin` point is put on the
+// `anchor` point of `parent`, offset by dx and dy. This is what layout() does
+// for a drawable, available on its own for the cases that are not drawables:
+// a glyph inside a control, a bar inside a row.
+[[nodiscard]] inline skia::SkRect
+anchoredBox(const skia::SkRect &parent, float width, float height,
+            Anchor anchor, Anchor origin, float dx = 0.0f, float dy = 0.0f) {
+  const float ax = parent.fLeft + parent.width() * anchorX(anchor);
+  const float ay = parent.fTop + parent.height() * anchorY(anchor);
+  return skia::SkRect::MakeXYWH(ax - width * anchorX(origin) + dx,
+                                ay - height * anchorY(origin) + dy, width,
+                                height);
+}
+
+// The same point on both, which is what centring and edge-alignment are.
+[[nodiscard]] inline skia::SkRect anchoredBox(const skia::SkRect &parent,
+                                              float width, float height,
+                                              Anchor at, float dx = 0.0f,
+                                              float dy = 0.0f) {
+  return anchoredBox(parent, width, height, at, at, dx, dy);
+}
+
+[[nodiscard]] inline skia::SkRect inset(const skia::SkRect &rect,
+                                        const Margin &by) {
+  return skia::SkRect::MakeLTRB(rect.fLeft + by.fLeft, rect.fTop + by.fTop,
+                                rect.fRight - by.fRight,
+                                rect.fBottom - by.fBottom);
+}
+
+[[nodiscard]] inline skia::SkRect inset(const skia::SkRect &rect,
+                                        float horizontal, float vertical) {
+  return inset(rect, Margin{vertical, horizontal, vertical, horizontal});
+}
+
 // How many drawables a frame walked and how many it actually drew. Counters
 // rather than anything cleverer: the question "why does a frame cost what it
 // costs" has been answered by guessing twice now, and guessing is slower than
@@ -480,12 +514,9 @@ public:
     width *= fScale;
     height *= fScale;
 
-    const float ax = parent.fLeft + parentW * anchorX(fAnchor);
-    const float ay = parent.fTop + parentH * anchorY(fAnchor);
-    const float left = ax - width * anchorX(fOrigin) + fX + fMargin.fLeft;
-    const float top = ay - height * anchorY(fOrigin) + fY + fMargin.fTop;
     const skia::SkRect previous = fBounds;
-    fBounds = skia::SkRect::MakeXYWH(left, top, width, height);
+    fBounds = anchoredBox(parent, width, height, fAnchor, fOrigin,
+                          fX + fMargin.fLeft, fY + fMargin.fTop);
     if (fBounds != previous) {
       // A drawable that moved or changed size has to repaint both where it is
       // now and where it used to be, and the layout is the only place that
@@ -503,9 +534,7 @@ public:
 
   // The box children are laid out in: this drawable, less its padding.
   [[nodiscard]] skia::SkRect contentBox() const {
-    return skia::SkRect::MakeLTRB(
-        fBounds.fLeft + fPadding.fLeft, fBounds.fTop + fPadding.fTop,
-        fBounds.fRight - fPadding.fRight, fBounds.fBottom - fPadding.fBottom);
+    return inset(fBounds, fPadding);
   }
 
   virtual void draw(skia::SkCanvas *canvas, float inheritedAlpha = 1.0f) {

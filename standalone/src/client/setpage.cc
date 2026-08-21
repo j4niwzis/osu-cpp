@@ -356,6 +356,7 @@ private:
         {.autoSize = scene::Axes::kBoth},
         nodes::FillFlow::Direction::kHorizontal);
     mapper->fWrap = false;
+    mapper->fCrossAlign = nodes::FillFlow::Cross::kMiddle;
     mapper->add<nodes::Text>({}, "mapped by ", 14.0f, listing::kContent2,
                              false);
     mapper->add<nodes::Text>({}, e.fCreator, 14.0f, listing::kContent1, true);
@@ -484,6 +485,7 @@ private:
           {.autoSize = scene::Axes::kBoth},
           nodes::FillFlow::Direction::kHorizontal, 8.0f, 0.0f);
       heading->fWrap = false;
+      heading->fCrossAlign = nodes::FillFlow::Cross::kMiddle;
       heading
           ->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
                              .padding = {1.0f, 8.0f, 1.0f, 8.0f},

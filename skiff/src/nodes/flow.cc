@@ -33,6 +33,11 @@ public:
   float fSpacingY = 0.0f;
   bool fWrap = true;
   bool fCentreRows = false; // rows centred in the container, as the cards are
+  // Where a child sits across the flow's axis. Its own enum rather than an
+  // Anchor, because across a column means horizontally and across a row means
+  // vertically, and one Anchor cannot mean both without being read twice.
+  enum class Cross : std::uint8_t { kStart, kMiddle, kEnd };
+  Cross fCrossAlign = Cross::kStart;
 
   void setSpacing(float x, float y) {
     fSpacingX = x;
@@ -51,8 +56,16 @@ protected:
         }
         child->fAnchor = Anchor::kTopLeft;
         child->fOrigin = Anchor::kTopLeft;
+        child->fX = 0.0f;
         child->fY = y;
         child->layout(box);
+        if (fCrossAlign != Cross::kStart) {
+          // Its width is only known once it has been laid out, so the offset
+          // that centres it is applied on a second pass over the same child.
+          child->fX = this->crossOffset(
+              box.width(), child->fBounds.width() + child->fMargin.totalX());
+          child->layout(box);
+        }
         y += child->fBounds.height() + child->fMargin.totalY() + fSpacingY;
       }
       return;
@@ -67,17 +80,23 @@ protected:
       if (row.empty()) {
         return;
       }
-      float x = fCentreRows ? (box.width() - rowWidth) * 0.5f : 0.0f;
+      // Every child in this row has been laid out already, so the row's
+      // height is known before anything is placed in it.
       float rowHeight = 0.0f;
+      for (Drawable *child : row) {
+        rowHeight = std::max(rowHeight,
+                             child->fBounds.height() + child->fMargin.totalY());
+      }
+      float x = fCentreRows ? (box.width() - rowWidth) * 0.5f : 0.0f;
       for (Drawable *child : row) {
         child->fAnchor = Anchor::kTopLeft;
         child->fOrigin = Anchor::kTopLeft;
         child->fX = x;
-        child->fY = y;
+        child->fY =
+            y + this->crossOffset(rowHeight, child->fBounds.height() +
+                                                 child->fMargin.totalY());
         child->layout(box);
         x += child->fBounds.width() + child->fMargin.totalX() + fSpacingX;
-        rowHeight = std::max(rowHeight,
-                             child->fBounds.height() + child->fMargin.totalY());
       }
       y += rowHeight + fSpacingY;
       row.clear();
@@ -113,6 +132,20 @@ protected:
   // A wrapping row is left alone: what is left over is only known once the
   // rows are decided, and the rows are decided by the widths this would be
   // choosing.
+  // How far across the line a child sits: how much room the line has, less
+  // how much the child takes.
+  [[nodiscard]] float crossOffset(float line, float own) const {
+    switch (fCrossAlign) {
+    case Cross::kMiddle:
+      return (line - own) * 0.5f;
+    case Cross::kEnd:
+      return line - own;
+    case Cross::kStart:
+      break;
+    }
+    return 0.0f;
+  }
+
   void grow(const skia::SkRect &box, bool horizontal) {
     if (horizontal && fWrap) {
       return;

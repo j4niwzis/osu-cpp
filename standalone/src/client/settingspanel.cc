@@ -436,7 +436,7 @@ private:
       const Settings &settings = *fOwner->fSettings;
       const auto &def = settings.defs()[fIndex];
       const paint::Painter p(canvas, *fOwner->fFont);
-      const skia::SkRect content = this->contentRect();
+      const skia::SkRect content = this->contentBox();
       const float baseline = fBounds.fTop + 16.0f;
 
       if (settings.isModified(fIndex)) {
@@ -466,7 +466,7 @@ private:
 
     bool onClick(float x, float y) override {
       const auto &def = fOwner->fSettings->defs()[fIndex];
-      const skia::SkRect content = this->contentRect();
+      const skia::SkRect content = this->contentBox();
       if (fOwner->fSettings->isModified(fIndex) && x < content.fLeft) {
         fOwner->fAction = {Action::kRestore, fIndex, 0};
         return true;
@@ -483,13 +483,6 @@ private:
     }
 
   private:
-    [[nodiscard]] skia::SkRect contentRect() const {
-      return skia::SkRect::MakeLTRB(fBounds.fLeft + kContentMargins,
-                                    fBounds.fTop,
-                                    fBounds.fRight - kContentMargins,
-                                    fBounds.fBottom);
-    }
-
     SettingsPanel *fOwner;
     std::size_t fIndex;
     ChoiceControlNode *fControl = nullptr; // one of these three, by kind
@@ -528,10 +521,8 @@ private:
       const bool active = fOwner->fActiveSection == static_cast<int>(fIndex);
       const float indicatorH = 4.0f + 14.0f * paint::outElasticHalf(fGrow);
       if (fGrow > 0.01f) {
-        p.fillRounded(skia::SkRect::MakeXYWH(fBounds.fLeft + 6.0f,
-                                             fBounds.centerY() -
-                                                 indicatorH * 0.5f,
-                                             4.0f, indicatorH),
+        p.fillRounded(scene::anchoredBox(fBounds, 4.0f, indicatorH,
+                                         scene::Anchor::kCentreLeft, 6.0f),
                       2.0f, skia::kWhite, alpha);
       }
       const skia::SkColor tint =
