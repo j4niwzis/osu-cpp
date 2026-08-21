@@ -233,10 +233,13 @@ public:
     return kColors[index % kColors.size()];
   }
 
+  // `sizeScale` is the 1 -> 1.4 the circle grows by as it fades out after a
+  // hit (LegacyMainCirclePiece).
   void drawHitCircle(skia::SkCanvas *canvas, osu::Vec2 pos, double time,
                      double now, double cs, double ar, int comboNumber,
-                     std::size_t comboIndex, float alphaScale = 1.0f) {
-    const double radius = detail::circleVisualRadius(cs);
+                     std::size_t comboIndex, float alphaScale = 1.0f,
+                     float sizeScale = 1.0f) {
+    const double radius = detail::circleVisualRadius(cs) * sizeScale;
     const float x = static_cast<float>(pos.fX);
     const float y = static_cast<float>(pos.fY);
 
@@ -304,14 +307,24 @@ public:
                             static_cast<float>(radius), alpha);
     }
 
-    if (now <= time) {
+    // DrawableHitCircle: the approach circle scales 4 -> 1 linearly over the
+    // whole preempt, fades to 0.9 rather than to 1, and at the object's start
+    // time fades out over 50ms instead of vanishing -- it stays on screen for
+    // that long even once the circle has been hit.
+    constexpr double kApproachFadeOut = 50.0;
+    if (now <= time + kApproachFadeOut) {
       const double approachT = std::clamp((now - time) / preempt, -1.0, 0.0);
       const double approachScale = 1.0 - 3.0 * approachT;
       const double approachElapsed = now - (time - preempt);
       const double approachFadeT =
           std::clamp(approachElapsed / approachFadeIn, 0.0, 1.0);
+      double approachOpacity = 0.9 * approachFadeT;
+      if (now > time) {
+        approachOpacity *= std::clamp(1.0 - (now - time) / kApproachFadeOut,
+                                      0.0, 1.0);
+      }
       const float approachAlpha =
-          static_cast<float>(approachFadeT) * alphaScale;
+          static_cast<float>(approachOpacity) * alphaScale;
 
       auto approach = this->approachCircle();
       if (approach) {
@@ -976,8 +989,9 @@ float4 main(float2 coords) {
                               paint);
   }
 
+  // `scaleMul` is the 1.5 -> 1 pop a follow point does as it fades in.
   void drawFollowPoint(skia::SkCanvas *canvas, osu::Vec2 pos, double angle,
-                       float alpha, double cs) {
+                       float alpha, double cs, float scaleMul = 1.0f) {
     auto img = this->followPoint();
     if (!img)
       return;
@@ -990,8 +1004,9 @@ float4 main(float2 coords) {
     canvas->save();
     canvas->translate(static_cast<float>(pos.fX), static_cast<float>(pos.fY));
     canvas->rotate(static_cast<float>(angle * 180.0 / std::numbers::pi));
-    detail::drawImageCentered(canvas, img.get(), 0.0f, 0.0f,
-                              static_cast<float>(hitSpriteScale * 0.3), paint);
+    detail::drawImageCentered(
+        canvas, img.get(), 0.0f, 0.0f,
+        static_cast<float>(hitSpriteScale * 0.3) * scaleMul, paint);
     canvas->restore();
   }
 

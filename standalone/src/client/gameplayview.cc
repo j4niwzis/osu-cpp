@@ -69,7 +69,10 @@ public:
   static constexpr double kHitBurstLifetime = 350.0;
   static constexpr double kCursorTrailLifetime = 140.0;
   static constexpr std::size_t kCursorTrailMax = 40;
-  static constexpr double kFadeLifetime = 250.0;
+  // LegacyMainCirclePiece's legacy_fade_duration, and DrawableHitCircle's
+  // fade on a miss.
+  static constexpr double kHitFade = 240.0;
+  static constexpr double kMissFade = 100.0;
   static constexpr std::size_t kProfileCount = 60;
 
 
@@ -152,10 +155,12 @@ public:
                         double cs) {
     if (c.fMap->fObjects.size() < 2)
       return;
-    const double preempt = osu::preemptTime(ar);
+    // FollowPointConnection. The spacing is a constant in osu! units and is
+    // not scaled by circle size; the distance it is stepped over is truncated
+    // to a whole number of them before the fractions are taken.
     const double fadeIn = osu::fadeInTime(ar);
-    const double radius = osu::circleRadius(cs);
-    const double spacing = radius * 0.7;
+    const double preempt = osu::followPointPreempt(ar);
+    const double spacing = osu::kFollowPointSpacing;
     for (std::size_t i = 0; i + 1 < c.fMap->fObjects.size(); ++i) {
       if ((*c.fCombo).fGroups[i] != (*c.fCombo).fGroups[i + 1])
         continue;
@@ -167,30 +172,35 @@ public:
       const osu::Vec2 endPos = objectPosition(c, i + 1);
       const double endTime = osu::startTime(c.fMap->fObjects[i + 1]);
       const osu::Vec2 dir = endPos - startPos;
-      const double distance = dir.length();
-      if (distance < spacing * 3.0)
+      const double distance = std::floor(dir.length());
+      if (distance <= 0.0)
         continue;
       const double angle = std::atan2(dir.fY, dir.fX);
       const double dt = endTime - startTime;
-      for (double d = spacing * 2.0; d < distance - 1.5 * spacing;
+      for (double d = std::floor(spacing * 1.5); d < distance - spacing;
            d += spacing) {
         const double fraction = d / distance;
-        const double pointTime = startTime + dt * fraction;
-        const double fadeInTime = pointTime - preempt;
-        const double fadeOutTime = pointTime;
-        double rawAlpha = 0.0;
-        if (now >= fadeInTime && now < fadeOutTime)
-          rawAlpha = (now - fadeInTime) / fadeIn;
-        else if (now >= fadeOutTime)
-          rawAlpha = 1.0 - (now - fadeOutTime) / fadeIn;
-        rawAlpha = std::clamp(rawAlpha, 0.0, 1.0);
-        const double relpos = rawAlpha * (2.0 - rawAlpha);
-        const double drawFraction = fraction - 0.1 * (1.0 - relpos);
-        const osu::Vec2 p = startPos + dir * drawFraction;
-        const float alpha = static_cast<float>(rawAlpha * 0.5);
-        if (alpha > 0.0f) {
-          c.fSkin->drawFollowPoint(canvas, p, angle, alpha, cs);
+        const double fadeOutTime = startTime + dt * fraction;
+        const double fadeInTime = fadeOutTime - preempt;
+        if (now < fadeInTime)
+          continue;
+        // Position, scale and alpha all run over the fade-in from the moment
+        // the point appears; the move and the scale are eased out, the fade
+        // is not. The fade out starts where the fade times say and takes the
+        // same time again.
+        const double t = std::clamp((now - fadeInTime) / fadeIn, 0.0, 1.0);
+        const double eased = t * (2.0 - t); // Easing.Out
+        double rawAlpha = t;
+        if (now >= fadeOutTime) {
+          rawAlpha = std::clamp(1.0 - (now - fadeOutTime) / fadeIn, 0.0, 1.0);
         }
+        if (rawAlpha <= 0.0)
+          continue;
+        const double drawFraction = fraction - 0.1 * (1.0 - eased);
+        const osu::Vec2 p = startPos + dir * drawFraction;
+        c.fSkin->drawFollowPoint(canvas, p, angle,
+                                 static_cast<float>(rawAlpha), cs,
+                                 static_cast<float>(1.5 - 0.5 * eased));
       }
     }
   }
@@ -481,17 +491,26 @@ public:
     auto it = fFadingObjects.begin();
     while (it != fFadingObjects.end()) {
       const double age = now - it->fTime;
-      if (age > kFadeLifetime) {
+      // LegacyMainCirclePiece fades a hit object out over 240ms while growing
+      // it to 1.4; DrawableHitCircle fades a missed one out over 100ms and
+      // leaves it the size it was.
+      const bool missed =
+          std::holds_alternative<osu::judgement::Miss>(it->fResult);
+      const double lifetime = missed ? kMissFade : kHitFade;
+      if (age > lifetime) {
         it = fFadingObjects.erase(it);
         continue;
       }
-      const float alpha = static_cast<float>(1.0 - age / kFadeLifetime);
+      const double t = age / lifetime;
+      const float alpha = static_cast<float>(1.0 - t);
+      const float sizeScale =
+          missed ? 1.0f : static_cast<float>(1.0 + 0.4 * t * (2.0 - t));
       std::visit(
           osu::Overloaded{
               [&](const osu::Circle &o) {
                 c.fSkin->drawHitCircle(canvas, o.fPos, o.fTime, now, cs, ar,
                                     o.fCombo, (*c.fCombo).fIndices[it->fIndex],
-                                    alpha);
+                                    alpha, sizeScale);
               },
               [&](const osu::Slider &o) {
                 c.fSkin->drawSlider(

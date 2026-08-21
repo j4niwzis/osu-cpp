@@ -178,6 +178,12 @@ inline double clampArOd(double ar, double rate) noexcept {
 // TimePreempt, floored to a whole millisecond. AR 8.3 gives 704 and not 705,
 // AR 9.3 gives 554 and not 555 -- and since neither 8.3 nor 9.3 is exact in
 // binary, the value that gets floored is a hair under the round number.
+// OsuHitObject.PREEMPT_MIN, the preempt an AR of 10 gives.
+inline constexpr double kPreemptMin = 450.0;
+
+// FollowPointConnection.SPACING, in osu! units and not scaled by circle size.
+inline constexpr double kFollowPointSpacing = 32.0;
+
 [[nodiscard]] inline double preemptTime(double ar) noexcept {
   const double value = asSingle(ar);
   const double raw = value <= 5.0 ? 1200.0 + 600.0 * (5.0 - value) / 5.0
@@ -185,12 +191,26 @@ inline double clampArOd(double ar, double rate) noexcept {
   return std::floor(raw);
 }
 
+// OsuHitObject.ApplyDefaults: 400 scaled by how far the preempt has fallen
+// below PREEMPT_MIN, which only happens for AR above 10. Clamping at 400
+// instead -- which is what this did -- leaves the circle fading in for longer
+// than it is on screen for at those rates.
 [[nodiscard]] inline double fadeInTime(double ar) noexcept {
-  return std::min(400.0, preemptTime(ar));
+  const double preempt = preemptTime(ar);
+  return 400.0 * std::min(1.0, preempt / kPreemptMin);
 }
 
+// DrawableHitCircle: the approach circle reaches its alpha over twice the
+// fade-in, or the whole preempt if that is shorter.
 [[nodiscard]] inline double approachFadeInTime(double ar) noexcept {
-  return std::min(800.0, preemptTime(ar));
+  return std::min(2.0 * fadeInTime(ar), preemptTime(ar));
+}
+
+// FollowPointConnection.GetFadeTimes. Not the object's preempt: follow points
+// appear a fixed 800ms ahead, scaled the same way the fade-in is once the
+// preempt drops below PREEMPT_MIN.
+[[nodiscard]] inline double followPointPreempt(double ar) noexcept {
+  return 800.0 * std::min(1.0, preemptTime(ar) / kPreemptMin);
 }
 
 // OsuHitObject.Radius: the object radius of 64 times the scale a circle size
