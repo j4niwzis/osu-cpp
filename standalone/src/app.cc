@@ -2390,14 +2390,15 @@ private:
     }
     // Safety net: whatever the screens forgot to announce shows up within
     // this long rather than never.
-    return now - fLastDrawWall >
-           500.0 if (fTraceRepaint && fState == State::kMainMenu &&
-                     now - fLastDrawWall > 500.0) {
+    if (fTraceRepaint && fState == State::kMainMenu &&
+        now - fLastDrawWall > 500.0) {
       std::println(std::cerr,
                    "[menu] idle: moving {} animating {} dt {:.0f} ms",
                    fMenuMoving, fMenu.animating(), fUiDt);
     }
-    ? this->frameBecause("the half-second safety net") : false;
+    return now - fLastDrawWall > 500.0
+               ? this->frameBecause("the half-second safety net")
+               : false;
   }
 
   // The part of the window that a screen is actually showing, in the window's
