@@ -68,9 +68,8 @@ using audio_client::SamplePlayer;
 export class App {
 public:
   App(std::optional<osu::BeatmapSet> set, osu::ModSet mods, bool headless,
-      bool autoplay, std::filesystem::path replayPath = {},
-      bool record = false, std::filesystem::path skinPath = {},
-      bool profile = false)
+      bool autoplay, std::filesystem::path replayPath = {}, bool record = false,
+      std::filesystem::path skinPath = {}, bool profile = false)
       : fMods(mods), fHeadless(headless), fAutoplay(autoplay),
         fReplayPath(std::move(replayPath)), fRecord(record),
         fSkin(std::move(skinPath)), fShowProfile(profile) {
@@ -93,17 +92,28 @@ public:
 private:
   osu::BeatmapSet fSet;
   osu::ModSet fMods = osu::mod::kNone;
-  std::optional<osu::Beatmap> fMap;
-  std::optional<osu::Engine> fEngine;
+  // The map being played and everything that only exists while it is.
+  struct PlayState {
+    std::optional<osu::Beatmap> fMap;
+    std::optional<osu::Engine> fEngine;
+    AnchoredClock fClock;
+    double fStartMs = 0.0;
+    double fPausedNow = 0.0; // frozen game time while paused
+    int fRetryCount = 0;     // plays of this map since it was chosen
+    bool fAwaitingFirstFrame = false;
+    osu::StarRating fPlayAttributes;
+    std::vector<osu::InputEvent> fAutoplayEvents;
+    std::vector<osu::InputEvent> fRecordedEvents;
+    std::filesystem::path fLastSavedReplay; // this run's own file
+  };
+  PlayState fPlay;
   bool fHeadless = false;
   bool fAutoplay = false;
-  bool fCliAutoplay = false;      // --autoplay, which outlives a single play
-  std::filesystem::path fReplayPath;  // the file driving the current play
+  bool fCliAutoplay = false;         // --autoplay, which outlives a single play
+  std::filesystem::path fReplayPath; // the file driving the current play
   std::filesystem::path fPendingReplay; // requested for the play about to start
   bool fRecord = false;
   std::string fBeatmapFilename;
-  std::vector<osu::InputEvent> fAutoplayEvents;
-  std::vector<osu::InputEvent> fRecordedEvents;
   std::size_t fAutoplayIndex = 0;
   Skin fSkin;
   bool fShowProfile = false;
@@ -145,24 +155,29 @@ private:
     const char *fFrameReason = ""; // what the last frame was drawn for
   };
   Frame fFrame;
-  int fScreenW = 1280;
-  int fScreenH = 960;
-  int fWindowedW = 1280;
-  int fWindowedH = 960;
-  int fWindowedX = 100;
-  int fWindowedY = 100;
-  bool fFullscreen = true;
+  // The window and where the pointer is in it. What a resize changes and
+  // what every screen measures itself against.
+  struct WindowState {
+    int fScreenW = 1280;
+    int fScreenH = 960;
+    float fMouseX = 0.0f;
+    float fMouseY = 0.0f;
+    bool fFullscreen = true;
+    int fWindowedW = 1280;
+    int fWindowedH = 960;
+    int fWindowedX = 100;
+    int fWindowedY = 100;
+  };
+  WindowState fWin;
   float fScale = 1.0f;
   float fOffsetX = 0.0f;
   float fOffsetY = 0.0f;
 
   // Input
   osu::Vec2 fCursor = osu::kPlayfieldCenter;
-  osu::Vec2 fRawPrev{};                              // last pointer position
-  osu::Vec2 fVirtualCursor = osu::kPlayfieldCenter;  // integrated position
+  osu::Vec2 fRawPrev{};                             // last pointer position
+  osu::Vec2 fVirtualCursor = osu::kPlayfieldCenter; // integrated position
   bool fHasRawPrev = false;
-  float fMouseX = 0.0f;
-  float fMouseY = 0.0f;
   std::uint32_t fHeldMask = 0; // bit per held key/button (Z/X/Space/M1/M2)
 
   // Event queue: filled on the GLFW event-pump (main) thread, drained on the
@@ -204,7 +219,7 @@ private:
   std::chrono::steady_clock::time_point fFrameStart{};
   std::chrono::steady_clock::time_point fBlitStart{};
   std::int64_t fCostUpdateUs = 0, fCostDrawUs = 0, fCostBlitUs = 0,
-      fCostSwapUs = 0;
+               fCostSwapUs = 0;
   std::int64_t fLastUpdateUs = 0;
   std::uint64_t fCostVisited = 0, fCostDrawn = 0;
   std::int64_t fCostClipArea = 0; // pixels the frames were allowed to touch
@@ -214,8 +229,7 @@ private:
   // into is missing exactly that.
   // The setting decides; the variable is there for a run before settings
   // exist, and to force it on while measuring.
-  const bool fForcePartialRedraw =
-      std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
+  const bool fForcePartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
   // OSU_TRACE_REPAINT=1 prints the numbers a frame's clip decision is made
   // from -- but only when one of them changes, so a session is a handful of
@@ -274,35 +288,45 @@ private:
     skia::Sp<skia::SkImage> fPanelArt;        // lazily fetched cover
     bool fPanelArtTried = false;
   };
-  std::vector<LibraryEntry> fLibrary;
-  std::deque<int> fLoadedOrder;          // LRU of entries holding a full set
+  // The maps this client knows about, which of them are listed, and
+  // which one is chosen. Everything the library screens read.
+  struct LibraryState {
+    std::vector<LibraryEntry> fLibrary;
+    std::vector<int> fVisible; // indices into fLibrary passing the filter
+    std::vector<client::listing::Entry> fFound;
+    std::deque<int> fLoadedOrder; // LRU of entries holding a full set
+    int fSelSet = 0;
+    int fSelDiff = 0;
+    std::vector<std::uint8_t>
+        fEntryStates; // what each card last drew as its own
+    int fBackgroundForSet = -1;
+    bool fSearchPending = false;
+    std::map<long, std::shared_ptr<client::http::Handle>> fTransfers;
+  };
+  LibraryState fLib;
   static constexpr std::size_t kMaxLoadedSets = 4;
   client::MapCache fMapCache;
   client::Loader fLoader;
 
   // Filtering / sorting: the control itself lives in client.filtercontrol.
   client::FilterControl fFilter;
-  std::vector<int> fVisible; // indices into fLibrary passing the filter
   bool fFilterDirty = true;
   bool fLibraryLoaded = false;
-  int fSelSet = 0;
-  int fSelDiff = 0;
   int fAppliedStarChoice = -1; // forces the first ordering pass
   client::carousel::Carousel fCarousel;
   std::vector<client::carousel::Row> fRows; // what the carousel lays out
-  int fBackgroundForSet = -1;
-  int fMenuMusicForSet = -1; // set whose audio is playing under the menus
+  int fMenuMusicForSet = -1;   // set whose audio is playing under the menus
   double fMenuTrackWall = 0.0; // when it started, so its end can be told
   double fMusicPollWall = 0.0; // last time the track was asked if it ended
   std::filesystem::path fMapsDir;
   std::filesystem::path fThumbDir;
   std::filesystem::path fReplayDir;
-  std::mutex fDropMutex;                  // guards fDropped
-  std::vector<std::string> fDropped;      // files dropped onto the window
-  skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();    // footer button
-  skia::SkRect fModsChip = skia::SkRect::MakeEmpty();      // footer button
-  skia::SkRect fOptionsChip = skia::SkRect::MakeEmpty();   // footer button
-  skia::SkRect fBackChip = skia::SkRect::MakeEmpty();      // footer back
+  std::mutex fDropMutex;             // guards fDropped
+  std::vector<std::string> fDropped; // files dropped onto the window
+  skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();  // footer button
+  skia::SkRect fModsChip = skia::SkRect::MakeEmpty();    // footer button
+  skia::SkRect fOptionsChip = skia::SkRect::MakeEmpty(); // footer button
+  skia::SkRect fBackChip = skia::SkRect::MakeEmpty();    // footer back
   bool fOptionsOpen = false;
   std::vector<skia::SkRect> fOptionHits;
   bool fConfirmDelete = false; // the deletion dialog is up
@@ -320,17 +344,13 @@ private:
   bool fPreviewPending = false;
   std::uint32_t fPreviewGeneration = 0; // stale fetches must not start playing
   bool fMusicDucked = false;            // menu music paused for a preview
-  std::vector<client::listing::Entry> fFound;
   // Transfers in flight, so progress can be polled without the view knowing
   // anything about HTTP.
-  std::map<long, std::shared_ptr<client::http::Handle>> fTransfers;
-  std::vector<std::uint8_t> fEntryStates; // what each card last drew as its own
-  bool fSearchPending = false;
-  int fSearchOffset = 0;        // how much of the current search is loaded
+  int fSearchOffset = 0; // how much of the current search is loaded
   std::uint32_t fSearchGeneration = 0; // results from older queries are dropped
-  bool fMoreAvailable = true;   // a full page came back, so ask for the next
-  bool fSwallowChar = false; // the 'D' that opened the screen also arrives
-                             // as a char event; it must not enter the query
+  bool fMoreAvailable = true; // a full page came back, so ask for the next
+  bool fSwallowChar = false;  // the 'D' that opened the screen also arrives
+                              // as a char event; it must not enter the query
   std::string fDownloadStatus;
   // A short-lived message in the corner, as lazer's notification overlay
   // shows when an import finishes.
@@ -343,7 +363,7 @@ private:
     osu::ReplayScore fScore; // from the .osr header, via the index
     std::string fGrade;
     bool fHasScore = false;
-    int fRules = -1;    // what it was recorded under, -1 if not ours
+    int fRules = -1;            // what it was recorded under, -1 if not ours
     bool fLegacyFormat = false; // no seed frame: old rules, no choice
   };
   bool fReplayListOpen = false;
@@ -354,7 +374,6 @@ private:
   std::vector<ReplayFile> fReplays;
   std::string fReplayFilter; // md5 the list was built for
   client::ReplayIndex fReplayIndex;
-  std::filesystem::path fLastSavedReplay; // this run's own file
   struct PanelHit {
     skia::SkRect fRect;
     int fIndex;
@@ -367,8 +386,8 @@ private:
   float fPanelDragOrigin = 0.0f;
   bool fPanelDragging = false;
   bool fPanelDragged = false;
-  bool fPanelFreeScroll = false; // user dragged/scrolled away from centre
-  bool fPanelOwnScore = false;   // the strip includes the run just played
+  bool fPanelFreeScroll = false;  // user dragged/scrolled away from centre
+  bool fPanelOwnScore = false;    // the strip includes the run just played
   std::vector<int> fPanelEntries; // index into fReplays, -1 = the score in hand
   skia::SkRect fPanelBand = skia::SkRect::MakeEmpty();
 
@@ -379,13 +398,11 @@ private:
     skia::SkColor fAccent;
   };
   std::vector<MenuButton> fMenuButtons; // rebuilt every pause/results frame
-  double fPausedNow = 0.0;              // frozen game time while paused
   double fPolledCursorX = -1.0, fPolledCursorY = -1.0; // wasm cursor polling
   std::atomic<bool> fRefreshRequested{false}; // set by the event thread
   std::atomic<int> fWindowX{0}, fWindowY{0};  // where the window sits
   std::atomic<int> fWorkAreaX{0}, fWorkAreaY{0}, fWorkAreaW{0}, fWorkAreaH{0};
   client::pause::PauseMenu fPauseMenu;
-  int fRetryCount = 0;      // plays of this map since it was chosen
   bool fRetryPending = false;
   int fPlayingSet = -1;
   int fPlayingDiff = -1;
@@ -405,8 +422,8 @@ private:
   double fUiDt = 16.0; // ms since the last frame, as measured
   // What the parts of song select that are still drawn immediately last drew,
   // so they can say when it changes rather than repainting on every frame.
-  int fHotFilter = 0;   // which filter control the pointer is on
-  int fHotFooter = 0;   // which footer chip the pointer is on
+  int fHotFilter = 0; // which filter control the pointer is on
+  int fHotFooter = 0; // which footer chip the pointer is on
   skia::SkRect fHotFooterRect = skia::SkRect::MakeEmpty();
   std::int64_t fFilterState = -1;
   bool fFilterCaret = false;
@@ -434,11 +451,11 @@ private:
   };
   struct MenuBtn {
     std::string fLabel;
-    std::string fGlyph;      // drawn as a text glyph; no icon font here
+    std::string fGlyph; // drawn as a text glyph; no icon font here
     skia::SkColor fColor{};
     MenuAction fAction{};
-    MenuState fVisible{};    // menu state this button belongs to
-    bool fLeftSide = false;  // back button sits left of the logo, as in lazer
+    MenuState fLib.fVisible{}; // menu state this button belongs to
+    bool fLeftSide = false;    // back button sits left of the logo, as in lazer
     // How far out, how hovered and how freshly clicked live on the node that
     // draws the button, which is what asks for the frames they need.
     skia::SkRect fRect = skia::SkRect::MakeEmpty();
@@ -462,12 +479,10 @@ private:
   bool fSliderBodiesStale = false;
   double fLastResizeWall = 0.0;
   // Set when a map is loaded and cleared by the frame that first shows it.
-  bool fAwaitingFirstFrame = false;
   // The difficulty of the map being played, under the ranked calculator and
   // with the mods applied, kept so the play can be priced when it ends.
-  osu::StarRating fPlayAttributes;
-  float fLogoBase = 0.0f;   // unscaled radius for this screen size
-  float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
+  float fLogoBase = 0.0f;    // unscaled radius for this screen size
+  float fMenuWedge = 20.0f;  // the shear on the menu's parallelograms
   int fHotResultButton = -1; // which action the pointer is on
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
   int fHotReplayPanel = -1;
@@ -477,7 +492,7 @@ private:
   // class.
   struct ExportJob;
   std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
-  int fHotDialogPiece = -1; // which piece of the export dialog is under it
+  int fHotDialogPiece = -1;     // which piece of the export dialog is under it
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
   client::logo::Logo fLogo;     // and the one in the middle of them
 
@@ -494,7 +509,6 @@ private:
   // ---- Overlays (views live in client.overlays) -------------------------
   client::ModSelect fModSelect;
   client::ExportDialog fExportDialog;
-
 
   AnchoredClock fMenuClock;
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
@@ -529,8 +543,8 @@ private:
     p.setColor(skia::colorSetARGB(
         static_cast<std::uint8_t>((1.0f - fade) * 160.0f), 10, 8, 14));
     canvas->drawRect(skia::SkRect::MakeXYWH(0, 0,
-                                            static_cast<float>(fScreenW),
-                                            static_cast<float>(fScreenH)),
+                                            static_cast<float>(fWin.fScreenW),
+                                            static_cast<float>(fWin.fScreenH)),
                      p);
   }
 
@@ -543,8 +557,6 @@ private:
   static constexpr auto kPanelBg = client::palette::kPanelBg;
 
   // Timing
-  double fStartMs = 0.0;
-  AnchoredClock fClock;
   double fLastClockSyncWall = std::numeric_limits<double>::lowest();
   static constexpr double kClockSyncIntervalMs = 250.0;
   AudioPlayer fAudio;
@@ -556,20 +568,13 @@ private:
   skia::SkFont fFont;
   skia::SkFont fDisplayFont;
 
-
-
-
-
-
-
-
   // Combo color group for each object.
   osu::ComboInfo fComboInfo;
 
-  void loadComboInfo() { fComboInfo = osu::buildComboInfo(*fMap); }
+  void loadComboInfo() { fComboInfo = osu::buildComboInfo(*fPlay.fMap); }
 
   void startGameplay(const osu::BeatmapInfo &info) {
-    fMap.emplace(client::loadBeatmap(fSet, info));
+    fPlay.fMap.emplace(client::loadBeatmap(fSet, info));
     fBeatmapFilename = info.fFilename;
 
     // Which rules to play by. A fresh play takes the setting. A replay takes
@@ -598,19 +603,20 @@ private:
         }
       }
     }
-    fEngine.emplace(*fMap, fMods, rules);
+    fPlay.fEngine.emplace(*fPlay.fMap, fMods, rules);
     // Worked out once, here, rather than when the results appear: it is the
     // difficulty calculation, and it belongs with the load rather than in the
     // moment between the last note and the screen that follows it.
-    fPlayAttributes = osu::calculateStars(
-        *fMap, fMods, nullptr, std::numeric_limits<double>::infinity(),
+    fPlay.fPlayAttributes = osu::calculateStars(
+        *fPlay.fMap, fMods, nullptr, std::numeric_limits<double>::infinity(),
         osu::StarAlgorithm::kRanked);
-    fPlayAttributes.fMaxCombo = fEngine->maxAchievableCombo();
-    fPlayAttributes.fLargeTicks = fEngine->maximumStatistics().fLargeTick;
+    fPlay.fPlayAttributes.fMaxCombo = fPlay.fEngine->maxAchievableCombo();
+    fPlay.fPlayAttributes.fLargeTicks =
+        fPlay.fEngine->maximumStatistics().fLargeTick;
     this->loadComboInfo();
-    fSkin.setComboColors(fMap->fComboColors);
-    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get(),
-                                 this->sliderBodyKey());
+    fSkin.setComboColors(fPlay.fMap->fComboColors);
+    fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale,
+                                 fContext.get(), this->sliderBodyKey());
     fSliderBodyScale = fScale;
     fSliderBodiesStale = false;
     if (fSettings.choice("renderer") == 1) {
@@ -621,28 +627,29 @@ private:
     }
     if (fAutoplay) {
       if (replay) {
-        fAutoplayEvents = std::move(replay->fEvents);
+        fPlay.fAutoplayEvents = std::move(replay->fEvents);
         fMods = replay->fMods;
         // The video exporter renders the recorded events; a watched replay
         // is its own recording. saveReplay refuses to write it back out.
-        fRecordedEvents = fAutoplayEvents;
+        fPlay.fRecordedEvents = fPlay.fAutoplayEvents;
       } else if (!fReplayPath.empty()) {
         // Unreadable: nothing to play back.
       } else {
-        fAutoplayEvents = osu::buildAutoplay(*fMap, fMods);
+        fPlay.fAutoplayEvents = osu::buildAutoplay(*fPlay.fMap, fMods);
       }
       fAutoplayIndex = 0;
     }
 
-    if (!fMap->fMeta.fAudioFilename.empty()) {
-      const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
+    if (!fPlay.fMap->fMeta.fAudioFilename.empty()) {
+      const auto bytes = fSet.findFile(fPlay.fMap->fMeta.fAudioFilename);
       if (!bytes.empty()) {
-        fAudio.load(bytes, detail::fileExtension(fMap->fMeta.fAudioFilename));
+        fAudio.load(bytes,
+                    detail::fileExtension(fPlay.fMap->fMeta.fAudioFilename));
       }
     }
 
-    if (!fMap->fMeta.fBackground.empty()) {
-      const auto bytes = fSet.findFile(fMap->fMeta.fBackground);
+    if (!fPlay.fMap->fMeta.fBackground.empty()) {
+      const auto bytes = fSet.findFile(fPlay.fMap->fMeta.fBackground);
       if (!bytes.empty()) {
         fView.setBackground(loadImage(bytes));
         fView.preScaleBackground(this->gameplayCtx(nullptr));
@@ -666,9 +673,9 @@ private:
                    "playfield {:.4f} -> {:.1f}px wide",
                    size, drawn, hasSprite ? "yes" : "NO(fallback circle)",
                    spriteW, fScale,
-                   hasSprite ? static_cast<float>(spriteW) * 0.35f * drawn *
-                                   fScale
-                             : 8.0f * drawn * fScale);
+                   hasSprite
+                       ? static_cast<float>(spriteW) * 0.35f * drawn * fScale
+                       : 8.0f * drawn * fScale);
     }
 
     // The clock is not started here. Everything between this point and the
@@ -677,15 +684,15 @@ private:
     // repaints the whole window and warms every cache it touches. Audio waits
     // with it, since it does not begin the instant it is asked to either.
     fAudio.setVolume(this->musicGain());
-    fAwaitingFirstFrame = true;
+    fPlay.fAwaitingFirstFrame = true;
   }
 
   // Called at the end of the first gameplay frame, once it has been handed to
   // the window. From here the map and the music start together.
   void startGameplayClock() {
-    fAwaitingFirstFrame = false;
-    fStartMs = wallMs();
-    fClock.reset(fStartMs, 0.0);
+    fPlay.fAwaitingFirstFrame = false;
+    fPlay.fStartMs = wallMs();
+    fPlay.fClock.reset(fPlay.fStartMs, 0.0);
     fLastClockSyncWall = std::numeric_limits<double>::lowest();
     fAudio.play();
   }
@@ -695,7 +702,7 @@ private:
       return 1;
     }
     this->startGameplay(fSet.fBeatmaps.front());
-    const auto result = osu::runAutoplay(*fMap, fEngine->mods());
+    const auto result = osu::runAutoplay(*fPlay.fMap, fPlay.fEngine->mods());
     std::println("{}", result.fScore);
     return 0;
   }
@@ -718,8 +725,8 @@ private:
 #else
     const auto monitor = glfw::glfwGetPrimaryMonitor();
     const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-    fScreenW = mode->width;
-    fScreenH = mode->height;
+    fWin.fScreenW = mode->width;
+    fWin.fScreenH = mode->height;
     if (mode->refreshRate > 0) {
       fRefreshHz = mode->refreshRate;
     }
@@ -766,8 +773,8 @@ private:
                                : glfw::kFalse);
       glfw::glfwWindowHint(glfw::kContextCreationApi, choice.fCreation);
       glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
-      fWindow = glfw::glfwCreateWindow(fScreenW, fScreenH, "osu_client",
-                                       monitor, nullptr);
+      fWindow = glfw::glfwCreateWindow(fWin.fScreenW, fWin.fScreenH,
+                                       "osu_client", monitor, nullptr);
       if (fWindow != nullptr) {
         std::println(std::cerr, "[gfx] context: {}", choice.fName);
         break;
@@ -808,32 +815,30 @@ private:
     // and returned, uncovered, unminimised. Whatever was in those buffers is
     // gone, and a client that repaints only what it changed has to be told,
     // or it paints its little rectangle onto whatever the compositor left.
-    glfw::glfwSetWindowRefreshCallback(
-        fWindow, [](glfw::GLFWwindow *w) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self != nullptr) {
-            self->noteWindowPlacement();
-            self->fRefreshRequested.store(true, std::memory_order_release);
-          }
-        });
+    glfw::glfwSetWindowRefreshCallback(fWindow, [](glfw::GLFWwindow *w) {
+      auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+      if (self != nullptr) {
+        self->noteWindowPlacement();
+        self->fRefreshRequested.store(true, std::memory_order_release);
+      }
+    });
     // Where the window is, tracked from the thread that is allowed to ask:
     // what has to be repainted after an expose is the part of the window a
     // screen is actually showing.
-    glfw::glfwSetWindowPosCallback(
-        fWindow, [](glfw::GLFWwindow *w, int, int) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self != nullptr) {
-            self->noteWindowPlacement();
-          }
-        });
+    glfw::glfwSetWindowPosCallback(fWindow, [](glfw::GLFWwindow *w, int, int) {
+      auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+      if (self != nullptr) {
+        self->noteWindowPlacement();
+      }
+    });
     this->noteWindowPlacement();
-    glfw::glfwSetMouseButtonCallback(
-        fWindow, [](glfw::GLFWwindow *w, int button, int action, int) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self == nullptr)
-            return;
-          self->enqueue({App::wallMs(), EventType::kMouseButton, button, action});
-        });
+    glfw::glfwSetMouseButtonCallback(fWindow, [](glfw::GLFWwindow *w,
+                                                 int button, int action, int) {
+      auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
+      if (self == nullptr)
+        return;
+      self->enqueue({App::wallMs(), EventType::kMouseButton, button, action});
+    });
     glfw::glfwSetCursorPosCallback(
         fWindow, [](glfw::GLFWwindow *w, double x, double y) {
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
@@ -847,8 +852,8 @@ private:
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
-          self->enqueue({App::wallMs(), EventType::kScroll, 0, 0,
-                         static_cast<float>(y)});
+          self->enqueue(
+              {App::wallMs(), EventType::kScroll, 0, 0, static_cast<float>(y)});
         });
     glfw::glfwSetDropCallback(
         fWindow, [](glfw::GLFWwindow *w, int count, const char **paths) {
@@ -897,12 +902,15 @@ private:
     fFont = this->loadFont(20.0f);
     skiff::nodes::Text::setFont(&fFont);
     fDisplayFont = this->loadDisplayFont(20.0f);
-    this->resize(fScreenW, fScreenH);
+    this->resize(fWin.fScreenW, fWin.fScreenH);
 
     // Persistent library at /maps (IDBFS). The initial syncfs is async; the
     // library is scanned once the flag flips (see frameSongSelect).
     EM_ASM({
-      try { FS.mkdir('/maps'); } catch (e) {}
+      try {
+        FS.mkdir('/maps');
+      } catch (e) {
+      }
       FS.mount(IDBFS, {}, '/maps');
       FS.syncfs(true, function(err) { Module._osu_maps_synced(); });
     });
@@ -920,7 +928,7 @@ private:
 #else
     // Snapshot the real framebuffer size on the main thread (that query is
     // main-thread-only in GLFW); the render thread must not call it.
-    glfw::glfwGetFramebufferSize(fWindow, &fScreenW, &fScreenH);
+    glfw::glfwGetFramebufferSize(fWindow, &fWin.fScreenW, &fWin.fScreenH);
 
     // The GL context is owned by the render thread from here on. The main
     // thread degrades into a pure event pump: it blocks in glfwWaitEvents,
@@ -960,7 +968,7 @@ private:
     fFont = this->loadFont(20.0f);
     skiff::nodes::Text::setFont(&fFont);
     fDisplayFont = this->loadDisplayFont(20.0f);
-    this->resize(fScreenW, fScreenH);
+    this->resize(fWin.fScreenW, fWin.fScreenH);
 
     this->initLibrary();
     // Launched with a beatmap on the command line => skip the main menu and
@@ -1027,7 +1035,7 @@ private:
       }
       this->applyEvent(ev);
     }
-    if (resized && (width != fScreenW || height != fScreenH)) {
+    if (resized && (width != fWin.fScreenW || height != fWin.fScreenH)) {
       this->resize(width, height);
     }
 
@@ -1044,7 +1052,7 @@ private:
     int liveW = 0;
     int liveH = 0;
     if (present::surfaceSize(fWindow, &liveW, &liveH) &&
-        (liveW != fScreenW || liveH != fScreenH)) {
+        (liveW != fWin.fScreenW || liveH != fWin.fScreenH)) {
       this->resize(liveW, liveH);
     }
   }
@@ -1056,13 +1064,13 @@ private:
     // the first play of a session, from process start -- so a single pointer
     // movement reaches the engine stamped minutes in, and advance() walks the
     // whole map and misses every object in it.
-    if (fAwaitingFirstFrame) {
+    if (fPlay.fAwaitingFirstFrame) {
       return 0.0;
     }
 #ifdef __EMSCRIPTEN__
-    return wallMs - fStartMs;
+    return wallMs - fPlay.fStartMs;
 #else
-    return fClock.sample(wallMs);
+    return fPlay.fClock.sample(wallMs);
 #endif
   }
 
@@ -1076,8 +1084,8 @@ private:
       this->resize(ev.fA, ev.fB);
       break;
     case EventType::kCursorMove:
-      fMouseX = ev.fX;
-      fMouseY = ev.fY;
+      fWin.fMouseX = ev.fX;
+      fWin.fMouseY = ev.fY;
       if (fSettingsPanel.dragging()) {
         this->dragSetting(ev.fX);
       }
@@ -1291,7 +1299,7 @@ private:
   }
 
   void keySongSelect(int key) {
-    const int nSets = static_cast<int>(fVisible.size());
+    const int nSets = static_cast<int>(fLib.fVisible.size());
     if (key == glfw::kKeyEscape) {
       if (!fFilter.text().empty()) {
         fFilter.clearText();
@@ -1334,42 +1342,43 @@ private:
     if (nSets == 0) {
       return;
     }
-    const int nDiffs = static_cast<int>(this->infosFor(fSelSet).size());
+    const int nDiffs = static_cast<int>(this->infosFor(fLib.fSelSet).size());
     if (key == glfw::kKeyUp) {
-      if (fSelDiff > 0) {
-        --fSelDiff;
+      if (fLib.fSelDiff > 0) {
+        --fLib.fSelDiff;
       } else if (const int pos = this->visiblePos(); pos > 0) {
-        fSelSet = fVisible[static_cast<std::size_t>(pos - 1)];
-        fSelDiff = std::max(0, static_cast<int>(this->infosFor(fSelSet).size()) - 1);
+        fLib.fSelSet = fLib.fVisible[static_cast<std::size_t>(pos - 1)];
+        fLib.fSelDiff = std::max(
+            0, static_cast<int>(this->infosFor(fLib.fSelSet).size()) - 1);
       }
     } else if (key == glfw::kKeyDown) {
-      if (fSelDiff + 1 < nDiffs) {
-        ++fSelDiff;
+      if (fLib.fSelDiff + 1 < nDiffs) {
+        ++fLib.fSelDiff;
       } else if (const int pos = this->visiblePos();
-                 pos >= 0 && pos + 1 < static_cast<int>(fVisible.size())) {
-        fSelSet = fVisible[static_cast<std::size_t>(pos + 1)];
-        fSelDiff = 0;
+                 pos >= 0 && pos + 1 < static_cast<int>(fLib.fVisible.size())) {
+        fLib.fSelSet = fLib.fVisible[static_cast<std::size_t>(pos + 1)];
+        fLib.fSelDiff = 0;
       }
     } else if (key == glfw::kKeyLeft) {
       if (const int pos = this->visiblePos(); pos > 0) {
-        fSelSet = fVisible[static_cast<std::size_t>(pos - 1)];
-        fSelDiff = 0;
+        fLib.fSelSet = fLib.fVisible[static_cast<std::size_t>(pos - 1)];
+        fLib.fSelDiff = 0;
       }
     } else if (key == glfw::kKeyRight) {
       if (const int pos = this->visiblePos();
-          pos >= 0 && pos + 1 < static_cast<int>(fVisible.size())) {
-        fSelSet = fVisible[static_cast<std::size_t>(pos + 1)];
-        fSelDiff = 0;
+          pos >= 0 && pos + 1 < static_cast<int>(fLib.fVisible.size())) {
+        fLib.fSelSet = fLib.fVisible[static_cast<std::size_t>(pos + 1)];
+        fLib.fSelDiff = 0;
       }
     } else if (key == glfw::kKeyEnter) {
-      this->startPlay(fSelSet, fSelDiff);
+      this->startPlay(fLib.fSelSet, fLib.fSelDiff);
     }
   }
 
   void openDownloads() {
     fSwallowChar = true;
     this->switchState(State::kDownload);
-    if (fFound.empty() && !fSearchPending) {
+    if (fLib.fFound.empty() && !fLib.fSearchPending) {
       this->startSearch(); // the listing opens on results, not a blank page
     }
   }
@@ -1425,14 +1434,14 @@ private:
         // that starts on a panel scrolls the list instead of selecting.
         if (this->panelListActive() && !fExportDialog.open() &&
             !fSettingsPanel.open() && !fModSelect.open() &&
-            this->panelListClick(fMouseX, fMouseY, pressed)) {
+            this->panelListClick(fWin.fMouseX, fWin.fMouseY, pressed)) {
           return;
         }
         if (pressed) {
-          this->clickAt(fMouseX, fMouseY);
+          this->clickAt(fWin.fMouseX, fWin.fMouseY);
         } else {
-          this->settingsClick(fMouseX, fMouseY, false);
-          this->filterClick(fMouseX, fMouseY, false);
+          this->settingsClick(fWin.fMouseX, fWin.fMouseY, false);
+          this->filterClick(fWin.fMouseX, fWin.fMouseY, false);
         }
       }
       return;
@@ -1504,8 +1513,7 @@ private:
             return;
           }
         }
-      } else if (piece >= 0 &&
-                 piece < static_cast<int>(fMenuBtns.size())) {
+      } else if (piece >= 0 && piece < static_cast<int>(fMenuBtns.size())) {
         const auto index = static_cast<std::size_t>(piece);
         if (fMenuBtns[index].fVisible == fMenuState &&
             fMenu.buttonExpand(index) > 0.5f) {
@@ -1524,13 +1532,13 @@ private:
       }
       if (const auto hit = fCarousel.click(x, y); hit.fHit) {
         if (hit.fDiff < 0) {
-          fSelSet = hit.fSet;
-          fSelDiff = 0;
-        } else if (fSelSet == hit.fSet && fSelDiff == hit.fDiff) {
+          fLib.fSelSet = hit.fSet;
+          fLib.fSelDiff = 0;
+        } else if (fLib.fSelSet == hit.fSet && fLib.fSelDiff == hit.fDiff) {
           this->startPlay(hit.fSet, hit.fDiff); // second click plays
         } else {
-          fSelSet = hit.fSet;
-          fSelDiff = hit.fDiff;
+          fLib.fSelSet = hit.fSet;
+          fLib.fSelDiff = hit.fDiff;
         }
         return;
       }
@@ -1555,8 +1563,8 @@ private:
         this->startDownload(result.fIndex);
         break;
       case client::listing::Listing::Action::kOpen:
-        if (result.fIndex < fFound.size()) {
-          fSetPage.show(fFound[result.fIndex]);
+        if (result.fIndex < fLib.fFound.size()) {
+          fSetPage.show(fLib.fFound[result.fIndex]);
           this->requestPageCover(result.fIndex);
         }
         break;
@@ -1671,26 +1679,32 @@ private:
   void submitTimed(const osu::InputEvent &ev) {
     // Guard: input events can be drained in a frame where the engine isn't
     // live yet (a queued press arriving during a state transition, before
-    // startGameplay populated fEngine). Dereferencing the empty optional was
-    // the SIGILL in applyButton.
-    if (!fEngine) {
+    // startGameplay populated fPlay.fEngine). Dereferencing the empty optional
+    // was the SIGILL in applyButton.
+    if (!fPlay.fEngine) {
       return;
     }
-    fEngine->submit(ev);
+    fPlay.fEngine->submit(ev);
     // Always record: the events are a few bytes each, and the autosave
     // setting decides afterwards whether they are kept. Gating the recording
     // itself on --record meant automatic replays were always empty.
-    fRecordedEvents.push_back(ev);
+    fPlay.fRecordedEvents.push_back(ev);
   }
 
   [[nodiscard]] static const char *stateName(State st) {
     switch (st) {
-    case State::kMainMenu: return "main-menu";
-    case State::kSongSelect: return "song-select";
-    case State::kDownload: return "download";
-    case State::kPlaying: return "playing";
-    case State::kPaused: return "paused";
-    case State::kResults: return "results";
+    case State::kMainMenu:
+      return "main-menu";
+    case State::kSongSelect:
+      return "song-select";
+    case State::kDownload:
+      return "download";
+    case State::kPlaying:
+      return "playing";
+    case State::kPaused:
+      return "paused";
+    case State::kResults:
+      return "results";
     }
     return "?";
   }
@@ -1777,13 +1791,13 @@ private:
 #endif
   }
 
-
   // A frame is only drawn when there is a reason to: an event arrived,
   // something is animating, a transfer is running, or the safety interval
   // elapsed. A menu nobody is touching costs a poll and a sleep, which is
   // how a compositor treats a window that has not damaged itself.
   void requestRedraw(double durationMs = 0.0) {
-    fFrame.fRedrawUntilWall = std::max(fFrame.fRedrawUntilWall, wallMs() + durationMs);
+    fFrame.fRedrawUntilWall =
+        std::max(fFrame.fRedrawUntilWall, wallMs() + durationMs);
   }
 
   // Which footer element the pointer is on, and where that element is. The
@@ -1792,12 +1806,13 @@ private:
     const skia::SkRect chips[] = {fBackChip, fModsChip, fRandomChip,
                                   fOptionsChip};
     for (int i = 0; i < 4; ++i) {
-      if (chips[static_cast<std::size_t>(i)].contains(fMouseX, fMouseY)) {
+      if (chips[static_cast<std::size_t>(i)].contains(fWin.fMouseX,
+                                                      fWin.fMouseY)) {
         return {i + 1, chips[static_cast<std::size_t>(i)]};
       }
     }
     for (std::size_t i = 0; i < fOptionHits.size(); ++i) {
-      if (fOptionHits[i].contains(fMouseX, fMouseY)) {
+      if (fOptionHits[i].contains(fWin.fMouseX, fWin.fMouseY)) {
         return {100 + static_cast<int>(i), fOptionHits[i]};
       }
     }
@@ -1816,13 +1831,16 @@ private:
   // This is what an event or an eased value owes -- rather than a blanket
   // "keep drawing for the next 400 ms", which is how a listing nobody was
   // touching ended up repainting at the refresh rate.
-  void oweFrames(int frames) { fFrame.fFramesOwed = std::max(fFrame.fFramesOwed, frames); }
+  void oweFrames(int frames) {
+    fFrame.fFramesOwed = std::max(fFrame.fFramesOwed, frames);
+  }
 
   // A screen that knows when it next changes by itself -- a caret blinking on
   // its own clock -- says so, and sleeps until then instead of keeping frames
   // coming in the hope of catching the moment.
   void wakeAt(double wall) {
-    fFrame.fWakeWall = fFrame.fWakeWall <= 0.0 ? wall : std::min(fFrame.fWakeWall, wall);
+    fFrame.fWakeWall =
+        fFrame.fWakeWall <= 0.0 ? wall : std::min(fFrame.fWakeWall, wall);
   }
 
   // Damage marked while a frame is being drawn says what to repaint; it does
@@ -1862,7 +1880,8 @@ private:
     // after a resize, not after anything in particular, just whenever one of
     // those buffers comes round. Owing a full repaint per buffer costs six
     // frames at a screen change and takes the failure away.
-    const bool reportedAge = fFrame.fBufferAge >= 0 && !fFrame.fBufferAgeAssumed;
+    const bool reportedAge =
+        fFrame.fBufferAge >= 0 && !fFrame.fBufferAgeAssumed;
     fFrame.fFullRepaintsOwed =
         (!buffersGone && reportedAge) ? 0 : kFullRepaintsAfterChange;
     if (!fFrame.fDrawing) {
@@ -1901,12 +1920,11 @@ private:
     for (auto &existing : fFrame.fDamage) {
       skia::SkIRect merged = existing;
       merged.join(area);
-      const auto mergedArea = static_cast<std::int64_t>(merged.width()) *
-                              merged.height();
-      const auto separate = static_cast<std::int64_t>(existing.width()) *
-                                existing.height() +
-                            static_cast<std::int64_t>(area.width()) *
-                                area.height();
+      const auto mergedArea =
+          static_cast<std::int64_t>(merged.width()) * merged.height();
+      const auto separate =
+          static_cast<std::int64_t>(existing.width()) * existing.height() +
+          static_cast<std::int64_t>(area.width()) * area.height();
       if (mergedArea <= separate * 5 / 4) {
         existing = merged;
         return;
@@ -1924,10 +1942,10 @@ private:
     for (std::size_t i = 0; i < fFrame.fDamage.size(); ++i) {
       skia::SkIRect merged = fFrame.fDamage[i];
       merged.join(area);
-      const auto cost = static_cast<std::int64_t>(merged.width()) *
-                            merged.height() -
-                        static_cast<std::int64_t>(fFrame.fDamage[i].width()) *
-                            fFrame.fDamage[i].height();
+      const auto cost =
+          static_cast<std::int64_t>(merged.width()) * merged.height() -
+          static_cast<std::int64_t>(fFrame.fDamage[i].width()) *
+              fFrame.fDamage[i].height();
       if (cost < bestCost) {
         bestCost = cost;
         best = i;
@@ -1979,11 +1997,12 @@ private:
     // system directly, on the thread that is drawing, once a frame.
     // Second line: a resize that landed after the surfaces were chosen cannot
     // be acted on within this frame, but it can stop it clipping.
-    const std::uint64_t reported = fReportedSize.load(std::memory_order_acquire);
+    const std::uint64_t reported =
+        fReportedSize.load(std::memory_order_acquire);
     const auto windowW = static_cast<int>(reported >> 32);
     const auto windowH = static_cast<int>(reported & 0xffffffffu);
     if (windowW > 0 && windowH > 0 &&
-        (windowW != fScreenW || windowH != fScreenH)) {
+        (windowW != fWin.fScreenW || windowH != fWin.fScreenH)) {
       fFrame.fBlitHistory.clear();
       fFrame.fFullDamage = true;
       fFrame.fFullDamageReason = "the window is not the size we were told";
@@ -2048,7 +2067,8 @@ private:
     // cannot disagree with what the frame then does. Printed when the answer
     // or the buffer age changes, and for the second after a size event.
     if (fTraceRepaint) {
-      const bool willClip = !fFrame.fComputedClipFull && this->partialRedraw() &&
+      const bool willClip = !fFrame.fComputedClipFull &&
+                            this->partialRedraw() &&
                             !this->historyShorterThan(this->drawReach());
       const bool resizing = wallMs() - fLastResizeWall < 1000.0;
       if (willClip != fTracedClipping || fFrame.fBufferAge != fTracedAge ||
@@ -2057,8 +2077,8 @@ private:
                      "[repaint] {:8.0f} ms  age {}{}  reach {}  history {}  "
                      "{}  -> {}{}",
                      wallMs(), fFrame.fBufferAge,
-                     fFrame.fBufferAgeAssumed ? " (assumed)" : "", this->drawReach(),
-                     fFrame.fBlitHistory.size(),
+                     fFrame.fBufferAgeAssumed ? " (assumed)" : "",
+                     this->drawReach(), fFrame.fBlitHistory.size(),
                      fFrame.fComputedClipFull ? "whole screen" : "a region",
                      willClip ? "CLIPS" : "repaints whole",
                      fFrame.fComputedClipFull
@@ -2089,8 +2109,9 @@ private:
     // repaint is owed for and the settle after a size event. In the steady
     // state this would be a full-screen memset on every gameplay frame, paid
     // to cover a case that cannot happen there.
-    if (fFrame.fComputedClipFull && (fFrame.fFullRepaintsOwed > 0 ||
-                              wallMs() - fLastResizeWall < kResizeSettleMs)) {
+    if (fFrame.fComputedClipFull &&
+        (fFrame.fFullRepaintsOwed > 0 ||
+         wallMs() - fLastResizeWall < kResizeSettleMs)) {
       canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
     }
 
@@ -2112,7 +2133,7 @@ private:
     // Past half the screen the clip stops paying for itself: every draw call
     // is recorded and tested either way, and only pixels are saved.
     const std::int64_t screenArea =
-        static_cast<std::int64_t>(fScreenW) * fScreenH;
+        static_cast<std::int64_t>(fWin.fScreenW) * fWin.fScreenH;
     const std::int64_t boundsArea =
         static_cast<std::int64_t>(bounds.width()) * bounds.height();
     if (boundsArea * 2 > screenArea) {
@@ -2155,9 +2176,10 @@ private:
     // pointer, the column while it scrolls -- and says nothing at all while
     // it is open and untouched, which is most of the time.
     if (fSettingsPanel.visible()) {
-      this->damage(fSettingsPanel.update(
-          fFont, fSettings,
-          {fScreenW, fScreenH, fMouseX, fMouseY, wallMs(), fUiDt}));
+      this->damage(
+          fSettingsPanel.update(fFont, fSettings,
+                                {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
+                                 fWin.fMouseY, wallMs(), fUiDt}));
     }
     if (fState == State::kDownload) {
       this->updateDownload();
@@ -2185,8 +2207,8 @@ private:
     // never advanced, and so kept marking itself.
     if (fModSelect.visible()) {
       const skia::SkRect region = fModSelect.damageFor(
-          {fScreenW, fScreenH, fMouseX, fMouseY, fUiDt});
-      if (region.width() >= static_cast<float>(fScreenW)) {
+          {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX, fWin.fMouseY, fUiDt});
+      if (region.width() >= static_cast<float>(fWin.fScreenW)) {
         this->damageAll("mod select sliding");
       } else {
         this->damage(region);
@@ -2203,7 +2225,7 @@ private:
       } else {
         int hot = -1;
         for (std::size_t i = 0; i < fPanelHits.size(); ++i) {
-          if (fPanelHits[i].fRect.contains(fMouseX, fMouseY)) {
+          if (fPanelHits[i].fRect.contains(fWin.fMouseX, fWin.fMouseY)) {
             hot = static_cast<int>(i);
             break;
           }
@@ -2234,13 +2256,14 @@ private:
       // written the only thing that moves is the per cent on the status line.
       // The box itself is repainted for the pointer, whose buttons light up.
       const skia::SkRect box =
-          client::ExportDialog::bounds(fScreenW, fScreenH);
-      const int hot = fExportDialog.hotElement(fMouseX, fMouseY);
+          client::ExportDialog::bounds(fWin.fScreenW, fWin.fScreenH);
+      const int hot = fExportDialog.hotElement(fWin.fMouseX, fWin.fMouseY);
       if (hot != fHotDialogPiece || fExportDialog.takeEdited()) {
         fHotDialogPiece = hot;
         this->damage(box);
       } else if (fExportDialog.takeStatusChanged()) {
-        this->damage(client::ExportDialog::statusBounds(fScreenW, fScreenH));
+        this->damage(
+            client::ExportDialog::statusBounds(fWin.fScreenW, fWin.fScreenH));
       }
     }
     fOverlayShown = overlay;
@@ -2250,7 +2273,8 @@ private:
   // Only a screen that reports its damage can be asked: for the others,
   // "nothing is marked" means "nobody was asked", not "nothing changed".
   [[nodiscard]] bool nothingToPaint() {
-    if (fFrame.fFullDamage || !fFrame.fDamage.empty() || fFrame.fFullRepaintsOwed > 0) {
+    if (fFrame.fFullDamage || !fFrame.fDamage.empty() ||
+        fFrame.fFullRepaintsOwed > 0) {
       return false;
     }
     if (fState != State::kDownload && fState != State::kSongSelect &&
@@ -2295,7 +2319,7 @@ private:
   // overlay that covers the screen and reports no regions has instead of
   // knowing what it changed.
   [[nodiscard]] bool pointerMoved() const {
-    return fMouseX != fDrawnMouseX || fMouseY != fDrawnMouseY;
+    return fWin.fMouseX != fDrawnMouseX || fWin.fMouseY != fDrawnMouseY;
   }
 
   // Why a frame is happening. needsFrame answers yes from sixteen places and
@@ -2343,7 +2367,7 @@ private:
           "pause triangles"); // triangles drift inside the buttons, as lazer's
                               // do
     }
-    if (fSearchPending || fPreviewPending || !fTransfers.empty()) {
+    if (fLib.fSearchPending || fPreviewPending || !fLib.fTransfers.empty()) {
       return this->frameBecause(
           "a search, preview or transfer"); // progress that is being watched
     }
@@ -2418,10 +2442,11 @@ private:
     const int areaY = fWorkAreaY.load(std::memory_order_acquire);
     const int areaW = fWorkAreaW.load(std::memory_order_acquire);
     const int areaH = fWorkAreaH.load(std::memory_order_acquire);
-    if (areaW <= 0 || areaH <= 0 || fScreenW <= 0 || fScreenH <= 0) {
+    if (areaW <= 0 || areaH <= 0 || fWin.fScreenW <= 0 || fWin.fScreenH <= 0) {
       return skia::SkIRect::MakeEmpty();
     }
-    skia::SkIRect window = skia::SkIRect::MakeXYWH(x, y, fScreenW, fScreenH);
+    skia::SkIRect window =
+        skia::SkIRect::MakeXYWH(x, y, fWin.fScreenW, fWin.fScreenH);
     const skia::SkIRect area =
         skia::SkIRect::MakeXYWH(areaX, areaY, areaW, areaH);
     if (!window.intersect(area)) {
@@ -2441,7 +2466,8 @@ private:
     glfw::glfwGetWindowPos(fWindow, &x, &y);
     fWindowX.store(x, std::memory_order_release);
     fWindowY.store(y, std::memory_order_release);
-    if (const auto monitor = glfw::glfwGetPrimaryMonitor(); monitor != nullptr) {
+    if (const auto monitor = glfw::glfwGetPrimaryMonitor();
+        monitor != nullptr) {
       int ax = 0, ay = 0, aw = 0, ah = 0;
       glfw::glfwGetMonitorWorkarea(monitor, &ax, &ay, &aw, &ah);
       fWorkAreaX.store(ax, std::memory_order_release);
@@ -2466,8 +2492,8 @@ private:
       // window back in from off the edge then costs the strip that came back,
       // not the whole window, every frame of the drag.
       const skia::SkIRect onScreen = this->visiblePortion();
-      if (onScreen.isEmpty() ||
-          (onScreen.width() >= fScreenW && onScreen.height() >= fScreenH)) {
+      if (onScreen.isEmpty() || (onScreen.width() >= fWin.fScreenW &&
+                                 onScreen.height() >= fWin.fScreenH)) {
         this->damageAll("the window system asked for a repaint");
       } else {
         this->damage(skia::SkRect::Make(onScreen));
@@ -2602,7 +2628,8 @@ private:
   // lazer's FPSCounter sits in the corner of every screen, and shows the
   // frame time beside the rate. The profiling readout is a separate thing and
   // stays behind --profile.
-  void notify(std::string text, skia::SkColor color = client::palette::kAccent2) {
+  void notify(std::string text,
+              skia::SkColor color = client::palette::kAccent2) {
     this->requestRedraw(4500.0); // the toast has to fade out on its own
     fToast = std::move(text);
     fToastColor = color;
@@ -2621,7 +2648,7 @@ private:
         std::min(1.0, std::min(age / 200.0, (kLifetimeMs - age) / 400.0)));
     const float w = p.measure(fToast, 14.0f) + 32.0f;
     const skia::SkRect box = skia::SkRect::MakeXYWH(
-        static_cast<float>(fScreenW) - w - 20.0f, 20.0f, w, 44.0f);
+        static_cast<float>(fWin.fScreenW) - w - 20.0f, 20.0f, w, 44.0f);
     p.fillRounded(box, 8.0f, client::palette::kBackground5, alpha * 0.95f);
     p.fillRect(skia::SkRect::MakeXYWH(box.fLeft, box.fTop, 4.0f, box.height()),
                fToastColor, alpha);
@@ -2642,17 +2669,17 @@ private:
       return;
     }
     const skiff::paint::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     const skia::SkRect box =
         skia::SkRect::MakeXYWH(sw - 92.0f, sh - 52.0f, 80.0f, 42.0f);
     // Drawn after the clip is lifted, straight into a buffer that is several
     // frames old, so a translucent background lets the numbers that were
     // there before show through and pile up. Partial redraw is the mode where
     // that happens, and the mode where this has to be opaque.
-    p.fillRounded(box, 6.0f,
-                  skia::colorSetARGB(this->partialRedraw() ? 255 : 150, 8, 6,
-                                     12));
+    p.fillRounded(
+        box, 6.0f,
+        skia::colorSetARGB(this->partialRedraw() ? 255 : 150, 8, 6, 12));
     p.textCentered(std::format("{:.0f} fps", std::round(1000.0 / fFpsFrameMs)),
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
@@ -2668,7 +2695,7 @@ private:
     }
     skia::SkIRect area = rect.roundOut();
     area.outset(2, 2);
-    if (!area.intersect(skia::SkIRect::MakeWH(fScreenW, fScreenH))) {
+    if (!area.intersect(skia::SkIRect::MakeWH(fWin.fScreenW, fWin.fScreenH))) {
       return;
     }
     fFrame.fBlitRegions.push_back(area);
@@ -2735,7 +2762,7 @@ private:
       std::println(std::cerr,
                    "[frame] +{:4.0f} ms  screen {}x{}  raster {}  window {}  "
                    "{}  repaint {}  blit {}  {}",
-                   wallMs() - fLastResizeWall, fScreenW, fScreenH,
+                   wallMs() - fLastResizeWall, fWin.fScreenW, fWin.fScreenH,
                    dims(fFrame.fRasterSurface), dims(fFrame.fWindowSurface),
                    fFrame.fDrewOnRaster ? "cpu" : "gpu", clip, blit,
                    fFrame.fComputedClipFull ? fFrame.fFullDamageReason : "");
@@ -2780,8 +2807,8 @@ private:
       fContext->flushAndSubmit(fFrame.fSurface.get());
     }
 
-    fDrawnMouseX = fMouseX;
-    fDrawnMouseY = fMouseY;
+    fDrawnMouseX = fWin.fMouseX;
+    fDrawnMouseY = fWin.fMouseY;
     const auto beforeSwap = std::chrono::steady_clock::now();
     // What changed since the last frame the compositor was given. Handing it
     // over means it can leave the rest of the window alone instead of taking
@@ -2791,13 +2818,14 @@ private:
     // rectangles are what changed since the buffer coming back was last ours,
     // which is only knowable from a reported age.
     std::vector<std::array<int, 4>> damage;
-    if (fFrame.fAgeReported && !fFrame.fComputedClipFull && !fFrame.fComputedClip.empty()) {
+    if (fFrame.fAgeReported && !fFrame.fComputedClipFull &&
+        !fFrame.fComputedClip.empty()) {
       damage.reserve(fFrame.fComputedClip.size());
       for (const auto &rect : fFrame.fComputedClip) {
         damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
       }
     }
-    if (damage.empty() || !present::swapWithDamage(fScreenH, damage)) {
+    if (damage.empty() || !present::swapWithDamage(fWin.fScreenH, damage)) {
       glfw::glfwSwapBuffers(fWindow);
     }
     fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -2829,7 +2857,7 @@ private:
     skiff::scene::visitedCount() = 0;
     skiff::scene::drawnCount() = 0;
     if (fFrame.fComputedClipFull) {
-      fCostClipArea += static_cast<std::int64_t>(fScreenW) * fScreenH;
+      fCostClipArea += static_cast<std::int64_t>(fWin.fScreenW) * fWin.fScreenH;
     } else if (!fFrame.fComputedClip.empty()) {
       for (const auto &rect : fFrame.fComputedClip) {
         fCostClipArea +=
@@ -2843,27 +2871,27 @@ private:
     // Named for what they are: settling the screen, drawing it (which on the
     // CPU renderer is where rasterisation happens too), handing the result to
     // the window, and waiting for the swap.
-    std::println(std::cerr,
-                 "[frame] update {:.2f} ms, draw {:.2f} ms, blit {:.2f} ms, "
-                 "swap {:.2f} ms over {} frames, {} of {} drawables, "
-                 "{:.0f}% of the screen repainted{}",
-                 static_cast<double>(fCostUpdateUs) / fCostFrames / 1000.0,
-                 static_cast<double>(fCostDrawUs) / fCostFrames / 1000.0,
-                 static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
-                 static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0,
-                 fCostFrames, fCostDrawn / std::max<std::uint64_t>(1, fCostFrames),
-                 fCostVisited / std::max<std::uint64_t>(1, fCostFrames),
-                 100.0 * static_cast<double>(fCostClipArea) /
-                     std::max<double>(1.0, static_cast<double>(fCostFrames) *
-                                               fScreenW * fScreenH),
-                 std::string(fFrame.fDrewOnRaster ? " [cpu]" : " [gpu]") +
-                     (this->partialRedraw()
-                          ? std::format(
-                                " (partial redraw, buffer age {} via {})",
-                                fFrame.fBufferAge,
-                                fFrame.fBufferAgeAssumed ? "assumption"
-                                                  : present::backend())
-                          : ""));
+    std::println(
+        std::cerr,
+        "[frame] update {:.2f} ms, draw {:.2f} ms, blit {:.2f} ms, "
+        "swap {:.2f} ms over {} frames, {} of {} drawables, "
+        "{:.0f}% of the screen repainted{}",
+        static_cast<double>(fCostUpdateUs) / fCostFrames / 1000.0,
+        static_cast<double>(fCostDrawUs) / fCostFrames / 1000.0,
+        static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
+        static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0, fCostFrames,
+        fCostDrawn / std::max<std::uint64_t>(1, fCostFrames),
+        fCostVisited / std::max<std::uint64_t>(1, fCostFrames),
+        100.0 * static_cast<double>(fCostClipArea) /
+            std::max<double>(1.0, static_cast<double>(fCostFrames) *
+                                      fWin.fScreenW * fWin.fScreenH),
+        std::string(fFrame.fDrewOnRaster ? " [cpu]" : " [gpu]") +
+            (this->partialRedraw()
+                 ? std::format(" (partial redraw, buffer age {} via {})",
+                               fFrame.fBufferAge,
+                               fFrame.fBufferAgeAssumed ? "assumption"
+                                                        : present::backend())
+                 : ""));
     fCostLogWall = wallMs();
     fCostUpdateUs = fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
     fCostVisited = fCostDrawn = 0;
@@ -2906,7 +2934,7 @@ private:
   // guesses at when it will not.
   [[nodiscard]] std::size_t windowReach() const {
     return fFrame.fBufferAge > 0 ? static_cast<std::size_t>(fFrame.fBufferAge)
-                          : kSwapChainDepth;
+                                 : kSwapChainDepth;
   }
 
   // It reaches as far as the window does, on either renderer. The raster
@@ -2955,8 +2983,9 @@ private:
   void rememberBlitRegion() {
     // An empty entry means "that frame was full", which forces a full copy
     // until it ages out.
-    fFrame.fBlitHistory.push_back(fFrame.fFrameClipFull ? std::vector<skia::SkIRect>{}
-                                          : fFrame.fFrameClip);
+    fFrame.fBlitHistory.push_back(fFrame.fFrameClipFull
+                                      ? std::vector<skia::SkIRect>{}
+                                      : fFrame.fFrameClip);
     while (fFrame.fBlitHistory.size() > kBlitHistoryDepth) {
       fFrame.fBlitHistory.erase(fFrame.fBlitHistory.begin());
     }
@@ -2980,8 +3009,8 @@ private:
       paint.setStyle(skia::kStrokeStyle);
       paint.setStrokeWidth(6.0f);
       paint.setColor(skia::colorSetARGB(255, 255, 40, 40));
-      skia::SkRect border = skia::SkRect::MakeWH(static_cast<float>(fScreenW),
-                                                 static_cast<float>(fScreenH));
+      skia::SkRect border = skia::SkRect::MakeWH(
+          static_cast<float>(fWin.fScreenW), static_cast<float>(fWin.fScreenH));
       border.inset(3.0f, 3.0f);
       canvas->drawRect(border, paint);
       // Deduplicated by reason rather than by the clock: a one-off -- a
@@ -3015,7 +3044,7 @@ private:
     using clock = std::chrono::steady_clock;
     // Zero until the first frame has been through, so that nothing before it
     // counts against the map.
-    const double now = fAwaitingFirstFrame ? 0.0 : this->nowMs();
+    const double now = fPlay.fAwaitingFirstFrame ? 0.0 : this->nowMs();
     if (this->shouldStop(now)) {
       this->finishPlay();
       this->frameResults();
@@ -3033,7 +3062,7 @@ private:
     // longer it ran -- and every number measured that way was measured
     // against a canvas doing something no normal frame does.
     const auto t0 = clock::now();
-    fEngine->advance(now);
+    fPlay.fEngine->advance(now);
     const auto t1 = clock::now();
     this->playHitsounds(now);
     fView.render(this->gameplayCtx(fFrame.fSurface->getCanvas()), now);
@@ -3057,7 +3086,7 @@ private:
       fView.advanceProfile();
     }
 
-    if (fAwaitingFirstFrame) {
+    if (fPlay.fAwaitingFirstFrame) {
       this->startGameplayClock();
     }
   }
@@ -3075,14 +3104,14 @@ private:
   // of a second on a map with hundreds of sliders, and a window being dragged
   // delivers a resize per frame.
   void rebuildSliderBodiesIfStale() {
-    if (!fSliderBodiesStale || !fMap) {
+    if (!fSliderBodiesStale || !fPlay.fMap) {
       return;
     }
     if (wallMs() - fLastResizeWall < 250.0) {
       return;
     }
-    fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get(),
-                                 this->sliderBodyKey());
+    fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale,
+                                 fContext.get(), this->sliderBodyKey());
     if (fSettings.choice("renderer") == 1) {
       fSkin.flattenBodiesToRaster(fContext.get());
     }
@@ -3096,8 +3125,8 @@ private:
   [[nodiscard]] client::GameplayView::Ctx gameplayCtx(skia::SkCanvas *canvas) {
     client::GameplayView::Ctx c;
     c.fCanvas = canvas;
-    c.fMap = fMap ? &*fMap : nullptr;
-    c.fEngine = fEngine ? &*fEngine : nullptr;
+    c.fMap = fPlay.fMap ? &*fPlay.fMap : nullptr;
+    c.fEngine = fPlay.fEngine ? &*fPlay.fEngine : nullptr;
     c.fSkin = &fSkin;
     c.fCombo = &fComboInfo;
     c.fFont = &fFont;
@@ -3105,15 +3134,16 @@ private:
     c.fScale = fScale;
     c.fOffsetX = fOffsetX;
     c.fOffsetY = fOffsetY;
-    c.fScreenW = fScreenW;
-    c.fScreenH = fScreenH;
+    c.fScreenW = fWin.fScreenW;
+    c.fScreenH = fWin.fScreenH;
     c.fCursor = fCursor;
     c.fCursorSize = fSettings.value("cursorsize");
-    c.fUiScale = std::clamp(static_cast<float>(fScreenH) / 1080.0f, 0.7f, 3.0f);
+    c.fUiScale =
+        std::clamp(static_cast<float>(fWin.fScreenH) / 1080.0f, 0.7f, 3.0f);
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
     c.fHitLighting = fSettings.flag("hitlighting");
-    c.fPp = fEngine ? this->pricePlay(fEngine->score()) : 0.0;
+    c.fPp = fPlay.fEngine ? this->pricePlay(fPlay.fEngine->score()) : 0.0;
     c.fShowProfile = fShowProfile;
     return c;
   }
@@ -3126,21 +3156,21 @@ private:
     fPlayedEvents = 0;
     fCombo = 0;
     fView.reset();
-    fAutoplayEvents.clear();
+    fPlay.fAutoplayEvents.clear();
     fAutoplayIndex = 0;
-    fRecordedEvents.clear();
+    fPlay.fRecordedEvents.clear();
     fHeldMask = 0;
   }
 
   void startPlay(int setIdx, int diffIdx) {
     // Retries are counted per map: coming here from anywhere but the retry
     // button starts the count again.
-    fRetryCount = fRetryPending ? fRetryCount + 1 : 0;
+    fPlay.fRetryCount = fRetryPending ? fPlay.fRetryCount + 1 : 0;
     fRetryPending = false;
     fPreview.stop();
     fPreviewId = -1;
     fMusicDucked = false; // gameplay takes the track over anyway
-    if (setIdx < 0 || setIdx >= static_cast<int>(fLibrary.size())) {
+    if (setIdx < 0 || setIdx >= static_cast<int>(fLib.fLibrary.size())) {
       return;
     }
     auto set = this->setForBlocking(setIdx);
@@ -3150,14 +3180,14 @@ private:
     }
     fPlayingSet = setIdx;
     fPlayingDiff = diffIdx;
-    fLastSavedReplay.clear();
+    fPlay.fLastSavedReplay.clear();
     // Only a play that was asked for by watchReplay is driven from a file.
     // Without this, everything after watching one replay would keep playing
     // that replay back -- and, being "recorded", would be saved as a copy.
     fReplayPath = std::exchange(fPendingReplay, {});
     fAutoplay = fCliAutoplay || !fReplayPath.empty();
-    fSet = *set; // active copy: gameplay reads audio/bg from here
-    fMenuMusicForSet = -1;  // gameplay reloads the track from scratch
+    fSet = *set;           // active copy: gameplay reads audio/bg from here
+    fMenuMusicForSet = -1; // gameplay reloads the track from scratch
     fAudio.setLooping(false);
     this->resetGameplayState();
     // Overlays must not survive into gameplay.
@@ -3176,7 +3206,7 @@ private:
   }
 
   void pauseGame() {
-    fPausedNow = this->nowMs();
+    fPlay.fPausedNow = this->nowMs();
     fAudio.pause();
     this->switchState(State::kPaused);
     this->setCursorVisible(true);
@@ -3185,7 +3215,7 @@ private:
   void resumeGame() {
     // Re-anchor the clock at the frozen instant: wall time spent in the
     // pause menu never existed as far as the game timeline is concerned.
-    fClock.reset(wallMs(), fPausedNow);
+    fPlay.fClock.reset(wallMs(), fPlay.fPausedNow);
     fLastClockSyncWall = wallMs();
     fAudio.resume();
     this->switchState(State::kPlaying);
@@ -3195,10 +3225,10 @@ private:
 
   void quitToSelect() {
     fAudio.stop();
-    fMenuMusicForSet = -1;  // let updateMenuMusic restart the loop
+    fMenuMusicForSet = -1; // let updateMenuMusic restart the loop
     this->switchState(State::kSongSelect);
     fView.invalidate();
-    fBackgroundForSet = -1; // gameplay replaced the cached background
+    fLib.fBackgroundForSet = -1; // gameplay replaced the cached background
     this->setCursorVisible(true);
   }
 
@@ -3227,15 +3257,15 @@ private:
     input.fMaxCombo = sc.fMaxCombo;
     input.fSliderTailHits = sc.fTailHit;
     input.fLargeTickHits = sc.fLargeTickHit;
-    return osu::performanceRanked(fPlayAttributes, input).fTotal;
+    return osu::performanceRanked(fPlay.fPlayAttributes, input).fTotal;
   }
 
   void captureResult() {
-    fResult.fScore = fEngine->score();
+    fResult.fScore = fPlay.fEngine->score();
     double sum = 0.0;
     double sumSq = 0.0;
     std::size_t n = 0;
-    for (const double d : fEngine->tapDeltas()) {
+    for (const double d : fPlay.fEngine->tapDeltas()) {
       sum += d;
       sumSq += d * d;
       ++n;
@@ -3243,9 +3273,9 @@ private:
     if (n > 0) {
       const double mean = sum / static_cast<double>(n);
       fResult.fMean = mean;
-      fResult.fUr = 10.0 * std::sqrt(std::max(
-                               0.0, sumSq / static_cast<double>(n) -
-                                        mean * mean));
+      fResult.fUr =
+          10.0 * std::sqrt(std::max(0.0, sumSq / static_cast<double>(n) -
+                                             mean * mean));
     } else {
       fResult.fMean = 0.0;
       fResult.fUr = 0.0;
@@ -3288,8 +3318,7 @@ private:
       EM_ASM(Module.setCursorVisible(false));
     }
     glfw::glfwSetInputMode(fWindow, glfw::kCursor,
-                           visible ? glfw::kCursorNormal
-                                   : glfw::kCursorHidden);
+                           visible ? glfw::kCursorNormal : glfw::kCursorHidden);
 #else
     const int hidden =
         this->relativeCursor() ? glfw::kCursorDisabled : glfw::kCursorHidden;
@@ -3329,8 +3358,8 @@ private:
       LibraryEntry entry;
       entry.fInfos = fSet.fBeatmaps;
       entry.fLoaded = std::make_shared<osu::BeatmapSet>(fSet);
-      fLibrary.push_back(std::move(entry));
-      fLoadedOrder.push_back(0);
+      fLib.fLibrary.push_back(std::move(entry));
+      fLib.fLoadedOrder.push_back(0);
     }
 
     // Collect the archive list first, then parse the cache misses on every
@@ -3348,16 +3377,16 @@ private:
     std::vector<std::filesystem::path> misses;
     for (const auto &path : archives) {
       if (auto cached = this->cachedEntryFor(path)) {
-        fLibrary.push_back(std::move(*cached));
+        fLib.fLibrary.push_back(std::move(*cached));
       } else {
         misses.push_back(path);
       }
     }
 
     if (!misses.empty()) {
-      const auto threads = std::max(
-          1u, std::min(std::thread::hardware_concurrency(),
-                       static_cast<unsigned>(misses.size())));
+      const auto threads =
+          std::max(1u, std::min(std::thread::hardware_concurrency(),
+                                static_cast<unsigned>(misses.size())));
       std::println(std::cerr, "[library] parsing {} new sets on {} threads",
                    misses.size(), threads);
       std::mutex resultMutex;
@@ -3379,7 +3408,7 @@ private:
               auto diffs = this->cacheRecordFor(set);
               const auto stamp = fileStamp(misses[i]);
               const std::scoped_lock lock(resultMutex);
-              fLibrary.push_back(std::move(entry));
+              fLib.fLibrary.push_back(std::move(entry));
               fMapCache.store(misses[i].filename().string(), stamp.first,
                               stamp.second, std::move(diffs));
             } catch (const std::exception &e) {
@@ -3407,22 +3436,23 @@ private:
 
     // Start on a random set so the menu isn't always greeted by the same
     // track (unless a specific beatmap was passed on the command line).
-    if (!fHasInitialSet && !fLibrary.empty()) {
-      std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
-      fSelSet = static_cast<int>(pick(fUiRng));
-      fSelDiff = 0;
+    if (!fHasInitialSet && !fLib.fLibrary.empty()) {
+      std::uniform_int_distribution<std::size_t> pick(0,
+                                                      fLib.fLibrary.size() - 1);
+      fLib.fSelSet = static_cast<int>(pick(fUiRng));
+      fLib.fSelDiff = 0;
     }
     fLibraryLoaded = true;
-    std::println(std::cerr, "[library] {} sets", fLibrary.size());
+    std::println(std::cerr, "[library] {} sets", fLib.fLibrary.size());
   }
 
   // Loop the selected set's audio quietly under the menus, lazer-style. Only
   // reloads when the selection changes; stops when gameplay takes over.
   void updateMenuMusic() {
-    if (fLibrary.empty()) {
+    if (fLib.fLibrary.empty()) {
       return;
     }
-    if (fMenuMusicForSet == fSelSet) {
+    if (fMenuMusicForSet == fLib.fSelSet) {
       // The track is given a moment to start before its silence counts as
       // having ended; OpenAL reports a source as stopped until it does.
       // Paused for a preview is not the same as finished.
@@ -3435,11 +3465,11 @@ private:
       }
       return;
     }
-    auto set = this->setFor(fSelSet);
+    auto set = this->setFor(fLib.fSelSet);
     if (!set) {
       return; // still loading; try again next frame
     }
-    fMenuMusicForSet = fSelSet;
+    fMenuMusicForSet = fLib.fSelSet;
     // The grace period starts when the track is asked for, not when it starts
     // playing: decoding takes a few hundred milliseconds, and silence while
     // that happens is not a track that ended. This is what made the client
@@ -3464,21 +3494,23 @@ private:
     const std::string ext = detail::fileExtension(audioName);
     std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
     auto pcm = std::make_shared<audio_client::DecodedAudio>();
-    const int forSet = fSelSet;
+    const int forSet = fLib.fSelSet;
     // The index alone is not identity: deleting a beatmap shifts everything
     // after it, so the path is checked too before this track is adopted.
-    const auto forPath = fLibrary[static_cast<std::size_t>(fSelSet)].fPath;
+    const auto forPath =
+        fLib.fLibrary[static_cast<std::size_t>(fLib.fSelSet)].fPath;
     fLoader.submit(
-        static_cast<std::uint64_t>(fSelSet) | (3ull << 32),
+        static_cast<std::uint64_t>(fLib.fSelSet) | (3ull << 32),
         [copy = std::move(copy), ext, pcm] {
           *pcm = audio_client::decodeAudio(copy, ext);
         },
         [this, forSet, forPath, pcm] {
-          if (forSet != fSelSet || pcm->fSamples.empty()) {
+          if (forSet != fLib.fSelSet || pcm->fSamples.empty()) {
             return; // selection moved on while decoding
           }
-          if (forSet >= static_cast<int>(fLibrary.size()) ||
-              fLibrary[static_cast<std::size_t>(forSet)].fPath != forPath) {
+          if (forSet >= static_cast<int>(fLib.fLibrary.size()) ||
+              fLib.fLibrary[static_cast<std::size_t>(forSet)].fPath !=
+                  forPath) {
             return; // that entry is not the one this was decoded for
           }
           fAudio.adopt(std::move(*pcm));
@@ -3497,27 +3529,27 @@ private:
   // long as there is anything else in the library.
   void nextMenuTrack() {
     this->requestRedraw(1500.0);
-    if (fVisible.size() > 1) {
+    if (fLib.fVisible.size() > 1) {
       // One draw, uniform over everything except the one just heard. Drawing
       // again until the draw differs is unbiased but can fail, and failing
       // eight times in a row meant playing the same track over again -- which
       // is the opposite of what this is for.
-      std::size_t current = fVisible.size();
-      for (std::size_t i = 0; i < fVisible.size(); ++i) {
-        if (fVisible[i] == fSelSet) {
+      std::size_t current = fLib.fVisible.size();
+      for (std::size_t i = 0; i < fLib.fVisible.size(); ++i) {
+        if (fLib.fVisible[i] == fLib.fSelSet) {
           current = i;
           break;
         }
       }
-      const bool skipping = current < fVisible.size();
+      const bool skipping = current < fLib.fVisible.size();
       std::uniform_int_distribution<std::size_t> pick(
-          0, fVisible.size() - (skipping ? 2 : 1));
+          0, fLib.fVisible.size() - (skipping ? 2 : 1));
       std::size_t idx = pick(fUiRng);
       if (skipping && idx >= current) {
         ++idx; // the gap left by the one being skipped closes over it
       }
-      fSelSet = fVisible[idx];
-      fSelDiff = 0; // the carousel follows the selection on its own
+      fLib.fSelSet = fLib.fVisible[idx];
+      fLib.fSelDiff = 0; // the carousel follows the selection on its own
       fMenuTrackWall = wallMs();
       return;
     }
@@ -3538,7 +3570,8 @@ private:
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     const auto writeTime = std::filesystem::last_write_time(path, ec);
-    return {size, static_cast<std::int64_t>(writeTime.time_since_epoch().count())};
+    return {size,
+            static_cast<std::int64_t>(writeTime.time_since_epoch().count())};
   }
 
   // Library entry straight from the cache, or nothing when it is stale.
@@ -3597,15 +3630,13 @@ private:
     std::vector<client::CachedDifficulty> diffs;
     diffs.reserve(set.fBeatmaps.size());
     for (const auto &info : set.fBeatmaps) {
-      diffs.push_back({info.fFilename, info.fMd5, info.fMeta.fBeatmapSetId,
-                       info.fMeta.fTitle,
-                       info.fMeta.fTitleUnicode, info.fMeta.fArtist,
-                       info.fMeta.fArtistUnicode, info.fMeta.fCreator,
-                       info.fMeta.fVersion, info.fMeta.fAudioFilename,
-                       info.fMeta.fBackground, info.fStars,
-                       info.fStarsRanked, info.fDiff.fCs,
-                       info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp,
-                       info.fLengthMs, info.fObjectCount});
+      diffs.push_back(
+          {info.fFilename, info.fMd5, info.fMeta.fBeatmapSetId,
+           info.fMeta.fTitle, info.fMeta.fTitleUnicode, info.fMeta.fArtist,
+           info.fMeta.fArtistUnicode, info.fMeta.fCreator, info.fMeta.fVersion,
+           info.fMeta.fAudioFilename, info.fMeta.fBackground, info.fStars,
+           info.fStarsRanked, info.fDiff.fCs, info.fDiff.fAr, info.fDiff.fOd,
+           info.fDiff.fHp, info.fLengthMs, info.fObjectCount});
     }
     return diffs;
   }
@@ -3615,8 +3646,8 @@ private:
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     const auto writeTime = std::filesystem::last_write_time(path, ec);
-    const auto mtime = static_cast<std::int64_t>(
-        writeTime.time_since_epoch().count());
+    const auto mtime =
+        static_cast<std::int64_t>(writeTime.time_since_epoch().count());
     const std::string key = path.filename().string();
 
     if (const auto *cached = fMapCache.lookup(key, size, mtime)) {
@@ -3626,7 +3657,7 @@ private:
         entry.fInfos.push_back(infoFromCache(d));
       }
       if (!entry.fInfos.empty()) {
-        fLibrary.push_back(std::move(entry));
+        fLib.fLibrary.push_back(std::move(entry));
         return;
       }
     }
@@ -3637,7 +3668,7 @@ private:
       LibraryEntry entry;
       entry.fPath = path;
       entry.fInfos = set->fBeatmaps;
-      fLibrary.push_back(std::move(entry));
+      fLib.fLibrary.push_back(std::move(entry));
 
       fMapCache.store(key, size, mtime, cacheRecordFor(*set));
     } catch (const std::exception &e) {
@@ -3650,10 +3681,10 @@ private:
   // later frame. Unzipping an archive and decoding its audio takes hundreds
   // of milliseconds, which is a visible freeze when done inline.
   [[nodiscard]] std::shared_ptr<osu::BeatmapSet> setFor(int index) {
-    if (index < 0 || index >= static_cast<int>(fLibrary.size())) {
+    if (index < 0 || index >= static_cast<int>(fLib.fLibrary.size())) {
       return nullptr;
     }
-    auto &entry = fLibrary[static_cast<std::size_t>(index)];
+    auto &entry = fLib.fLibrary[static_cast<std::size_t>(index)];
     if (entry.fLoaded) {
       return entry.fLoaded;
     }
@@ -3667,10 +3698,10 @@ private:
   // Blocking load, for the one case that genuinely cannot proceed without
   // the data: starting gameplay.
   [[nodiscard]] std::shared_ptr<osu::BeatmapSet> setForBlocking(int index) {
-    if (index < 0 || index >= static_cast<int>(fLibrary.size())) {
+    if (index < 0 || index >= static_cast<int>(fLib.fLibrary.size())) {
       return nullptr;
     }
-    auto &entry = fLibrary[static_cast<std::size_t>(index)];
+    auto &entry = fLib.fLibrary[static_cast<std::size_t>(index)];
     if (entry.fLoaded) {
       return entry.fLoaded;
     }
@@ -3678,8 +3709,8 @@ private:
       return nullptr;
     }
     try {
-      entry.fLoaded = std::make_shared<osu::BeatmapSet>(
-          loadBeatmapSet(entry.fPath, false));
+      entry.fLoaded =
+          std::make_shared<osu::BeatmapSet>(loadBeatmapSet(entry.fPath, false));
       this->adoptCachedStars(index, *entry.fLoaded);
       this->touchLoaded(index);
     } catch (const std::exception &e) {
@@ -3691,7 +3722,7 @@ private:
   }
 
   void requestSet(int index) {
-    const auto path = fLibrary[static_cast<std::size_t>(index)].fPath;
+    const auto path = fLib.fLibrary[static_cast<std::size_t>(index)].fPath;
     if (path.empty()) {
       return;
     }
@@ -3699,12 +3730,12 @@ private:
     fLoader.submit(
         static_cast<std::uint64_t>(index) | (1ull << 32),
         [path, result] {
-          *result = std::make_shared<osu::BeatmapSet>(
-              loadBeatmapSet(path, false));
+          *result =
+              std::make_shared<osu::BeatmapSet>(loadBeatmapSet(path, false));
         },
         [this, index, path, result] {
-          if (index >= static_cast<int>(fLibrary.size()) ||
-              fLibrary[static_cast<std::size_t>(index)].fPath != path) {
+          if (index >= static_cast<int>(fLib.fLibrary.size()) ||
+              fLib.fLibrary[static_cast<std::size_t>(index)].fPath != path) {
             return; // library was re-sorted underneath us
           }
           if (!*result) {
@@ -3713,7 +3744,7 @@ private:
           // The scan already worked the star ratings out and wrote them to the
           // cache; this load was for the objects and the audio.
           this->adoptCachedStars(index, **result);
-          fLibrary[static_cast<std::size_t>(index)].fLoaded = *result;
+          fLib.fLibrary[static_cast<std::size_t>(index)].fLoaded = *result;
           this->touchLoaded(index);
         });
   }
@@ -3768,31 +3799,31 @@ private:
   }
 
   void touchLoaded(int index) {
-    fLoadedOrder.push_back(index);
-    while (fLoadedOrder.size() > kMaxLoadedSets) {
-      const int evict = fLoadedOrder.front();
-      fLoadedOrder.pop_front();
+    fLib.fLoadedOrder.push_back(index);
+    while (fLib.fLoadedOrder.size() > kMaxLoadedSets) {
+      const int evict = fLib.fLoadedOrder.front();
+      fLib.fLoadedOrder.pop_front();
       if (evict != index && evict >= 0 &&
-          evict < static_cast<int>(fLibrary.size()) &&
-          !fLibrary[static_cast<std::size_t>(evict)].fPath.empty()) {
-        fLibrary[static_cast<std::size_t>(evict)].fLoaded.reset();
+          evict < static_cast<int>(fLib.fLibrary.size()) &&
+          !fLib.fLibrary[static_cast<std::size_t>(evict)].fPath.empty()) {
+        fLib.fLibrary[static_cast<std::size_t>(evict)].fLoaded.reset();
       }
     }
   }
 
   [[nodiscard]] const std::vector<osu::BeatmapInfo> &infosFor(int index) const {
     static const std::vector<osu::BeatmapInfo> kEmpty;
-    if (index < 0 || index >= static_cast<int>(fLibrary.size())) {
+    if (index < 0 || index >= static_cast<int>(fLib.fLibrary.size())) {
       return kEmpty;
     }
-    return fLibrary[static_cast<std::size_t>(index)].fInfos;
+    return fLib.fLibrary[static_cast<std::size_t>(index)].fInfos;
   }
 
   void sortLibrary() {
-    const int selected = fSelSet;
+    const int selected = fLib.fSelSet;
     const std::filesystem::path selPath =
-        selected >= 0 && selected < static_cast<int>(fLibrary.size())
-            ? fLibrary[static_cast<std::size_t>(selected)].fPath
+        selected >= 0 && selected < static_cast<int>(fLib.fLibrary.size())
+            ? fLib.fLibrary[static_cast<std::size_t>(selected)].fPath
             : std::filesystem::path{};
 
     const auto key = [](const LibraryEntry &e) -> const osu::BeatmapInfo * {
@@ -3800,45 +3831,45 @@ private:
     };
     switch (fFilter.sortMode()) {
     case client::FilterControl::SortMode::kAuthor:
-      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+      std::ranges::stable_sort(fLib.fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
         return i ? toLowerAscii(i->fMeta.fCreator) : std::string{};
       });
       break;
     case client::FilterControl::SortMode::kTitle:
-      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+      std::ranges::stable_sort(fLib.fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
         return i ? toLowerAscii(i->fMeta.fTitle) : std::string{};
       });
       break;
     case client::FilterControl::SortMode::kArtist:
-      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+      std::ranges::stable_sort(fLib.fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
         return i ? toLowerAscii(i->fMeta.fArtist) : std::string{};
       });
       break;
     case client::FilterControl::SortMode::kDifficulty:
-      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+      std::ranges::stable_sort(fLib.fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
         return i ? this->shownStars(*i) : 0.0;
       });
       break;
     case client::FilterControl::SortMode::kLength:
-      std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
+      std::ranges::stable_sort(fLib.fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
         return i ? i->fLengthMs : 0.0;
       });
       break;
     }
     // The LRU holds indices, which the sort just invalidated.
-    fLoadedOrder.clear();
-    for (int i = 0; i < static_cast<int>(fLibrary.size()); ++i) {
-      if (fLibrary[static_cast<std::size_t>(i)].fLoaded) {
-        fLoadedOrder.push_back(i);
+    fLib.fLoadedOrder.clear();
+    for (int i = 0; i < static_cast<int>(fLib.fLibrary.size()); ++i) {
+      if (fLib.fLibrary[static_cast<std::size_t>(i)].fLoaded) {
+        fLib.fLoadedOrder.push_back(i);
       }
       if (!selPath.empty() &&
-          fLibrary[static_cast<std::size_t>(i)].fPath == selPath) {
-        fSelSet = i;
+          fLib.fLibrary[static_cast<std::size_t>(i)].fPath == selPath) {
+        fLib.fSelSet = i;
       }
     }
     fFilterDirty = true;
@@ -3858,10 +3889,10 @@ private:
     }
     fFilterDirty = false;
     const client::Criteria criteria = client::parseQuery(fFilter.text());
-    fVisible.clear();
+    fLib.fVisible.clear();
 
-    for (int i = 0; i < static_cast<int>(fLibrary.size()); ++i) {
-      const auto &infos = fLibrary[static_cast<std::size_t>(i)].fInfos;
+    for (int i = 0; i < static_cast<int>(fLib.fLibrary.size()); ++i) {
+      const auto &infos = fLib.fLibrary[static_cast<std::size_t>(i)].fInfos;
       if (infos.empty()) {
         continue;
       }
@@ -3875,14 +3906,14 @@ private:
         }
       }
       if (any) {
-        fVisible.push_back(i);
+        fLib.fVisible.push_back(i);
       }
     }
 
-    if (!fVisible.empty() &&
-        std::ranges::find(fVisible, fSelSet) == fVisible.end()) {
-      fSelSet = fVisible.front();
-      fSelDiff = 0;
+    if (!fLib.fVisible.empty() &&
+        std::ranges::find(fLib.fVisible, fLib.fSelSet) == fLib.fVisible.end()) {
+      fLib.fSelSet = fLib.fVisible.front();
+      fLib.fSelDiff = 0;
     }
   }
 
@@ -3904,7 +3935,8 @@ private:
       return false;
     }
     const auto contains = [](std::string_view hay, const std::string &needle) {
-      return needle.empty() || toLowerAscii(hay).find(needle) != std::string::npos;
+      return needle.empty() ||
+             toLowerAscii(hay).find(needle) != std::string::npos;
     };
     if (!contains(info.fMeta.fCreator, c.fCreator)) {
       return false;
@@ -3925,13 +3957,12 @@ private:
     }
     // Remaining free text: every space-separated term must appear somewhere,
     // as FilterCriteria.Matches does.
-    const std::string haystack =
-        toLowerAscii(setMeta.fTitle) + '\x1f' +
-        toLowerAscii(setMeta.fTitleUnicode) + '\x1f' +
-        toLowerAscii(setMeta.fArtist) + '\x1f' +
-        toLowerAscii(setMeta.fArtistUnicode) + '\x1f' +
-        toLowerAscii(info.fMeta.fCreator) + '\x1f' +
-        toLowerAscii(info.fMeta.fVersion);
+    const std::string haystack = toLowerAscii(setMeta.fTitle) + '\x1f' +
+                                 toLowerAscii(setMeta.fTitleUnicode) + '\x1f' +
+                                 toLowerAscii(setMeta.fArtist) + '\x1f' +
+                                 toLowerAscii(setMeta.fArtistUnicode) + '\x1f' +
+                                 toLowerAscii(info.fMeta.fCreator) + '\x1f' +
+                                 toLowerAscii(info.fMeta.fVersion);
     std::size_t pos = 0;
     while (pos < c.fSearchText.size()) {
       const auto next = c.fSearchText.find(' ', pos);
@@ -3949,23 +3980,24 @@ private:
   }
 
   [[nodiscard]] int visiblePos() const {
-    const auto it = std::ranges::find(fVisible, fSelSet);
-    return it == fVisible.end() ? -1
-                                : static_cast<int>(it - fVisible.begin());
+    const auto it = std::ranges::find(fLib.fVisible, fLib.fSelSet);
+    return it == fLib.fVisible.end()
+               ? -1
+               : static_cast<int>(it - fLib.fVisible.begin());
   }
 
   void syncMapsDir() {
 #ifdef __EMSCRIPTEN__
-    EM_ASM(FS.syncfs(false, function(err) {}));
+    EM_ASM(FS.syncfs(false, function(err){}));
 #endif
   }
 
   // Point the selection at the set that came from the command line.
   void selectInitialSet() {
-    for (std::size_t i = 0; i < fLibrary.size(); ++i) {
-      if (fLibrary[i].fPath.empty()) {
-        fSelSet = static_cast<int>(i);
-        fSelDiff = 0;
+    for (std::size_t i = 0; i < fLib.fLibrary.size(); ++i) {
+      if (fLib.fLibrary[i].fPath.empty()) {
+        fLib.fSelSet = static_cast<int>(i);
+        fLib.fSelDiff = 0;
         return;
       }
     }
@@ -3985,8 +4017,8 @@ private:
     if (setId <= 0) {
       return -1;
     }
-    for (std::size_t i = 0; i < fLibrary.size(); ++i) {
-      if (onlineSetId(fLibrary[i]) == setId) {
+    for (std::size_t i = 0; i < fLib.fLibrary.size(); ++i) {
+      if (onlineSetId(fLib.fLibrary[i]) == setId) {
         return static_cast<int>(i);
       }
     }
@@ -3996,7 +4028,7 @@ private:
   // Marks the results that are already installed, so they read as owned and
   // cannot be downloaded a second time.
   void markOwnedResults() {
-    for (auto &e : fFound) {
+    for (auto &e : fLib.fFound) {
       if (e.fSt == client::listing::Entry::St::kFetching) {
         continue;
       }
@@ -4007,20 +4039,20 @@ private:
   }
 
   bool addOszToLibrary(const std::filesystem::path &path, bool select) {
-    const std::size_t before = fLibrary.size();
+    const std::size_t before = fLib.fLibrary.size();
     this->scanArchive(path);
-    if (fLibrary.size() == before) {
+    if (fLib.fLibrary.size() == before) {
       return false;
     }
     // The same set can already be in the library under another file name --
     // imported from elsewhere, or downloaded before. Keep the new archive and
     // drop the old entry rather than listing the beatmap twice.
-    const int setId = onlineSetId(fLibrary.back());
+    const int setId = onlineSetId(fLib.fLibrary.back());
     // Unsubmitted maps carry no online id; their difficulty hashes identify
     // them just as well.
     std::vector<std::string> hashes;
     if (setId <= 0) {
-      for (const auto &info : fLibrary.back().fInfos) {
+      for (const auto &info : fLib.fLibrary.back().fInfos) {
         if (!info.fMd5.empty()) {
           hashes.push_back(info.fMd5);
         }
@@ -4044,13 +4076,14 @@ private:
       return other == hashes;
     };
     {
-      for (std::size_t i = 0; i + 1 < fLibrary.size();) {
-        if (!sameSet(fLibrary[i])) {
+      for (std::size_t i = 0; i + 1 < fLib.fLibrary.size();) {
+        if (!sameSet(fLib.fLibrary[i])) {
           ++i;
           continue;
         }
-        const auto stale = fLibrary[i].fPath;
-        fLibrary.erase(fLibrary.begin() + static_cast<std::ptrdiff_t>(i));
+        const auto stale = fLib.fLibrary[i].fPath;
+        fLib.fLibrary.erase(fLib.fLibrary.begin() +
+                            static_cast<std::ptrdiff_t>(i));
         if (!stale.empty() && stale != path &&
             stale.parent_path() == fMapsDir) {
           std::error_code ec;
@@ -4062,14 +4095,14 @@ private:
     }
     fMapCache.save();
     this->syncMapsDir();
-    const auto added = fLibrary.back().fPath;
+    const auto added = fLib.fLibrary.back().fPath;
     this->sortLibrary();
     this->rebuildVisible();
     if (select) {
-      for (int i = 0; i < static_cast<int>(fLibrary.size()); ++i) {
-        if (fLibrary[static_cast<std::size_t>(i)].fPath == added) {
-          fSelSet = i;
-          fSelDiff = 0;
+      for (int i = 0; i < static_cast<int>(fLib.fLibrary.size()); ++i) {
+        if (fLib.fLibrary[static_cast<std::size_t>(i)].fPath == added) {
+          fLib.fSelSet = i;
+          fLib.fSelDiff = 0;
           break;
         }
       }
@@ -4131,7 +4164,10 @@ private:
 
   void importOsz() {
 #ifdef __EMSCRIPTEN__
-    EM_ASM({ if (Module.osuPickBeatmap) Module.osuPickBeatmap(); });
+    EM_ASM({
+      if (Module.osuPickBeatmap)
+        Module.osuPickBeatmap();
+    });
 #else
     const std::filesystem::path chosen = this->runFilePicker();
     if (chosen.empty()) {
@@ -4147,8 +4183,8 @@ private:
   // The picker writes the chosen path to a temp file; we read it back.
   [[nodiscard]] std::filesystem::path runFilePicker() {
     std::error_code ec;
-    const auto tmp = std::filesystem::temp_directory_path(ec) /
-                     "osu_client_import.txt";
+    const auto tmp =
+        std::filesystem::temp_directory_path(ec) / "osu_client_import.txt";
     const std::string tmpStr = tmp.string();
     const std::string commands[] = {
         "zenity --file-selection "
@@ -4241,70 +4277,91 @@ private:
   [[nodiscard]] static int statusId(client::listing::Category c) {
     using Category = client::listing::Category;
     switch (c) {
-    case Category::kRanked: return 1;
-    case Category::kQualified: return 3;
-    case Category::kLoved: return 4;
-    case Category::kPending: return 0;
-    case Category::kWip: return -1;
-    case Category::kGraveyard: return -2;
-    default: return 100; // no server-side status
+    case Category::kRanked:
+      return 1;
+    case Category::kQualified:
+      return 3;
+    case Category::kLoved:
+      return 4;
+    case Category::kPending:
+      return 0;
+    case Category::kWip:
+      return -1;
+    case Category::kGraveyard:
+      return -2;
+    default:
+      return 100; // no server-side status
     }
   }
 
   [[nodiscard]] static const char *statusName(client::listing::Category c) {
     using Category = client::listing::Category;
     switch (c) {
-    case Category::kRanked: return "ranked";
-    case Category::kQualified: return "qualified";
-    case Category::kLoved: return "loved";
-    case Category::kPending: return "pending";
-    case Category::kWip: return "wip";
-    case Category::kGraveyard: return "graveyard";
-    case Category::kLeaderboard: return "leaderboard";
-    default: return "";
+    case Category::kRanked:
+      return "ranked";
+    case Category::kQualified:
+      return "qualified";
+    case Category::kLoved:
+      return "loved";
+    case Category::kPending:
+      return "pending";
+    case Category::kWip:
+      return "wip";
+    case Category::kGraveyard:
+      return "graveyard";
+    case Category::kLeaderboard:
+      return "leaderboard";
+    default:
+      return "";
     }
   }
 
   // lazer's criteria mapped onto what each mirror calls them. An empty string
   // means the mirror cannot sort by it and the listing does it itself.
-  [[nodiscard]] static std::string sortParam(client::listing::Sort sort,
-                                             bool descending,
-                                             MirrorStyle style) {
+  [[nodiscard]] static std::string
+  sortParam(client::listing::Sort sort, bool descending, MirrorStyle style) {
     using Sort = client::listing::Sort;
     const char *field = nullptr;
     switch (sort) {
-    case Sort::kTitle: field = "title"; break;
-    case Sort::kArtist: field = "artist"; break;
-    case Sort::kRanked: field = style == MirrorStyle::kOsuDirect
-                                    ? "ranked_date" : "ranked"; break;
-    case Sort::kUpdated: field = style == MirrorStyle::kOsuDirect
-                                     ? "last_updated" : "updated"; break;
-    case Sort::kPlays: field = style == MirrorStyle::kOsuDirect
-                                   ? "play_count" : "plays"; break;
-    case Sort::kFavourites: field = style == MirrorStyle::kOsuDirect
-                                        ? "favourite_count" : "favourites";
+    case Sort::kTitle:
+      field = "title";
       break;
-    default: return {}; // difficulty, rating, relevance, nominations
+    case Sort::kArtist:
+      field = "artist";
+      break;
+    case Sort::kRanked:
+      field = style == MirrorStyle::kOsuDirect ? "ranked_date" : "ranked";
+      break;
+    case Sort::kUpdated:
+      field = style == MirrorStyle::kOsuDirect ? "last_updated" : "updated";
+      break;
+    case Sort::kPlays:
+      field = style == MirrorStyle::kOsuDirect ? "play_count" : "plays";
+      break;
+    case Sort::kFavourites:
+      field =
+          style == MirrorStyle::kOsuDirect ? "favourite_count" : "favourites";
+      break;
+    default:
+      return {}; // difficulty, rating, relevance, nominations
     }
     const char *dir = descending ? "desc" : "asc";
-    return style == MirrorStyle::kOsuDirect
-               ? std::format("{}:{}", field, dir)
-               : std::format("{}_{}", field, dir);
+    return style == MirrorStyle::kOsuDirect ? std::format("{}:{}", field, dir)
+                                            : std::format("{}_{}", field, dir);
   }
 
   [[nodiscard]] std::string searchUrl(int offset) const {
     const auto &f = fListing.filters();
     const auto &mirror = kMirrors[fMirror];
     const std::string q = client::http::urlEncode(f.fQuery);
-    const std::string sort =
-        sortParam(f.fSort, f.fDescending, mirror.fStyle);
+    const std::string sort = sortParam(f.fSort, f.fDescending, mirror.fStyle);
     const int status = statusId(f.fCategory);
     std::string url;
     switch (mirror.fStyle) {
     case MirrorStyle::kNerinyan: {
-      url = std::format(
-          "https://api.nerinyan.moe/search?q={}&m={}&ps={}&p={}", q,
-          f.fRuleset, kSearchPageSize, offset / kSearchPageSize);
+      url =
+          std::format("https://api.nerinyan.moe/search?q={}&m={}&ps={}&p={}", q,
+                      f.fRuleset, kSearchPageSize, offset / kSearchPageSize);
       if (const char *name = statusName(f.fCategory); *name != '\0') {
         url += std::format("&s={}", name);
       }
@@ -4332,9 +4389,9 @@ private:
       }
       break;
     case MirrorStyle::kMino:
-      url = std::format(
-          "https://catboy.best/api/v2/search?query={}&mode={}&limit={}&offset={}",
-          q, f.fRuleset, kSearchPageSize, offset);
+      url = std::format("https://catboy.best/api/v2/"
+                        "search?query={}&mode={}&limit={}&offset={}",
+                        q, f.fRuleset, kSearchPageSize, offset);
       if (status != 100) {
         url += std::format("&status={}", status);
       }
@@ -4352,19 +4409,19 @@ private:
     // Pages already in flight belong to the previous query; without this they
     // arrive afterwards and are appended to the new results.
     ++fSearchGeneration;
-    fSearchPending = false;
+    fLib.fSearchPending = false;
     fListing.resetSortForSearch();
     fListing.scrollToStart();
-    fFound.clear();
+    fLib.fFound.clear();
     this->fetchPage();
   }
 
   // The next page of the current search, appended to what is already there.
   void fetchPage() {
-    if (fSearchPending || !fMoreAvailable) {
+    if (fLib.fSearchPending || !fMoreAvailable) {
       return;
     }
-    fSearchPending = true;
+    fLib.fSearchPending = true;
     fDownloadStatus = fSearchOffset == 0 ? "Searching..." : "Loading more...";
     const int offset = fSearchOffset;
     const std::uint32_t generation = fSearchGeneration;
@@ -4379,7 +4436,7 @@ private:
   }
 
   void onSearchDone(int offset, client::http::Response r) {
-    fSearchPending = false;
+    fLib.fSearchPending = false;
     if (!r.fOk) {
       // A mirror that will not answer is replaced by the next one; the same
       // page is then asked of it.
@@ -4447,9 +4504,9 @@ private:
     };
 
     if (offset == 0) {
-      fFound.clear();
+      fLib.fFound.clear();
     }
-    const std::size_t before = fFound.size();
+    const std::size_t before = fLib.fFound.size();
     for (const auto &e : *arr) {
       const bjson::object *o = e.if_object();
       if (o == nullptr) {
@@ -4488,9 +4545,8 @@ private:
       if (const bjson::value *ratings = o->if_contains("ratings")) {
         if (const bjson::array *ra = ratings->if_array()) {
           for (const auto &v : *ra) {
-            d.fRatings.push_back(v.is_number()
-                                     ? static_cast<int>(v.to_number<double>())
-                                     : 0);
+            d.fRatings.push_back(
+                v.is_number() ? static_cast<int>(v.to_number<double>()) : 0);
           }
         }
       }
@@ -4551,23 +4607,23 @@ private:
                             &client::listing::Entry::Difficulty::fStars);
         }
       }
-      fFound.push_back(std::move(d));
+      fLib.fFound.push_back(std::move(d));
     }
     this->markOwnedResults();
-    const std::size_t added = fFound.size() - before;
+    const std::size_t added = fLib.fFound.size() - before;
     fSearchOffset = offset + kSearchPageSize;
     fMoreAvailable = added >= static_cast<std::size_t>(kSearchPageSize) / 2;
-    fDownloadStatus = std::format("{} results", fFound.size());
+    fDownloadStatus = std::format("{} results", fLib.fFound.size());
   }
 
   // PlayButton on the card thumbnail: fetches the 10-second preview osu!
   // serves for every set and plays it on its own source.
   void togglePreview(std::size_t idx) {
-    if (idx >= fFound.size()) {
+    if (idx >= fLib.fFound.size()) {
       std::println(std::cerr, "[preview] no entry at {}", idx);
       return;
     }
-    const long id = fFound[idx].fSetId;
+    const long id = fLib.fFound[idx].fSetId;
     if (fPreviewId == id) {
       fPreview.stop();
       fPreviewId = -1;
@@ -4588,35 +4644,33 @@ private:
     const std::string url = std::format("https://b.ppy.sh/preview/{}.mp3", id);
     std::println(std::cerr, "[preview] fetching {}", url);
     auto handle = std::make_shared<client::http::Handle>();
-    client::http::get(url, std::move(handle),
-                      [this, id, generation](client::http::Response r) {
-                        if (generation != fPreviewGeneration) {
-                          return; // superseded by a later click
-                        }
-                        fPreviewPending = false;
-                        if (!r.fOk || r.fBody.size() < 1024) {
-                          std::println(std::cerr,
-                                       "[preview] fetch failed: {} ({} bytes) {}",
-                                       r.fStatus, r.fBody.size(), r.fError);
-                          this->notify("preview unavailable",
-                                       skia::colorSetARGB(255, 255, 110, 110));
-                          return;
-                        }
-                        const std::vector<std::uint8_t> bytes(r.fBody.begin(),
-                                                              r.fBody.end());
-                        if (!fPreview.load(bytes, ".mp3")) {
-                          std::println(std::cerr,
-                                       "[preview] decode failed ({} bytes)",
-                                       bytes.size());
-                          return;
-                        }
-                        fPreview.setLooping(false);
-                        fPreview.setVolume(this->musicGain());
-                        fPreview.play();
-                        fPreviewId = id;
-                        std::println(std::cerr, "[preview] playing {} ({:.1f}s)",
-                                     id, fPreview.durationSec());
-                      });
+    client::http::get(
+        url, std::move(handle),
+        [this, id, generation](client::http::Response r) {
+          if (generation != fPreviewGeneration) {
+            return; // superseded by a later click
+          }
+          fPreviewPending = false;
+          if (!r.fOk || r.fBody.size() < 1024) {
+            std::println(std::cerr, "[preview] fetch failed: {} ({} bytes) {}",
+                         r.fStatus, r.fBody.size(), r.fError);
+            this->notify("preview unavailable",
+                         skia::colorSetARGB(255, 255, 110, 110));
+            return;
+          }
+          const std::vector<std::uint8_t> bytes(r.fBody.begin(), r.fBody.end());
+          if (!fPreview.load(bytes, ".mp3")) {
+            std::println(std::cerr, "[preview] decode failed ({} bytes)",
+                         bytes.size());
+            return;
+          }
+          fPreview.setLooping(false);
+          fPreview.setVolume(this->musicGain());
+          fPreview.play();
+          fPreviewId = id;
+          std::println(std::cerr, "[preview] playing {} ({:.1f}s)", id,
+                       fPreview.durationSec());
+        });
   }
 
   void restoreMusic() {
@@ -4637,10 +4691,10 @@ private:
 
   // The page shows covers.cover@2x (1920x360), not the card crop.
   void requestPageCover(std::size_t idx) {
-    if (idx >= fFound.size()) {
+    if (idx >= fLib.fFound.size()) {
       return;
     }
-    auto &d = fFound[idx];
+    auto &d = fLib.fFound[idx];
     if (d.fPageCoverSt != client::listing::Entry::Cover::kNone) {
       return;
     }
@@ -4648,40 +4702,39 @@ private:
     const long id = d.fSetId;
     const std::string url =
         d.fFullCover.empty()
-            ? std::format("https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg",
-                          id)
+            ? std::format(
+                  "https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg", id)
             : d.fFullCover;
     auto handle = std::make_shared<client::http::Handle>();
-    client::http::get(url, std::move(handle),
-                      [this, id](client::http::Response r) {
-                        for (auto &e : fFound) {
-                          if (e.fSetId != id) {
-                            continue;
-                          }
-                          if (r.fOk && r.fBody.size() > 256) {
-                            const std::vector<std::uint8_t> bytes(
-                                r.fBody.begin(), r.fBody.end());
-                            e.fPageCover = loadImage(bytes);
-                          }
-                          e.fPageCoverSt =
-                              e.fPageCover
-                                  ? client::listing::Entry::Cover::kReady
-                                  : client::listing::Entry::Cover::kFailed;
-                          break;
-                        }
-                      });
+    client::http::get(
+        url, std::move(handle), [this, id](client::http::Response r) {
+          for (auto &e : fLib.fFound) {
+            if (e.fSetId != id) {
+              continue;
+            }
+            if (r.fOk && r.fBody.size() > 256) {
+              const std::vector<std::uint8_t> bytes(r.fBody.begin(),
+                                                    r.fBody.end());
+              e.fPageCover = loadImage(bytes);
+            }
+            e.fPageCoverSt = e.fPageCover
+                                 ? client::listing::Entry::Cover::kReady
+                                 : client::listing::Entry::Cover::kFailed;
+            break;
+          }
+        });
   }
 
   void requestThumb(std::size_t idx) {
-    if (idx >= fFound.size()) {
+    if (idx >= fLib.fFound.size()) {
       return;
     }
-    auto &d = fFound[idx];
+    auto &d = fLib.fFound[idx];
     if (d.fThumbSt != client::listing::Entry::Thumb::kNone) {
       return;
     }
     int inflight = 0;
-    for (const auto &e : fFound) {
+    for (const auto &e : fLib.fFound) {
       if (e.fThumbSt == client::listing::Entry::Thumb::kFetching) {
         ++inflight;
       }
@@ -4693,14 +4746,14 @@ private:
     const long id = d.fSetId;
     const std::string url =
         d.fCardCover.empty()
-            ? std::format("https://assets.ppy.sh/beatmaps/{}/covers/card@2x.jpg",
-                          id)
+            ? std::format(
+                  "https://assets.ppy.sh/beatmaps/{}/covers/card@2x.jpg", id)
             : d.fCardCover;
     auto handle = std::make_shared<client::http::Handle>();
     client::http::get(
         url, std::move(handle), [this, id](client::http::Response r) {
-          for (std::size_t i = 0; i < fFound.size(); ++i) {
-            auto &e = fFound[i];
+          for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
+            auto &e = fLib.fFound[i];
             if (e.fSetId != id) {
               continue;
             }
@@ -4721,22 +4774,26 @@ private:
   }
 
   [[nodiscard]] std::size_t indexOfSet(long id) const {
-    for (std::size_t i = 0; i < fFound.size(); ++i) {
-      if (fFound[i].fSetId == id) {
+    for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
+      if (fLib.fFound[i].fSetId == id) {
         return i;
       }
     }
-    return fFound.size();
+    return fLib.fFound.size();
   }
 
-  void startDownloadForSet(long id) { this->startDownload(this->indexOfSet(id)); }
-  void togglePreviewForSet(long id) { this->togglePreview(this->indexOfSet(id)); }
+  void startDownloadForSet(long id) {
+    this->startDownload(this->indexOfSet(id));
+  }
+  void togglePreviewForSet(long id) {
+    this->togglePreview(this->indexOfSet(id));
+  }
 
   void startDownload(std::size_t idx) {
-    if (idx >= fFound.size()) {
+    if (idx >= fLib.fFound.size()) {
       return;
     }
-    auto &d = fFound[idx];
+    auto &d = fLib.fFound[idx];
     if (d.fSt == client::listing::Entry::St::kFetching) {
       return;
     }
@@ -4751,10 +4808,10 @@ private:
     d.fSt = client::listing::Entry::St::kFetching;
     const long id = d.fSetId;
     auto handle = std::make_shared<client::http::Handle>();
-    fTransfers[id] = handle;
+    fLib.fTransfers[id] = handle;
     d.fProgress = 0.0f;
-    const std::string url = std::vformat(kMirrors[fMirror].fDownload,
-                                         std::make_format_args(id));
+    const std::string url =
+        std::vformat(kMirrors[fMirror].fDownload, std::make_format_args(id));
     client::http::get(url, std::move(handle),
                       [this, id](client::http::Response r) {
                         this->onDownloadDone(id, std::move(r));
@@ -4762,9 +4819,9 @@ private:
   }
 
   void onDownloadDone(long id, client::http::Response r) {
-    fTransfers.erase(id);
+    fLib.fTransfers.erase(id);
     client::listing::Entry *d = nullptr;
-    for (auto &e : fFound) {
+    for (auto &e : fLib.fFound) {
       if (e.fSetId == id) {
         d = &e;
         break;
@@ -4784,11 +4841,10 @@ private:
     const auto path = fMapsDir / std::format("{}.osz", id);
     {
       std::ofstream out(path, std::ios::binary);
-      out.write(r.fBody.data(),
-                static_cast<std::streamsize>(r.fBody.size()));
+      out.write(r.fBody.data(), static_cast<std::streamsize>(r.fBody.size()));
     }
 #ifdef __EMSCRIPTEN__
-    EM_ASM(FS.syncfs(false, function(err) {}));
+    EM_ASM(FS.syncfs(false, function(err){}));
 #endif
     if (this->addOszToLibrary(path, true)) {
       if (d != nullptr) {
@@ -4829,13 +4885,13 @@ private:
 
     int fw = 0, fh = 0;
     glfw::glfwGetFramebufferSize(fWindow, &fw, &fh);
-    if (fw != fScreenW || fh != fScreenH) {
+    if (fw != fWin.fScreenW || fh != fWin.fScreenH) {
       this->resize(fw, fh);
     }
 
     if (fQuit.load(std::memory_order_acquire) ||
         glfw::glfwWindowShouldClose(fWindow)) {
-      if (fEngine &&
+      if (fPlay.fEngine &&
           (fState == State::kPlaying || fState == State::kPaused)) {
         this->printResult();
         if (fRecord)
@@ -4872,19 +4928,18 @@ private:
       return;
     }
     auto image = std::make_shared<skia::Sp<skia::SkImage>>();
-    fLoader.submit(static_cast<std::uint64_t>(setIndex) | (4ull << 32),
-                   [bytes = std::move(bytes), image] {
-                     *image = loadImage(bytes);
-                   },
-                   [this, setIndex, image] {
-                     if (setIndex != fSelSet || !*image) {
-                       return;
-                     }
-                     fView.setBackground(*image);
-                     fView.preScaleBackground(this->gameplayCtx(nullptr));
-                     this->damageAll("artwork arrived");
-                     this->requestRedraw(400.0);
-                   });
+    fLoader.submit(
+        static_cast<std::uint64_t>(setIndex) | (4ull << 32),
+        [bytes = std::move(bytes), image] { *image = loadImage(bytes); },
+        [this, setIndex, image] {
+          if (setIndex != fLib.fSelSet || !*image) {
+            return;
+          }
+          fView.setBackground(*image);
+          fView.preScaleBackground(this->gameplayCtx(nullptr));
+          this->damageAll("artwork arrived");
+          this->requestRedraw(400.0);
+        });
   }
 
   void loadSelectBackground(const osu::BeatmapSet &set) {
@@ -4909,12 +4964,13 @@ private:
 
   void strokeRounded(skia::SkCanvas *canvas, const skia::SkRect &rect,
                      float radius, skia::SkColor color, float width) {
-    skiff::paint::Painter(canvas, fFont).strokeRounded(rect, radius, color, width);
+    skiff::paint::Painter(canvas, fFont)
+        .strokeRounded(rect, radius, color, width);
   }
 
-  void drawTextClipped(skia::SkCanvas *canvas, const std::string &text,
-                       float x, float y, float maxW, float size,
-                       skia::SkColor color, float alpha = 1.0f) {
+  void drawTextClipped(skia::SkCanvas *canvas, const std::string &text, float x,
+                       float y, float maxW, float size, skia::SkColor color,
+                       float alpha = 1.0f) {
     skiff::paint::Painter(canvas, fFont)
         .textClipped(text, x, y, maxW, size, color, alpha);
   }
@@ -4975,9 +5031,12 @@ private:
 
   [[nodiscard]] static const char *menuStateName(MenuState st) {
     switch (st) {
-    case MenuState::kInitial: return "initial";
-    case MenuState::kTopLevel: return "top-level";
-    case MenuState::kPlay: return "play";
+    case MenuState::kInitial:
+      return "initial";
+    case MenuState::kTopLevel:
+      return "top-level";
+    case MenuState::kPlay:
+      return "play";
     }
     return "?";
   }
@@ -4998,8 +5057,8 @@ private:
   // What the logo is told each frame. Nothing it could work out itself.
   [[nodiscard]] client::logo::Logo::Ctx logoCtx() {
     return {&fFont,
-            fMouseX,
-            fMouseY,
+            fWin.fMouseX,
+            fWin.fMouseY,
             fUiDt,
             fSettings.flag("visualiser"),
             fSettings.flag("menutriangles"),
@@ -5043,30 +5102,32 @@ private:
 
   // F2 in song select: move the selection (lazer's FooterButtonRandom).
   void selectRandom() {
-    if (fVisible.empty()) {
+    if (fLib.fVisible.empty()) {
       return;
     }
-    std::uniform_int_distribution<std::size_t> pick(0, fVisible.size() - 1);
-    fSelSet = fVisible[pick(fUiRng)];
-    fSelDiff = 0;
+    std::uniform_int_distribution<std::size_t> pick(0,
+                                                    fLib.fVisible.size() - 1);
+    fLib.fSelSet = fLib.fVisible[pick(fUiRng)];
+    fLib.fSelDiff = 0;
   }
 
   // "random" in the menu's play submenu: pick a map and start it.
   void playRandom() {
-    if (fLibrary.empty()) {
+    if (fLib.fLibrary.empty()) {
       this->switchState(State::kSongSelect);
       return;
     }
-    std::uniform_int_distribution<std::size_t> pick(0, fLibrary.size() - 1);
+    std::uniform_int_distribution<std::size_t> pick(0,
+                                                    fLib.fLibrary.size() - 1);
     const auto si = pick(fUiRng);
-    const auto &infos = fLibrary[si].fInfos;
+    const auto &infos = fLib.fLibrary[si].fInfos;
     if (infos.empty()) {
       return;
     }
     std::uniform_int_distribution<std::size_t> pickDiff(0, infos.size() - 1);
-    fSelSet = static_cast<int>(si);
-    fSelDiff = static_cast<int>(pickDiff(fUiRng));
-    this->startPlay(fSelSet, fSelDiff);
+    fLib.fSelSet = static_cast<int>(si);
+    fLib.fSelDiff = static_cast<int>(pickDiff(fUiRng));
+    this->startPlay(fLib.fSelSet, fLib.fSelDiff);
   }
 
   // The logo is the menu's primary control: clicking advances a level, and at
@@ -5089,20 +5150,18 @@ private:
     }
   }
 
-
   // The background field, when there is no artwork to show: client.triangles
   // is the port of TrianglesV2, and this is the same one the pause buttons
   // and the logo use.
   void drawMenuTriangles(skia::SkCanvas *canvas) {
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     fBackgroundTriangles.setScaleAdjust(2.4f);
     fBackgroundTriangles.setAlphaRange(0.06f, 0.16f);
     fBackgroundTriangles.draw(canvas, skia::SkRect::MakeWH(sw, sh),
                               fSettings.flag("menutriangles") ? fUiDt : 0.0,
                               1.0f);
   }
-
 
   // ---- Main menu ---------------------------------------------------------
   //
@@ -5114,16 +5173,16 @@ private:
     this->ensureMenuButtons();
     this->updateMenuSpectrum();
 
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
 
-    if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
+    if (!fLib.fLibrary.empty() && fLib.fBackgroundForSet != fLib.fSelSet) {
       // setFor() is asynchronous: only mark the background as up to date once
       // the set has actually arrived, otherwise the first frame consumes the
       // request and the artwork never appears.
-      if (auto set = this->setFor(fSelSet)) {
-        fBackgroundForSet = fSelSet;
-        this->requestBackground(fSelSet, set);
+      if (auto set = this->setFor(fLib.fSelSet)) {
+        fLib.fBackgroundForSet = fLib.fSelSet;
+        this->requestBackground(fLib.fSelSet, set);
       }
     }
     const float dimTarget = fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
@@ -5136,7 +5195,7 @@ private:
     // counting as a change, or this fires on every frame for ever.
     if (std::abs(fMenuDim - fDrawnMenuDim) > 0.001f) {
       this->damageAll("menu dim");
-    } else if (!fView.hasBackground() && fLibrary.empty() &&
+    } else if (!fView.hasBackground() && fLib.fLibrary.empty() &&
                fSettings.flag("menutriangles")) {
       this->damageAll("triangle background, drifting");
     }
@@ -5169,10 +5228,9 @@ private:
     const float leftW = static_cast<float>(leftCount) * (btnW + btnGap);
     const float groupW = leftW + 2.0f * logoR + 28.0f * uiScale + rightW;
 
-    const float targetLogoX =
-        fMenuState == MenuState::kInitial
-            ? sw * 0.5f
-            : (sw - groupW) * 0.5f + leftW + logoR;
+    const float targetLogoX = fMenuState == MenuState::kInitial
+                                  ? sw * 0.5f
+                                  : (sw - groupW) * 0.5f + leftW + logoR;
     const float targetLogoY =
         sh * (fMenuState == MenuState::kInitial ? 0.46f : 0.5f);
     const float targetScale = fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
@@ -5214,7 +5272,7 @@ private:
       }
       b.fRect = rect;
 
-      const bool hovered = visible && rect.contains(fMouseX, fMouseY);
+      const bool hovered = visible && rect.contains(fWin.fMouseX, fWin.fMouseY);
       fMenu.easeHover(i, hovered ? 1.0f : 0.0f, fUiDt);
     }
 
@@ -5225,7 +5283,7 @@ private:
     fMenuMoving = std::abs(fMenuDim - dimTarget) > kMoving ||
                   fLogo.moving(this->logoCtx());
 
-    fMenu.setPointer(fMouseX, fMouseY);
+    fMenu.setPointer(fWin.fMouseX, fWin.fMouseY);
 
     // How far the bars actually reach this frame. A flat guess of three
     // quarters of the logo's width was covering 40% of the screen on its own,
@@ -5268,8 +5326,8 @@ private:
   // once the buttons are out. There is no triangle overlay over artwork;
   // triangles are only the fallback background when no art exists at all.
   void drawMenuBackground(skia::SkCanvas *canvas) {
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     if (fView.hasBackground()) {
       fView.drawBackground(this->gameplayCtx(canvas), canvas);
       if (fMenuDim < 0.999f) {
@@ -5278,7 +5336,7 @@ private:
             static_cast<std::uint8_t>((1.0f - fMenuDim) * 255.0f), 0, 0, 0));
         canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
       }
-    } else if (fLibrary.empty()) {
+    } else if (fLib.fLibrary.empty()) {
       // Only with no beatmaps at all does lazer's default (triangle)
       // background show; while artwork is still loading, stay dark.
       canvas->clear(skia::colorSetARGB(255, 32, 24, 44));
@@ -5462,7 +5520,7 @@ private:
   }
 
   void scrollSettings(float delta) {
-    fSettingsPanel.scroll(delta, static_cast<float>(fScreenH));
+    fSettingsPanel.scroll(delta, static_cast<float>(fWin.fScreenH));
   }
 
   void applyAudioSettings() {
@@ -5497,14 +5555,16 @@ private:
 
   void sortLibraryByStars() {
     std::string selected;
-    if (fSelSet >= 0 && fSelSet < static_cast<int>(fLibrary.size())) {
-      const auto &infos = this->infosFor(fSelSet);
-      if (fSelDiff >= 0 && fSelDiff < static_cast<int>(infos.size())) {
-        selected = infos[static_cast<std::size_t>(fSelDiff)].fFilename;
+    if (fLib.fSelSet >= 0 &&
+        fLib.fSelSet < static_cast<int>(fLib.fLibrary.size())) {
+      const auto &infos = this->infosFor(fLib.fSelSet);
+      if (fLib.fSelDiff >= 0 &&
+          fLib.fSelDiff < static_cast<int>(infos.size())) {
+        selected = infos[static_cast<std::size_t>(fLib.fSelDiff)].fFilename;
       }
     }
-    for (std::size_t i = 0; i < fLibrary.size(); ++i) {
-      auto &entry = fLibrary[i];
+    for (std::size_t i = 0; i < fLib.fLibrary.size(); ++i) {
+      auto &entry = fLib.fLibrary[i];
       std::ranges::stable_sort(entry.fInfos, {},
                                [this](const osu::BeatmapInfo &info) {
                                  return this->shownStars(info);
@@ -5516,12 +5576,12 @@ private:
         this->adoptCachedStars(static_cast<int>(i), *entry.fLoaded);
       }
     }
-    if (!selected.empty() && fSelSet >= 0 &&
-        fSelSet < static_cast<int>(fLibrary.size())) {
-      const auto &infos = this->infosFor(fSelSet);
+    if (!selected.empty() && fLib.fSelSet >= 0 &&
+        fLib.fSelSet < static_cast<int>(fLib.fLibrary.size())) {
+      const auto &infos = this->infosFor(fLib.fSelSet);
       for (std::size_t i = 0; i < infos.size(); ++i) {
         if (infos[i].fFilename == selected) {
-          fSelDiff = static_cast<int>(i);
+          fLib.fSelDiff = static_cast<int>(i);
           break;
         }
       }
@@ -5565,8 +5625,9 @@ private:
 
   void drawModSelect(skia::SkCanvas *canvas) {
     const auto entries = this->modEntries();
-    fModSelect.draw(canvas, fFont, entries, fMods,
-                    {fScreenW, fScreenH, fMouseX, fMouseY, fUiDt});
+    fModSelect.draw(
+        canvas, fFont, entries, fMods,
+        {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX, fWin.fMouseY, fUiDt});
   }
 
   bool modClick(float x, float y) {
@@ -5575,7 +5636,8 @@ private:
   }
 
   void drawExportDialog(skia::SkCanvas *canvas) {
-    fExportDialog.draw(canvas, fFont, fScreenW, fScreenH, fMouseX, fMouseY);
+    fExportDialog.draw(canvas, fFont, fWin.fScreenW, fWin.fScreenH,
+                       fWin.fMouseX, fWin.fMouseY);
   }
 
   bool exportClick(float x, float y) {
@@ -5605,7 +5667,7 @@ private:
         std::make_shared<client::VideoExporter>();
     client::VideoOptions fOpts;
     skia::Sp<skia::SkSurface> fFrame.fSurface; // raster: no GL on this thread
-    osu::Beatmap fMap;
+    osu::Beatmap fPlay.fMap;
     osu::ComboInfo fCombo;
     std::vector<osu::InputEvent> fEvents;
     osu::ModSet fMods = osu::mod::kNone;
@@ -5639,12 +5701,12 @@ private:
     if (fExportJob) {
       return; // one at a time
     }
-    if (!fMap || fRecordedEvents.empty()) {
+    if (!fPlay.fMap || fPlay.fRecordedEvents.empty()) {
       this->exportFailed("nothing to export: no play recorded for this map");
       return;
     }
-    const auto preset = client::kVideoPresets[static_cast<std::size_t>(
-        fExportDialog.preset())];
+    const auto preset =
+        client::kVideoPresets[static_cast<std::size_t>(fExportDialog.preset())];
     // A size typed into the dialog wins over the one picked from the row.
     const auto [typedWidth, typedHeight] = fExportDialog.customSize();
     auto job = std::make_unique<ExportJob>();
@@ -5668,20 +5730,19 @@ private:
     }
     std::error_code cwdError;
     const auto here = std::filesystem::current_path(cwdError);
-    job->fOpts.fOutput =
-        (cwdError ? fMapsDir.parent_path() : here) /
-        std::format("{}-{}x{}.mp4", safe, job->fOpts.fWidth,
-                    job->fOpts.fHeight);
+    job->fOpts.fOutput = (cwdError ? fMapsDir.parent_path() : here) /
+                         std::format("{}-{}x{}.mp4", safe, job->fOpts.fWidth,
+                                     job->fOpts.fHeight);
 
     // Written out before the encoder is started: it is told about its inputs
     // once, when it is launched, and an audio path handed over afterwards
     // reached nobody -- which is why the videos had no sound.
-    if (!fMap->fMeta.fAudioFilename.empty()) {
-      const auto bytes = fSet.findFile(fMap->fMeta.fAudioFilename);
+    if (!fPlay.fMap->fMeta.fAudioFilename.empty()) {
+      const auto bytes = fSet.findFile(fPlay.fMap->fMeta.fAudioFilename);
       if (!bytes.empty()) {
         std::error_code ec;
         const auto audioPath = std::filesystem::temp_directory_path(ec) /
-                               fMap->fMeta.fAudioFilename;
+                               fPlay.fMap->fMeta.fAudioFilename;
         std::ofstream out(audioPath, std::ios::binary);
         out.write(reinterpret_cast<const char *>(bytes.data()),
                   static_cast<std::streamsize>(bytes.size()));
@@ -5689,8 +5750,7 @@ private:
         job->fOpts.fAudio = audioPath;
       }
     }
-    std::println(std::cerr, "[export] writing {}",
-                 job->fOpts.fOutput.string());
+    std::println(std::cerr, "[export] writing {}", job->fOpts.fOutput.string());
 
     if (!job->fExporter->begin(job->fOpts)) {
       this->exportFailed(job->fExporter->error());
@@ -5718,13 +5778,13 @@ private:
                             static_cast<float>(osu::kPlayfieldWidth),
                         static_cast<float>(job->fOpts.fHeight) /
                             static_cast<float>(osu::kPlayfieldHeight));
-    fSkin.precomputeSliderBodies(*fMap, fComboInfo, exportScale,
+    fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, exportScale,
                                  fContext.get());
     fSkin.flattenBodiesToRaster(fContext.get());
 
-    job->fMap = *fMap;
+    job->fMap = *fPlay.fMap;
     job->fCombo = fComboInfo;
-    job->fEvents = fRecordedEvents;
+    job->fEvents = fPlay.fRecordedEvents;
     job->fMods = fMods;
     job->fSkin = &fSkin;
     job->fFont = fFont;
@@ -5738,7 +5798,7 @@ private:
     job->fDim = fSettings.value("dim");
     job->fNoGlow = fNoGlow;
     job->fHitLighting = fSettings.flag("hitlighting");
-    job->fAttributes = fPlayAttributes;
+    job->fAttributes = fPlay.fPlayAttributes;
     for (const auto &info : fSet.fBeatmaps) {
       if (info.fMeta.fBackground.empty()) {
         continue;
@@ -5769,14 +5829,12 @@ private:
                             static_cast<float>(osu::kPlayfieldWidth),
                         static_cast<float>(height) /
                             static_cast<float>(osu::kPlayfieldHeight));
-    const float offsetX =
-        (static_cast<float>(width) -
-         static_cast<float>(osu::kPlayfieldWidth) * scale) *
-        0.5f;
-    const float offsetY =
-        (static_cast<float>(height) -
-         static_cast<float>(osu::kPlayfieldHeight) * scale) *
-        0.5f;
+    const float offsetX = (static_cast<float>(width) -
+                           static_cast<float>(osu::kPlayfieldWidth) * scale) *
+                          0.5f;
+    const float offsetY = (static_cast<float>(height) -
+                           static_cast<float>(osu::kPlayfieldHeight) * scale) *
+                          0.5f;
 
     client::GameplayView::Ctx ctx;
     ctx.fMap = &job.fMap;
@@ -5799,9 +5857,8 @@ private:
     osu::Engine engine(job.fMap, job.fMods);
     const double end = job.fMap.lastObjectEndTime() + 1500.0;
     const double step = 1000.0 / static_cast<double>(job.fOpts.fFps);
-    const skia::SkImageInfo info =
-        skia::SkImageInfo::Make(width, height, skia::kRGBA_8888_SkColorType,
-                                skia::kPremul_SkAlphaType);
+    const skia::SkImageInfo info = skia::SkImageInfo::Make(
+        width, height, skia::kRGBA_8888_SkColorType, skia::kPremul_SkAlphaType);
     const std::size_t rowBytes = static_cast<std::size_t>(width) * 4u;
     std::vector<std::uint8_t> pixels(rowBytes *
                                      static_cast<std::size_t>(height));
@@ -5876,8 +5933,8 @@ private:
     }
 
     job.fOk = job.fExporter->finish();
-    job.fMessage = job.fOk ? job.fOpts.fOutput.string()
-                           : job.fExporter->error();
+    job.fMessage =
+        job.fOk ? job.fOpts.fOutput.string() : job.fExporter->error();
     job.fFinished.store(true, std::memory_order_release);
   }
 
@@ -5889,10 +5946,9 @@ private:
     }
     ExportJob &job = *fExportJob;
     if (!job.fFinished.load(std::memory_order_acquire)) {
-      fExportDialog.setStatus(
-          std::format("rendering {}%   {}x{}",
-                      job.fPercent.load(std::memory_order_relaxed),
-                      job.fOpts.fWidth, job.fOpts.fHeight));
+      fExportDialog.setStatus(std::format(
+          "rendering {}%   {}x{}", job.fPercent.load(std::memory_order_relaxed),
+          job.fOpts.fWidth, job.fOpts.fHeight));
       return;
     }
     if (job.fThread.joinable()) {
@@ -5930,7 +5986,7 @@ private:
     if (!fReplayListOpen) {
       return;
     }
-    if (this->difficultyMd5(fSelSet, fSelDiff) != fReplayFilter) {
+    if (this->difficultyMd5(fLib.fSelSet, fLib.fSelDiff) != fReplayFilter) {
       this->scanReplays();
     }
   }
@@ -5952,7 +6008,7 @@ private:
     const std::string wanted =
         fState == State::kResults || fState == State::kPlaying
             ? this->beatmapMd5()
-            : this->difficultyMd5(fSelSet, fSelDiff);
+            : this->difficultyMd5(fLib.fSelSet, fLib.fSelDiff);
     fReplayFilter = wanted;
     fReplays.clear();
     for (const auto *e : fReplayIndex.forBeatmap(wanted)) {
@@ -5993,8 +6049,8 @@ private:
       return;
     }
     const skiff::paint::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(220, 8, 6, 12));
     p.textCentered("replays", sw * 0.5f, 62.0f, 26.0f, skia::kWhite);
@@ -6028,18 +6084,19 @@ private:
     if (replay == nullptr) {
       return;
     }
-    auto set = this->setForBlocking(fSelSet);
-    if (!set || fSelDiff < 0 ||
-        fSelDiff >= static_cast<int>(set->fBeatmaps.size())) {
+    auto set = this->setForBlocking(fLib.fSelSet);
+    if (!set || fLib.fSelDiff < 0 ||
+        fLib.fSelDiff >= static_cast<int>(set->fBeatmaps.size())) {
       return;
     }
     fSet = *set;
-    fPlayingSet = fSelSet;
-    fPlayingDiff = fSelDiff;
+    fPlayingSet = fLib.fSelSet;
+    fPlayingDiff = fLib.fSelDiff;
     fReplayPath = replay->fPath;
     fAutoplay = true;
     this->resetGameplayState();
-    this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(fSelDiff)]);
+    this->startGameplay(
+        fSet.fBeatmaps[static_cast<std::size_t>(fLib.fSelDiff)]);
     fAudio.stop();
     fMenuMusicForSet = -1; // the menu loop restarts once the export is done
     fReplayPath.clear();
@@ -6053,13 +6110,12 @@ private:
     return fReplayListOpen || fState == State::kResults;
   }
 
-
   void watchReplay(const std::filesystem::path &path) {
     // On the results screen the strip belongs to the map just played, which is
     // not necessarily the one selected in the carousel.
     const bool results = fState == State::kResults;
-    const int setIdx = results ? fPlayingSet : fSelSet;
-    const int diffIdx = results ? fPlayingDiff : fSelDiff;
+    const int setIdx = results ? fPlayingSet : fLib.fSelSet;
+    const int diffIdx = results ? fPlayingDiff : fLib.fSelDiff;
     if (setIdx < 0) {
       return;
     }
@@ -6089,21 +6145,21 @@ private:
     this->refreshReplayFilter();
     this->rebuildVisible();
 
-    if (!fLibrary.empty() && fBackgroundForSet != fSelSet) {
+    if (!fLib.fLibrary.empty() && fLib.fBackgroundForSet != fLib.fSelSet) {
       // setFor() is asynchronous: only mark the background as up to date once
       // the set has actually arrived, otherwise the first frame consumes the
       // request and the artwork never appears.
-      if (auto set = this->setFor(fSelSet)) {
-        fBackgroundForSet = fSelSet;
-        this->requestBackground(fSelSet, set);
+      if (auto set = this->setFor(fLib.fSelSet)) {
+        fLib.fBackgroundForSet = fLib.fSelSet;
+        this->requestBackground(fLib.fSelSet, set);
       }
     }
 
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
 
-    if (fVisible.empty() != fDrawnEmpty) {
-      fDrawnEmpty = fVisible.empty();
+    if (fLib.fVisible.empty() != fDrawnEmpty) {
+      fDrawnEmpty = fLib.fVisible.empty();
       this->damageAll("song select has nothing to list");
     }
 
@@ -6111,14 +6167,14 @@ private:
     // is open. Data, not drawables -- the carousel makes a panel only for
     // what is actually within the viewport.
     fRows.clear();
-    for (const int si : fVisible) {
+    for (const int si : fLib.fVisible) {
       fRows.push_back({si, -1});
-      if (si != fSelSet) {
+      if (si != fLib.fSelSet) {
         continue;
       }
       const auto &infos = this->infosFor(si);
-      fSelDiff = std::clamp(fSelDiff, 0,
-                            std::max(0, static_cast<int>(infos.size()) - 1));
+      fLib.fSelDiff = std::clamp(
+          fLib.fSelDiff, 0, std::max(0, static_cast<int>(infos.size()) - 1));
       for (int di = 0; di < static_cast<int>(infos.size()); ++di) {
         fRows.push_back({si, di});
       }
@@ -6129,13 +6185,13 @@ private:
     ctx.fHeight = sh;
     ctx.fTop = client::FilterControl::kHeight + 8.0f;
     ctx.fBottom = sh - 62.0f;
-    ctx.fMouseX = fMouseX;
-    ctx.fMouseY = fMouseY;
+    ctx.fMouseX = fWin.fMouseX;
+    ctx.fMouseY = fWin.fMouseY;
     ctx.fNowMs = wallMs();
     ctx.fDtMs = fUiDt;
     ctx.fRows = fRows;
-    ctx.fSelectedSet = fSelSet;
-    ctx.fSelectedDiff = fSelDiff;
+    ctx.fSelectedSet = fLib.fSelSet;
+    ctx.fSelectedDiff = fLib.fSelDiff;
     fCarousel.update(ctx);
     this->damage(fCarousel.takeDamage());
 
@@ -6143,22 +6199,22 @@ private:
     // rows of an open list -- so it is repainted when which of them is under
     // the pointer changes, rather than for as long as the pointer is inside
     // it. The handles of the difficulty slider move while dragged.
-    const int hotFilter = fFilter.hotElement(fMouseX, fMouseY);
+    const int hotFilter = fFilter.hotElement(fWin.fMouseX, fWin.fMouseY);
     const std::int64_t filterState = fFilter.stateKey();
     if (hotFilter != fHotFilter || filterState != fFilterState ||
         fFilter.dragging()) {
       fHotFilter = hotFilter;
       fFilterState = filterState;
-      this->damage(client::FilterControl::bounds(fScreenW));
+      this->damage(client::FilterControl::bounds(fWin.fScreenW));
     }
     // The caret and the set count are inside the search box, which is what
     // gets repainted for them -- and the caret only exists while there is
     // text to put it after, so an empty filter asks for nothing at all.
     const bool caret = fFilter.caretShown(wallMs());
-    if (caret != fFilterCaret || fVisible.size() != fDrawnVisibleCount ||
+    if (caret != fFilterCaret || fLib.fVisible.size() != fDrawnVisibleCount ||
         fFilter.text() != fDrawnFilterText) {
       fFilterCaret = caret;
-      fDrawnVisibleCount = fVisible.size();
+      fDrawnVisibleCount = fLib.fVisible.size();
       fDrawnFilterText = fFilter.text();
       this->damage(fFilter.searchBox());
     }
@@ -6185,8 +6241,8 @@ private:
     // The wedge is the selection written out: it changes when the selection
     // does, or when a mod changes what the numbers on it say.
     const std::int64_t wedgeKey =
-        (static_cast<std::int64_t>(fSelSet) << 24) ^
-        (static_cast<std::int64_t>(fSelDiff) << 8) ^
+        (static_cast<std::int64_t>(fLib.fSelSet) << 24) ^
+        (static_cast<std::int64_t>(fLib.fSelDiff) << 8) ^
         static_cast<std::int64_t>(static_cast<std::uint32_t>(fMods));
     if (wedgeKey != fWedgeKey) {
       fWedgeKey = wedgeKey;
@@ -6201,8 +6257,8 @@ private:
     if (!fLibraryLoaded) {
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
       this->drawTextCentered(canvas, "Syncing local storage...",
-                             static_cast<float>(fScreenW) * 0.5f,
-                             static_cast<float>(fScreenH) * 0.5f, 24.0f,
+                             static_cast<float>(fWin.fScreenW) * 0.5f,
+                             static_cast<float>(fWin.fScreenH) * 0.5f, 24.0f,
                              skia::kWhite, 0.8f);
       this->present();
       return;
@@ -6210,10 +6266,10 @@ private:
 #endif
     this->drawScreenBackground(canvas);
 
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
 
-    if (fVisible.empty()) {
+    if (fLib.fVisible.empty()) {
       const bool filtered = !fFilter.text().empty();
       this->drawTextCentered(
           canvas, filtered ? "No maps match the filter" : "No beatmaps yet",
@@ -6231,12 +6287,12 @@ private:
     }
 
     // ---- Left: the info wedge (lazer's BeatmapTitleWedge area).
-    const auto &selInfos = this->infosFor(fSelSet);
+    const auto &selInfos = this->infosFor(fLib.fSelSet);
     if (!selInfos.empty()) {
-      this->drawInfoWedge(canvas, selInfos,
-                          selInfos[static_cast<std::size_t>(std::clamp(
-                              fSelDiff, 0,
-                              static_cast<int>(selInfos.size()) - 1))]);
+      this->drawInfoWedge(
+          canvas, selInfos,
+          selInfos[static_cast<std::size_t>(std::clamp(
+              fLib.fSelDiff, 0, static_cast<int>(selInfos.size()) - 1))]);
     }
 
     // ---- Right: the carousel, which masks itself to its own viewport.
@@ -6254,8 +6310,8 @@ private:
   // view it filters and reacts when the criteria change.
 
   void drawFilterControl(skia::SkCanvas *canvas) {
-    fFilter.draw(canvas, fFont, fScreenW, fMouseX, fMouseY, fVisible.size(),
-                 wallMs());
+    fFilter.draw(canvas, fFont, fWin.fScreenW, fWin.fMouseX, fWin.fMouseY,
+                 fLib.fVisible.size(), wallMs());
   }
 
   bool filterClick(float x, float y, bool pressed) {
@@ -6289,7 +6345,6 @@ private:
     this->rebuildVisible();
   }
 
-
   // Set panels carry the beatmap's cover art behind the text, as lazer's
   // PanelSetBackground does. The image is pulled from the archive the first
   // time the panel is drawn and kept with the entry.
@@ -6308,8 +6363,7 @@ private:
       const float iw = static_cast<float>(art->width());
       const float ih = static_cast<float>(art->height());
       if (iw > 0.0f && ih > 0.0f) {
-        const float scale =
-            std::max(rect.width() / iw, rect.height() / ih);
+        const float scale = std::max(rect.width() / iw, rect.height() / ih);
         const float dw = iw * scale;
         const float dh = ih * scale;
         canvas->drawImageRect(
@@ -6336,23 +6390,20 @@ private:
     }
 
     const float pad = 18.0f;
-    const std::string title =
-        infos.empty() ? "(empty)"
-        : infos.front().fMeta.fTitleUnicode.empty()
-            ? infos.front().fMeta.fTitle
-            : infos.front().fMeta.fTitleUnicode;
-    const std::string artist =
-        infos.empty() ? std::string{}
-        : infos.front().fMeta.fArtistUnicode.empty()
-            ? infos.front().fMeta.fArtist
-            : infos.front().fMeta.fArtistUnicode;
+    const std::string title = infos.empty() ? "(empty)"
+                              : infos.front().fMeta.fTitleUnicode.empty()
+                                  ? infos.front().fMeta.fTitle
+                                  : infos.front().fMeta.fTitleUnicode;
+    const std::string artist = infos.empty() ? std::string{}
+                               : infos.front().fMeta.fArtistUnicode.empty()
+                                   ? infos.front().fMeta.fArtist
+                                   : infos.front().fMeta.fArtistUnicode;
     this->drawTextClipped(canvas, title, rect.fLeft + pad,
                           rect.fTop + rect.height() * 0.44f,
                           rect.width() - pad * 2 - 90.0f, 19.0f, skia::kWhite);
-    this->drawTextClipped(canvas, artist, rect.fLeft + pad,
-                          rect.fTop + rect.height() * 0.72f,
-                          rect.width() - pad * 2 - 90.0f, 14.0f, skia::kWhite,
-                          0.75f);
+    this->drawTextClipped(
+        canvas, artist, rect.fLeft + pad, rect.fTop + rect.height() * 0.72f,
+        rect.width() - pad * 2 - 90.0f, 14.0f, skia::kWhite, 0.75f);
 
     // Difficulty spread dots (PanelBeatmapSet.SpreadDisplay).
     float dotX = rect.fRight - pad;
@@ -6376,7 +6427,7 @@ private:
     const float h = rect.height();
     const float shear = 0.8f * h; // horizontal displacement over the height
     struct Step {
-      float fFrom, fTo;    // fractions of width
+      float fFrom, fTo; // fractions of width
       float fAlphaL, fAlphaR;
     };
     const Step steps[] = {
@@ -6398,8 +6449,8 @@ private:
       // Approximate the per-box horizontal gradient with its mean alpha; the
       // steps are narrow enough that the banding is not visible.
       const float alpha = (st.fAlphaL + st.fAlphaR) * 0.5f;
-      p.setColor(skia::colorSetARGB(
-          static_cast<std::uint8_t>(alpha * 255.0f), 0, 0, 0));
+      p.setColor(skia::colorSetARGB(static_cast<std::uint8_t>(alpha * 255.0f),
+                                    0, 0, 0));
       canvas->drawPath(quad.detach(), p);
     }
   }
@@ -6407,10 +6458,10 @@ private:
   // Cover art for a set panel: decoded on the loader thread and cached with
   // the entry, so every visible panel gets one without stalling a frame.
   [[nodiscard]] skia::Sp<skia::SkImage> panelArt(int setIndex) {
-    if (setIndex < 0 || setIndex >= static_cast<int>(fLibrary.size())) {
+    if (setIndex < 0 || setIndex >= static_cast<int>(fLib.fLibrary.size())) {
       return nullptr;
     }
-    auto &entry = fLibrary[static_cast<std::size_t>(setIndex)];
+    auto &entry = fLib.fLibrary[static_cast<std::size_t>(setIndex)];
     if (entry.fPanelArt || entry.fPanelArtTried) {
       return entry.fPanelArt;
     }
@@ -6457,11 +6508,11 @@ private:
           }
         },
         [this, setIndex, path, image] {
-          if (setIndex >= static_cast<int>(fLibrary.size()) ||
-              fLibrary[static_cast<std::size_t>(setIndex)].fPath != path) {
+          if (setIndex >= static_cast<int>(fLib.fLibrary.size()) ||
+              fLib.fLibrary[static_cast<std::size_t>(setIndex)].fPath != path) {
             return;
           }
-          auto &e = fLibrary[static_cast<std::size_t>(setIndex)];
+          auto &e = fLib.fLibrary[static_cast<std::size_t>(setIndex)];
           e.fPanelArt = *image;
           e.fPanelArtTried = true;
         });
@@ -6486,12 +6537,12 @@ private:
     if (scale >= 1.0f) {
       return src;
     }
-    const int h = std::max(1, static_cast<int>(
-                                  static_cast<float>(src->height()) * scale));
+    const int h = std::max(
+        1, static_cast<int>(static_cast<float>(src->height()) * scale));
     skia::SkBitmap bmp;
-    if (!bmp.tryAllocPixels(skia::SkImageInfo::Make(
-            kWidth, h, skia::kRGBA_8888_SkColorType,
-            skia::kPremul_SkAlphaType))) {
+    if (!bmp.tryAllocPixels(
+            skia::SkImageInfo::Make(kWidth, h, skia::kRGBA_8888_SkColorType,
+                                    skia::kPremul_SkAlphaType))) {
       return src;
     }
     skia::SkCanvas canvas(bmp);
@@ -6536,10 +6587,9 @@ private:
     const skia::SkRect badge = skia::SkRect::MakeXYWH(
         rect.fLeft + pad, rect.centerY() - 11.0f, 62.0f, 22.0f);
     this->fillRounded(canvas, badge, 11.0f, starColor(this->shownStars(info)));
-    this->drawTextCentered(canvas,
-                           std::format("{:.2f}", this->shownStars(info)),
-                           badge.centerX(), badge.centerY() + 5.0f, 13.0f,
-                           skia::colorSetARGB(255, 20, 16, 26));
+    this->drawTextCentered(
+        canvas, std::format("{:.2f}", this->shownStars(info)), badge.centerX(),
+        badge.centerY() + 5.0f, 13.0f, skia::colorSetARGB(255, 20, 16, 26));
     this->drawTextClipped(canvas, info.fMeta.fVersion, badge.fRight + 14.0f,
                           rect.centerY() + 5.0f,
                           rect.width() - badge.width() - pad * 3, 15.0f,
@@ -6550,8 +6600,8 @@ private:
   void drawInfoWedge(skia::SkCanvas *canvas,
                      const std::vector<osu::BeatmapInfo> &infos,
                      const osu::BeatmapInfo &info) {
-    const float sh = static_cast<float>(fScreenH);
-    const float w = std::min(560.0f, static_cast<float>(fScreenW) * 0.44f);
+    const float sh = static_cast<float>(fWin.fScreenH);
+    const float w = std::min(560.0f, static_cast<float>(fWin.fScreenW) * 0.44f);
     const float top = 32.0f;
     const float h = 168.0f;
     const float shear = 22.0f; // lazer's wedges are sheared parallelograms
@@ -6577,13 +6627,12 @@ private:
         meta.fArtistUnicode.empty() ? meta.fArtist : meta.fArtistUnicode, pad,
         top + 76.0f, w - pad * 2, 18.0f, skia::kWhite, 0.8f);
     this->drawTextClipped(canvas,
-                          std::format("mapped by {}", info.fMeta.fCreator),
-                          pad, top + 100.0f, w - pad * 2, 15.0f, kAccent2, 0.9f);
+                          std::format("mapped by {}", info.fMeta.fCreator), pad,
+                          top + 100.0f, w - pad * 2, 15.0f, kAccent2, 0.9f);
     this->drawTextClipped(
         canvas,
         std::format("{}   {:.2f}*   CS {:.1f}  AR {:.1f}  OD {:.1f}  HP {:.1f}",
-                    info.fMeta.fVersion, this->shownStars(info),
-                    info.fDiff.fCs,
+                    info.fMeta.fVersion, this->shownStars(info), info.fDiff.fCs,
                     info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp),
         pad, top + 128.0f, w - pad * 2, 15.0f,
         starColor(this->shownStars(info)));
@@ -6600,7 +6649,7 @@ private:
     const float dotY = top + h + 22.0f;
     for (std::size_t i = 0; i < infos.size(); ++i) {
       const auto &d = infos[i];
-      const bool isSelected = static_cast<int>(i) == fSelDiff;
+      const bool isSelected = static_cast<int>(i) == fLib.fSelDiff;
       skia::SkPaint dot;
       dot.setAntiAlias(true);
       dot.setColor(starColor(this->shownStars(d)));
@@ -6625,18 +6674,19 @@ private:
   // button sits on the left, as ScreenBackButton does.
   void drawSelectFooter(skia::SkCanvas *canvas) {
     const skiff::paint::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     constexpr float kFooterHeight = 60.0f;
-    p.fillRect(skia::SkRect::MakeXYWH(0.0f, sh - kFooterHeight, sw,
-                                      kFooterHeight),
-               client::palette::kBackground5);
+    p.fillRect(
+        skia::SkRect::MakeXYWH(0.0f, sh - kFooterHeight, sw, kFooterHeight),
+        client::palette::kBackground5);
 
     // Back button, bottom-left.
     fBackChip = skia::SkRect::MakeXYWH(24.0f, sh - 46.0f, 100.0f, 34.0f);
-    const bool backHover = fBackChip.contains(fMouseX, fMouseY);
+    const bool backHover = fBackChip.contains(fWin.fMouseX, fWin.fMouseY);
     p.fillRounded(fBackChip, 17.0f,
-                  backHover ? client::palette::kCardSel : client::palette::kCardBg);
+                  backHover ? client::palette::kCardSel
+                            : client::palette::kCardBg);
     p.textCentered("back", fBackChip.centerX(), fBackChip.centerY() + 5.0f,
                    14.0f, skia::kWhite, 0.9f);
 
@@ -6654,12 +6704,12 @@ private:
     const float gap = 10.0f;
     float x = (sw - (bw * 3.0f + gap * 2.0f)) * 0.5f;
     for (const auto &b : btns) {
-      const skia::SkRect r =
-          skia::SkRect::MakeXYWH(x, sh - 48.0f, bw, 36.0f);
+      const skia::SkRect r = skia::SkRect::MakeXYWH(x, sh - 48.0f, bw, 36.0f);
       *b.fHit = r;
-      const bool hover = r.contains(fMouseX, fMouseY);
+      const bool hover = r.contains(fWin.fMouseX, fWin.fMouseY);
       p.fillRounded(r, 18.0f,
-                    hover ? client::palette::kCardSel : client::palette::kCardBg);
+                    hover ? client::palette::kCardSel
+                          : client::palette::kCardBg);
       p.strokeRounded(r, 18.0f, b.fColor, hover ? 2.0f : 1.0f);
       p.textCentered(b.fLabel, r.centerX(), r.centerY() + 5.0f, 14.0f,
                      hover ? b.fColor : skia::kWhite);
@@ -6691,7 +6741,7 @@ private:
           box.fLeft + 6.0f, box.fTop + 6.0f + static_cast<float>(i) * itemH,
           w - 12.0f, itemH);
       fOptionHits.push_back(r);
-      if (r.contains(fMouseX, fMouseY)) {
+      if (r.contains(fWin.fMouseX, fWin.fMouseY)) {
         p.fillRounded(r, 8.0f, client::palette::kCardSel);
       }
       p.textClipped(kItems[i], r.fLeft + 14.0f, r.centerY() + 5.0f,
@@ -6707,11 +6757,21 @@ private:
         }
         fOptionsOpen = false;
         switch (i) {
-        case 0: this->importOsz(); break;
-        case 1: this->openDownloads(); break;
-        case 2: this->toggleReplayList(); break;
-        case 3: this->askDeleteBeatmap(); break;
-        default: this->toggleSettings(); break;
+        case 0:
+          this->importOsz();
+          break;
+        case 1:
+          this->openDownloads();
+          break;
+        case 2:
+          this->toggleReplayList();
+          break;
+        case 3:
+          this->askDeleteBeatmap();
+          break;
+        default:
+          this->toggleSettings();
+          break;
         }
         return true;
       }
@@ -6738,10 +6798,11 @@ private:
 
   // lazer never deletes a beatmap without asking, and neither does this.
   void askDeleteBeatmap() {
-    if (fSelSet < 0 || fSelSet >= static_cast<int>(fLibrary.size())) {
+    if (fLib.fSelSet < 0 ||
+        fLib.fSelSet >= static_cast<int>(fLib.fLibrary.size())) {
       return;
     }
-    const auto &infos = this->infosFor(fSelSet);
+    const auto &infos = this->infosFor(fLib.fSelSet);
     if (infos.empty()) {
       return;
     }
@@ -6790,8 +6851,8 @@ private:
 
     const auto line = [&](std::string text, float size, skia::SkColor colour,
                           bool bold, float alpha) {
-      auto node = std::make_unique<nodes::Text>(std::move(text), size, colour,
-                                                bold);
+      auto node =
+          std::make_unique<nodes::Text>(std::move(text), size, colour, bold);
       node->fAnchor = scene::Anchor::kTopCentre;
       node->fOrigin = scene::Anchor::kTopCentre;
       node->setMaxWidth(520.0f);
@@ -6800,9 +6861,9 @@ private:
     };
     column->add(line("Confirm deletion of", 16.0f, skia::kWhite, false, 0.75f));
     column->add(line(title, 20.0f, skia::kWhite, true, 1.0f));
-    column->add(line(std::format("{} difficulties will be removed from disk",
-                                 infos.size()),
-                     13.0f, skia::kWhite, false, 0.6f));
+    column->add(line(
+        std::format("{} difficulties will be removed from disk", infos.size()),
+        13.0f, skia::kWhite, false, 0.6f));
     panel->add(std::move(column));
 
     auto buttons = std::make_unique<nodes::FillFlow>(
@@ -6819,10 +6880,11 @@ private:
                                       fConfirmScene.reset();
                                       this->deleteSelectedBeatmap();
                                     }));
-    buttons->add(this->dialogButton("Cancel", client::palette::kAccent2, [this] {
-      fConfirmDelete = false;
-      fConfirmScene.reset();
-    }));
+    buttons->add(
+        this->dialogButton("Cancel", client::palette::kAccent2, [this] {
+          fConfirmDelete = false;
+          fConfirmScene.reset();
+        }));
     panel->add(std::move(buttons));
 
     root->add(std::move(panel));
@@ -6846,8 +6908,8 @@ private:
     background->fCornerRadius = 10.0f;
     button->add(std::move(background));
 
-    auto text = std::make_unique<nodes::Text>(std::move(label), 15.0f, accent,
-                                              false);
+    auto text =
+        std::make_unique<nodes::Text>(std::move(label), 15.0f, accent, false);
     text->fAnchor = scene::Anchor::kCentre;
     text->fOrigin = scene::Anchor::kCentre;
     button->add(std::move(text));
@@ -6859,10 +6921,10 @@ private:
       return;
     }
     const skia::SkRect screen = skia::SkRect::MakeWH(
-        static_cast<float>(fScreenW), static_cast<float>(fScreenH));
+        static_cast<float>(fWin.fScreenW), static_cast<float>(fWin.fScreenH));
     fConfirmScene->updateTree(wallMs());
     fConfirmScene->layoutIfNeeded(screen);
-    fConfirmScene->setHover(fMouseX, fMouseY);
+    fConfirmScene->setHover(fWin.fMouseX, fWin.fMouseY);
     fConfirmScene->draw(canvas);
     this->damage(fConfirmScene->takeDamage());
   }
@@ -6877,11 +6939,12 @@ private:
 
   // Removes the archive and everything the client remembers about it.
   void deleteSelectedBeatmap() {
-    if (fSelSet < 0 || fSelSet >= static_cast<int>(fLibrary.size())) {
+    if (fLib.fSelSet < 0 ||
+        fLib.fSelSet >= static_cast<int>(fLib.fLibrary.size())) {
       return;
     }
-    const auto index = static_cast<std::size_t>(fSelSet);
-    const auto path = fLibrary[index].fPath;
+    const auto index = static_cast<std::size_t>(fLib.fSelSet);
+    const auto path = fLib.fLibrary[index].fPath;
     const std::string name =
         path.empty() ? std::string{} : path.filename().string();
 
@@ -6889,9 +6952,10 @@ private:
     // the file does.
     this->stopMenuMusic();
     fMenuMusicForSet = -1;
-    fBackgroundForSet = -1;
+    fLib.fBackgroundForSet = -1;
 
-    fLibrary.erase(fLibrary.begin() + static_cast<std::ptrdiff_t>(index));
+    fLib.fLibrary.erase(fLib.fLibrary.begin() +
+                        static_cast<std::ptrdiff_t>(index));
     if (!path.empty()) {
       std::error_code ec;
       std::filesystem::remove(path, ec);
@@ -6901,9 +6965,10 @@ private:
     }
     this->sortLibrary();
     this->rebuildVisible();
-    fSelSet = std::clamp(fSelSet, 0,
-                         std::max(0, static_cast<int>(fLibrary.size()) - 1));
-    fSelDiff = 0;
+    fLib.fSelSet =
+        std::clamp(fLib.fSelSet, 0,
+                   std::max(0, static_cast<int>(fLib.fLibrary.size()) - 1));
+    fLib.fSelDiff = 0;
     fPlayingSet = -1;
     fPlayingDiff = -1;
     this->notify(name.empty() ? "beatmap deleted"
@@ -6911,11 +6976,11 @@ private:
   }
 
   void drawBottomBar(skia::SkCanvas *canvas, const std::string &hint) {
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     this->fillRounded(canvas,
-                      skia::SkRect::MakeXYWH(0.0f, sh - 44.0f, sw, 44.0f),
-                      0.0f, kPanelBg);
+                      skia::SkRect::MakeXYWH(0.0f, sh - 44.0f, sw, 44.0f), 0.0f,
+                      kPanelBg);
     this->drawTextCentered(canvas, hint, sw * 0.5f, sh - 16.0f, 15.0f,
                            skia::kWhite, 0.75f);
   }
@@ -6932,10 +6997,10 @@ private:
     // Progress lives on the transfer handles; the view just reads a float.
     // A card whose number moved says so, which is what keeps a download from
     // being worth the whole screen on every frame of it.
-    for (std::size_t i = 0; i < fFound.size(); ++i) {
-      auto &e = fFound[i];
-      const auto it = fTransfers.find(e.fSetId);
-      if (it != fTransfers.end() && it->second) {
+    for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
+      auto &e = fLib.fFound[i];
+      const auto it = fLib.fTransfers.find(e.fSetId);
+      if (it != fLib.fTransfers.end() && it->second) {
         const float progress =
             it->second->fProgress.load(std::memory_order_relaxed);
         if (progress != e.fProgress) {
@@ -6949,24 +7014,24 @@ private:
     // starting, one finishing, an import marking everything already owned.
     // Comparing it here catches all of them, including the ones written after
     // this was, which a call at each site would not.
-    fEntryStates.resize(fFound.size(), 0xFF);
-    for (std::size_t i = 0; i < fFound.size(); ++i) {
-      const auto state = static_cast<std::uint8_t>(fFound[i].fSt);
-      if (fEntryStates[i] != state) {
-        fEntryStates[i] = state;
+    fLib.fEntryStates.resize(fLib.fFound.size(), 0xFF);
+    for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
+      const auto state = static_cast<std::uint8_t>(fLib.fFound[i].fSt);
+      if (fLib.fEntryStates[i] != state) {
+        fLib.fEntryStates[i] = state;
         fListing.entryChanged(static_cast<int>(i));
       }
     }
     client::listing::Listing::Ctx ctx;
     ctx.fFont = &fFont;
-    ctx.fWidth = static_cast<float>(fScreenW);
-    ctx.fHeight = static_cast<float>(fScreenH);
-    ctx.fMouseX = fMouseX;
-    ctx.fMouseY = fMouseY;
+    ctx.fWidth = static_cast<float>(fWin.fScreenW);
+    ctx.fHeight = static_cast<float>(fWin.fScreenH);
+    ctx.fMouseX = fWin.fMouseX;
+    ctx.fMouseY = fWin.fMouseY;
     ctx.fNowMs = wallMs();
     ctx.fDtMs = fUiDt;
-    ctx.fEntries = fFound;
-    ctx.fLoading = fSearchPending;
+    ctx.fEntries = fLib.fFound;
+    ctx.fLoading = fLib.fSearchPending;
     if (fPreviewId >= 0 && !fPreviewPending && !fPreview.playing()) {
       fPreviewId = -1; // the clip ran out; the button goes back to play
       this->restoreMusic();
@@ -6976,17 +7041,17 @@ private:
     this->damage(fListing.takeDamage());
     if (fSetPage.open()) {
       const std::size_t idx = this->indexOfSet(fSetPage.setId());
-      if (idx >= fFound.size()) {
+      if (idx >= fLib.fFound.size()) {
         fSetPage.close(); // the set fell out of the results
         this->damageAll("beatmap page closed");
       }
       client::setpage::SetPage::Ctx page;
-      page.fEntry = idx < fFound.size() ? &fFound[idx] : nullptr;
+      page.fEntry = idx < fLib.fFound.size() ? &fLib.fFound[idx] : nullptr;
       page.fFont = &fFont;
       page.fWidth = ctx.fWidth;
       page.fHeight = ctx.fHeight;
-      page.fMouseX = fMouseX;
-      page.fMouseY = fMouseY;
+      page.fMouseX = fWin.fMouseX;
+      page.fMouseY = fWin.fMouseY;
       page.fNowMs = wallMs();
       page.fPreviewPlaying = fPreviewId == fSetPage.setId();
       page.fPreviewProgress = this->previewProgress();
@@ -7032,17 +7097,18 @@ private:
   void updatePause() {
     client::pause::PauseMenu::Ctx ctx;
     ctx.fFont = &fFont;
-    ctx.fWidth = static_cast<float>(fScreenW);
-    ctx.fHeight = static_cast<float>(fScreenH);
-    ctx.fMouseX = fMouseX;
-    ctx.fMouseY = fMouseY;
+    ctx.fWidth = static_cast<float>(fWin.fScreenW);
+    ctx.fHeight = static_cast<float>(fWin.fScreenH);
+    ctx.fMouseX = fWin.fMouseX;
+    ctx.fMouseY = fWin.fMouseY;
     ctx.fNowMs = wallMs();
     ctx.fDtMs = fUiDt;
     ctx.fAnimateTriangles = fSettings.flag("pausetriangles");
-    ctx.fRetries = fRetryCount;
+    ctx.fRetries = fPlay.fRetryCount;
     ctx.fProgress = this->playProgress();
-    ctx.fAccuracy = fEngine ? static_cast<float>(fEngine->score().accuracy())
-                            : 1.0f;
+    ctx.fAccuracy = fPlay.fEngine
+                        ? static_cast<float>(fPlay.fEngine->score().accuracy())
+                        : 1.0f;
     fPauseMenu.update(ctx);
     this->damage(fPauseMenu.takeDamage());
   }
@@ -7050,16 +7116,16 @@ private:
   // How far into the playable part of the map the pause happened, which is
   // what GameplayMenuOverlay puts under the buttons.
   [[nodiscard]] float playProgress() const {
-    if (!fMap || fMap->fObjects.empty()) {
+    if (!fPlay.fMap || fPlay.fMap->fObjects.empty()) {
       return 0.0f;
     }
-    const double first = osu::startTime(fMap->fObjects.front());
-    const double last = osu::startTime(fMap->fObjects.back());
+    const double first = osu::startTime(fPlay.fMap->fObjects.front());
+    const double last = osu::startTime(fPlay.fMap->fObjects.back());
     if (last <= first) {
       return 0.0f;
     }
     return static_cast<float>(
-        std::clamp((fPausedNow - first) / (last - first), 0.0, 1.0));
+        std::clamp((fPlay.fPausedNow - first) / (last - first), 0.0, 1.0));
   }
 
   void framePaused() {
@@ -7068,17 +7134,18 @@ private:
     // said. The scene is still redrawn, because a clipped repaint has to put
     // back whatever was under the piece being repainted.
     fView.invalidate();
-    fView.render(this->gameplayCtx(fFrame.fSurface->getCanvas()), fPausedNow);
+    fView.render(this->gameplayCtx(fFrame.fSurface->getCanvas()),
+                 fPlay.fPausedNow);
     fPauseMenu.render(fFrame.fSurface->getCanvas());
     this->present();
   }
 
   void drawMenuButton(skia::SkCanvas *canvas, const MenuButton &b) {
-    const bool hover = b.fRect.contains(fMouseX, fMouseY);
+    const bool hover = b.fRect.contains(fWin.fMouseX, fWin.fMouseY);
     this->fillRounded(canvas, b.fRect, 12.0f, hover ? kCardSel : kCardBg);
     this->strokeRounded(canvas, b.fRect, 12.0f, b.fAccent, hover ? 3.0f : 2.0f);
-    this->drawTextCentered(canvas, b.fLabel,
-                           b.fRect.centerX(), b.fRect.centerY() + 7.0f, 20.0f,
+    this->drawTextCentered(canvas, b.fLabel, b.fRect.centerX(),
+                           b.fRect.centerY() + 7.0f, 20.0f,
                            hover ? b.fAccent : skia::kWhite);
   }
 
@@ -7099,8 +7166,8 @@ private:
   // that what the pointer is on -- and therefore what has to be repainted --
   // is known without drawing them first.
   void updateResults() {
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     fMenuButtons.clear();
     // The rules toggle only exists when there is a saved replay to watch
     // under them; the score in hand was played under whatever it was played
@@ -7115,9 +7182,9 @@ private:
                0.5f;
     std::vector<std::string> labels{"retry", "back to song select",
                                     "export video"};
-    std::vector<skia::SkColor> accents{
-        skia::colorSetARGB(255, 255, 204, 102), client::palette::kAccent2,
-        skia::colorSetARGB(255, 170, 102, 255)};
+    std::vector<skia::SkColor> accents{skia::colorSetARGB(255, 255, 204, 102),
+                                       client::palette::kAccent2,
+                                       skia::colorSetARGB(255, 170, 102, 255)};
     if (rulesToggle) {
       labels.push_back(this->rulesToggleLabel());
       accents.push_back(this->rulesToggleEnabled()
@@ -7125,17 +7192,16 @@ private:
                             : skia::colorSetARGB(255, 120, 120, 130));
     }
     for (int i = 0; i < count; ++i) {
-      fMenuButtons.push_back(
-          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh),
-           labels[static_cast<std::size_t>(i)],
-           accents[static_cast<std::size_t>(i)]});
+      fMenuButtons.push_back({skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh),
+                              labels[static_cast<std::size_t>(i)],
+                              accents[static_cast<std::size_t>(i)]});
       bx += bw + gap;
     }
 
     // The row lights the button under the pointer and nothing else.
     int hot = -1;
     for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
-      if (fMenuButtons[i].fRect.contains(fMouseX, fMouseY)) {
+      if (fMenuButtons[i].fRect.contains(fWin.fMouseX, fWin.fMouseY)) {
         hot = static_cast<int>(i);
         break;
       }
@@ -7160,13 +7226,13 @@ private:
     this->drawScreenBackground(canvas);
     const skiff::paint::Painter p(canvas, fFont);
 
-    const float sw = static_cast<float>(fScreenW);
-    const float sh = static_cast<float>(fScreenH);
+    const float sw = static_cast<float>(fWin.fScreenW);
+    const float sh = static_cast<float>(fWin.fScreenH);
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(160, 10, 8, 14));
 
     this->drawScorePanelList(canvas, p, sw, sh,
-                            /*ownScore=*/fReplayPath.empty());
+                             /*ownScore=*/fReplayPath.empty());
     for (const auto &b : fMenuButtons) {
       this->drawMenuButton(canvas, b);
     }
@@ -7183,8 +7249,9 @@ private:
   //
   // `ownScore` marks a leading entry carrying the score in hand (the run just
   // played); the browser has none and shows each replay's own header.
-  void drawScorePanelList(skia::SkCanvas *canvas, const skiff::paint::Painter &p,
-                          float sw, float sh, bool ownScore) {
+  void drawScorePanelList(skia::SkCanvas *canvas,
+                          const skiff::paint::Painter &p, float sw, float sh,
+                          bool ownScore) {
     fPanelHits.clear();
     fPanelOwnScore = ownScore;
 
@@ -7202,8 +7269,8 @@ private:
     const float spacing = kPanelSpacing * scale;
     const float expandedGap = kExpandedSpacing * scale;
     const float cy = sh * 0.47f;
-    fPanelBand = skia::SkRect::MakeLTRB(0.0f, cy - expandedH * 0.5f - 10.0f,
-                                        sw, cy + expandedH * 0.5f + 10.0f);
+    fPanelBand = skia::SkRect::MakeLTRB(0.0f, cy - expandedH * 0.5f - 10.0f, sw,
+                                        cy + expandedH * 0.5f + 10.0f);
 
     // Entries: the score in hand first when there is one, then every replay
     // for this difficulty. The run just played is already the expanded panel,
@@ -7213,8 +7280,8 @@ private:
       fPanelEntries.push_back(-1);
     }
     for (std::size_t i = 0; i < fReplays.size(); ++i) {
-      if (ownScore && !fLastSavedReplay.empty() &&
-          fReplays[i].fPath == fLastSavedReplay) {
+      if (ownScore && !fPlay.fLastSavedReplay.empty() &&
+          fReplays[i].fPath == fPlay.fLastSavedReplay) {
         continue;
       }
       fPanelEntries.push_back(static_cast<int>(i));
@@ -7381,21 +7448,23 @@ private:
 
   // `replay` is null for the score in hand, which is contracted whenever some
   // other panel is expanded.
-  void drawContractedPanel(const skiff::paint::Painter &p, const skia::SkRect &r,
-                           const ReplayFile *replayPtr, float scale) {
-    const bool hover = r.contains(fMouseX, fMouseY);
+  void drawContractedPanel(const skiff::paint::Painter &p,
+                           const skia::SkRect &r, const ReplayFile *replayPtr,
+                           float scale) {
+    const bool hover = r.contains(fWin.fMouseX, fWin.fMouseY);
     const float h = r.height();
     p.fillRounded(r, 10.0f * scale,
-                  hover ? client::palette::kCardSel : client::palette::kBackground4);
+                  hover ? client::palette::kCardSel
+                        : client::palette::kBackground4);
 
     if (replayPtr == nullptr) {
       const auto &sc = fResult.fScore;
-      p.textCentered(fResult.fGrade, r.centerX(),
-                     r.fTop + h * 0.17f, 46.0f * scale, client::palette::kAccent);
+      p.textCentered(fResult.fGrade, r.centerX(), r.fTop + h * 0.17f,
+                     46.0f * scale, client::palette::kAccent);
       p.textCentered(std::format("{}", sc.fScore), r.centerX(),
                      r.fTop + h * 0.32f, 19.0f * scale, skia::kWhite);
-      p.textCentered(std::format("{:.2f}%", sc.accuracy() * 100.0),
-                     r.centerX(), r.fTop + h * 0.40f, 14.0f * scale,
+      p.textCentered(std::format("{:.2f}%", sc.accuracy() * 100.0), r.centerX(),
+                     r.fTop + h * 0.40f, 14.0f * scale,
                      client::palette::kAccent2, 0.95f);
       p.textCentered(std::format("{}x", sc.fMaxCombo), r.centerX(),
                      r.fTop + h * 0.47f, 14.0f * scale, skia::kWhite, 0.75f);
@@ -7435,8 +7504,8 @@ private:
     p.textClipped(diff, r.fLeft + 8.0f * scale, r.fTop + h * 0.66f,
                   r.width() - 16.0f * scale, 13.0f * scale, skia::kWhite,
                   0.95f);
-    p.textCentered(when, r.centerX(), r.fBottom - 18.0f * scale,
-                   11.0f * scale, skia::kWhite, 0.55f);
+    p.textCentered(when, r.centerX(), r.fBottom - 18.0f * scale, 11.0f * scale,
+                   skia::kWhite, 0.55f);
   }
 
   // The expanded panel: the score in hand when `replay` is null, otherwise the
@@ -7457,18 +7526,12 @@ private:
     Shown sh;
     if (replay == nullptr) {
       const auto &sc = fResult.fScore;
-      sh = {sc.fScore,
-            sc.fGreat,
-            sc.fGood,
-            sc.fMeh,
-            sc.fMiss,
-            sc.fMaxCombo,
-            sc.accuracy(),
-            true,
-            sc.fLargeTickHit,
-            sc.fLargeTickHit + sc.fLargeTickMiss,
-            sc.fTailHit,
-            sc.fTailHit + sc.fTailMiss};
+      sh = {sc.fScore,        sc.fGreat,
+            sc.fGood,         sc.fMeh,
+            sc.fMiss,         sc.fMaxCombo,
+            sc.accuracy(),    true,
+            sc.fLargeTickHit, sc.fLargeTickHit + sc.fLargeTickMiss,
+            sc.fTailHit,      sc.fTailHit + sc.fTailMiss};
     } else if (replay->fHasScore) {
       const auto &sc = replay->fScore;
       sh = {static_cast<std::uint64_t>(sc.fTotalScore),
@@ -7484,12 +7547,12 @@ private:
     // The beatmap: the one just played on the results screen, the selected one
     // in the browser. Every replay in the strip belongs to it.
     const bool results = fState == State::kResults;
-    const int setIdx = results ? fPlayingSet : fSelSet;
-    const int diffIdx = results ? fPlayingDiff : fSelDiff;
+    const int setIdx = results ? fPlayingSet : fLib.fSelSet;
+    const int diffIdx = results ? fPlayingDiff : fLib.fSelDiff;
     std::string title;
     std::string artist;
-    if (results && fMap) {
-      const auto &m = fMap->fMeta;
+    if (results && fPlay.fMap) {
+      const auto &m = fPlay.fMap->fMeta;
       title = m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode;
       artist = m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode;
     } else if (setIdx >= 0) {
@@ -7540,9 +7603,8 @@ private:
         p.fillRounded(chip, 11.0f * scale,
                       client::palette::starColor(this->shownStars(info)));
         p.textCentered(std::format("{:.2f}", this->shownStars(info)),
-                       chip.centerX(),
-                       chip.centerY() + 5.0f * scale, 12.0f * scale,
-                       skia::colorSetARGB(255, 20, 16, 26));
+                       chip.centerX(), chip.centerY() + 5.0f * scale,
+                       12.0f * scale, skia::colorSetARGB(255, 20, 16, 26));
         p.textClipped(info.fMeta.fVersion, chip.fRight + 10.0f * scale,
                       y + 5.0f * scale, 150.0f * scale, 13.0f * scale,
                       skia::kWhite, 0.9f);
@@ -7564,8 +7626,7 @@ private:
     const float cellW = (panel.width() - 32.0f * scale) / 4.0f;
     float cx = panel.fLeft + 16.0f * scale;
     for (const auto &st : top) {
-      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale,
-                     st.fColor);
+      p.textCentered(st.fLabel, cx + cellW * 0.5f, y, 11.0f * scale, st.fColor);
       p.textCentered(st.fValue, cx + cellW * 0.5f, y + 20.0f * scale,
                      18.0f * scale, skia::kWhite);
       cx += cellW;
@@ -7577,26 +7638,26 @@ private:
         {"accuracy", std::format("{:.2f}%", sh.fAccuracy * 100.0),
          skia::kWhite},
     };
-    bottom.push_back({"pp", std::format("{:.0f}", fResult.fPp),
-                      client::palette::kAccent});
+    bottom.push_back(
+        {"pp", std::format("{:.0f}", fResult.fPp), client::palette::kAccent});
     if (sh.fDetail) {
       bottom.push_back(
           {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite});
-      bottom.push_back({"UR", std::format("{:.0f}", fResult.fUr),
-                        skia::kWhite});
+      bottom.push_back(
+          {"UR", std::format("{:.0f}", fResult.fUr), skia::kWhite});
       // What the sliders did, which lazer keeps out of the 300/100/50 counts
       // and reports on its own.
       if (sh.fTickTotal > 0) {
-        bottom.push_back({"slider ticks",
-                          std::format("{}/{}", sh.fTickHit, sh.fTickTotal),
-                          sh.fTickHit == sh.fTickTotal ? skia::kWhite
-                                                       : client::palette::kMiss});
+        bottom.push_back(
+            {"slider ticks", std::format("{}/{}", sh.fTickHit, sh.fTickTotal),
+             sh.fTickHit == sh.fTickTotal ? skia::kWhite
+                                          : client::palette::kMiss});
       }
       if (sh.fTailTotal > 0) {
-        bottom.push_back({"slider ends",
-                          std::format("{}/{}", sh.fTailHit, sh.fTailTotal),
-                          sh.fTailHit == sh.fTailTotal ? skia::kWhite
-                                                       : client::palette::kMiss});
+        bottom.push_back(
+            {"slider ends", std::format("{}/{}", sh.fTailHit, sh.fTailTotal),
+             sh.fTailHit == sh.fTailTotal ? skia::kWhite
+                                          : client::palette::kMiss});
       }
     } else if (replay != nullptr) {
       // A stored replay keeps no hit statistics, only when it was played.
@@ -7607,8 +7668,8 @@ private:
                             : replay->fLabel.substr(underscore + 1),
                         skia::kWhite});
     }
-    const float bottomW = (panel.width() - 32.0f * scale) /
-                          static_cast<float>(bottom.size());
+    const float bottomW =
+        (panel.width() - 32.0f * scale) / static_cast<float>(bottom.size());
     cx = panel.fLeft + 16.0f * scale;
     for (const auto &st : bottom) {
       p.textCentered(st.fLabel, cx + bottomW * 0.5f, y, 11.0f * scale,
@@ -7651,12 +7712,12 @@ private:
       skia::SkColor fColor;
     };
     const Grade grades[] = {
-        {0.0, 0.60, skia::colorSetARGB(255, 0xff, 0x54, 0x5a)},   // D
-        {0.60, 0.70, skia::colorSetARGB(255, 0xff, 0xa0, 0x55)},  // C
-        {0.70, 0.80, skia::colorSetARGB(255, 0xff, 0xdd, 0x55)},  // B
-        {0.80, 0.90, skia::colorSetARGB(255, 0x88, 0xdd, 0x20)},  // A
-        {0.90, 0.95, skia::colorSetARGB(255, 0x02, 0xb8, 0xd7)},  // S
-        {0.95, 1.00, skia::colorSetARGB(255, 0xde, 0x31, 0xae)},  // SS
+        {0.0, 0.60, skia::colorSetARGB(255, 0xff, 0x54, 0x5a)},  // D
+        {0.60, 0.70, skia::colorSetARGB(255, 0xff, 0xa0, 0x55)}, // C
+        {0.70, 0.80, skia::colorSetARGB(255, 0xff, 0xdd, 0x55)}, // B
+        {0.80, 0.90, skia::colorSetARGB(255, 0x88, 0xdd, 0x20)}, // A
+        {0.90, 0.95, skia::colorSetARGB(255, 0x02, 0xb8, 0xd7)}, // S
+        {0.95, 1.00, skia::colorSetARGB(255, 0xde, 0x31, 0xae)}, // SS
     };
     skia::SkPaint graded;
     graded.setAntiAlias(true);
@@ -7674,8 +7735,8 @@ private:
     }
 
     // Achieved accuracy, animated in with the panel.
-    const float progress = skiff::paint::outQuint(static_cast<float>(
-        (wallMs() - fStateEnterWall) / 1400.0));
+    const float progress = skiff::paint::outQuint(
+        static_cast<float>((wallMs() - fStateEnterWall) / 1400.0));
     arc.setColor(skia::kWhite);
     canvas->drawArc(bounds, -90.0f,
                     static_cast<float>(accuracy) * 360.0f * progress, false,
@@ -7684,8 +7745,8 @@ private:
     // Rank badge in the middle.
     p.textCentered(fResult.fGrade, cx, cy + r * 0.28f, r * 0.72f,
                    client::palette::kAccent);
-    p.textCentered(std::format("{:.2f}%", accuracy * 100.0), cx,
-                   cy + r * 0.62f, r * 0.16f, skia::kWhite, 0.85f);
+    p.textCentered(std::format("{:.2f}%", accuracy * 100.0), cx, cy + r * 0.62f,
+                   r * 0.16f, skia::kWhite, 0.85f);
   }
 
   bool initSkia() {
@@ -7757,7 +7818,8 @@ private:
     return candidates;
   }
 
-  [[nodiscard]] skia::Sp<skia::SkTypeface> loadTypeface(const std::string &name) {
+  [[nodiscard]] skia::Sp<skia::SkTypeface>
+  loadTypeface(const std::string &name) {
     for (const auto &path : this->assetCandidates(name)) {
       std::error_code ec;
       if (!std::filesystem::exists(path, ec)) {
@@ -7882,21 +7944,22 @@ private:
     return skia::SkFont();
   }
 
-
   // Playfield placement for the current screen size. Split out so the video
   // exporter can re-derive it for its offscreen resolution.
   void layoutForScreen() {
     // Match webosu-2: playfield occupies 80% of the limiting screen dimension.
     constexpr float kPlayfieldSize = 0.8f;
-    const float sx =
-        static_cast<float>(fScreenW) / static_cast<float>(osu::kPlayfieldWidth);
-    const float sy = static_cast<float>(fScreenH) /
+    const float sx = static_cast<float>(fWin.fScreenW) /
+                     static_cast<float>(osu::kPlayfieldWidth);
+    const float sy = static_cast<float>(fWin.fScreenH) /
                      static_cast<float>(osu::kPlayfieldHeight);
     fScale = kPlayfieldSize * std::min(sx, sy);
     fOffsetX =
-        (fScreenW - static_cast<float>(osu::kPlayfieldWidth) * fScale) * 0.5f;
+        (fWin.fScreenW - static_cast<float>(osu::kPlayfieldWidth) * fScale) *
+        0.5f;
     fOffsetY =
-        (fScreenH - static_cast<float>(osu::kPlayfieldHeight) * fScale) * 0.5f;
+        (fWin.fScreenH - static_cast<float>(osu::kPlayfieldHeight) * fScale) *
+        0.5f;
   }
 
   // Skia's CPU rasteriser, as an alternative target for the menus, made on
@@ -7909,17 +7972,19 @@ private:
   // handles better than a CPU rasteriser would, and drawing those textures
   // into a raster canvas would mean reading them back every frame.
   [[nodiscard]] bool ensureRasterSurface() {
-    if (fFrame.fRasterSurface && fFrame.fRasterSurface->width() == fScreenW &&
-        fFrame.fRasterSurface->height() == fScreenH) {
+    if (fFrame.fRasterSurface &&
+        fFrame.fRasterSurface->width() == fWin.fScreenW &&
+        fFrame.fRasterSurface->height() == fWin.fScreenH) {
       return true;
     }
     // Same colour space as the window, or the pixels get encoded twice on the
     // way over and the whole frame comes out lighter.
     fFrame.fRasterSurface = skia::Raster(skia::SkImageInfo::Make(
-        fScreenW, fScreenH, skia::kRGBA_8888_SkColorType,
+        fWin.fScreenW, fWin.fScreenH, skia::kRGBA_8888_SkColorType,
         skia::kPremul_SkAlphaType,
-        fFrame.fWindowSurface ? fFrame.fWindowSurface->imageInfo().refColorSpace()
-                       : nullptr));
+        fFrame.fWindowSurface
+            ? fFrame.fWindowSurface->imageInfo().refColorSpace()
+            : nullptr));
     return static_cast<bool>(fFrame.fRasterSurface);
   }
 
@@ -7927,15 +7992,15 @@ private:
     // Called on the render thread with framebuffer dimensions delivered by
     // the resize event (or the pre-thread snapshot); querying GLFW here is
     // not allowed off the main thread.
-    fScreenW = w;
-    fScreenH = h;
+    fWin.fScreenW = w;
+    fWin.fScreenH = h;
     this->layoutForScreen();
 
     skia::GrGLFramebufferInfo info;
     info.fFBOID = 0;
     info.fFormat = skia::kGlRgba8;
     skia::GrBackendRenderTarget target =
-        skia::MakeGL(fScreenW, fScreenH, 0, 0, info);
+        skia::MakeGL(fWin.fScreenW, fWin.fScreenH, 0, 0, info);
     fFrame.fWindowSurface = skia::WrapBackendRenderTarget(
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);
@@ -7958,15 +8023,16 @@ private:
     if (fWindow == nullptr)
       return;
 #ifndef __EMSCRIPTEN__
-    fFullscreen = !fFullscreen;
-    if (fFullscreen) {
+    fWin.fFullscreen = !fWin.fFullscreen;
+    if (fWin.fFullscreen) {
       const auto monitor = glfw::glfwGetPrimaryMonitor();
       const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
       glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
                                  mode->height, mode->refreshRate);
     } else {
-      glfw::glfwSetWindowMonitor(fWindow, nullptr, fWindowedX, fWindowedY,
-                                 fWindowedW, fWindowedH, 0);
+      glfw::glfwSetWindowMonitor(fWindow, nullptr, fWin.fWindowedX,
+                                 fWin.fWindowedY, fWin.fWindowedW,
+                                 fWin.fWindowedH, 0);
     }
 #endif
   }
@@ -7984,7 +8050,7 @@ private:
 
   [[nodiscard]] double nowMs() {
 #ifdef __EMSCRIPTEN__
-    return glfw::glfwGetTime() * 1000.0 - fStartMs;
+    return glfw::glfwGetTime() * 1000.0 - fPlay.fStartMs;
 #else
     // The audio device is consulted at most every kClockSyncIntervalMs;
     // between syncs the game clock extrapolates from the wall clock. This
@@ -7997,30 +8063,30 @@ private:
     if (wall - fLastClockSyncWall >= kClockSyncIntervalMs) {
       fLastClockSyncWall = wall;
       if (fAudio.playing()) {
-        fClock.sync(wall, fAudio.positionSec() * 1000.0);
+        fPlay.fClock.sync(wall, fAudio.positionSec() * 1000.0);
       }
     }
-    return fClock.sample(wall);
+    return fPlay.fClock.sample(wall);
 #endif
   }
 
   [[nodiscard]] bool shouldStop(double now) const {
-    return fEngine->finished() && now > fMap->lastObjectEndTime() + 1000.0;
+    return fPlay.fEngine->finished() &&
+           now > fPlay.fMap->lastObjectEndTime() + 1000.0;
   }
-
 
   void submitAutoplay(double now) {
     if (!fAutoplay) {
       return; // the player is driving
     }
-    while (fAutoplayIndex < fAutoplayEvents.size() &&
-           fAutoplayEvents[fAutoplayIndex].fTime <= now) {
-      const auto &ev = fAutoplayEvents[fAutoplayIndex];
-      fEngine->submit(ev);
+    while (fAutoplayIndex < fPlay.fAutoplayEvents.size() &&
+           fPlay.fAutoplayEvents[fAutoplayIndex].fTime <= now) {
+      const auto &ev = fPlay.fAutoplayEvents[fAutoplayIndex];
+      fPlay.fEngine->submit(ev);
       if (fReplayPath.empty()) {
         // Generated autoplay is worth recording; a replay being watched is
         // already on disk.
-        fRecordedEvents.push_back(ev);
+        fPlay.fRecordedEvents.push_back(ev);
       }
       if (ev.fAction == osu::InputAction::kMove) {
         fCursor = ev.fPos;
@@ -8031,14 +8097,14 @@ private:
   }
 
   void playHitsounds(double now) {
-    const auto &events = fEngine->events();
+    const auto &events = fPlay.fEngine->events();
     while (fPlayedEvents < events.size()) {
       const auto &ev = events[fPlayedEvents++];
       const int previous = fCombo;
       // The engine owns the combo now that a slider hands out several
       // judgements: its ticks and its tail each raise it, and only some of
       // them break it.
-      fCombo = fEngine->score().fCombo;
+      fCombo = fPlay.fEngine->score().fCombo;
       fView.setCombo(fCombo);
       // Ticks and tails are scored but not shown; lazer pops the head's
       // judgement at the head and nothing at all for what is under it.
@@ -8053,8 +8119,9 @@ private:
           // A tail's own time is 36ms before the slider's end; lazer plays
           // the end animation at the end.
           const double when =
-              tail && ev.fIndex < fMap->fObjects.size()
-                  ? osu::objectEnd(fMap->fObjects[ev.fIndex], *fMap).second
+              tail && ev.fIndex < fPlay.fMap->fObjects.size()
+                  ? osu::objectEnd(fPlay.fMap->fObjects[ev.fIndex], *fPlay.fMap)
+                        .second
                   : now;
           fView.noteSliderNested(ev.fIndex, tail, hit, when);
         }
@@ -8072,9 +8139,10 @@ private:
         }
         continue;
       }
-      const double hitTime = ev.fIndex < fMap->fObjects.size()
-                                 ? osu::startTime(fMap->fObjects[ev.fIndex])
-                                 : now;
+      const double hitTime =
+          ev.fIndex < fPlay.fMap->fObjects.size()
+              ? osu::startTime(fPlay.fMap->fObjects[ev.fIndex])
+              : now;
       this->playObjectHitsound(hitTime, ev.fIndex);
     }
   }
@@ -8095,7 +8163,7 @@ private:
                                                    double time) const {
     if (const char *name = sampleSetName(set))
       return name;
-    if (const auto *tp = fMap->activeTiming(time)) {
+    if (const auto *tp = fPlay.fMap->activeTiming(time)) {
       if (const char *name = sampleSetName(tp->fSet))
         return name;
     }
@@ -8157,7 +8225,7 @@ private:
   }
 
   void playObjectHitsound(double time, std::size_t index) {
-    if (index >= fMap->fObjects.size())
+    if (index >= fPlay.fMap->fObjects.size())
       return;
     std::visit(osu::Overloaded{
                    [this, time](const osu::Circle &o) {
@@ -8170,33 +8238,23 @@ private:
                      this->playHitSample(time, o.fSound, o.fSample);
                    },
                },
-               fMap->fObjects[index]);
+               fPlay.fMap->fObjects[index]);
   }
 
   [[nodiscard]] osu::Vec2 objectPosition(std::size_t index) const {
-    if (index >= fMap->fObjects.size()) {
+    if (index >= fPlay.fMap->fObjects.size()) {
       return osu::kPlayfieldCenter;
     }
-    return osu::objectPosition(fMap->fObjects[index]);
+    return osu::objectPosition(fPlay.fMap->fObjects[index]);
   }
 
   [[nodiscard]] std::pair<osu::Vec2, double>
   objectEnd(std::size_t index) const {
-    if (index >= fMap->fObjects.size()) {
+    if (index >= fPlay.fMap->fObjects.size()) {
       return {osu::kPlayfieldCenter, 0.0};
     }
-    return osu::objectEnd(fMap->fObjects[index], *fMap);
+    return osu::objectEnd(fPlay.fMap->fObjects[index], *fPlay.fMap);
   }
-
-
-
-
-
-
-
-
-
-
 
   // Cursor trail as a single feathered ribbon.
   //
@@ -8236,18 +8294,15 @@ private:
     // display the playfield is 60% of the width, and the pointer stopped
     // dead at its edge with the desk still going.
     const osu::Vec2 lo = this->toPlayfield(0.0f, 0.0f);
-    const osu::Vec2 hi = this->toPlayfield(static_cast<float>(fScreenW),
-                                           static_cast<float>(fScreenH));
+    const osu::Vec2 hi = this->toPlayfield(static_cast<float>(fWin.fScreenW),
+                                           static_cast<float>(fWin.fScreenH));
     fVirtualCursor = {std::clamp(fVirtualCursor.fX + delta.fX, lo.fX, hi.fX),
                       std::clamp(fVirtualCursor.fY + delta.fY, lo.fY, hi.fY)};
     return fVirtualCursor;
   }
 
-
-
-
   void printResult() {
-    std::println("{}", fEngine->score());
+    std::println("{}", fPlay.fEngine->score());
 
     // Timing statistics over actual taps (circles + slider heads). Judgement
     // events are the wrong series for this: sliders/spinners are finalized at
@@ -8256,7 +8311,7 @@ private:
     double sum = 0.0;
     double sumSq = 0.0;
     std::size_t n = 0;
-    for (const double d : fEngine->tapDeltas()) {
+    for (const double d : fPlay.fEngine->tapDeltas()) {
       sum += d;
       sumSq += d * d;
       ++n;
@@ -8284,7 +8339,7 @@ private:
   }
 
   void saveReplay() {
-    if (fRecordedEvents.empty() || !fMap)
+    if (fPlay.fRecordedEvents.empty() || !fPlay.fMap)
       return;
     if (!fReplayPath.empty()) {
       return; // watching a replay must not write it back out as a new one
@@ -8295,7 +8350,7 @@ private:
     nameStream << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S");
     // The .osr header has fields for the score, so it goes in there rather
     // than into a sidecar: the file stays a plain, original-format replay.
-    const auto &sc = fEngine->score();
+    const auto &sc = fPlay.fEngine->score();
     osu::ReplayScore score;
     score.f300 = static_cast<std::uint16_t>(sc.fGreat);
     score.f100 = static_cast<std::uint16_t>(sc.fGood);
@@ -8307,7 +8362,7 @@ private:
     // The counts the four legacy shorts have no room for, written into the
     // block osu! reads at the end of the file so an import gets this score's
     // real accuracy and rank instead of a legacy approximation of them.
-    const auto maxStats = fEngine->maximumStatistics();
+    const auto maxStats = fPlay.fEngine->maximumStatistics();
     osu::ReplayStatistics stats;
     stats.fPresent = true;
     stats.fGreat = sc.fGreat;
@@ -8326,21 +8381,23 @@ private:
     stats.fMaxLargeBonus = maxStats.fLargeBonus;
     stats.fRank = osu::gradeString(osu::computeGrade(sc));
     stats.fTotalScore = static_cast<std::int64_t>(sc.fScore);
-    auto replayBytes = osu::encodeReplay(fRecordedEvents, this->beatmapMd5(),
-                                         "Player", fMods, score, stats);
+    auto replayBytes =
+        osu::encodeReplay(fPlay.fRecordedEvents, this->beatmapMd5(), "Player",
+                          fMods, score, stats);
     std::error_code ec;
     std::filesystem::create_directories(fReplayDir, ec);
     const std::filesystem::path outPath =
-        fReplayDir / (fMap->fMeta.fVersion + "_" + nameStream.str() + ".osr");
+        fReplayDir /
+        (fPlay.fMap->fMeta.fVersion + "_" + nameStream.str() + ".osr");
     std::ofstream out(outPath, std::ios::binary);
     for (std::uint8_t b : replayBytes)
       out.put(static_cast<char>(b));
     out.close();
-    fLastSavedReplay = outPath;
+    fPlay.fLastSavedReplay = outPath;
     // Which rules this was played under lives here, in the index, and not in
     // the .osr: every field of that file belongs to osu!'s format.
-    fReplayIndex.add(outPath,
-                     fEngine->rules() == osu::RuleSet::kLegacyClient ? 1 : 0);
+    fReplayIndex.add(
+        outPath, fPlay.fEngine->rules() == osu::RuleSet::kLegacyClient ? 1 : 0);
     std::println(std::cerr, "[replay] saved {}", outPath.string());
   }
 
@@ -8348,7 +8405,6 @@ private:
     return {(static_cast<double>(sx) - fOffsetX) / fScale,
             (static_cast<double>(sy) - fOffsetY) / fScale};
   }
-
 };
 
 } // namespace client
