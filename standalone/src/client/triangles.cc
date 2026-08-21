@@ -110,8 +110,26 @@ private:
 
   void refill(float width) {
     // AimCount = clamp(width * 0.02 * SpawnRatio, 1, max).
+    //
+    // lazer takes that width from the layout, which its Scale transforms do
+    // not touch. What arrives here is the box as drawn, and the boxes this
+    // goes in are animated: the logo beats with the music, grows under the
+    // pointer and is punched on a click, and the pause buttons swell on
+    // hover. Recounting from that every frame makes the aim wobble by one,
+    // and a count that drops by one deletes a triangle mid-flight while a
+    // count that rises spawns one out of nowhere -- which reads as triangles
+    // blinking in and out.
+    //
+    // So the count is held until the width has moved by more than one
+    // triangle's worth of it. An animation of a few percent leaves it alone;
+    // a window resize still takes effect.
+    const float per = std::max(1e-4f, 0.02f * fSpawnRatio);
+    if (!fParts.empty() && std::abs(width - fCountedWidth) * per < 1.0f) {
+      return;
+    }
+    fCountedWidth = width;
     const auto aim = static_cast<std::size_t>(
-        std::clamp(width * 0.02f * fSpawnRatio, 1.0f, 64.0f));
+        std::clamp(width * per, 1.0f, 64.0f));
     while (fParts.size() < aim) {
       fParts.push_back(this->spawn(true));
     }
@@ -137,6 +155,7 @@ private:
   }
 
   std::vector<Particle> fParts;
+  float fCountedWidth = 0.0f;
   std::mt19937 fRng{std::random_device{}()};
   float fVelocity = 1.0f;
   float fSpawnRatio = 1.0f;

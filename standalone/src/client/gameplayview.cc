@@ -756,8 +756,12 @@ public:
         kInitialFillScale + (1.0 - kInitialFillScale) * progress;
     const float fillAlpha = static_cast<float>(
         c.fEngine->isTracking(index) ? kTrackingAlpha : kIdleAlpha);
+    // DefaultSpinnerDisc carries Scale = 1.3 on itself, so it multiplies the
+    // centre layer as well as the disc -- and so does the grow or shrink at
+    // the end. Applying it only to the disc, which is what this did, left the
+    // centre a third smaller than it should be.
     c.fSkin->drawSpinner(canvas, cx, cy, radius, progress, fill, fillAlpha,
-                         rotation, centre,
+                         rotation, centre * discScale,
                          c.fEngine->spinnerAngle(index));
 
     skia::SkPaint textPaint;
