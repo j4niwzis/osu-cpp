@@ -56,38 +56,6 @@ inline std::filesystem::path findFile(const std::filesystem::path &root,
   return {};
 }
 
-// osu!'s lighting sprite, rebuilt rather than shipped: a white radial glow
-// whose alpha falls off as 0.686 * (1 - t^2)^3.1, which is what the real one
-// measures to. Premultiplied, so the colour rides down with the alpha.
-[[nodiscard]] inline skia::Sp<skia::SkImage> makeLighting(int size) {
-  skia::SkBitmap bmp;
-  if (!bmp.tryAllocPixels(skia::SkImageInfo::Make(
-          size, size, skia::kRGBA_8888_SkColorType, skia::kPremul_SkAlphaType))) {
-    return nullptr;
-  }
-  auto *base = static_cast<std::uint8_t *>(bmp.getPixels());
-  const double centre = static_cast<double>(size) / 2.0;
-  for (int y = 0; y < size; ++y) {
-    auto *row = base + static_cast<std::size_t>(y) * bmp.rowBytes();
-    for (int x = 0; x < size; ++x) {
-      const double dx = (static_cast<double>(x) + 0.5 - centre) / centre;
-      const double dy = (static_cast<double>(y) + 0.5 - centre) / centre;
-      const double t2 = dx * dx + dy * dy;
-      const double a =
-          t2 >= 1.0 ? 0.0 : 0.686 * std::pow(1.0 - t2, 3.1);
-      const auto v = static_cast<std::uint8_t>(
-          std::clamp(a, 0.0, 1.0) * 255.0 + 0.5);
-      std::uint8_t *px = row + static_cast<std::size_t>(x) * 4;
-      px[0] = v; // premultiplied white
-      px[1] = v;
-      px[2] = v;
-      px[3] = v;
-    }
-  }
-  bmp.setImmutable();
-  return skia::RasterFromBitmap(bmp);
-}
-
 inline void drawImageCentered(skia::SkCanvas *canvas, skia::SkImage *image,
                               float x, float y, float width, float height,
                               const skia::SkPaint &paint) {
@@ -200,29 +168,16 @@ public:
     return image("reversearrow");
   }
   // SkinnableLighting is a SkinnableSprite named "lighting", so that is the
-  // element osu! skins provide it under. webosu-2 has no equivalent: its
-  // "hitburst" is a different thing entirely, a flat opaque white disc --
-  // measured, alpha 255 out to 47% of the radius and a hard edge -- used for
-  // a 160ms flash. Drawn with lazer's animation over it, which holds at full
-  // opacity for 400ms, it is a solid plate on the playfield.
-  //
-  // lazer always has one of these, since a skin without it falls back to the
-  // legacy default skin, so the sprite is built here when the skin has none.
-  // The shape is taken from that file: its alpha averaged over rings is
-  // 0.686 * (1 - t^2)^3.1 to within 0.0025, over 368 pixels at 2x, so 184 at
-  // the size an object of scale 1 would be.
-  [[nodiscard]] skia::Sp<skia::SkImage> hitBurst() {
-    if (auto skinned = image("lighting")) {
-      return skinned;
-    }
-    if (!fLightingBuilt) {
-      fLightingBuilt = true;
-      fLighting = detail::makeLighting(kLightingSize);
-    }
-    return fLighting;
-  }
+  // element osu! skins provide it under. webosu-2 has nothing equivalent --
+  // its "hitburst" is a flat opaque disc used for a short flash, not a glow --
+  // so with those assets there is no lighting and none is drawn.
+  [[nodiscard]] skia::Sp<skia::SkImage> hitBurst() { return image("lighting"); }
 
-  static constexpr int kLightingSize = 184;
+  // Whether there is anything to draw at all, so the caller can stop keeping
+  // track of hits that will never be shown.
+  [[nodiscard]] bool hasHitLighting() {
+    return static_cast<bool>(this->hitBurst());
+  }
   [[nodiscard]] skia::Sp<skia::SkImage> followPoint() {
     return image("followpoint");
   }
@@ -1237,8 +1192,6 @@ float4 main(float2 coords) {
   }
 
 private:
-  skia::Sp<skia::SkImage> fLighting;
-  bool fLightingBuilt = false;
   std::filesystem::path fRoot;
   std::unordered_map<std::string, skia::Sp<skia::SkImage>> fImages;
   std::vector<skia::SkColor> fComboColors;

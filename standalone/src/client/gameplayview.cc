@@ -306,7 +306,9 @@ public:
   }
 
   void drawHitBursts(const Ctx &c, skia::SkCanvas *canvas, double now, double cs) {
-    if (!c.fHitLighting) {
+    // Nothing to draw either when the setting is off or when the skin has no
+    // lighting element at all.
+    if (!c.fHitLighting || !c.fSkin->hasHitLighting()) {
       fHitBursts.clear();
       return;
     }
@@ -473,9 +475,15 @@ public:
                  obj);
     }
 
-    for (const auto &hb : fHitBursts)
-      addPlayfieldPt(static_cast<float>(hb.fPos.fX),
-                     static_cast<float>(hb.fPos.fY), r * 2.5f);
+    // Lighting lives for 1400ms, so a map at speed keeps a dozen of these
+    // alive at once and their union is most of the playfield -- which throws
+    // away partial redraws and repaints the background every frame. Not worth
+    // paying for when there is nothing to draw.
+    if (c.fHitLighting && c.fSkin->hasHitLighting()) {
+      for (const auto &hb : fHitBursts)
+        addPlayfieldPt(static_cast<float>(hb.fPos.fX),
+                       static_cast<float>(hb.fPos.fY), r * 2.5f);
+    }
 
     for (const auto &pp : fPopups)
       addPlayfieldPt(static_cast<float>(pp.fPos.fX),
