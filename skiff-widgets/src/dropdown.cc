@@ -48,7 +48,6 @@ public:
   float fPlateRadius = 6.0f;
   float fRowRadius = 6.0f;
   float fTextInset = 12.0f;
-  float fBaseline = 4.0f; // below a row's middle, not derived from the size
   float fDimAlpha = 0.8f; // an option that is not the current one
   std::function<void(int)> fOnChoose;
 
@@ -116,11 +115,9 @@ private:
                     fHovered ? theme.fSurfaceActive : theme.fSurfaceHover,
                     alpha);
       const bool chosen = static_cast<int>(fIndex) == fList->fCurrent;
-      p.textClipped(fList->fLabels[fIndex], fBounds.fLeft + fList->fTextInset,
-                    fBounds.centerY() + fList->fBaseline,
-                    fBounds.width() - fList->fTextInset * 2.0f,
-                    fList->fFontSize, theme.fText,
-                    alpha * (chosen ? 1.0f : fList->fDimAlpha));
+      p.textIn(fBounds, fList->fLabels[fIndex], fList->fFontSize, theme.fText,
+               alpha * (chosen ? 1.0f : fList->fDimAlpha), false,
+               fList->fTextInset);
     }
 
     bool acceptsInput() const override { return true; }

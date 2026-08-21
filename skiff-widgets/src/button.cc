@@ -66,10 +66,9 @@ protected:
     }
     p.fillRounded(fBounds, fTheme.fCorner, fill,
                   alpha * (fEnabled ? 1.0f : 0.5f));
-    p.textCentered(fLabel, fBounds.centerX(),
-                   fBounds.centerY() + fTheme.fFontSize * 0.375f,
-                   fTheme.fFontSize, fPrimary ? fTheme.fOnAccent : fTheme.fText,
-                   alpha * (fEnabled ? 1.0f : 0.5f), true);
+    p.textCentredIn(fBounds, fLabel, fTheme.fFontSize,
+                    fPrimary ? fTheme.fOnAccent : fTheme.fText,
+                    alpha * (fEnabled ? 1.0f : 0.5f), true);
   }
 
 private:

@@ -186,7 +186,8 @@ private:
   [[nodiscard]] static std::uint64_t cacheKey(const skia::SkFont &font,
                                               std::string_view text) {
     std::uint64_t hash = std::hash<std::string_view>{}(text);
-    hash ^= std::hash<const void *>{}(font.getTypeface()) * 0x9e3779b97f4a7c15ull;
+    hash ^=
+        std::hash<const void *>{}(font.getTypeface()) * 0x9e3779b97f4a7c15ull;
     hash ^= static_cast<std::uint64_t>(font.getSize() * 64.0f) << 17;
     hash ^= static_cast<std::uint64_t>(font.isEmbolden()) << 61;
     // Linear metrics measure wider than hinted ones by a fraction of a pixel
@@ -250,8 +251,7 @@ private:
     }
   }
 
-  [[nodiscard]] skia::SkFont fontFor(const skia::SkFont &font,
-                                     int face) const {
+  [[nodiscard]] skia::SkFont fontFor(const skia::SkFont &font, int face) const {
     if (face < 0 || face >= static_cast<int>(fFallbacks.size())) {
       return font;
     }
@@ -282,7 +282,8 @@ private:
       return byte;
     }
     for (int n = 0; n < extra; ++n) {
-      const auto cont = static_cast<unsigned char>(text[i + 1 + static_cast<std::size_t>(n)]);
+      const auto cont =
+          static_cast<unsigned char>(text[i + 1 + static_cast<std::size_t>(n)]);
       if ((cont & 0xc0) != 0x80) {
         ++i;
         return byte;
@@ -297,8 +298,7 @@ private:
   static constexpr std::uint32_t kWeightAxis =
       (static_cast<std::uint32_t>('w') << 24) |
       (static_cast<std::uint32_t>('g') << 16) |
-      (static_cast<std::uint32_t>('h') << 8) |
-      static_cast<std::uint32_t>('t');
+      (static_cast<std::uint32_t>('h') << 8) | static_cast<std::uint32_t>('t');
 
   skia::Sp<skia::SkTypeface> fPrimary;
   skia::Sp<skia::SkTypeface> fPrimaryBold;
@@ -338,16 +338,14 @@ inline skia::SkFont *&defaultFont() {
 
 // Colour4.Lighten: each channel scaled towards white, alpha left alone. What
 // a hovered tab or row is drawn in.
-[[nodiscard]] inline skia::SkColor lighten(skia::SkColor colour,
-                                           float amount) {
+[[nodiscard]] inline skia::SkColor lighten(skia::SkColor colour, float amount) {
   const auto channel = [amount](std::uint32_t v) {
     return static_cast<std::uint8_t>(
         std::min(255.0f, static_cast<float>(v) * (1.0f + amount)));
   };
-  return skia::colorSetARGB((colour >> 24) & 0xffu,
-                            channel((colour >> 16) & 0xffu),
-                            channel((colour >> 8) & 0xffu),
-                            channel(colour & 0xffu));
+  return skia::colorSetARGB(
+      (colour >> 24) & 0xffu, channel((colour >> 16) & 0xffu),
+      channel((colour >> 8) & 0xffu), channel(colour & 0xffu));
 }
 
 // FillMode.Fill: the image is cropped to the destination's aspect ratio
@@ -366,14 +364,13 @@ inline void imageFilled(skia::SkCanvas *canvas, const skia::SkImage *image,
   const float scale = std::max(dst.width() / iw, dst.height() / ih);
   const float srcW = dst.width() / scale;
   const float srcH = dst.height() / scale;
-  const skia::SkRect src =
-      skia::SkRect::MakeXYWH((iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
+  const skia::SkRect src = skia::SkRect::MakeXYWH(
+      (iw - srcW) * 0.5f, (ih - srcH) * 0.5f, srcW, srcH);
   skia::SkPaint p;
   p.setAlphaf(alpha);
-  canvas->drawImageRect(image, src, dst,
-                        skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
-                        alpha < 1.0f ? &p : nullptr,
-                        skia::SkCanvas::kStrict_SrcRectConstraint);
+  canvas->drawImageRect(
+      image, src, dst, skia::SkSamplingOptions(skia::SkFilterMode::kLinear),
+      alpha < 1.0f ? &p : nullptr, skia::SkCanvas::kStrict_SrcRectConstraint);
 }
 
 // Text whose size is animating -- a logo on the beat, a judgement popping --
@@ -421,8 +418,8 @@ public:
 
   [[nodiscard]] skia::SkCanvas *canvas() const noexcept { return fCanvas; }
 
-  void fillRounded(const skia::SkRect &rect, float radius,
-                   skia::SkColor color, float alpha = 1.0f) const {
+  void fillRounded(const skia::SkRect &rect, float radius, skia::SkColor color,
+                   float alpha = 1.0f) const {
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
@@ -518,6 +515,35 @@ public:
   void imageFilled(const skia::SkImage *image, const skia::SkRect &dst,
                    float alpha = 1.0f) const {
     skiff::paint::imageFilled(fCanvas, image, dst, alpha);
+  }
+
+  // The baseline that puts a line of this size in the middle of a box, from
+  // the font's ascent and descent. The alternative is a constant added to the
+  // middle, which has to be picked per size and per face by eye.
+  [[nodiscard]] float middleBaseline(const skia::SkRect &box,
+                                     float size) const {
+    fFont->setSize(size);
+    skia::SkFontMetrics metrics;
+    fFont->getMetrics(&metrics);
+    return box.centerY() - (metrics.fAscent + metrics.fDescent) * 0.5f;
+  }
+
+  // Text in a box: down the middle vertically, and clipped to the box so a
+  // long string cannot run out of it. `inset` is taken off both ends.
+  void textIn(const skia::SkRect &box, const std::string &str, float size,
+              skia::SkColor color, float alpha = 1.0f, bool bold = false,
+              float inset = 0.0f) const {
+    this->textClipped(str, box.fLeft + inset, this->middleBaseline(box, size),
+                      box.width() - inset * 2.0f, size, color, alpha, bold);
+  }
+
+  // The same, centred across the box as well.
+  void textCentredIn(const skia::SkRect &box, const std::string &str,
+                     float size, skia::SkColor color, float alpha = 1.0f,
+                     bool bold = false, float inset = 0.0f) const {
+    this->textCenteredClipped(
+        str, box.centerX(), this->middleBaseline(box, size),
+        box.width() - inset * 2.0f, size, color, alpha, bold);
   }
 
   // Text with a soft shadow, the way lazer draws judgements and HUD numbers.

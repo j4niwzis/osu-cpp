@@ -80,7 +80,7 @@ protected:
       textLeft = ix + 14.0f;
     }
 
-    const float baseline = fBounds.centerY() + fTheme.fFontSize * 0.375f;
+    const float baseline = p.middleBaseline(fBounds, fTheme.fFontSize);
     const float room = fBounds.fRight - textLeft - fTheme.fPaddingX;
     if (fText.empty()) {
       p.text(fPlaceholder, textLeft, baseline, fTheme.fFontSize,

@@ -340,12 +340,13 @@ private:
       p.fillRounded(
           fBounds, 6.0f,
           open ? palette::kAccent : skia::colorSetARGB(255, 58, 48, 70), alpha);
-      p.textClipped(option, fBounds.fLeft + 12.0f, fBounds.centerY() + 4.0f,
-                    fBounds.width() - 32.0f, 13.0f, skia::kWhite, alpha);
+      p.textClipped(option, fBounds.fLeft + 12.0f,
+                    p.middleBaseline(fBounds, 13.0f), fBounds.width() - 32.0f,
+                    13.0f, skia::kWhite, alpha);
       // The chevron, so it reads as something that opens.
       p.textClipped(open ? "^" : "v", fBounds.fRight - 18.0f,
-                    fBounds.centerY() + 4.0f, 12.0f, 12.0f, skia::kWhite,
-                    alpha * 0.8f);
+                    p.middleBaseline(fBounds, 12.0f), 12.0f, 12.0f,
+                    skia::kWhite, alpha * 0.8f);
     }
 
     bool acceptsInput() const override { return true; }
@@ -538,10 +539,11 @@ private:
                  : (fHovered ? skia::colorSetARGB(255, 200, 195, 210)
                              : skia::colorSetARGB(255, 153, 153, 153));
       p.textClipped(Settings::kSectionIcons[fIndex], fBounds.fLeft + 26.0f,
-                    fBounds.centerY() + 7.0f, 24.0f, 18.0f, tint, alpha);
+                    p.middleBaseline(fBounds, 18.0f), 24.0f, 18.0f, tint,
+                    alpha);
       p.textClipped(Settings::kSections[fIndex], fBounds.fLeft + 56.0f,
-                    fBounds.centerY() + 6.0f, kSidebarWidth - 66.0f, 15.0f,
-                    tint, alpha);
+                    p.middleBaseline(fBounds, 15.0f), kSidebarWidth - 66.0f,
+                    15.0f, tint, alpha);
     }
 
     bool acceptsInput() const override { return true; }
