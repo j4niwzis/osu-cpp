@@ -336,6 +336,10 @@ struct ScoreState {
   int fTailHit = 0;
   int fTailMiss = 0;
   double fHealth = 1.0;
+  // The play ended with the bar empty. Kept here rather than being inferred
+  // from fHealth, which is clamped at zero and so cannot be distinguished
+  // from a play that merely finished on nothing left.
+  bool fFailed = false;
 
   // Running totals for the standardised score. The maxima come from a
   // simulated perfect play and are filled in by the engine before any
@@ -603,8 +607,12 @@ computeDrainRate(std::span<const std::pair<double, double>> increases,
   return std::clamp(target, 0.0, 1.0);
 }
 
+// ScoreProcessor.FailScore marks a failed play F outright, and updateRank
+// then refuses to move off it. Failing is a state, not a number: health is
+// clamped at zero when it happens, so asking whether it went below -- which
+// is what this did -- never says yes.
 [[nodiscard]] inline Grade computeGrade(const ScoreState &state) noexcept {
-  if (state.fHealth < 0.0) {
+  if (state.fFailed) {
     return grade::F{};
   }
   const double acc = state.accuracy();

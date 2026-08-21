@@ -452,10 +452,17 @@ private:
 
   void emit(std::size_t i, HitKind kind, Judgement j, bool hit, double delta) {
     fEvents.push_back({i, j, kind, delta});
-    if (fFailed) {
-      return; // judged, but it counts for nothing
-    }
+    // What multiplayer does, which is what this client does everywhere: the
+    // score, the combo and the accuracy carry on past a fail, the health does
+    // not, and the grade is F from the moment it happens.
+    // ScoreProcessor drops results after a fail unless
+    // ApplyNewJudgementsWhenFailed is set, and the two screens that set it
+    // are MultiplayerPlayer and MultiSpectatorPlayer; HealthProcessor stops
+    // either way.
     registerResult(fScore, kind, j, hit, fMods, fDiff.fHp);
+    if (fFailed) {
+      return;
+    }
     if (this->legacy()) {
       this->legacyHealth(j);
       return;
@@ -528,6 +535,7 @@ private:
     if (fScore.fHealth <= 0.0) {
       fScore.fHealth = 0.0;
       fFailed = true;
+      fScore.fFailed = true; // the grade is F from here, whatever the accuracy
     }
   }
 

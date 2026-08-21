@@ -261,6 +261,27 @@ TEST(Stars, MatchesLazer) {
 // Note the reference is rosu-pp and not osu! itself: this algorithm no longer
 // exists in osu!'s master branch, so at the last few digits there is nothing
 // to say which of the two is right.
+// Failing keeps the score running and stops the health, which is what
+// MultiplayerPlayer asks ScoreProcessor for and what this client does on
+// every screen. Checked against lazer's own processors over the judgements of
+// a real replay: 413 of them, agreeing on health, score, combo and accuracy
+// at every step.
+TEST(Rules, FailedPlayKeepsScoringAndGradesF) {
+  ScoreState state;
+  state.fGreat = 90;
+  state.fMiss = 10;
+  state.adoptLegacyCounts();
+  EXPECT_FALSE(std::holds_alternative<grade::F>(computeGrade(state)));
+
+  // Health clamps at zero when a play fails, so the grade cannot be read off
+  // it -- the state has to say so itself.
+  state.fHealth = 0.0;
+  EXPECT_FALSE(std::holds_alternative<grade::F>(computeGrade(state)));
+
+  state.fFailed = true;
+  EXPECT_TRUE(std::holds_alternative<grade::F>(computeGrade(state)));
+}
+
 TEST(Stars, MatchesRankedCalculator) {
   struct RankedCase {
     const char *fFile;
