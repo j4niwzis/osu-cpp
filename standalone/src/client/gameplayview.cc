@@ -543,12 +543,18 @@ public:
       addPlayfieldPt(static_cast<float>(pp.fPos.fX),
                      static_cast<float>(pp.fPos.fY), 60.0f);
 
+    // Scaled by the cursor size setting, which goes to 2x. A fixed radius
+    // meant a large cursor was drawn partly outside the region being
+    // repainted, so what was on screen depended on what else had damaged that
+    // area -- the size looked applied on some entries into a map and not on
+    // others.
+    const float cursorReach = 24.0f * std::max(1.0f, c.fCursorSize);
     for (const auto &pt : fCursorTrail)
       addPlayfieldPt(static_cast<float>(pt.fPos.fX),
-                     static_cast<float>(pt.fPos.fY), 24.0f);
+                     static_cast<float>(pt.fPos.fY), cursorReach);
 
     addPlayfieldPt(static_cast<float>(c.fCursor.fX),
-                   static_cast<float>(c.fCursor.fY), 24.0f);
+                   static_cast<float>(c.fCursor.fY), cursorReach);
 
     for (std::size_t i = 0; i + 1 < c.fMap->fObjects.size(); ++i) {
       const double endTime = osu::startTime(c.fMap->fObjects[i + 1]);
@@ -1059,9 +1065,28 @@ public:
 
     // Only reached when the skin has no trail of its own, so there is no
     // sprite to blend with or to cap the head with here.
+    //
+    // Through a layer, for the same reason the stamped path is: the ribbon is
+    // one strip of triangles and where the pointer turns back on itself the
+    // strip covers ground it has already covered. Drawn straight onto the
+    // playfield those triangles blend with each other and the fold comes out
+    // brighter than the rest of the trail. Inside the layer each takes the
+    // brighter of itself and what is there, so crossing changes nothing, and
+    // the layer meets the playfield once.
+    skia::SkRect bounds = skia::SkRect::MakeLTRB(pos[0].fX, pos[0].fY,
+                                                 pos[0].fX, pos[0].fY);
+    for (const auto &p : pos) {
+      bounds.fLeft = std::min(bounds.fLeft, p.fX);
+      bounds.fTop = std::min(bounds.fTop, p.fY);
+      bounds.fRight = std::max(bounds.fRight, p.fX);
+      bounds.fBottom = std::max(bounds.fBottom, p.fY);
+    }
+    canvas->saveLayer(&bounds, nullptr);
     skia::SkPaint paint;
+    paint.setBlendMode(skia::SkBlendMode::kLighten);
     // No shader on the paint: kDst keeps the interpolated vertex colors.
     canvas->drawVertices(verts, skia::SkBlendMode::kDst, paint);
+    canvas->restore();
   }
 
   void drawCursor(const Ctx &c, skia::SkCanvas *canvas) {
