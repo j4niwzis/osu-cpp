@@ -1718,7 +1718,14 @@ private:
 
   // The whole screen has to be repainted: a screen changed, the window
   // resized, or something that does not report its bounds moved.
-  void damageAll(const char *reason = "unspecified") {
+  // `buffersGone` says the window's buffers were thrown away and remade, not
+  // merely repainted. Buffer age describes the contents of a buffer that
+  // survived a frame; after a reallocation there are no such buffers, and the
+  // history that would have covered them has just been cleared, so the ages
+  // that come back describe buffers this client has never drawn into. Trusting
+  // them there is what left everything but the live region black during a
+  // window drag.
+  void damageAll(const char *reason = "unspecified", bool buffersGone = false) {
     fFullDamage = true;
     // The window is cycling through several buffers, and a repaint lands in
     // exactly one of them: the others still hold what was on screen before.
@@ -1730,7 +1737,8 @@ private:
     // the screen it was called from underneath.
     // With a real buffer age each frame works out for itself how far back it
     // has to repaint, so the margin is only for the case where nobody says.
-    fFullRepaintsOwed = fBufferAge >= 0 ? 0 : kFullRepaintsAfterChange;
+    fFullRepaintsOwed =
+        (!buffersGone && fBufferAge >= 0) ? 0 : kFullRepaintsAfterChange;
     if (!fDrawing) {
       fDamageDrives = true;
       this->oweFrames(kFullRepaintsAfterChange + 1);
@@ -2283,7 +2291,9 @@ private:
     const bool software =
         fSettings.choice("renderer") == 1 && this->ensureRasterSurface();
     if (software != fDrewOnRaster) {
-      this->damageAll("renderer changed");
+      // Same reasoning: the frame moves to a different surface, and whatever
+      // that one holds has nothing to do with the ages being reported.
+      this->damageAll("renderer changed", /*buffersGone=*/true);
     }
     fDrewOnRaster = software;
     fSurface = software ? fRasterSurface : fWindowSurface;
@@ -7813,7 +7823,7 @@ private:
     // drawing on that way. The frame that needs it makes it.
     fRasterSurface.reset();
     fBlitHistory.clear();
-    this->damageAll("resize");
+    this->damageAll("resize", /*buffersGone=*/true);
     fView.invalidate();
     fView.preScaleBackground(this->gameplayCtx(nullptr));
   }
