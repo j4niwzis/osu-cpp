@@ -215,33 +215,39 @@ private:
   static constexpr std::size_t kMaxDamageRects = 3;
   bool fOverlayShown = false; // an overlay covered the screen last frame
   double fDamageLogWall = 0.0;
-  const char *fLoggedFullReason = nullptr;
-  std::chrono::steady_clock::time_point fFrameStart{};
-  std::chrono::steady_clock::time_point fBlitStart{};
-  std::int64_t fCostUpdateUs = 0, fCostDrawUs = 0, fCostBlitUs = 0,
-               fCostSwapUs = 0;
-  std::int64_t fLastUpdateUs = 0;
-  std::uint64_t fCostVisited = 0, fCostDrawn = 0;
-  std::int64_t fCostClipArea = 0; // pixels the frames were allowed to touch
-  int fCostFrames = 0;
-  double fCostLogWall = 0.0;
+  // What the client says about itself when asked: the frame cost
+  // counters, the damage overlay and the traces. Nothing that draws
+  // reads any of it.
+  struct Diagnostics {
+    const char *fLoggedFullReason = nullptr;
+    std::chrono::steady_clock::time_point fFrameStart{};
+    std::chrono::steady_clock::time_point fBlitStart{};
+    std::int64_t fCostUpdateUs = 0, fCostDrawUs = 0, fCostBlitUs = 0,
+                 fCostSwapUs = 0;
+    std::int64_t fLastUpdateUs = 0;
+    std::uint64_t fCostVisited = 0, fCostDrawn = 0;
+    std::int64_t fCostClipArea = 0; // pixels the frames were allowed to touch
+    int fCostFrames = 0;
+    double fCostLogWall = 0.0;
+    const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
+    const bool fTraceRepaint = std::getenv("OSU_TRACE_REPAINT") != nullptr ||
+                               std::getenv("OSU_TRACE_RESIZE") != nullptr;
+    bool fTracedClipping = false;
+    int fTracedAge = -2;
+    std::size_t fTracedHistory = 0;
+  };
+  Diagnostics fDiag;
   // What each of the last few frames repainted, since the buffer being drawn
   // into is missing exactly that.
   // The setting decides; the variable is there for a run before settings
   // exist, and to force it on while measuring.
   const bool fForcePartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
-  const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
   // OSU_TRACE_REPAINT=1 prints the numbers a frame's clip decision is made
   // from -- but only when one of them changes, so a session is a handful of
   // lines rather than one per frame. A screen going black but for the live
   // region is a frame that clipped into a buffer it had never drawn into, and
   // the line where clipping resumes is the one that says why it thought it
   // could. OSU_TRACE_RESIZE is the old name and still works.
-  const bool fTraceRepaint = std::getenv("OSU_TRACE_REPAINT") != nullptr ||
-                             std::getenv("OSU_TRACE_RESIZE") != nullptr;
-  bool fTracedClipping = false;
-  int fTracedAge = -2;
-  std::size_t fTracedHistory = 0;
   // OSU_BUFFER_AGE=N overrides the setting of the same meaning, for measuring.
   const int fForcedBufferAge = [] {
     const char *value = std::getenv("OSU_BUFFER_AGE");
@@ -2066,13 +2072,14 @@ private:
     // after the blit history has been updated for this frame, so the line
     // cannot disagree with what the frame then does. Printed when the answer
     // or the buffer age changes, and for the second after a size event.
-    if (fTraceRepaint) {
+    if (fDiag.fTraceRepaint) {
       const bool willClip = !fFrame.fComputedClipFull &&
                             this->partialRedraw() &&
                             !this->historyShorterThan(this->drawReach());
       const bool resizing = wallMs() - fLastResizeWall < 1000.0;
-      if (willClip != fTracedClipping || fFrame.fBufferAge != fTracedAge ||
-          (fFrame.fBlitHistory.size() < fTracedHistory) || resizing) {
+      if (willClip != fDiag.fTracedClipping ||
+          fFrame.fBufferAge != fDiag.fTracedAge ||
+          (fFrame.fBlitHistory.size() < fDiag.fTracedHistory) || resizing) {
         std::println(std::cerr,
                      "[repaint] {:8.0f} ms  age {}{}  reach {}  history {}  "
                      "{}  -> {}{}",
@@ -2085,9 +2092,9 @@ private:
                          ? std::string(" -- ") + fFrame.fFullDamageReason
                          : std::string());
       }
-      fTracedClipping = willClip;
-      fTracedAge = fFrame.fBufferAge;
-      fTracedHistory = fFrame.fBlitHistory.size();
+      fDiag.fTracedClipping = willClip;
+      fDiag.fTracedAge = fFrame.fBufferAge;
+      fDiag.fTracedHistory = fFrame.fBlitHistory.size();
     }
 
     if (!fFrame.fSurface) {
@@ -2326,7 +2333,7 @@ private:
   // said which of them only to itself, so "it draws when it should not" and
   // "it does not draw when it should" were both unanswerable from outside.
   [[nodiscard]] bool frameBecause(const char *reason) {
-    if (fTraceRepaint && reason != fFrame.fFrameReason) {
+    if (fDiag.fTraceRepaint && reason != fFrame.fFrameReason) {
       std::println(std::cerr, "[frame] {:8.0f} ms  drawn because {}", wallMs(),
                    reason);
     }
@@ -2422,7 +2429,7 @@ private:
     }
     // Safety net: whatever the screens forgot to announce shows up within
     // this long rather than never.
-    if (fTraceRepaint && fState == State::kMainMenu &&
+    if (fDiag.fTraceRepaint && fState == State::kMainMenu &&
         now - fFrame.fLastDrawWall > 500.0) {
       std::println(std::cerr,
                    "[menu] idle: moving {} animating {} dt {:.0f} ms",
@@ -2553,9 +2560,9 @@ private:
     // was asked for has anything to put on screen.
     const auto updateStart = std::chrono::steady_clock::now();
     this->updateScreens();
-    fLastUpdateUs = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - updateStart)
-                        .count();
+    fDiag.fLastUpdateUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - updateStart)
+                              .count();
     if (this->nothingToPaint()) {
       // The question the safety net exists to ask has just been asked and
       // answered, so the net does not need to fire.
@@ -2566,7 +2573,7 @@ private:
       return;
     }
     fFrame.fLastDrawWall = wallMs();
-    fFrameStart = std::chrono::steady_clock::now();
+    fDiag.fFrameStart = std::chrono::steady_clock::now();
 
     // The renderer is chosen per frame, because only the UI screens may use
     // the CPU one: gameplay draws precomputed GPU textures.
@@ -2702,7 +2709,7 @@ private:
   }
 
   void present() {
-    const auto frameStart = fFrameStart;
+    const auto frameStart = fDiag.fFrameStart;
     // Overlays float above whatever screen is drawn.
     auto *canvas = fFrame.fSurface->getCanvas();
     if (fModSelect.visible()) {
@@ -2730,7 +2737,7 @@ private:
     // otherwise the counter is drawn into a surface whose corner is never
     // carried over, and the number stops.
     this->drawFpsCounter(canvas);
-    fBlitStart = std::chrono::steady_clock::now();
+    fDiag.fBlitStart = std::chrono::steady_clock::now();
 
     // Everything about this frame, for the four hundred milliseconds after a
     // size event: what the client thinks the screen is, what the two surfaces
@@ -2738,7 +2745,7 @@ private:
     // Four fixes have been aimed at this from four theories and none of them
     // was measured; this is all of the state at once so the next one is not a
     // fifth theory.
-    if (fTraceRepaint && wallMs() - fLastResizeWall < 400.0) {
+    if (fDiag.fTraceRepaint && wallMs() - fLastResizeWall < 400.0) {
       const auto dims = [](const skia::Sp<skia::SkSurface> &surface) {
         return surface
                    ? std::format("{}x{}", surface->width(), surface->height())
@@ -2840,7 +2847,7 @@ private:
   // at which of the three got slower has not worked so far.
   void reportFrameCost(std::chrono::steady_clock::time_point start,
                        std::chrono::steady_clock::time_point beforeSwap) {
-    if (!fForceShowDamage) {
+    if (!fDiag.fForceShowDamage) {
       return;
     }
     const auto now = std::chrono::steady_clock::now();
@@ -2848,24 +2855,25 @@ private:
       return std::chrono::duration_cast<std::chrono::microseconds>(to - from)
           .count();
     };
-    fCostUpdateUs += fLastUpdateUs;
-    fCostDrawUs += us(start, fBlitStart) - fLastUpdateUs;
-    fCostBlitUs += us(fBlitStart, beforeSwap);
-    fCostSwapUs += us(beforeSwap, now);
-    fCostVisited += skiff::scene::visitedCount();
-    fCostDrawn += skiff::scene::drawnCount();
+    fDiag.fCostUpdateUs += fDiag.fLastUpdateUs;
+    fDiag.fCostDrawUs += us(start, fDiag.fBlitStart) - fDiag.fLastUpdateUs;
+    fDiag.fCostBlitUs += us(fDiag.fBlitStart, beforeSwap);
+    fDiag.fCostSwapUs += us(beforeSwap, now);
+    fDiag.fCostVisited += skiff::scene::visitedCount();
+    fDiag.fCostDrawn += skiff::scene::drawnCount();
     skiff::scene::visitedCount() = 0;
     skiff::scene::drawnCount() = 0;
     if (fFrame.fComputedClipFull) {
-      fCostClipArea += static_cast<std::int64_t>(fWin.fScreenW) * fWin.fScreenH;
+      fDiag.fCostClipArea +=
+          static_cast<std::int64_t>(fWin.fScreenW) * fWin.fScreenH;
     } else if (!fFrame.fComputedClip.empty()) {
       for (const auto &rect : fFrame.fComputedClip) {
-        fCostClipArea +=
+        fDiag.fCostClipArea +=
             static_cast<std::int64_t>(rect.width()) * rect.height();
       }
     }
-    ++fCostFrames;
-    if (wallMs() - fCostLogWall < 1000.0 || fCostFrames == 0) {
+    ++fDiag.fCostFrames;
+    if (wallMs() - fDiag.fCostLogWall < 1000.0 || fDiag.fCostFrames == 0) {
       return;
     }
     // Named for what they are: settling the screen, drawing it (which on the
@@ -2876,14 +2884,15 @@ private:
         "[frame] update {:.2f} ms, draw {:.2f} ms, blit {:.2f} ms, "
         "swap {:.2f} ms over {} frames, {} of {} drawables, "
         "{:.0f}% of the screen repainted{}",
-        static_cast<double>(fCostUpdateUs) / fCostFrames / 1000.0,
-        static_cast<double>(fCostDrawUs) / fCostFrames / 1000.0,
-        static_cast<double>(fCostBlitUs) / fCostFrames / 1000.0,
-        static_cast<double>(fCostSwapUs) / fCostFrames / 1000.0, fCostFrames,
-        fCostDrawn / std::max<std::uint64_t>(1, fCostFrames),
-        fCostVisited / std::max<std::uint64_t>(1, fCostFrames),
-        100.0 * static_cast<double>(fCostClipArea) /
-            std::max<double>(1.0, static_cast<double>(fCostFrames) *
+        static_cast<double>(fDiag.fCostUpdateUs) / fDiag.fCostFrames / 1000.0,
+        static_cast<double>(fDiag.fCostDrawUs) / fDiag.fCostFrames / 1000.0,
+        static_cast<double>(fDiag.fCostBlitUs) / fDiag.fCostFrames / 1000.0,
+        static_cast<double>(fDiag.fCostSwapUs) / fDiag.fCostFrames / 1000.0,
+        fDiag.fCostFrames,
+        fDiag.fCostDrawn / std::max<std::uint64_t>(1, fDiag.fCostFrames),
+        fDiag.fCostVisited / std::max<std::uint64_t>(1, fDiag.fCostFrames),
+        100.0 * static_cast<double>(fDiag.fCostClipArea) /
+            std::max<double>(1.0, static_cast<double>(fDiag.fCostFrames) *
                                       fWin.fScreenW * fWin.fScreenH),
         std::string(fFrame.fDrewOnRaster ? " [cpu]" : " [gpu]") +
             (this->partialRedraw()
@@ -2892,11 +2901,12 @@ private:
                                fFrame.fBufferAgeAssumed ? "assumption"
                                                         : present::backend())
                  : ""));
-    fCostLogWall = wallMs();
-    fCostUpdateUs = fCostDrawUs = fCostBlitUs = fCostSwapUs = 0;
-    fCostVisited = fCostDrawn = 0;
-    fCostClipArea = 0;
-    fCostFrames = 0;
+    fDiag.fCostLogWall = wallMs();
+    fDiag.fCostUpdateUs = fDiag.fCostDrawUs = fDiag.fCostBlitUs =
+        fDiag.fCostSwapUs = 0;
+    fDiag.fCostVisited = fDiag.fCostDrawn = 0;
+    fDiag.fCostClipArea = 0;
+    fDiag.fCostFrames = 0;
   }
 
   // How many back buffers the window may be cycling through; each of them
@@ -2994,7 +3004,7 @@ private:
   // OSU_SHOW_DAMAGE=1 outlines what was repainted, which is the only way to
   // see whether a screen is reporting its damage honestly.
   [[nodiscard]] bool showingDamage() const {
-    return fForceShowDamage || fSettings.flag("damageoverlay");
+    return fDiag.fForceShowDamage || fSettings.flag("damageoverlay");
   }
 
   void showDamage(skia::SkCanvas *canvas) {
@@ -3016,12 +3026,12 @@ private:
       // Deduplicated by reason rather than by the clock: a one-off -- a
       // screen change, a resize -- would otherwise be swallowed by whatever
       // repeating reason spoke first in that second.
-      const bool sameReason = fLoggedFullReason != nullptr &&
-                              std::string_view(fLoggedFullReason) ==
+      const bool sameReason = fDiag.fLoggedFullReason != nullptr &&
+                              std::string_view(fDiag.fLoggedFullReason) ==
                                   std::string_view(fFrame.fFullDamageReason);
       if (!sameReason || wallMs() - fDamageLogWall > 1000.0) {
         fDamageLogWall = wallMs();
-        fLoggedFullReason = fFrame.fFullDamageReason;
+        fDiag.fLoggedFullReason = fFrame.fFullDamageReason;
         std::println(std::cerr, "[damage] would repaint everything: {}",
                      fFrame.fFullDamageReason);
       }
