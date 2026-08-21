@@ -144,6 +144,14 @@ private:
   // Swap interval is a property of the context, so only the thread holding it
   // may set it; a toggle in the settings parks the value here.
   std::atomic<int> fSwapIntervalRequest{-1};
+  // The last framebuffer size the window system reported, written by the
+  // thread that owns the window and read by the one that draws. The resize
+  // event carries the same numbers, but it goes through a queue that is
+  // drained at the top of a frame: a resize arriving after that is not known
+  // to the frame already being drawn, and that frame is the one that clips
+  // into a buffer the server has just reallocated. This is the same fact
+  // without the queue.
+  std::atomic<std::uint64_t> fReportedSize{0};
   int fSwapInterval = -1;
   int fRefreshHz = 60; // the monitor's, sampled where GLFW allows the query
   double fRedrawUntilWall = 0.0; // frames are drawn until at least this time
@@ -868,6 +876,8 @@ private:
           auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
           if (self == nullptr)
             return;
+          self->fReportedSize.store(App::packSize(width, height),
+                                    std::memory_order_release);
           // Surface recreation must happen where the GL context is current:
           // marshal to the render thread.
           self->enqueue({App::wallMs(), EventType::kResize, width, height});
@@ -950,6 +960,18 @@ private:
     skiff::nodes::Text::setFont(&fFont);
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
+
+    // Said once, because whether it is answered decides which of the two ways
+    // of noticing a resize is doing the work, and guessing at that has cost a
+    // day.
+    {
+      int probeW = 0;
+      int probeH = 0;
+      std::println(std::cerr, "[present] surface size: {}",
+                   present::surfaceSize(&probeW, &probeH)
+                       ? std::format("{}x{}", probeW, probeH)
+                       : "not answered, using the resize callback");
+    }
 
     this->initLibrary();
     // Launched with a beatmap on the command line => skip the main menu and
@@ -1944,9 +1966,19 @@ private:
     // Nothing in the damage bookkeeping can know that, because the whole of
     // it is downstream of the event. So the size is asked of the window
     // system directly, on the thread that is drawing, once a frame.
+    // Asked of the window system where it will answer, and taken from what
+    // the resize callback last reported where it will not -- which is the
+    // case on a driver that reports no buffer age either, since both come
+    // from the same EGL or GLX that was never resolved.
     int windowW = 0;
     int windowH = 0;
-    if (present::surfaceSize(&windowW, &windowH) &&
+    if (!present::surfaceSize(&windowW, &windowH)) {
+      const std::uint64_t reported =
+          fReportedSize.load(std::memory_order_acquire);
+      windowW = static_cast<int>(reported >> 32);
+      windowH = static_cast<int>(reported & 0xffffffffu);
+    }
+    if (windowW > 0 && windowH > 0 &&
         (windowW != fScreenW || windowH != fScreenH)) {
       fBlitHistory.clear();
       fFullDamage = true;
@@ -2759,6 +2791,12 @@ private:
   // left. A screen change is worth more margin than it costs, so the frames
   // that repaint whole after one are counted with some to spare.
   static constexpr std::size_t kSwapChainDepth = 4;
+  [[nodiscard]] static std::uint64_t packSize(int width, int height) {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(width))
+            << 32) |
+           static_cast<std::uint32_t>(height);
+  }
+
   static constexpr int kFullRepaintsAfterChange = 6;
   // How long after the last size event a window is still assumed to be
   // throwing its buffers away. The same quarter second the slider bodies wait
