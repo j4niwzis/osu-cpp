@@ -360,6 +360,7 @@ private:
     double fMean = 0.0;
     double fUr = 0.0;
     std::string fGrade = "F";
+    double fPp = 0.0;
   };
   ResultData fResult;
 
@@ -432,6 +433,9 @@ private:
   double fLastResizeWall = 0.0;
   // Set when a map is loaded and cleared by the frame that first shows it.
   bool fAwaitingFirstFrame = false;
+  // The difficulty of the map being played, under the ranked calculator and
+  // with the mods applied, kept so the play can be priced when it ends.
+  osu::StarRating fPlayAttributes;
   float fLogoAmp = 0.0f;    // beat amplitude the logo settled at
   float fLogoRadius = 0.0f;
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
@@ -573,6 +577,14 @@ private:
       }
     }
     fEngine.emplace(*fMap, fMods, rules);
+    // Worked out once, here, rather than when the results appear: it is the
+    // difficulty calculation, and it belongs with the load rather than in the
+    // moment between the last note and the screen that follows it.
+    fPlayAttributes = osu::calculateStars(
+        *fMap, fMods, nullptr, std::numeric_limits<double>::infinity(),
+        osu::StarAlgorithm::kRanked);
+    fPlayAttributes.fMaxCombo = fEngine->maxAchievableCombo();
+    fPlayAttributes.fLargeTicks = fEngine->maximumStatistics().fLargeTick;
     this->loadComboInfo();
     fSkin.setComboColors(fMap->fComboColors);
     fSkin.precomputeSliderBodies(*fMap, fComboInfo, fScale, fContext.get(),
@@ -2987,6 +2999,20 @@ private:
       fResult.fUr = 0.0;
     }
     fResult.fGrade = osu::gradeString(osu::computeGrade(fResult.fScore));
+
+    // What the play is worth. The counts come straight off the score: the
+    // tails and ticks are the ones a performance calculation asks for, and
+    // this client has them because it judges them.
+    const auto &sc = fResult.fScore;
+    osu::ScoreInput input;
+    input.fGreat = sc.fGreat;
+    input.fOk = sc.fGood;
+    input.fMeh = sc.fMeh;
+    input.fMiss = sc.fMiss;
+    input.fMaxCombo = sc.fMaxCombo;
+    input.fSliderTailHits = sc.fTailHit;
+    input.fLargeTickHits = sc.fLargeTickHit;
+    fResult.fPp = osu::performanceRanked(fPlayAttributes, input).fTotal;
   }
 
   // With an absolute pointer the desktop cursor stops at the screen edge, so
@@ -7554,6 +7580,8 @@ private:
         {"accuracy", std::format("{:.2f}%", sh.fAccuracy * 100.0),
          skia::kWhite},
     };
+    bottom.push_back({"pp", std::format("{:.0f}", fResult.fPp),
+                      client::ui::kAccent});
     if (sh.fDetail) {
       bottom.push_back(
           {"hit error", std::format("{:+.1f}ms", fResult.fMean), skia::kWhite});
