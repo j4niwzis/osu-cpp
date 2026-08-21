@@ -1005,7 +1005,19 @@ float4 main(float2 coords) {
     // the disc. Drawing it at the disc's own size, which is what this did,
     // stretched it over the whole spinner.
     if (centreScale > 0.0) {
-      const double centreSize = 128.0 * centreScale;
+      // What lazer's RingPiece measures: OBJECT_DIMENSIONS times whatever the
+      // centre layer and the disc are scaled by, which the caller has already
+      // multiplied together.
+      const double ringSize = 128.0 * centreScale;
+      // The sprite is not just that ring. Measured over rings of
+      // spinnertop.png: alpha is solid out to 80% of the file's half-width
+      // and the remaining fifth is glow falling to nothing, with the white
+      // ring itself sitting at 72-80%. Drawn at the ring's size the file
+      // therefore puts its ring at four fifths of where it belongs, which is
+      // why the centre still looked small. This fraction is a fact about
+      // webosu-2's sprite, which is the only one this has.
+      constexpr double kSolidFraction = 0.8;
+      const double centreSize = ringSize / kSolidFraction;
       if (top) {
         canvas->save();
         canvas->translate(static_cast<float>(cx), static_cast<float>(cy));
@@ -1026,7 +1038,7 @@ float4 main(float2 coords) {
         centre.setAntiAlias(true);
         centre.setAlphaf(0.8f);
         canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
-                           static_cast<float>(centreSize * 0.5), centre);
+                           static_cast<float>(ringSize * 0.5), centre);
       }
     }
   }
