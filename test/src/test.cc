@@ -252,6 +252,57 @@ TEST(Stars, MatchesLazer) {
   }
 }
 
+// The other calculator: the one the servers actually rank with, checked
+// against rosu-pp, which is the reference implementation of it. Agreement is
+// to within a part in a million here; section by section the two series agree
+// to about 1e-8, which is single precision -- lazer and rosu-pp both hold
+// object positions as floats and this holds them as doubles.
+//
+// Note the reference is rosu-pp and not osu! itself: this algorithm no longer
+// exists in osu!'s master branch, so at the last few digits there is nothing
+// to say which of the two is right.
+TEST(Stars, MatchesRankedCalculator) {
+  struct RankedCase {
+    const char *fFile;
+    double fStars;
+    double fAim;
+    double fSpeed;
+  };
+  const RankedCase cases[] = {
+      {"test/data/diffcalc-test.osu", 6.6232539338574, 3.8012985833856,
+       2.1987202735588},
+      {"test/data/zero-length-sliders.osu", 1.5045783545700, 0.8903373157054,
+       0.2543994557061},
+      {"test/data/very-fast-slider.osu", 0.4333383667119, 0.0,
+       0.2480856854663},
+      {"test/data/nan-slider.osu", 0.7294182074713, 0.0855674731135,
+       0.4261969247179},
+  };
+
+  for (const auto &c : cases) {
+    const Beatmap bm = loadTestBeatmap(c.fFile);
+    const StarRating stars =
+        calculateStars(bm, mod::kNone, nullptr,
+                       std::numeric_limits<double>::infinity(),
+                       StarAlgorithm::kRanked);
+    EXPECT_NEAR(stars.fTotal, c.fStars, c.fStars * 1e-6) << c.fFile;
+    EXPECT_NEAR(stars.fAim, c.fAim, std::max(c.fAim, 1e-3) * 1e-6) << c.fFile;
+    EXPECT_NEAR(stars.fSpeed, c.fSpeed, std::max(c.fSpeed, 1e-3) * 1e-6)
+        << c.fFile;
+  }
+}
+
+TEST(Stars, MatchesRankedCalculatorWithDoubleTime) {
+  const Beatmap bm = loadTestBeatmap("test/data/diffcalc-test.osu");
+  const StarRating stars =
+      calculateStars(bm, mod::kDoubleTime, nullptr,
+                     std::numeric_limits<double>::infinity(),
+                     StarAlgorithm::kRanked);
+  EXPECT_NEAR(stars.fTotal, 9.6491732889114, 9.6491732889114 * 1e-6);
+  EXPECT_NEAR(stars.fAim, 5.5958565319540, 5.5958565319540 * 1e-6);
+  EXPECT_NEAR(stars.fSpeed, 2.9843504836661, 2.9843504836661 * 1e-6);
+}
+
 TEST(Stars, MatchesLazerWithDoubleTime) {
   const StarCase cases[] = {
       {"test/data/diffcalc-test.osu", 9.4677694877984, 5.5930033565508,
