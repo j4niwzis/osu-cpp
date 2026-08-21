@@ -69,6 +69,11 @@ else()
   CPMAddPackage(NAME osucpp SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
 endif()
 
+# The drawing library: Skia wrapper, palette, painter, scene graph, drawables.
+# Everything the client draws with comes from here; nothing here knows what a
+# beatmap is.
+CPMAddPackage(NAME osuui SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/../ui)
+
 # ---- Create binary ----
 
 file(GLOB_RECURSE module_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
@@ -112,6 +117,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 if(EMSCRIPTEN_BUILD)
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
+    osuui
     ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
     ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
     ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
@@ -122,6 +128,7 @@ if(EMSCRIPTEN_BUILD)
 else()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
+    osuui
     Threads::Threads
     OpenGL::GL
     ${GLFW_LDFLAGS} ${GLFW_LIBRARIES}

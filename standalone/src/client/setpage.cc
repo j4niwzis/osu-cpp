@@ -280,91 +280,60 @@ private:
                                                        const Ctx &ctx) {
     fPreviewGlyph = nullptr;
 
-    auto root = std::make_unique<nodes::Box>(listing::kBackground6);
-    root->fRelativeSizeAxes = scene::Axes::kBoth;
-    root->fWidth = 1.0f;
-    root->fHeight = 1.0f;
-
-    auto scroll = std::make_unique<nodes::ScrollContainer>();
-    scroll->fRelativeSizeAxes = scene::Axes::kBoth;
-    scroll->fWidth = 1.0f;
-    scroll->fHeight = 1.0f;
-
-    auto column = std::make_unique<nodes::FillFlow>(
+    auto root = scene::make<nodes::Box>({.fill = true}, listing::kBackground6);
+    auto *scroll = root->add<nodes::ScrollContainer>({.fill = true});
+    auto *column = scroll->add<nodes::FillFlow>(
+        {.fillX = true, .autoSize = scene::Axes::kY},
         nodes::FillFlow::Direction::kVertical);
-    column->fRelativeSizeAxes = scene::Axes::kX;
-    column->fWidth = 1.0f;
-    column->fAutoSizeAxes = scene::Axes::kY;
 
     column->add(this->buildHeader(e, ctx));
     column->add(this->buildInfo(e, ctx));
-
-    scroll->add(std::move(column));
-    root->add(std::move(scroll));
     return root;
   }
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildHeader(const Entry &e,
                                                              const Ctx &ctx) {
-    auto header = std::make_unique<nodes::Box>(listing::kBackground5);
-    header->fRelativeSizeAxes = scene::Axes::kX;
-    header->fWidth = 1.0f;
-    header->fHeight = kHeaderHeight;
-    header->fMasking = true;
+    auto header = scene::make<nodes::Box>(
+        {.fillX = true, .height = kHeaderHeight, .masking = true},
+        listing::kBackground5);
 
     if (e.fPageCoverSt == Entry::Cover::kReady && e.fPageCover) {
-      auto cover = std::make_unique<nodes::Sprite>(e.fPageCover);
-      cover->fRelativeSizeAxes = scene::Axes::kBoth;
-      cover->fWidth = 1.0f;
-      cover->fHeight = 1.0f;
-      header->add(std::move(cover));
+      header->add<nodes::Sprite>({.fill = true}, e.fPageCover);
     } else if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
-      auto cover = std::make_unique<nodes::Sprite>(e.fThumb);
-      cover->fRelativeSizeAxes = scene::Axes::kBoth;
-      cover->fWidth = 1.0f;
-      cover->fHeight = 1.0f;
-      header->add(std::move(cover));
+      header->add<nodes::Sprite>({.fill = true}, e.fThumb);
     }
-    auto gradient = std::make_unique<CoverGradient>();
-    gradient->fRelativeSizeAxes = scene::Axes::kBoth;
-    gradient->fWidth = 1.0f;
-    gradient->fHeight = 1.0f;
-    header->add(std::move(gradient));
+    header->add<CoverGradient>({.fill = true});
 
     header->add(this->buildHeaderLeft(e));
     header->add(this->buildPicker(e));
+    static_cast<void>(ctx);
     return header;
   }
 
   [[nodiscard]] std::unique_ptr<scene::Drawable>
   buildHeaderLeft(const Entry &e) {
-    auto left = std::make_unique<nodes::FillFlow>(
-        nodes::FillFlow::Direction::kVertical);
-    left->fRelativeSizeAxes = scene::Axes::kX;
-    left->fWidth = 1.0f;
-    left->fAutoSizeAxes = scene::Axes::kY;
-    left->fPadding = {kYPadding, kRightWidth + kHorizontalPadding + 10.0f,
-                      kYPadding, kHorizontalPadding};
-    left->setSpacing(0.0f, 4.0f);
+    auto left = scene::make<nodes::FillFlow>(
+        {.fillX = true,
+         .autoSize = scene::Axes::kY,
+         .padding = {kYPadding, kRightWidth + kHorizontalPadding + 10.0f,
+                     kYPadding, kHorizontalPadding}},
+        nodes::FillFlow::Direction::kVertical, 0.0f, 4.0f);
 
-    auto title = std::make_unique<nodes::Text>(
-        e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, 30.0f,
+    left->add<nodes::Text>(
+        {}, e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, 30.0f,
         listing::kContent1, true);
-    left->add(std::move(title));
 
-    auto badges = std::make_unique<nodes::FillFlow>(
-        nodes::FillFlow::Direction::kHorizontal);
-    badges->fAutoSizeAxes = scene::Axes::kBoth;
-    badges->setSpacing(4.0f, 0.0f);
+    auto *badges = left->add<nodes::FillFlow>(
+        {.autoSize = scene::Axes::kBoth},
+        nodes::FillFlow::Direction::kHorizontal, 4.0f, 0.0f);
     badges->fWrap = false;
     const auto badge = [&](const char *label, skia::SkColor colour) {
-      auto box = std::make_unique<nodes::Box>(colour);
-      box->fAutoSizeAxes = scene::Axes::kBoth;
-      box->fCornerRadius = 3.0f;
-      box->fPadding = {2.0f, 6.0f, 2.0f, 6.0f};
-      box->add(std::make_unique<nodes::Text>(label, 10.0f,
-                                             listing::kBackground6, true));
-      badges->add(std::move(box));
+      badges
+          ->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
+                             .padding = {2.0f, 6.0f, 2.0f, 6.0f},
+                             .cornerRadius = 3.0f},
+                            colour)
+          ->add<nodes::Text>({}, label, 10.0f, listing::kBackground6, true);
     };
     if (e.fVideo) {
       badge("VIDEO", listing::kContent2);
@@ -381,61 +350,43 @@ private:
     if (e.fFeatured) {
       badge("FEATURED ARTIST", skia::colorSetARGB(255, 255, 204, 102));
     }
-    left->add(std::move(badges));
 
-    left->add(std::make_unique<nodes::Text>(
-        e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, 20.0f,
-        listing::kContent1, false));
+    left->add<nodes::Text>(
+        {}, e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, 20.0f,
+        listing::kContent1, false);
 
-    auto mapper = std::make_unique<nodes::FillFlow>(
+    auto *mapper = left->add<nodes::FillFlow>(
+        {.autoSize = scene::Axes::kBoth},
         nodes::FillFlow::Direction::kHorizontal);
-    mapper->fAutoSizeAxes = scene::Axes::kBoth;
     mapper->fWrap = false;
-    mapper->add(std::make_unique<nodes::Text>("mapped by ", 14.0f,
-                                              listing::kContent2, false));
-    mapper->add(std::make_unique<nodes::Text>(e.fCreator, 14.0f,
-                                              listing::kContent1, true));
-    left->add(std::move(mapper));
+    mapper->add<nodes::Text>({}, "mapped by ", 14.0f, listing::kContent2,
+                             false);
+    mapper->add<nodes::Text>({}, e.fCreator, 14.0f, listing::kContent1, true);
 
-    auto status = std::make_unique<nodes::Box>(listing::kColour3);
-    status->fAutoSizeAxes = scene::Axes::kBoth;
-    status->fCornerRadius = 9.0f;
-    status->fPadding = {2.0f, 10.0f, 2.0f, 10.0f};
-    status->fMargin = {6.0f, 0.0f, 0.0f, 0.0f};
-    status->add(std::make_unique<nodes::Text>(
-        e.fStatus.empty() ? "unknown" : e.fStatus, 11.0f,
-        listing::kBackground6, true));
-    left->add(std::move(status));
+    left->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
+                           .margin = {6.0f, 0.0f, 0.0f, 0.0f},
+                           .padding = {2.0f, 10.0f, 2.0f, 10.0f},
+                           .cornerRadius = 9.0f},
+                          listing::kColour3)
+        ->add<nodes::Text>({}, e.fStatus.empty() ? "unknown" : e.fStatus, 11.0f,
+                           listing::kBackground6, true);
 
     left->add(this->buildButtons(e));
     return left;
   }
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildButtons(const Entry &e) {
-    auto row = std::make_unique<nodes::FillFlow>(
-        nodes::FillFlow::Direction::kHorizontal);
-    row->fAutoSizeAxes = scene::Axes::kBoth;
-    row->setSpacing(kButtonsSpacing, 0.0f);
+    auto row = scene::make<nodes::FillFlow>(
+        {.autoSize = scene::Axes::kBoth, .margin = {10.0f, 0.0f, 0.0f, 0.0f}},
+        nodes::FillFlow::Direction::kHorizontal, kButtonsSpacing, 0.0f);
     row->fWrap = false;
-    row->fMargin = {10.0f, 0.0f, 0.0f, 0.0f};
 
-    auto play = std::make_unique<nodes::Clickable>(
+    auto *play = row->add<nodes::Clickable>(
+        {.width = kButtonsHeight, .height = kButtonsHeight},
         [this] { fPending = {Action::kPreview, 0}; });
-    play->fWidth = kButtonsHeight;
-    play->fHeight = kButtonsHeight;
-    auto playBg = std::make_unique<nodes::Box>(listing::kBackground3);
-    playBg->fRelativeSizeAxes = scene::Axes::kBoth;
-    playBg->fWidth = 1.0f;
-    playBg->fHeight = 1.0f;
-    playBg->fCornerRadius = 6.0f;
-    play->add(std::move(playBg));
-    auto glyph = std::make_unique<PreviewGlyph>();
-    glyph->fRelativeSizeAxes = scene::Axes::kBoth;
-    glyph->fWidth = 1.0f;
-    glyph->fHeight = 1.0f;
-    fPreviewGlyph = glyph.get();
-    play->add(std::move(glyph));
-    row->add(std::move(play));
+    play->add<nodes::Box>({.fill = true, .cornerRadius = 6.0f},
+                          listing::kBackground3);
+    fPreviewGlyph = play->add<PreviewGlyph>({.fill = true});
 
     const bool done = e.fSt == Entry::St::kDone;
     std::string label = "Download";
@@ -447,87 +398,65 @@ private:
     } else if (e.fVideo) {
       label = "Download with video";
     }
-    auto download = std::make_unique<nodes::Clickable>(
+
+    auto *download = row->add<nodes::Clickable>(
+        {.width = 240.0f, .height = kButtonsHeight},
         [this] { fPending = {Action::kDownload, 0}; });
-    download->fWidth = 240.0f;
-    download->fHeight = kButtonsHeight;
-    auto downloadBg = std::make_unique<nodes::Box>(
-        done ? listing::kBackground3 : listing::kColour3);
-    downloadBg->fRelativeSizeAxes = scene::Axes::kBoth;
-    downloadBg->fWidth = 1.0f;
-    downloadBg->fHeight = 1.0f;
-    downloadBg->fCornerRadius = 6.0f;
-    download->add(std::move(downloadBg));
-    auto text = std::make_unique<nodes::Text>(
-        label, 16.0f, done ? listing::kContent2 : listing::kBackground6, true);
-    text->fAnchor = scene::Anchor::kCentre;
-    text->fOrigin = scene::Anchor::kCentre;
-    download->add(std::move(text));
-    row->add(std::move(download));
+    download->add<nodes::Box>({.fill = true, .cornerRadius = 6.0f},
+                              done ? listing::kBackground3 : listing::kColour3);
+    download->add<nodes::Text>(
+        {.place = scene::Anchor::kCentre}, label, 16.0f,
+        done ? listing::kContent2 : listing::kBackground6, true);
     return row;
   }
 
   // BeatmapPicker: a tile per difficulty over the set's counts.
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildPicker(const Entry &e) {
-    auto right = std::make_unique<nodes::FillFlow>(
-        nodes::FillFlow::Direction::kVertical);
-    right->fWidth = kRightWidth;
-    right->fAutoSizeAxes = scene::Axes::kY;
-    right->fAnchor = scene::Anchor::kTopRight;
-    right->fOrigin = scene::Anchor::kTopRight;
-    right->fMargin = {kYPadding, kHorizontalPadding, 0.0f, 0.0f};
-    right->setSpacing(0.0f, 6.0f);
+    auto right = scene::make<nodes::FillFlow>(
+        {.place = scene::Anchor::kTopRight,
+         .width = kRightWidth,
+         .autoSize = scene::Axes::kY,
+         .margin = {kYPadding, kHorizontalPadding, 0.0f, 0.0f}},
+        nodes::FillFlow::Direction::kVertical, 0.0f, 6.0f);
 
-    right->add(std::make_unique<nodes::Text>(
+    right->add<nodes::Text>(
+        {},
         std::format("{} plays    {} favourites", e.fPlayCount,
                     e.fFavouriteCount),
-        12.0f, listing::kContent2, false));
+        12.0f, listing::kContent2, false);
 
-    auto tiles = std::make_unique<nodes::FillFlow>(
-        nodes::FillFlow::Direction::kHorizontal);
-    tiles->fWidth = kRightWidth;
-    tiles->fAutoSizeAxes = scene::Axes::kY;
-    tiles->setSpacing(kTileSpacing, kTileSpacing);
+    auto *tiles = right->add<nodes::FillFlow>(
+        {.width = kRightWidth, .autoSize = scene::Axes::kY},
+        nodes::FillFlow::Direction::kHorizontal, kTileSpacing, kTileSpacing);
     for (std::size_t i = 0; i < e.fDiffs.size(); ++i) {
       const auto &diff = e.fDiffs[i];
       const bool selected = static_cast<int>(i) == fSelected;
       const int index = static_cast<int>(i);
-      auto tile = std::make_unique<nodes::Clickable>([this, index] {
-        fSelected = index;
-        fPending = {Action::kSelectDiff, index};
-      });
-      tile->fWidth = kTileSize;
-      tile->fHeight = kTileSize;
-      auto bg = std::make_unique<nodes::Box>(
+
+      auto *tile = tiles->add<nodes::Clickable>(
+          {.width = kTileSize, .height = kTileSize}, [this, index] {
+            fSelected = index;
+            fPending = {Action::kSelectDiff, index};
+          });
+      tile->add<nodes::Box>(
+          {.fill = true, .cornerRadius = 4.0f},
           selected ? listing::kBackground3 : listing::kBackground5);
-      bg->fRelativeSizeAxes = scene::Axes::kBoth;
-      bg->fWidth = 1.0f;
-      bg->fHeight = 1.0f;
-      bg->fCornerRadius = 4.0f;
-      tile->add(std::move(bg));
-      auto dot = std::make_unique<nodes::Box>(client::ui::starColor(diff.fStars));
-      dot->fWidth = 16.0f;
-      dot->fHeight = 16.0f;
-      dot->fCornerRadius = 8.0f;
-      dot->fAnchor = scene::Anchor::kTopCentre;
-      dot->fOrigin = scene::Anchor::kTopCentre;
-      dot->fY = 6.0f;
-      tile->add(std::move(dot));
-      auto stars = std::make_unique<nodes::Text>(
+      tile->add<nodes::Box>({.place = scene::Anchor::kTopCentre,
+                             .y = 6.0f,
+                             .width = 16.0f,
+                             .height = 16.0f,
+                             .cornerRadius = 8.0f},
+                            client::ui::starColor(diff.fStars));
+      tile->add<nodes::Text>(
+          {.place = scene::Anchor::kBottomCentre, .y = -3.0f},
           std::format("{:.1f}", diff.fStars), 10.0f,
           selected ? listing::kContent1 : listing::kContent2, selected);
-      stars->fAnchor = scene::Anchor::kBottomCentre;
-      stars->fOrigin = scene::Anchor::kBottomCentre;
-      stars->fY = -3.0f;
-      tile->add(std::move(stars));
-      tiles->add(std::move(tile));
     }
-    right->add(std::move(tiles));
 
     if (!e.fDiffs.empty()) {
-      right->add(std::make_unique<nodes::Text>(
-          e.fDiffs[static_cast<std::size_t>(fSelected)].fVersion, 16.0f,
-          listing::kContent1, true));
+      right->add<nodes::Text>(
+          {}, e.fDiffs[static_cast<std::size_t>(fSelected)].fVersion, 16.0f,
+          listing::kContent1, true);
     }
     return right;
   }
@@ -535,70 +464,58 @@ private:
   // Info: the selected difficulty's numbers, the metadata, the ratings.
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildInfo(const Entry &e,
                                                            const Ctx &ctx) {
-    auto section = std::make_unique<nodes::Box>(listing::kBackground5);
-    section->fRelativeSizeAxes = scene::Axes::kX;
-    section->fWidth = 1.0f;
-    section->fAutoSizeAxes = scene::Axes::kY;
-    section->fPadding = {kYPadding, kHorizontalPadding, kYPadding,
-                         kHorizontalPadding};
+    auto section = scene::make<nodes::Box>(
+        {.fillX = true,
+         .autoSize = scene::Axes::kY,
+         .padding = {kYPadding, kHorizontalPadding, kYPadding,
+                     kHorizontalPadding}},
+        listing::kBackground5);
 
-    auto left = std::make_unique<nodes::FillFlow>(
-        nodes::FillFlow::Direction::kVertical);
-    left->fWidth = std::max(200.0f, ctx.fWidth - kHorizontalPadding * 2.0f -
-                                        kRightWidth - 30.0f);
-    left->fAutoSizeAxes = scene::Axes::kY;
-    left->setSpacing(0.0f, 8.0f);
+    const float leftWidth = std::max(
+        200.0f, ctx.fWidth - kHorizontalPadding * 2.0f - kRightWidth - 30.0f);
+    auto *left = section->add<nodes::FillFlow>(
+        {.width = leftWidth, .autoSize = scene::Axes::kY},
+        nodes::FillFlow::Direction::kVertical, 0.0f, 8.0f);
 
     if (!e.fDiffs.empty()) {
       const auto &diff = e.fDiffs[static_cast<std::size_t>(fSelected)];
-      auto heading = std::make_unique<nodes::FillFlow>(
-          nodes::FillFlow::Direction::kHorizontal);
-      heading->fAutoSizeAxes = scene::Axes::kBoth;
-      heading->setSpacing(8.0f, 0.0f);
-      heading->fWrap = false;
-      auto pill = std::make_unique<nodes::Box>(client::ui::starColor(diff.fStars));
-      pill->fAutoSizeAxes = scene::Axes::kBoth;
-      pill->fCornerRadius = 9.0f;
-      pill->fPadding = {1.0f, 8.0f, 1.0f, 8.0f};
-      pill->add(std::make_unique<nodes::Text>(
-          std::format("{:.2f}", diff.fStars), 12.0f, listing::kBackground6,
-          true));
-      heading->add(std::move(pill));
-      heading->add(std::make_unique<nodes::Text>(diff.fVersion, 16.0f,
-                                                 listing::kContent1, true));
-      left->add(std::move(heading));
 
-      auto stats = std::make_unique<nodes::FillFlow>(
-          nodes::FillFlow::Direction::kHorizontal);
-      stats->fRelativeSizeAxes = scene::Axes::kX;
-      stats->fWidth = 1.0f;
-      stats->fAutoSizeAxes = scene::Axes::kY;
-      stats->setSpacing(0.0f, 10.0f);
-      const float cellWidth = left->fWidth / 4.0f - 1.0f;
+      auto *heading = left->add<nodes::FillFlow>(
+          {.autoSize = scene::Axes::kBoth},
+          nodes::FillFlow::Direction::kHorizontal, 8.0f, 0.0f);
+      heading->fWrap = false;
+      heading
+          ->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
+                             .padding = {1.0f, 8.0f, 1.0f, 8.0f},
+                             .cornerRadius = 9.0f},
+                            client::ui::starColor(diff.fStars))
+          ->add<nodes::Text>({}, std::format("{:.2f}", diff.fStars), 12.0f,
+                             listing::kBackground6, true);
+      heading->add<nodes::Text>({}, diff.fVersion, 16.0f, listing::kContent1,
+                                true);
+
+      auto *stats = left->add<nodes::FillFlow>(
+          {.fillX = true, .autoSize = scene::Axes::kY},
+          nodes::FillFlow::Direction::kHorizontal, 0.0f, 10.0f);
+      const float cellWidth = leftWidth / 4.0f - 1.0f;
       const auto stat = [&](const char *label, std::string value, float bar) {
-        auto cell = std::make_unique<nodes::FillFlow>(
-            nodes::FillFlow::Direction::kVertical);
-        cell->fWidth = cellWidth;
-        cell->fAutoSizeAxes = scene::Axes::kY;
-        cell->setSpacing(0.0f, 2.0f);
-        cell->add(std::make_unique<nodes::Text>(label, 11.0f,
-                                                listing::kContent2, false));
-        cell->add(std::make_unique<nodes::Text>(std::move(value), 17.0f,
-                                                listing::kContent1, true));
+        auto *cell = stats->add<nodes::FillFlow>(
+            {.width = cellWidth, .autoSize = scene::Axes::kY},
+            nodes::FillFlow::Direction::kVertical, 0.0f, 2.0f);
+        cell->add<nodes::Text>({}, label, 11.0f, listing::kContent2, false);
+        cell->add<nodes::Text>({}, std::move(value), 17.0f, listing::kContent1,
+                               true);
         if (bar > 0.0f) {
-          auto track = std::make_unique<nodes::Box>(listing::kBackground6);
-          track->fWidth = cellWidth - 16.0f;
-          track->fHeight = 4.0f;
-          track->fCornerRadius = 2.0f;
-          auto fill = std::make_unique<nodes::Box>(listing::kColour1);
-          fill->fRelativeSizeAxes = scene::Axes::kBoth;
-          fill->fWidth = std::clamp(bar, 0.0f, 1.0f);
-          fill->fHeight = 1.0f;
-          fill->fCornerRadius = 2.0f;
-          track->add(std::move(fill));
-          cell->add(std::move(track));
+          cell->add<nodes::Box>({.width = cellWidth - 16.0f,
+                                 .height = 4.0f,
+                                 .cornerRadius = 2.0f},
+                                listing::kBackground6)
+              ->add<nodes::Box>({.width = std::clamp(bar, 0.0f, 1.0f),
+                                 .height = 1.0f,
+                                 .relativeSize = scene::Axes::kBoth,
+                                 .cornerRadius = 2.0f},
+                                listing::kColour1);
         }
-        stats->add(std::move(cell));
       };
       stat("Length", formatLength(diff.fLengthMs), 0.0f);
       stat("BPM", std::format("{:.0f}", e.fBpm), 0.0f);
@@ -613,26 +530,19 @@ private:
            static_cast<float>(diff.fOd / 10.0));
       stat("Approach Rate", std::format("{:.1f}", diff.fAr),
            static_cast<float>(diff.fAr / 10.0));
-      left->add(std::move(stats));
     }
 
     const auto metaRow = [&](const char *label, std::string value) {
-      auto row = std::make_unique<nodes::FillFlow>(
+      auto *row = left->add<nodes::FillFlow>(
+          {.fillX = true, .autoSize = scene::Axes::kY},
           nodes::FillFlow::Direction::kHorizontal);
-      row->fRelativeSizeAxes = scene::Axes::kX;
-      row->fWidth = 1.0f;
-      row->fAutoSizeAxes = scene::Axes::kY;
       row->fWrap = false;
-      auto name = std::make_unique<nodes::Text>(label, 11.0f,
-                                                listing::kContent2, false);
-      name->fWidth = 110.0f;
-      name->setMaxWidth(110.0f);
-      row->add(std::move(name));
-      auto text = std::make_unique<nodes::Text>(std::move(value), 13.0f,
-                                                listing::kContent1, false);
-      text->setMaxWidth(left->fWidth - 120.0f);
-      row->add(std::move(text));
-      left->add(std::move(row));
+      row->add<nodes::Text>({.width = 110.0f}, label, 11.0f,
+                            listing::kContent2, false)
+          ->setMaxWidth(110.0f);
+      row->add<nodes::Text>({}, std::move(value), 13.0f, listing::kContent1,
+                            false)
+          ->setMaxWidth(leftWidth - 120.0f);
     };
     metaRow("Source", e.fSource.empty() ? "-" : e.fSource);
     metaRow("Genre", listing::kGenreLabels[genreIndex(e.fGenre)]);
@@ -640,27 +550,20 @@ private:
     metaRow("Tags", e.fTags.empty() ? "-" : e.fTags);
     metaRow("Last updated", e.fUpdated);
 
-    section->add(std::move(left));
-
-    auto right = std::make_unique<nodes::FillFlow>(
-        nodes::FillFlow::Direction::kVertical);
-    right->fWidth = kRightWidth;
-    right->fAutoSizeAxes = scene::Axes::kY;
-    right->fAnchor = scene::Anchor::kTopRight;
-    right->fOrigin = scene::Anchor::kTopRight;
-    right->setSpacing(0.0f, 6.0f);
-    right->add(std::make_unique<nodes::Text>("User Rating", 12.0f,
-                                             listing::kContent2, false));
+    auto *right = section->add<nodes::FillFlow>(
+        {.place = scene::Anchor::kTopRight,
+         .width = kRightWidth,
+         .autoSize = scene::Axes::kY},
+        nodes::FillFlow::Direction::kVertical, 0.0f, 6.0f);
+    right->add<nodes::Text>({}, "User Rating", 12.0f, listing::kContent2,
+                            false);
     // osu! returns eleven buckets, the first unused.
     std::vector<int> counts(10, 0);
     for (std::size_t i = 1; i < e.fRatings.size() && i <= 10; ++i) {
       counts[i - 1] = e.fRatings[i];
     }
-    auto ratings = std::make_unique<Ratings>(std::move(counts));
-    ratings->fWidth = kRightWidth;
-    ratings->fHeight = 110.0f;
-    right->add(std::move(ratings));
-    section->add(std::move(right));
+    right->add<Ratings>({.width = kRightWidth, .height = 110.0f},
+                        std::move(counts));
     return section;
   }
 

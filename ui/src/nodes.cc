@@ -165,6 +165,10 @@ public:
 
   explicit FillFlow(Direction direction = Direction::kVertical)
       : fDirection(direction) {}
+  // Spacing is part of what a flow *is*, so it can be given at construction
+  // rather than in a setter call on the line after every one of them.
+  FillFlow(Direction direction, float spacingX, float spacingY)
+      : fSpacingX(spacingX), fSpacingY(spacingY), fDirection(direction) {}
 
   float fSpacingX = 0.0f;
   float fSpacingY = 0.0f;

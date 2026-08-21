@@ -31,6 +31,15 @@ enum class Axes : std::uint8_t { kNone, kX, kY, kBoth };
   return a == Axes::kY || a == Axes::kBoth;
 }
 
+[[nodiscard]] inline Axes axesUnion(Axes a, Axes b) noexcept {
+  const bool x = hasX(a) || hasX(b);
+  const bool y = hasY(a) || hasY(b);
+  if (x && y) return Axes::kBoth;
+  if (x) return Axes::kX;
+  if (y) return Axes::kY;
+  return Axes::kNone;
+}
+
 // The nine positions a drawable can be anchored to, as in the framework.
 enum class Anchor : std::uint8_t {
   kTopLeft, kTopCentre, kTopRight,
@@ -123,6 +132,51 @@ struct Transform {
   Easing fEasing = Easing::kNone;
 };
 
+// ---- the specification ----------------------------------------------------
+
+// Every layout input a drawable has, gathered into one aggregate so that a
+// node can be written down rather than assembled field by field:
+//
+//   auto *bg = row->add<nodes::Box>({.fill = true, .cornerRadius = 6.0f},
+//                                   ui::kBackground3);
+//
+// Each member's default is the drawable's own, so an empty spec `{}` changes
+// nothing and every field left out stays at what the class chose. Four of
+// them are shorthands rather than fields of their own, covering the idioms
+// that the screens repeat most:
+//
+//   place        anchor and origin at once, which is what all but a handful
+//                of call sites want; anchor/origin override it individually
+//   fill         relative size on both axes at 1.0 -- "as big as my parent"
+//   fillX/fillY  the same on one axis, leaving the other to width/height,
+//                as in "full width, forty pixels tall"
+//
+// Designated initialisers must be written in declaration order, so the order
+// here is the order a layout is usually thought about: where it sits, how big
+// it is, what surrounds it, then how it looks.
+struct Spec {
+  Anchor place = Anchor::kTopLeft;
+  std::optional<Anchor> anchor{};
+  std::optional<Anchor> origin{};
+  float x = 0.0f, y = 0.0f;
+
+  bool fill = false;
+  bool fillX = false;
+  bool fillY = false;
+  float width = 0.0f, height = 0.0f;
+  Axes relativeSize = Axes::kNone;
+  Axes autoSize = Axes::kNone;
+
+  Margin margin{};
+  Margin padding{};
+
+  float cornerRadius = 0.0f;
+  bool masking = false;
+  float scale = 1.0f;
+  float alpha = 1.0f;
+  bool visible = true;
+};
+
 // ---- the node ------------------------------------------------------------
 
 class Drawable {
@@ -150,11 +204,86 @@ public:
   // -- computed by layout()
   skia::SkRect fBounds = skia::SkRect::MakeEmpty();
 
+  // Writes a spec onto this drawable. Anything the spec does not mention is
+  // left as the class set it, which is what makes `{}` a no-op and lets a
+  // custom node keep the sizing its constructor chose.
+  void apply(const Spec &spec) {
+    fAnchor = spec.anchor.value_or(spec.place);
+    fOrigin = spec.origin.value_or(spec.place);
+    fX = spec.x;
+    fY = spec.y;
+
+    Axes relative = spec.relativeSize;
+    if (spec.fill || spec.fillX) {
+      relative = axesUnion(relative, Axes::kX);
+      fWidth = 1.0f;
+    } else if (spec.width != 0.0f) {
+      fWidth = spec.width;
+    }
+    if (spec.fill || spec.fillY) {
+      relative = axesUnion(relative, Axes::kY);
+      fHeight = 1.0f;
+    } else if (spec.height != 0.0f) {
+      fHeight = spec.height;
+    }
+    if (relative != Axes::kNone) {
+      fRelativeSizeAxes = relative;
+    }
+    if (spec.autoSize != Axes::kNone) {
+      fAutoSizeAxes = spec.autoSize;
+    }
+
+    fMargin = spec.margin;
+    fPadding = spec.padding;
+    fCornerRadius = spec.cornerRadius;
+    fMasking = spec.masking;
+    fScale = spec.scale;
+    fAlpha = spec.alpha;
+    fVisible = spec.visible;
+
+    // Sizing an axis both from the parent and from the children asks for two
+    // different numbers at once. The framework throws here; this is a build
+    // that has to keep drawing, so it says which node did it and picks the
+    // relative one, rather than laying out something nobody asked for.
+    if ((hasX(fRelativeSizeAxes) && hasX(fAutoSizeAxes)) ||
+        (hasY(fRelativeSizeAxes) && hasY(fAutoSizeAxes))) {
+      std::println(std::cerr,
+                   "[scene] relative and automatic sizing on the same axis");
+      fAutoSizeAxes = Axes::kNone;
+    }
+  }
+
   void add(std::unique_ptr<Drawable> child) {
     child->fParent = this;
     fChildren.push_back(std::move(child));
     this->markDamaged();
   }
+
+  // Builds a child in place, applies the spec and hands it back typed. This
+  // is the whole of what building a tree costs now: the make_unique, the run
+  // of field assignments, the std::move and the .get() kept for later were
+  // four separate things to get right per node, and three of them were the
+  // same every time.
+  template <class T, class... Args>
+    requires std::derived_from<T, Drawable>
+  T *add(const Spec &spec, Args &&...args) {
+    auto child = std::make_unique<T>(std::forward<Args>(args)...);
+    T *raw = child.get();
+    raw->apply(spec);
+    this->add(std::move(child));
+    return raw;
+  }
+
+  // Same, for a node that was already built elsewhere -- returns it typed so
+  // that keeping a pointer does not need a separate .get() before the move.
+  template <class T>
+    requires std::derived_from<T, Drawable>
+  T *adopt(std::unique_ptr<T> child) {
+    T *raw = child.get();
+    this->add(std::move(child));
+    return raw;
+  }
+
   void clear() { fChildren.clear(); }
   [[nodiscard]] std::span<const std::unique_ptr<Drawable>> children() const {
     return fChildren;
@@ -563,5 +692,17 @@ public:
   skia::SkRect fDamageAccum = skia::SkRect::MakeEmpty(); // meaningful at roots
   Drawable *fParent = nullptr;
 };
+
+// Builds a detached node -- a screen's root, or anything handed to somebody
+// else's add(). The same spec as Drawable::add, for the cases where there is
+// no parent yet to hang it on.
+template <class T, class... Args>
+  requires std::derived_from<T, Drawable>
+[[nodiscard]] std::unique_ptr<T> make(const Spec &spec, Args &&...args) {
+  auto node = std::make_unique<T>(std::forward<Args>(args)...);
+  node->apply(spec);
+  return node;
+}
+
 
 } // namespace client::scene

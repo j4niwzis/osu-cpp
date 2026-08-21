@@ -341,43 +341,32 @@ private:
   };
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
-    auto root = std::make_unique<scene::Drawable>();
-    root->fRelativeSizeAxes = scene::Axes::kBoth;
-    root->fWidth = 1.0f;
-    root->fHeight = 1.0f;
+    auto root = scene::make<scene::Drawable>({.fill = true});
 
-    auto dim = std::make_unique<nodes::Box>(skia::colorSetARGB(255, 0, 0, 0));
-    dim->fRelativeSizeAxes = scene::Axes::kBoth;
-    dim->fWidth = 1.0f;
-    dim->fHeight = 1.0f;
-    dim->fAlpha = kBackgroundAlpha;
-    root->add(std::move(dim));
+    root->add<nodes::Box>({.fill = true, .alpha = kBackgroundAlpha},
+                          skia::colorSetARGB(255, 0, 0, 0));
 
     // lazer lays this out as a grid of four rows: the header centred in what
     // is left above, the buttons at their own height, the numbers below, and
     // a footer. Two centred blocks come out in the same place.
-    auto header = std::make_unique<HeaderNode>(this);
-    header->fY = fBuiltH * 0.5f - kButtonHeight * 1.5f - kButtonSpacing - 96.0f;
-    root->add(std::move(header));
+    root->add<HeaderNode>({.y = fBuiltH * 0.5f - kButtonHeight * 1.5f -
+                                kButtonSpacing - 96.0f},
+                          this);
 
-    auto column =
-        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
-    column->fRelativeSizeAxes = scene::Axes::kX;
-    column->fWidth = 1.0f;
-    column->fAutoSizeAxes = scene::Axes::kY;
-    column->fAnchor = scene::Anchor::kCentreLeft;
-    column->fOrigin = scene::Anchor::kCentreLeft;
-    column->fY = -kButtonHeight * 1.5f;
-    column->fPadding = {0.0f, kHorizontalPadding, 0.0f, kHorizontalPadding};
-    column->setSpacing(0.0f, kButtonSpacing);
-    column->add(std::make_unique<ButtonNode>(this, 0, "Continue", kGreen));
-    column->add(std::make_unique<ButtonNode>(this, 1, "Retry", kYellowDark));
-    column->add(std::make_unique<ButtonNode>(this, 2, "Quit", kRed));
-    root->add(std::move(column));
+    auto *column = root->add<nodes::FillFlow>(
+        {.place = scene::Anchor::kCentreLeft,
+         .y = -kButtonHeight * 1.5f,
+         .fillX = true,
+         .autoSize = scene::Axes::kY,
+         .padding = {0.0f, kHorizontalPadding, 0.0f, kHorizontalPadding}},
+        nodes::FillFlow::Direction::kVertical, 0.0f, kButtonSpacing);
+    column->add<ButtonNode>({}, this, 0, "Continue", kGreen);
+    column->add<ButtonNode>({}, this, 1, "Retry", kYellowDark);
+    column->add<ButtonNode>({}, this, 2, "Quit", kRed);
 
-    auto info = std::make_unique<InfoNode>(this);
-    info->fY = fBuiltH * 0.5f + kButtonHeight * 1.5f + kButtonSpacing + 24.0f;
-    root->add(std::move(info));
+    root->add<InfoNode>({.y = fBuiltH * 0.5f + kButtonHeight * 1.5f +
+                              kButtonSpacing + 24.0f},
+                        this);
     return root;
   }
 
