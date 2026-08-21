@@ -469,6 +469,7 @@ private:
   // The main menu screen: which level it is on, where the logo is going,
   // the buttons and the dim behind them. What moves out with the menu.
   struct MenuUi {
+    MenuState fMenuState = MenuState::kInitial;
     std::vector<MenuBtn> fMenuBtns;
     bool fMenuMoving = false;
     LogoTarget fLogoTarget;
@@ -482,7 +483,6 @@ private:
     float fDrawnMenuDim = -1.0f; // the dim the screen currently shows
   };
   MenuUi fMenuUi;
-  MenuState fMenuState = MenuState::kInitial;
   // Set while anything in the menu is still easing towards a target, so the
   // frames that carry it there are asked for rather than waited for.
   // Where the menu wants the logo; the logo eases towards it and owns
@@ -1518,8 +1518,8 @@ private:
         }
         for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
           auto &b = fMenuUi.fMenuBtns[i];
-          if (b.fVisible == fMenuState && fMenu.buttonExpand(i) > 0.5f &&
-              b.fRect.contains(x, y)) {
+          if (b.fVisible == fMenuUi.fMenuState &&
+              fMenu.buttonExpand(i) > 0.5f && b.fRect.contains(x, y)) {
             this->menuTrigger(i);
             return;
           }
@@ -1527,7 +1527,7 @@ private:
       } else if (piece >= 0 &&
                  piece < static_cast<int>(fMenuUi.fMenuBtns.size())) {
         const auto index = static_cast<std::size_t>(piece);
-        if (fMenuUi.fMenuBtns[index].fVisible == fMenuState &&
+        if (fMenuUi.fMenuBtns[index].fVisible == fMenuUi.fMenuState &&
             fMenu.buttonExpand(index) > 0.5f) {
           this->menuTrigger(index);
           return;
@@ -1748,7 +1748,7 @@ private:
     if (st == State::kMainMenu) {
       // Returning to the menu always lands on the top level, never on a
       // stale submenu, and the logo re-eases into place from where it was.
-      fMenuState = MenuState::kTopLevel;
+      fMenuUi.fMenuState = MenuState::kTopLevel;
     }
   }
 
@@ -5065,12 +5065,12 @@ private:
   }
 
   void setMenuState(MenuState st) {
-    if (fMenuState == st) {
+    if (fMenuUi.fMenuState == st) {
       return;
     }
-    std::println(std::cerr, "[menu] {} -> {}", menuStateName(fMenuState),
-                 menuStateName(st));
-    fMenuState = st;
+    std::println(std::cerr, "[menu] {} -> {}",
+                 menuStateName(fMenuUi.fMenuState), menuStateName(st));
+    fMenuUi.fMenuState = st;
   }
 
   [[nodiscard]] float approach(float current, float target, float tauMs) const {
@@ -5157,14 +5157,14 @@ private:
   // a populated level it triggers that level's first button (onOsuLogo).
   void triggerLogo() {
     fLogo.strike();
-    switch (fMenuState) {
+    switch (fMenuUi.fMenuState) {
     case MenuState::kInitial:
       this->setMenuState(MenuState::kTopLevel);
       break;
     case MenuState::kTopLevel:
     case MenuState::kPlay:
       for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
-        if (fMenuUi.fMenuBtns[i].fVisible == fMenuState &&
+        if (fMenuUi.fMenuBtns[i].fVisible == fMenuUi.fMenuState &&
             !fMenuUi.fMenuBtns[i].fLeftSide) {
           this->menuTrigger(i);
           break;
@@ -5209,7 +5209,8 @@ private:
         this->requestBackground(fLib.fSelSet, set);
       }
     }
-    const float dimTarget = fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
+    const float dimTarget =
+        fMenuUi.fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
     fMenuUi.fMenuDim = this->approach(fMenuUi.fMenuDim, dimTarget, 220.0f);
 
     // What moves here is the logo with its visualiser and the buttons; the
@@ -5235,7 +5236,7 @@ private:
     int rightCount = 0;
     int leftCount = 0;
     for (const auto &b : fMenuUi.fMenuBtns) {
-      if (b.fVisible != fMenuState) {
+      if (b.fVisible != fMenuUi.fMenuState) {
         continue;
       }
       if (b.fLeftSide) {
@@ -5247,17 +5248,19 @@ private:
 
     fMenuUi.fLogoBase = std::min(sw, sh) * 0.17f;
     const float logoR =
-        fMenuUi.fLogoBase * (fMenuState == MenuState::kInitial ? 1.0f : 0.62f);
+        fMenuUi.fLogoBase *
+        (fMenuUi.fMenuState == MenuState::kInitial ? 1.0f : 0.62f);
     const float rightW = static_cast<float>(rightCount) * (btnW + btnGap);
     const float leftW = static_cast<float>(leftCount) * (btnW + btnGap);
     const float groupW = leftW + 2.0f * logoR + 28.0f * uiScale + rightW;
 
-    const float targetLogoX = fMenuState == MenuState::kInitial
+    const float targetLogoX = fMenuUi.fMenuState == MenuState::kInitial
                                   ? sw * 0.5f
                                   : (sw - groupW) * 0.5f + leftW + logoR;
     const float targetLogoY =
-        sh * (fMenuState == MenuState::kInitial ? 0.46f : 0.5f);
-    const float targetScale = fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
+        sh * (fMenuUi.fMenuState == MenuState::kInitial ? 0.46f : 0.5f);
+    const float targetScale =
+        fMenuUi.fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
 
     fMenuUi.fLogoTarget = {targetLogoX, targetLogoY, targetScale};
     fLogo.moveTowards(this->logoCtx());
@@ -5276,7 +5279,7 @@ private:
     // the pointer is on it, and that decides where the hover is going.
     for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
       auto &b = fMenuUi.fMenuBtns[i];
-      const bool visible = b.fVisible == fMenuState;
+      const bool visible = b.fVisible == fMenuUi.fMenuState;
       const float expand = fMenu.easeExpand(i, visible ? 1.0f : 0.0f, fUiDt);
       fMenu.decayFlash(i, fUiDt);
 
@@ -5455,7 +5458,7 @@ private:
   void keyMainMenu(int key) {
     this->ensureMenuButtons();
     if (key == glfw::kKeyEscape) {
-      switch (fMenuState) {
+      switch (fMenuUi.fMenuState) {
       case MenuState::kPlay:
         this->setMenuState(MenuState::kTopLevel);
         break;
@@ -5475,14 +5478,14 @@ private:
     // Letter shortcuts, as in lazer.
     const auto fire = [this](MenuAction act) {
       for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
-        if (fMenuUi.fMenuBtns[i].fVisible == fMenuState &&
+        if (fMenuUi.fMenuBtns[i].fVisible == fMenuUi.fMenuState &&
             fMenuUi.fMenuBtns[i].fAction == act) {
           this->menuTrigger(i);
           return;
         }
       }
     };
-    if (fMenuState == MenuState::kTopLevel) {
+    if (fMenuUi.fMenuState == MenuState::kTopLevel) {
       if (key == glfw::kKeyP) {
         fire(MenuAction::kOpenPlay);
       } else if (key == glfw::kKeyB || key == glfw::kKeyD) {
@@ -5492,7 +5495,7 @@ private:
       } else if (key == glfw::kKeyQ) {
         fire(MenuAction::kExit);
       }
-    } else if (fMenuState == MenuState::kPlay) {
+    } else if (fMenuUi.fMenuState == MenuState::kPlay) {
       if (key == glfw::kKeyS) {
         fire(MenuAction::kSolo);
       } else if (key == glfw::kKeyR) {
