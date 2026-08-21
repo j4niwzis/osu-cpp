@@ -14,6 +14,10 @@ export namespace client {
 // app, which now only feeds it judgements and asks it to draw.
 class GameplayView {
 public:
+  // Playfield units per unit of the cursor size setting: what one device
+  // pixel of cursor came to at 1080p, which is where these were tuned.
+  static constexpr float kCursorUnitScale = 1.0f / 2.25f;
+
   // What the renderer needs from the app for a frame. Passed in rather than
   // captured so the view holds no back-reference.
   struct Ctx {
@@ -96,7 +100,6 @@ public:
   // What twelve device pixels came to at 1080p, which is the size these were
   // tuned at. Kept as the playfield-relative figure it always meant.
   static constexpr float kTrailWidthUnits = 12.0f / 2.25f;
-  static constexpr float kCursorUnitScale = 1.0f / 2.25f;
   // LegacyMainCirclePiece's legacy_fade_duration, and DrawableHitCircle's
   // fade on a miss.
   static constexpr double kHitFade = 240.0;
