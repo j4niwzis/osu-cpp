@@ -3,7 +3,7 @@ export module client.carousel;
 import std;
 import skia;
 import client.ui;
-import client.scene;
+import skiff.scene;
 
 // osu!lazer's song select carousel, as a scene tree.
 //
@@ -19,6 +19,10 @@ import client.scene;
 // it. What this owns is where each panel is, which of them exist at all, and
 // what has to be repainted. That seam is deliberate: the drawing is already
 // 1:1 with lazer and did not need moving to gain a scene tree.
+// The framework lives in skiff:: now; these keep the screens below
+// writing scene:: and nodes:: as they did when it sat in client::.
+namespace scene = skiff::scene;
+
 export namespace client::carousel {
 
 // One row of the list: a set panel, or one difficulty of the expanded set.

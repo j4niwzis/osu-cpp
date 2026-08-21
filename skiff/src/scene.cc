@@ -1,8 +1,8 @@
-export module client.scene;
+export module skiff.scene;
 
 import std;
 import skia;
-import client.ui;
+import skiff.paint;
 
 // A retained scene graph, in the shape osu!framework gives its drawables.
 //
@@ -18,7 +18,7 @@ import client.ui;
 // screens actually use: anchors and origins, relative and automatic sizing,
 // flow and scroll containers, transforms with easing, and hit testing through
 // the tree.
-export namespace client::scene {
+export namespace skiff::scene {
 
 // ---- geometry -------------------------------------------------------------
 
@@ -110,9 +110,9 @@ enum class Easing : std::uint8_t { kNone, kOut, kOutQuint, kOutElasticHalf };
   case Easing::kOut:
     return 1.0f - (1.0f - t) * (1.0f - t);
   case Easing::kOutQuint:
-    return client::ui::outQuint(t);
+    return skiff::paint::outQuint(t);
   case Easing::kOutElasticHalf:
-    return client::ui::outElasticHalf(t);
+    return skiff::paint::outElasticHalf(t);
   case Easing::kNone:
     break;
   }
@@ -705,4 +705,4 @@ template <class T, class... Args>
 }
 
 
-} // namespace client::scene
+} // namespace skiff::scene

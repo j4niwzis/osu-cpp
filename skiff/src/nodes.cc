@@ -1,20 +1,20 @@
-export module client.nodes;
+export module skiff.nodes;
 
 import std;
 import skia;
-import client.ui;
-import client.scene;
+import skiff.paint;
+import skiff.scene;
 
 // The drawables the screens are actually built out of: boxes, text, sprites,
 // flows, scroll containers and clickable areas. Everything here is a
 // scene::Drawable, so it inherits layout, transforms and hit testing.
-export namespace client::nodes {
+export namespace skiff::nodes {
 
-using client::scene::Anchor;
-using client::scene::Axes;
-using client::scene::Drawable;
-using client::scene::Easing;
-using client::scene::Margin;
+using skiff::scene::Anchor;
+using skiff::scene::Axes;
+using skiff::scene::Drawable;
+using skiff::scene::Easing;
+using skiff::scene::Margin;
 
 // A filled rectangle, optionally rounded. The framework's Box.
 class Box : public Drawable {
@@ -79,9 +79,9 @@ protected:
       return;
     }
     font->setSize(fSize);
-    client::ui::fonts().applyWeight(*font, fBold);
-    const float measured = client::ui::fonts().measure(*font, fText);
-    client::ui::fonts().applyWeight(*font, false);
+    skiff::paint::fonts().applyWeight(*font, fBold);
+    const float measured = skiff::paint::fonts().measure(*font, fText);
+    skiff::paint::fonts().applyWeight(*font, false);
     fWidth = fMaxWidth > 0.0f ? std::min(fMaxWidth, measured) : measured;
     fHeight = fSize * 1.25f;
     fMeasuredSize = fSize;
@@ -93,7 +93,7 @@ protected:
       return;
     }
     font->setSize(fSize);
-    client::ui::fonts().applyWeight(*font, fBold);
+    skiff::paint::fonts().applyWeight(*font, fBold);
     skia::SkPaint paint;
     paint.setAntiAlias(true);
     paint.setColor(fColour);
@@ -103,10 +103,10 @@ protected:
       canvas->clipRect(fBounds, true);
     }
     // The baseline sits at the top plus the ascent share of the line box.
-    client::ui::fonts().draw(canvas, *font, fText, fBounds.fLeft,
+    skiff::paint::fonts().draw(canvas, *font, fText, fBounds.fLeft,
                              fBounds.fTop + fSize, paint);
     canvas->restoreToCount(saved);
-    client::ui::fonts().applyWeight(*font, false);
+    skiff::paint::fonts().applyWeight(*font, false);
   }
 
 private:
@@ -296,7 +296,7 @@ protected:
     const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
     fLastMs = nowMs;
     const float previous = fCurrent;
-    fCurrent = client::ui::approach(fCurrent, fTarget, 30.0f, dt);
+    fCurrent = skiff::paint::approach(fCurrent, fTarget, 30.0f, dt);
     if (std::abs(fCurrent - fTarget) < 0.05f) {
       fCurrent = fTarget; // settle, so a still list stops re-laying out
     }
@@ -425,4 +425,4 @@ private:
   std::function<void()> fAction;
 };
 
-} // namespace client::nodes
+} // namespace skiff::nodes

@@ -69,10 +69,10 @@ else()
   CPMAddPackage(NAME osucpp SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
 endif()
 
-# The drawing library: Skia wrapper, palette, painter, scene graph, drawables.
-# Everything the client draws with comes from here; nothing here knows what a
-# beatmap is.
-CPMAddPackage(NAME osuui SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/../ui)
+# skiff, the UI framework: Skia wrapper, painter, scene graph, drawables.
+# Everything the client draws with comes from here; nothing in there knows
+# what a beatmap is. Kept as its own project so it can be lifted out whole.
+CPMAddPackage(NAME skiff SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/../skiff)
 
 # ---- Create binary ----
 
@@ -117,7 +117,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 if(EMSCRIPTEN_BUILD)
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
-    osuui
+    skiff::skiff
     ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
     ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
     ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
@@ -128,7 +128,7 @@ if(EMSCRIPTEN_BUILD)
 else()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
-    osuui
+    skiff::skiff
     Threads::Threads
     OpenGL::GL
     ${GLFW_LDFLAGS} ${GLFW_LIBRARIES}

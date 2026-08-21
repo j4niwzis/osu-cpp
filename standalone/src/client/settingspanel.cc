@@ -4,8 +4,13 @@ import std;
 import skia;
 import client.ui;
 import client.settings;
-import client.scene;
-import client.nodes;
+import skiff.scene;
+import skiff.nodes;
+
+// The framework lives in skiff:: now; these keep the screens below
+// writing scene:: and nodes:: as they did when it sat in client::.
+namespace scene = skiff::scene;
+namespace nodes = skiff::nodes;
 
 export namespace client {
 

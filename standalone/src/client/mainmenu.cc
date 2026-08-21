@@ -2,7 +2,7 @@ export module client.mainmenu;
 
 import std;
 import skia;
-import client.scene;
+import skiff.scene;
 
 // osu!lazer's MainMenu as a scene tree: the background, the row of
 // MainMenuButtons and the OsuLogo over them.
@@ -14,6 +14,10 @@ import client.scene;
 // in what order they are drawn, which one the pointer is on, and -- the part
 // that was hand-rolled per element before -- what has to be repainted when
 // any of that changes.
+// The framework lives in skiff:: now; these keep the screens below
+// writing scene:: and nodes:: as they did when it sat in client::.
+namespace scene = skiff::scene;
+
 export namespace client::mainmenu {
 
 using Paint = std::function<void(skia::SkCanvas *, const skia::SkRect &, int)>;

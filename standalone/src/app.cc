@@ -35,8 +35,8 @@ import client.mainmenu;
 import client.triangles;
 import present;
 import client.setpage;
-import client.scene;
-import client.nodes;
+import skiff.scene;
+import skiff.nodes;
 import client.gameplayview;
 import client.mods;
 import client.video;
@@ -273,7 +273,7 @@ private:
   bool fConfirmDelete = false; // the deletion dialog is up
   // Built as a scene tree rather than drawn by hand: the first screen on the
   // retained renderer, and the pattern the rest follow.
-  std::unique_ptr<client::scene::Drawable> fConfirmScene;
+  std::unique_ptr<skiff::scene::Drawable> fConfirmScene;
 
   // Download screen (mirror search + .osz fetch).
   client::listing::Listing fListing;
@@ -871,7 +871,7 @@ private:
 
     this->loadFonts();
     fFont = this->loadFont(20.0f);
-    client::nodes::Text::setFont(&fFont);
+    skiff::nodes::Text::setFont(&fFont);
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
@@ -934,7 +934,7 @@ private:
 
     this->loadFonts();
     fFont = this->loadFont(20.0f);
-    client::nodes::Text::setFont(&fFont);
+    skiff::nodes::Text::setFont(&fFont);
     fDisplayFont = this->loadDisplayFont(20.0f);
     this->resize(fScreenW, fScreenH);
 
@@ -2597,10 +2597,10 @@ private:
     fCostDrawUs += us(start, fBlitStart) - fLastUpdateUs;
     fCostBlitUs += us(fBlitStart, beforeSwap);
     fCostSwapUs += us(beforeSwap, now);
-    fCostVisited += client::scene::visitedCount();
-    fCostDrawn += client::scene::drawnCount();
-    client::scene::visitedCount() = 0;
-    client::scene::drawnCount() = 0;
+    fCostVisited += skiff::scene::visitedCount();
+    fCostDrawn += skiff::scene::drawnCount();
+    skiff::scene::visitedCount() = 0;
+    skiff::scene::drawnCount() = 0;
     if (fComputedClipFull) {
       fCostClipArea += static_cast<std::int64_t>(fScreenW) * fScreenH;
     } else if (!fComputedClip.empty()) {
@@ -6780,10 +6780,10 @@ private:
   // a vertical flow of text, and two buttons in a horizontal one. No
   // coordinates are computed here -- anchors and flows place everything, and
   // the panel fades and rises into place with transforms.
-  [[nodiscard]] std::unique_ptr<client::scene::Drawable>
+  [[nodiscard]] std::unique_ptr<skiff::scene::Drawable>
   buildDeleteDialog(const std::vector<osu::BeatmapInfo> &infos) {
-    namespace scene = client::scene;
-    namespace nodes = client::nodes;
+    namespace scene = skiff::scene;
+    namespace nodes = skiff::nodes;
 
     auto root = std::make_unique<nodes::Box>(skia::colorSetARGB(200, 8, 6, 12));
     root->fRelativeSizeAxes = scene::Axes::kBoth;
@@ -6856,11 +6856,11 @@ private:
     return root;
   }
 
-  [[nodiscard]] std::unique_ptr<client::scene::Drawable>
+  [[nodiscard]] std::unique_ptr<skiff::scene::Drawable>
   dialogButton(std::string label, skia::SkColor accent,
                std::function<void()> action) {
-    namespace scene = client::scene;
-    namespace nodes = client::nodes;
+    namespace scene = skiff::scene;
+    namespace nodes = skiff::nodes;
 
     auto button = std::make_unique<nodes::Clickable>(std::move(action));
     button->fWidth = 240.0f;
@@ -7721,7 +7721,7 @@ private:
       return false;
     }
     fContext = skia::MakeGL(std::move(interface));
-    client::nodes::CachedContainer::setContext(fContext.get());
+    skiff::nodes::CachedContainer::setContext(fContext.get());
     // The carousel owns where a panel is and when it has to be repainted; the
     // client still owns what one looks like, and hands it over here.
     // The menu's pieces: the tree owns where they are and what has to be

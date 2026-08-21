@@ -3,8 +3,8 @@ export module client.listing;
 import std;
 import skia;
 import client.ui;
-import client.scene;
-import client.nodes;
+import skiff.scene;
+import skiff.nodes;
 
 // osu!lazer's BeatmapListingOverlay, port of the layout and the palette.
 //
@@ -159,8 +159,8 @@ inline constexpr float kSortBarHeight = 40.0f;
 inline constexpr float kExpandedMaxHeight = 200.0f; // ExpandedContentScrollContainer
 inline constexpr float kExpandDelayMs = 100.0f;     // BeatmapCardContent.ExpandAfterDelay
 
-namespace scene = client::scene;
-namespace nodes = client::nodes;
+namespace scene = skiff::scene;
+namespace nodes = skiff::nodes;
 
 // Painting shared by the nodes below. Free functions rather than methods,
 // because every node needs them and none of them owns them.

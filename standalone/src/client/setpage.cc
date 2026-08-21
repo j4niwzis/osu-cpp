@@ -3,8 +3,8 @@ export module client.setpage;
 import std;
 import skia;
 import client.ui;
-import client.scene;
-import client.nodes;
+import skiff.scene;
+import skiff.nodes;
 import client.listing;
 
 // osu!lazer's BeatmapSetOverlay: the page a beatmap card opens.
@@ -16,8 +16,8 @@ import client.listing;
 export namespace client::setpage {
 
 using listing::Entry;
-namespace scene = client::scene;
-namespace nodes = client::nodes;
+namespace scene = skiff::scene;
+namespace nodes = skiff::nodes;
 
 inline constexpr float kYPadding = 25.0f;
 inline constexpr float kRightWidth = 275.0f;

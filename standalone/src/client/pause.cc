@@ -3,8 +3,8 @@ export module client.pause;
 import std;
 import skia;
 import client.ui;
-import client.scene;
-import client.nodes;
+import skiff.scene;
+import skiff.nodes;
 import client.triangles;
 
 // osu!lazer's PauseOverlay, which is a GameplayMenuOverlay: black over the
@@ -19,6 +19,11 @@ import client.triangles;
 // when selected over 400 ms OutQuint, corner radius 5, sheared by
 // OsuGame.SHEAR, its label 28 Bold with the letters spreading to 1.4 and the
 // whole thing scaling to 1.02 when it is the selected one.
+// The framework lives in skiff:: now; these keep the screens below
+// writing scene:: and nodes:: as they did when it sat in client::.
+namespace scene = skiff::scene;
+namespace nodes = skiff::nodes;
+
 export namespace client::pause {
 
 inline constexpr float kBackgroundAlpha = 0.75f;
