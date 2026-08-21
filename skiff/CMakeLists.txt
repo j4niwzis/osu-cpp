@@ -46,14 +46,24 @@ endif()
 # ready-made things a screen is built out of, themed rather than subclassed.
 # An application that wants only the graph links the first and never pays for
 # the second.
+# Primary interface units first, then their partitions. Globbed per directory
+# rather than recursively, so that adding a widget is adding a file and
+# nothing else.
+file(GLOB skiff_node_partitions CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/nodes/*.cc")
+file(GLOB skiff_widget_partitions CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/widgets/*.cc")
+
 set(skiff_core_sources
   ${CMAKE_CURRENT_SOURCE_DIR}/src/skia.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/paint.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/scene.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/nodes.cc
+  ${skiff_node_partitions}
 )
 set(skiff_widget_sources
   ${CMAKE_CURRENT_SOURCE_DIR}/src/widgets.cc
+  ${skiff_widget_partitions}
 )
 
 if(SKIFF_EMSCRIPTEN)
