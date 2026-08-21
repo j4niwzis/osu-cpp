@@ -47,10 +47,8 @@ struct Ctx {
   double fStars = 0.0;
   bool fHasDifficulty = false;
   bool fOwnScore = false; // the strip leads with the run in hand
-  // Drawn in the middle of the accuracy circle and under the counts on
-  // whichever panel is expanded, including a replay's. That is what the
-  // client does today and this keeps doing it.
-  std::string fGrade;
+  // The run in hand, shown only on its own panel: an .osr stores none of
+  // these three, so a replay's panel has nothing to put in their place.
   double fPp = 0.0;
   double fMean = 0.0;
   double fUr = 0.0;
@@ -312,7 +310,7 @@ private:
     const float circleR = 100.0f * scale;
     const float ccy = y + circleR;
     this->drawAccuracyCircle(canvas, ctx, panel.centerX(), ccy, circleR,
-                             entry.fAccuracy);
+                             entry.fAccuracy, entry.fGrade);
     y = ccy + circleR + 24.0f * scale;
 
     // The score counts up as the panel appears; a replay's stored score is
@@ -367,8 +365,9 @@ private:
         {"accuracy", std::format("{:.2f}%", entry.fAccuracy * 100.0),
          skia::kWhite},
     };
-    bottom.push_back({"pp", std::format("{:.0f}", ctx.fPp), palette::kAccent});
     if (entry.fDetail) {
+      bottom.push_back(
+          {"pp", std::format("{:.0f}", ctx.fPp), palette::kAccent});
       bottom.push_back(
           {"hit error", std::format("{:+.1f}ms", ctx.fMean), skia::kWhite});
       bottom.push_back({"UR", std::format("{:.0f}", ctx.fUr), skia::kWhite});
@@ -419,7 +418,8 @@ private:
   // their accuracy cutoffs), the achieved accuracy drawn over them, and the
   // rank letter in the middle. Cutoffs are lazer's standard ones.
   void drawAccuracyCircle(skia::SkCanvas *canvas, const Ctx &ctx, float cx,
-                          float cy, float r, double accuracy) {
+                          float cy, float r, double accuracy,
+                          const std::string &grade) {
     const paint::Painter p(canvas, *ctx.fFont);
     const float thickness = r * 0.2f; // accuracy_circle_radius
     const skia::SkRect bounds =
@@ -472,7 +472,7 @@ private:
                     arc);
 
     // Rank badge in the middle.
-    p.textCentered(ctx.fGrade, cx, cy + r * 0.28f, r * 0.72f, palette::kAccent);
+    p.textCentered(grade, cx, cy + r * 0.28f, r * 0.72f, palette::kAccent);
     p.textCentered(std::format("{:.2f}%", accuracy * 100.0), cx, cy + r * 0.62f,
                    r * 0.16f, skia::kWhite, 0.85f);
   }

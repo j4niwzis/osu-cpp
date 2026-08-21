@@ -5756,7 +5756,6 @@ private:
     ctx.fEnterWall = fStateEnterWall;
     ctx.fDtMs = fUiDt;
     ctx.fOwnScore = ownScore;
-    ctx.fGrade = fResult.fGrade;
     ctx.fPp = fResult.fPp;
     ctx.fMean = fResult.fMean;
     ctx.fUr = fResult.fUr;
