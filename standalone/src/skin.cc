@@ -947,7 +947,8 @@ float4 main(float2 coords) {
   // `rotation` the ambient spin, in degrees.
   void drawSpinner(skia::SkCanvas *canvas, double cx, double cy, double radius,
                    double progress, double fill = 1.0, float fillAlpha = 0.4f,
-                   double rotation = 0.0, double centreScale = 0.5) {
+                   double rotation = 0.0, double centreScale = 0.5,
+                   double centreRotation = 0.0) {
     if (radius <= 0.0) {
       return;
     }
@@ -959,12 +960,13 @@ float4 main(float2 coords) {
     // when there are ticks on the disc to turn.
     static_cast<void>(rotation);
     this->drawSpinnerPieces(canvas, cx, cy, radius, progress, fill, fillAlpha,
-                            centreScale);
+                            centreScale, centreRotation);
   }
 
   void drawSpinnerPieces(skia::SkCanvas *canvas, double cx, double cy,
                          double radius, double progress, double fill,
-                         float fillAlpha, double centreScale) {
+                         float fillAlpha, double centreScale,
+                         double centreRotation) {
     auto base = this->spinnerBase();
     auto prog = this->spinnerProgress();
     auto top = this->spinnerTop();
@@ -996,28 +998,36 @@ float4 main(float2 coords) {
       canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
                          static_cast<float>(fillRadius), fillPaint);
     }
-    // SpinnerCentreLayer. Its pieces -- CirclePiece, RingPiece -- are
-    // OBJECT_DIMENSIONS, a fixed 128 units across, so the centre is one hit
-    // circle wide and does not grow with the disc. Taking a fraction of the
-    // disc's radius instead, which is what this did, opened it out over the
-    // whole spinner.
-    if (centreScale > 0.0) {
-      const double centreRadius = 64.0 * centreScale;
-      skia::SkPaint centre;
-      centre.setColor(skia::kWhite);
-      centre.setStyle(skia::kStrokeStyle);
-      centre.setStrokeWidth(2.0f);
-      centre.setAntiAlias(true);
-      centre.setAlphaf(0.8f);
-      canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
-                         static_cast<float>(centreRadius), centre);
-    }
     static_cast<void>(progress);
-    if (top) {
-      detail::drawImageCentered(canvas, top.get(), static_cast<float>(cx),
-                                static_cast<float>(cy),
-                                static_cast<float>(radius * 2.0),
-                                static_cast<float>(radius * 2.0), paint);
+    // spinnertop is the centre piece -- the ringed circle with the asterisk,
+    // which is what SpinnerCentreLayer holds. Its pieces are OBJECT_DIMENSIONS,
+    // a fixed 128 units, so it is one hit circle across and does not grow with
+    // the disc. Drawing it at the disc's own size, which is what this did,
+    // stretched it over the whole spinner.
+    if (centreScale > 0.0) {
+      const double centreSize = 128.0 * centreScale;
+      if (top) {
+        canvas->save();
+        canvas->translate(static_cast<float>(cx), static_cast<float>(cy));
+        // The asterisk is the one asymmetric thing here, and it is also the
+        // only feedback that the spinner is turning at all: SpinnerCentreLayer
+        // turns it by half the tracked rotation.
+        canvas->rotate(static_cast<float>(centreRotation * 0.5 * 180.0 /
+                                          std::numbers::pi));
+        detail::drawImageCentered(canvas, top.get(), 0.0f, 0.0f,
+                                  static_cast<float>(centreSize),
+                                  static_cast<float>(centreSize), paint);
+        canvas->restore();
+      } else {
+        skia::SkPaint centre;
+        centre.setColor(skia::kWhite);
+        centre.setStyle(skia::kStrokeStyle);
+        centre.setStrokeWidth(2.0f);
+        centre.setAntiAlias(true);
+        centre.setAlphaf(0.8f);
+        canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
+                           static_cast<float>(centreSize * 0.5), centre);
+      }
     }
   }
 

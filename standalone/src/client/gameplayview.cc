@@ -757,7 +757,8 @@ public:
     const float fillAlpha = static_cast<float>(
         c.fEngine->isTracking(index) ? kTrackingAlpha : kIdleAlpha);
     c.fSkin->drawSpinner(canvas, cx, cy, radius, progress, fill, fillAlpha,
-                         rotation, centre);
+                         rotation, centre,
+                         c.fEngine->spinnerAngle(index));
 
     skia::SkPaint textPaint;
     textPaint.setColor(skia::kWhite);

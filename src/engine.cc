@@ -102,6 +102,13 @@ public:
     return fRules == RuleSet::kLegacyClient;
   }
 
+  // How far the spinner has been turned, in radians and signed, which is
+  // what SpinnerRotationTracker.Rotation is and what the centre piece turns
+  // by. spinnerRotations is the same thing counted in whole turns.
+  [[nodiscard]] double spinnerAngle(std::size_t index) const noexcept {
+    return index < fStates.size() ? fStates[index].fTotalAngle : 0.0;
+  }
+
   [[nodiscard]] int spinnerRotations(std::size_t index) const noexcept {
     return index < fStates.size() ? fStates[index].fRotations : 0;
   }
