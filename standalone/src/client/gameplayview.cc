@@ -93,6 +93,10 @@ public:
   // arrived: a trail's worth of path at this spacing is well under this.
   static constexpr std::size_t kCursorTrailMax = 256;
   static constexpr double kTrailSpacing = 2.0; // playfield units
+  // What twelve device pixels came to at 1080p, which is the size these were
+  // tuned at. Kept as the playfield-relative figure it always meant.
+  static constexpr float kTrailWidthUnits = 12.0f / 2.25f;
+  static constexpr float kCursorUnitScale = 1.0f / 2.25f;
   // LegacyMainCirclePiece's legacy_fade_duration, and DrawableHitCircle's
   // fade on a miss.
   static constexpr double kHitFade = 240.0;
@@ -875,8 +879,8 @@ public:
     if (!img || pts.size() < 2) {
       return;
     }
-    const float spriteW =
-        static_cast<float>(img->width()) * 0.35f * scale * c.fCursorSize;
+    const float spriteW = static_cast<float>(img->width()) * 0.35f *
+                          kCursorUnitScale * c.fCursorSize;
     const float interval = std::max(0.5f * scale, spriteW / 2.5f);
 
     // All of it through one layer. The stamps overlap each other on purpose,
@@ -922,7 +926,7 @@ public:
         }
         c.fSkin->drawCursorTrail(
             canvas, {pts[i].fX + dx * u, pts[i].fY + dy * u},
-            scale * c.fCursorSize, a, blend);
+            kCursorUnitScale * c.fCursorSize, a, blend);
       }
       carried = std::fmod(carried + len, interval);
     }
@@ -983,8 +987,14 @@ public:
       return;
     }
 
-    const float baseW = 12.0f * scale;
-    const float feather = 1.5f * scale; // ~1.5 device px of edge fade
+    // In playfield units, so the trail is the same fraction of the playfield
+    // at every resolution. Written as a device-pixel width it was a constant
+    // twelve pixels, which on a screen with twice the pixels is half the
+    // trail: 5.3 units at 1080p, 2.7 at 4K, next to circles that grew.
+    const float baseW = kTrailWidthUnits * c.fCursorSize;
+    // This one stays in device pixels on purpose: it is the margin that fades
+    // the edge, and an edge is an edge whatever the screen.
+    const float feather = 1.5f * scale;
     const std::size_t n = pts.size();
 
     // Four vertices per point: outer-left (alpha 0), inner-left, inner-right
@@ -1055,8 +1065,10 @@ public:
   }
 
   void drawCursor(const Ctx &c, skia::SkCanvas *canvas) {
-    c.fSkin->drawCursor(canvas, c.fCursor,
-                     c.fCursorSize / c.fScale);
+    // Playfield-relative for the same reason as the trail it leads: pinned to
+    // device pixels, the cursor shrank against everything around it as the
+    // resolution went up.
+    c.fSkin->drawCursor(canvas, c.fCursor, c.fCursorSize * kCursorUnitScale);
   }
 
   // Judgement text. DefaultJudgementPiece and, for anything that is not a
