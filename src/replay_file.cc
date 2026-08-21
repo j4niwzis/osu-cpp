@@ -8,9 +8,36 @@ import osu.engine;
 
 export namespace osu {
 
-// Replays stamped with this version or later were scored by osu!'s rules;
-// anything older came from this client's own model and plays back under it.
-inline constexpr std::int32_t kLazerRulesVersion = 20260820;
+// LegacyScoreEncoder.LATEST_VERSION and FIRST_LAZER_VERSION. The version field
+// is what lazer reads to decide whether a replay came from stable: anything
+// below the first lazer version has the Classic mod appended on import, which
+// changes slider scoring and hit windows, so a replay written here claims a
+// lazer version and is played back by lazer as it was recorded.
+inline constexpr std::int32_t kLazerScoreVersion = 30000019;
+inline constexpr std::int32_t kFirstLazerScoreVersion = 30000000;
+
+// The per-result counts lazer keeps, which ride along at the end of the file
+// as JSON so that an import gets the real accuracy and rank rather than the
+// four legacy counts. Empty means the block is not written.
+struct ReplayStatistics {
+  int fGreat = 0;
+  int fOk = 0;
+  int fMeh = 0;
+  int fMiss = 0;
+  int fLargeTickHit = 0;
+  int fLargeTickMiss = 0;
+  int fSliderTailHit = 0;
+  int fSmallBonus = 0;
+  int fLargeBonus = 0;
+  int fMaxGreat = 0;
+  int fMaxLargeTick = 0;
+  int fMaxSliderTail = 0;
+  int fMaxSmallBonus = 0;
+  int fMaxLargeBonus = 0;
+  std::string fRank;
+  std::int64_t fTotalScore = 0;
+  bool fPresent = false;
+};
 
 // The .osr header carries the score alongside the input events; these are
 // those fields, in the order the format stores them.
@@ -51,6 +78,10 @@ struct ReplayHeader {
 
 struct ReplayData {
   std::vector<InputEvent> fEvents;
+  // No seed frame: one of the files this client wrote before the format was
+  // fixed. Absolute frame times, .xz where LZMA belongs, and the old scoring
+  // model.
+  bool fLegacyFormat = false;
   std::string fBeatmapMd5;
   std::string fPlayerName;
   ModSet fMods = mod::kNone;
@@ -335,15 +366,21 @@ encodeReplayData(std::span<const InputEvent> events, std::int32_t seed = 0) {
   return std::vector<std::uint8_t>(s.begin(), s.end());
 }
 
+// The seed frame is what tells a replay's vintage. Everything osu! has
+// written since 2013 ends with one and carries frame times as deltas; the
+// files this client wrote before the format was fixed have no seed frame,
+// carry absolute times, and were scored by the old model. One frame answers
+// all three questions, so nothing else is consulted.
+[[nodiscard]] inline bool hasSeedFrame(std::string_view replayStr) noexcept {
+  return replayStr.find("-12345|") != std::string_view::npos;
+}
+
 inline std::vector<InputEvent> decodeReplayData(std::string_view replayStr) {
   std::vector<InputEvent> events;
   int keys = 0;
   std::int64_t now = 0;
   std::size_t pos = 0;
-  // Replays this wrote before the format was fixed carry absolute times and
-  // no seed frame; everything osu! has written since 2013 carries deltas and
-  // ends with one. That frame is the only thing that tells the two apart.
-  const bool deltas = replayStr.find("-12345|") != std::string_view::npos;
+  const bool deltas = hasSeedFrame(replayStr);
   while (pos < replayStr.size()) {
     std::size_t s1 = replayStr.find('|', pos);
     if (s1 == std::string::npos)
@@ -401,20 +438,113 @@ inline std::vector<InputEvent> decodeReplayData(std::string_view replayStr) {
   return events;
 }
 
+// The mod acronyms lazer knows this client's mods by. The legacy bitfield in
+// the header is enough for stable, but a lazer-version replay has its mods
+// read back out of the JSON block instead, so they have to agree.
+[[nodiscard]] inline std::vector<std::string> modAcronyms(ModSet mods) {
+  std::vector<std::string> out;
+  const auto add = [&out, mods](ModSet flag, const char *acronym) {
+    if (hasMod(mods, flag)) {
+      out.emplace_back(acronym);
+    }
+  };
+  add(mod::kNoFail, "NF");
+  add(mod::kEasy, "EZ");
+  add(mod::kHidden, "HD");
+  add(mod::kHardRock, "HR");
+  add(mod::kDoubleTime, "DT");
+  add(mod::kHalfTime, "HT");
+  add(mod::kAuto, "AT");
+  add(mod::kAutopilot, "AP");
+  return out;
+}
+
+// ScoreRank has no SS: an SS is an X, and X and S go silver under Hidden or
+// Flashlight (ModHidden.AdjustRank). The name has to be one lazer's enum
+// knows -- a rank it cannot parse throws while deserialising and takes the
+// whole import down with it, rather than being skipped.
+[[nodiscard]] inline std::string scoreRankName(std::string_view grade,
+                                               ModSet mods) {
+  const bool silver = hasMod(mods, mod::kHidden);
+  if (grade == "SS") {
+    return silver ? "XH" : "X";
+  }
+  if (grade == "S") {
+    return silver ? "SH" : "S";
+  }
+  if (grade == "A" || grade == "B" || grade == "C" || grade == "D" ||
+      grade == "F") {
+    return std::string(grade);
+  }
+  return "D";
+}
+
+// LegacyReplaySoloScoreInfo, serialised the way osu!'s global JSON settings
+// serialise it: snake_case keys, zero counts left out entirely.
+[[nodiscard]] inline std::string soloScoreJson(const ReplayStatistics &s,
+                                               ModSet mods) {
+  std::string out = "{";
+  out += R"("client_version":"","rank":")" + scoreRankName(s.fRank, mods) +
+         R"(","user_id":-1,)";
+  out += R"("online_id":-1,"mods":[)";
+  bool first = true;
+  for (const auto &acronym : modAcronyms(mods)) {
+    if (!first) {
+      out += ",";
+    }
+    first = false;
+    out += R"({"acronym":")" + acronym + R"("})";
+  }
+  out += "],\"statistics\":{";
+  first = true;
+  const auto pair = [&out, &first](const char *key, int value) {
+    if (value == 0) {
+      return;
+    }
+    if (!first) {
+      out += ",";
+    }
+    first = false;
+    out += std::format("\"{}\":{}", key, value);
+  };
+  pair("great", s.fGreat);
+  pair("ok", s.fOk);
+  pair("meh", s.fMeh);
+  pair("miss", s.fMiss);
+  pair("large_tick_hit", s.fLargeTickHit);
+  pair("large_tick_miss", s.fLargeTickMiss);
+  pair("slider_tail_hit", s.fSliderTailHit);
+  pair("small_bonus", s.fSmallBonus);
+  pair("large_bonus", s.fLargeBonus);
+  out += "},\"maximum_statistics\":{";
+  first = true;
+  pair("great", s.fMaxGreat);
+  pair("large_tick_hit", s.fMaxLargeTick);
+  pair("slider_tail_hit", s.fMaxSliderTail);
+  pair("small_bonus", s.fMaxSmallBonus);
+  pair("large_bonus", s.fMaxLargeBonus);
+  out += "},";
+  // Written only when there is one; lazer's own encoder sends null otherwise
+  // and works out the value itself on import.
+  if (s.fTotalScore > 0) {
+    out += std::format("\"total_score_without_mods\":{},", s.fTotalScore);
+  }
+  out += "\"pauses\":[]}";
+  return out;
+}
+
 } // namespace detail
 
 [[nodiscard]] inline std::vector<std::uint8_t>
 encodeReplay(std::span<const InputEvent> events, const std::string &beatmapMd5,
              const std::string &playerName, ModSet mods,
-             const ReplayScore &score = {}) {
+             const ReplayScore &score = {},
+             const ReplayStatistics &stats = {}) {
   using namespace detail;
   std::vector<std::uint8_t> out;
 
   writeByte(out, 0);
-  // The game version field doubles as a rules stamp: replays written before
-  // this one were scored by the old model -- one judgement per slider, no
-  // drain, no note lock -- and are played back that way.
-  writeInt(out, kLazerRulesVersion);
+  writeInt(out, kLazerScoreVersion);
   writeString(out, beatmapMd5);
   writeString(out, playerName);
 
@@ -446,7 +576,22 @@ encodeReplay(std::span<const InputEvent> events, const std::string &beatmapMd5,
   writeInt(out, static_cast<std::int32_t>(compressed.size()));
   out.insert(out.end(), compressed.begin(), compressed.end());
 
-  writeLong(out, 0);
+  writeLong(out, -1); // LegacyOnlineID: this score was never uploaded
+
+  // LegacyReplaySoloScoreInfo, which every reader past version 30000001 asks
+  // for. It carries the counts the four legacy shorts cannot -- ticks, tails,
+  // bonus spins -- and it replaces the mods outright on import, so the
+  // acronyms have to be here even though the legacy bitfield is above. A
+  // length of -1 is a null array, which is how the block is left out.
+  if (stats.fPresent) {
+    std::string json = detail::soloScoreJson(stats, mods);
+    std::vector<std::uint8_t> bytes(json.begin(), json.end());
+    auto blob = lzmaCompress(bytes);
+    writeInt(out, static_cast<std::int32_t>(blob.size()));
+    out.insert(out.end(), blob.begin(), blob.end());
+  } else {
+    writeInt(out, -1);
+  }
   return out;
 }
 
@@ -523,6 +668,34 @@ decodeReplayHeader(std::span<const std::uint8_t> data) {
   return parseReplayHeader(sp);
 }
 
+// Whether a replay is one of the old ones, answered from the file. The events
+// have to be decompressed to see the seed frame, so this is not free -- the
+// index calls it once per new file and remembers the answer.
+[[nodiscard]] inline bool replayIsLegacyFormat(
+    std::span<const std::uint8_t> data) noexcept {
+  using namespace detail;
+  try {
+    auto sp = data;
+    parseReplayHeader(sp);
+    if (sp.size() < 4) {
+      return false;
+    }
+    const std::int32_t len = readInt(sp);
+    if (len <= 0 || sp.size() < static_cast<std::size_t>(len)) {
+      return false;
+    }
+    auto events = lzmaDecompress(sp.subspan(0, static_cast<std::size_t>(len)));
+    if (events.empty()) {
+      return false;
+    }
+    return !hasSeedFrame(
+        std::string_view(reinterpret_cast<const char *>(events.data()),
+                         events.size()));
+  } catch (const std::exception &) {
+    return false;
+  }
+}
+
 [[nodiscard]] inline ReplayData
 decodeReplay(std::span<const std::uint8_t> data) {
   using namespace detail;
@@ -541,6 +714,7 @@ decodeReplay(std::span<const std::uint8_t> data) {
 
   auto decompressed = lzmaDecompress(replayBytes);
   std::string replayStr(decompressed.begin(), decompressed.end());
+  result.fLegacyFormat = !hasSeedFrame(replayStr);
   result.fEvents = decodeReplayData(replayStr);
   return result;
 }

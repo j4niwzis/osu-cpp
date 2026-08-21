@@ -120,6 +120,8 @@ void printUsage(std::string_view program) {
          "run\n"
       << "  --trace-replay     Play a replay through the engine and print "
          "every judgement\n"
+      << "  --legacy-rules     With --trace-replay, use this client's old "
+         "scoring model\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"
@@ -143,6 +145,7 @@ int main(int argc, char **argv) {
   double until = std::numeric_limits<double>::infinity();
   bool dumpAim = false;
   bool traceReplay = false;
+  bool legacyRules = false;
   osu::StarAlgorithm algorithm = osu::StarAlgorithm::kLazerMaster;
   osu::ModSet mods = osu::mod::kNone;
 
@@ -181,6 +184,8 @@ int main(int argc, char **argv) {
       algorithm = osu::StarAlgorithm::kRanked;
     } else if (arg == "--trace-replay") {
       traceReplay = true;
+    } else if (arg == "--legacy-rules") {
+      legacyRules = true;
     } else if (arg == "--until" && i + 1 < args.size()) {
       until = std::stod(std::string(args[++i]));
     } else if (arg == "--beatmap" && i + 1 < args.size()) {
@@ -261,11 +266,15 @@ int main(int argc, char **argv) {
           std::istreambuf_iterator<char>()};
       const osu::ReplayData replay = osu::decodeReplay(bytes);
 
-      const osu::RuleSet rules = replay.fVersion < osu::kLazerRulesVersion
+      // A replay with no seed frame is one this client wrote before the
+      // format was fixed, and only plays back under the old model. Anything
+      // else takes --legacy-rules, defaulting to osu!'s.
+      const osu::RuleSet rules = replay.fLegacyFormat || legacyRules
                                      ? osu::RuleSet::kLegacyClient
                                      : osu::RuleSet::kLazer;
       std::cout << std::format(
-          "replay version {} rules {} mods {} events {}\n", replay.fVersion,
+          "replay version {} format {} rules {} mods {} events {}\n",
+          replay.fVersion, replay.fLegacyFormat ? "legacy" : "current",
           rules == osu::RuleSet::kLazer ? "lazer" : "legacy",
           replay.fMods.fValue, replay.fEvents.size());
 

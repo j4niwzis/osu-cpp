@@ -16,6 +16,14 @@ struct ReplayIndexEntry {
   osu::ReplayScore fScore;
   std::string fGrade;
   bool fHasScore = false;
+  // Which rules the play was made under. Recorded here rather than in the
+  // .osr, whose every field belongs to osu!'s format and is read by osu!.
+  // -1 when the file came from somewhere else and nothing is known.
+  int fRules = -1;
+  // No seed frame in the events: one of the files this client wrote before
+  // the format was fixed. Those predate the rules being osu!'s, so they only
+  // ever play back under the old model.
+  bool fLegacyFormat = false;
 };
 
 // An index of the replay directory.
@@ -34,10 +42,7 @@ struct ReplayIndexEntry {
 class ReplayIndex {
 public:
   // Bump when the field layout below changes.
-  static constexpr int kSchemaVersion = 1;
-  // A header is a few hundred bytes; this is generous even with a long name.
-  static constexpr std::size_t kHeaderWindow = 64 * 1024;
-
+  static constexpr int kSchemaVersion = 2;
   void load(const std::filesystem::path &file) {
     fFile = file;
     fEntries.clear();
@@ -80,6 +85,8 @@ public:
       e.fScore.fTotalScore = static_cast<std::int32_t>(numOf(o, "score"));
       e.fScore.fMaxCombo = static_cast<std::uint16_t>(numOf(o, "combo"));
       e.fScore.fPerfect = numOf(o, "perfect") != 0.0;
+      e.fRules = o->if_contains("rules") ? intOf(o, "rules") : -1;
+      e.fLegacyFormat = numOf(o, "legacyFormat") != 0.0;
       fEntries.emplace(name, std::move(e));
     }
   }
@@ -134,12 +141,15 @@ public:
   }
 
   // A replay that has just been written; no need to re-scan the directory.
-  void add(const std::filesystem::path &path) {
+  // `rules` is what it was played under: 0 for osu!'s, 1 for this client's
+  // old model, -1 when there is nothing to say.
+  void add(const std::filesystem::path &path, int rules = -1) {
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     const auto mtime = static_cast<std::int64_t>(
         std::filesystem::last_write_time(path, ec).time_since_epoch().count());
     if (auto entry = readHeader(path, size, mtime)) {
+      entry->fRules = rules;
       fEntries[path.filename().string()] = std::move(*entry);
       fDirty = true;
       this->rebuildGroups();
@@ -182,6 +192,8 @@ public:
       o["score"] = static_cast<int>(e.fScore.fTotalScore);
       o["combo"] = static_cast<int>(e.fScore.fMaxCombo);
       o["perfect"] = e.fScore.fPerfect ? 1 : 0;
+      o["rules"] = e.fRules;
+      o["legacyFormat"] = e.fLegacyFormat ? 1 : 0;
       list.push_back(std::move(o));
     }
     root["replays"] = std::move(list);
@@ -195,8 +207,11 @@ public:
   }
 
 private:
-  // Reads the header out of a prefix of the file: no decompression, and for a
-  // long replay no reading of the events either.
+  // Reads what a list needs out of one file. The header alone would come out
+  // of a prefix, but whether the replay is one of the old ones is answered by
+  // the seed frame, which is inside the compressed events, so the whole file
+  // is read and the events decompressed. That happens once: the answer is
+  // written to the index and the file is not opened again until it changes.
   [[nodiscard]] static std::optional<ReplayIndexEntry>
   readHeader(const std::filesystem::path &path, std::uintmax_t size,
              std::int64_t mtime) {
@@ -204,11 +219,9 @@ private:
     if (!in) {
       return std::nullopt;
     }
-    std::vector<char> raw(
-        std::min<std::size_t>(kHeaderWindow, static_cast<std::size_t>(size)));
-    in.read(raw.data(), static_cast<std::streamsize>(raw.size()));
-    const std::vector<std::uint8_t> bytes(
-        raw.begin(), raw.begin() + static_cast<std::ptrdiff_t>(in.gcount()));
+    const std::vector<std::uint8_t> bytes{
+        std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    const bool legacyFormat = osu::replayIsLegacyFormat(bytes);
     try {
       const auto header = osu::decodeReplayHeader(bytes);
       ReplayIndexEntry e;
@@ -219,6 +232,7 @@ private:
       e.fBeatmapMd5 = header.fBeatmapMd5;
       e.fScore = header.fScore;
       e.fHasScore = header.fScore.totalHits() > 0;
+      e.fLegacyFormat = legacyFormat;
       if (e.fHasScore) {
         osu::ScoreState state;
         state.fGreat = header.fScore.f300;

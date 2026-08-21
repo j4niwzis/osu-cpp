@@ -307,8 +307,14 @@ private:
     osu::ReplayScore fScore; // from the .osr header, via the index
     std::string fGrade;
     bool fHasScore = false;
+    int fRules = -1;    // what it was recorded under, -1 if not ours
+    bool fLegacyFormat = false; // no seed frame: old rules, no choice
   };
   bool fReplayListOpen = false;
+  // Which rules the replay about to be watched plays under. Set from the
+  // index when the selection moves -- a replay recorded here remembers what
+  // it was played under -- and then it is the user's to flip.
+  bool fReplayLegacyRules = false;
   std::vector<ReplayFile> fReplays;
   std::string fReplayFilter; // md5 the list was built for
   client::ReplayIndex fReplayIndex;
@@ -529,21 +535,25 @@ private:
     fMap.emplace(client::loadBeatmap(fSet, info));
     fBeatmapFilename = info.fFilename;
 
-    // Which rules to play by. The setting decides for a fresh play; a replay
-    // decides for itself, since one recorded before the rules changed was
-    // scored by the old ones and only plays back as it was under them.
+    // Which rules to play by. A fresh play takes the setting. A replay takes
+    // the toggle beside its panel, which starts on whatever the index says it
+    // was recorded under -- except for one this client wrote back when it
+    // produced .xz, which osu! cannot read and which predates the rules being
+    // osu!'s, so it only ever plays back under the old model.
     osu::RuleSet rules = fSettings.choice("rules") == 1
                              ? osu::RuleSet::kLegacyClient
                              : osu::RuleSet::kLazer;
     std::optional<osu::ReplayData> replay;
     if (fAutoplay && !fReplayPath.empty()) {
+      rules = fReplayLegacyRules ? osu::RuleSet::kLegacyClient
+                                 : osu::RuleSet::kLazer;
       std::ifstream file(fReplayPath, std::ios::binary);
       if (file) {
         std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file),
                                         std::istreambuf_iterator<char>()};
         try {
           replay = osu::decodeReplay(bytes);
-          if (replay->fVersion < osu::kLazerRulesVersion) {
+          if (replay->fLegacyFormat) {
             rules = osu::RuleSet::kLegacyClient;
           }
         } catch (const std::exception &) {
@@ -1335,12 +1345,18 @@ private:
       return;
     }
     if (fReplayListOpen) {
-      // The strip handled anything over it; the actions below it are ours.
-      for (const auto &b : fMenuButtons) {
-        if (b.fRect.contains(x, y)) {
-          this->exportSelectedReplay();
-          return;
+      // The strip handled anything over it; the actions below it are ours,
+      // and they are the rules toggle then export, in that order.
+      for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
+        if (!fMenuButtons[i].fRect.contains(x, y)) {
+          continue;
         }
+        if (i == 0) {
+          this->toggleReplayRules();
+        } else {
+          this->exportSelectedReplay();
+        }
+        return;
       }
       return;
     }
@@ -1477,9 +1493,11 @@ private:
         this->retry();
       } else if (idx == 1) {
         this->quitToSelect();
-      } else {
+      } else if (idx == 2) {
         fExportDialog.show();
         fReplayListOpen = false; // one overlay at a time
+      } else {
+        this->toggleReplayRules();
       }
     }
   }
@@ -5695,7 +5713,7 @@ private:
     fReplays.clear();
     for (const auto *e : fReplayIndex.forBeatmap(wanted)) {
       fReplays.push_back({e->fPath, e->fLabel, e->fScore, e->fGrade,
-                          e->fHasScore});
+                          e->fHasScore, e->fRules, e->fLegacyFormat});
     }
     // Best first, which is the order a leaderboard is in and the order these
     // panels imply by sitting in a row. The index hands them over in whatever
@@ -5721,6 +5739,7 @@ private:
     fPanelFreeScroll = false;
     fPanelDragging = false;
     fPanelEntries.clear();
+    this->syncReplayRulesToSelection();
   }
 
   void drawReplayList(skia::SkCanvas *canvas) {
@@ -5741,8 +5760,16 @@ private:
     fMenuButtons.clear();
     if (this->selectedReplay() != nullptr) {
       const float bw = std::min(260.0f, sw * 0.22f);
-      fMenuButtons.push_back({skia::SkRect::MakeXYWH((sw - bw) * 0.5f,
-                                                     sh - 92.0f, bw, 46.0f),
+      const float gap = 14.0f;
+      float bx = (sw - (bw * 2.0f + gap)) * 0.5f;
+      fMenuButtons.push_back({skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f),
+                              this->rulesToggleLabel(),
+                              this->rulesToggleEnabled()
+                                  ? client::ui::kAccent2
+                                  : skia::colorSetARGB(255, 120, 120, 130)});
+      this->drawMenuButton(canvas, fMenuButtons.back());
+      bx += bw + gap;
+      fMenuButtons.push_back({skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f),
                               "export video",
                               skia::colorSetARGB(255, 170, 102, 255)});
       this->drawMenuButton(canvas, fMenuButtons.back());
@@ -6828,18 +6855,33 @@ private:
     const float sw = static_cast<float>(fScreenW);
     const float sh = static_cast<float>(fScreenH);
     fMenuButtons.clear();
+    // The rules toggle only exists when there is a saved replay to watch
+    // under them; the score in hand was played under whatever it was played
+    // under and cannot be replayed from here.
+    const bool rulesToggle = this->selectedReplay() != nullptr;
+    const int count = rulesToggle ? 4 : 3;
     const float bw = std::min(260.0f, sw * 0.22f);
     const float bh = 46.0f;
     const float gap = 14.0f;
-    float bx = (sw - (bw * 3.0f + gap * 2.0f)) * 0.5f;
-    const char *labels[] = {"retry", "back to song select", "export video"};
-    const skia::SkColor accents[] = {skia::colorSetARGB(255, 255, 204, 102),
-                                     client::ui::kAccent2,
-                                     skia::colorSetARGB(255, 170, 102, 255)};
-    for (int i = 0; i < 3; ++i) {
+    float bx = (sw - (bw * static_cast<float>(count) +
+                      gap * static_cast<float>(count - 1))) *
+               0.5f;
+    std::vector<std::string> labels{"retry", "back to song select",
+                                    "export video"};
+    std::vector<skia::SkColor> accents{
+        skia::colorSetARGB(255, 255, 204, 102), client::ui::kAccent2,
+        skia::colorSetARGB(255, 170, 102, 255)};
+    if (rulesToggle) {
+      labels.push_back(this->rulesToggleLabel());
+      accents.push_back(this->rulesToggleEnabled()
+                            ? client::ui::kAccent2
+                            : skia::colorSetARGB(255, 120, 120, 130));
+    }
+    for (int i = 0; i < count; ++i) {
       fMenuButtons.push_back(
-          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh), labels[i],
-           accents[i]});
+          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh),
+           labels[static_cast<std::size_t>(i)],
+           accents[static_cast<std::size_t>(i)]});
       bx += bw + gap;
     }
 
@@ -7017,6 +7059,7 @@ private:
         this->watchSelectedReplay();
       } else {
         fSelectedPanel = hit.fIndex;
+        this->syncReplayRulesToSelection();
         fPanelFreeScroll = false; // re-centre on the new selection
       }
       return true;
@@ -7051,6 +7094,42 @@ private:
     if (const auto *replay = this->selectedReplay()) {
       this->watchReplay(replay->fPath);
     }
+  }
+
+  // The label on the rules toggle, and whether it can be pressed at all.
+  // A replay from the .xz era was scored by the old model and its frames are
+  // in the old shape, so there is nothing to choose.
+  [[nodiscard]] std::string rulesToggleLabel() const {
+    const auto *replay = this->selectedReplay();
+    if (replay != nullptr && replay->fLegacyFormat) {
+      return "rules: old (forced)";
+    }
+    return fReplayLegacyRules ? "rules: old" : "rules: osu!lazer";
+  }
+
+  [[nodiscard]] bool rulesToggleEnabled() const {
+    const auto *replay = this->selectedReplay();
+    return replay != nullptr && !replay->fLegacyFormat;
+  }
+
+  void toggleReplayRules() {
+    if (this->rulesToggleEnabled()) {
+      fReplayLegacyRules = !fReplayLegacyRules;
+      fView.invalidate();
+    }
+  }
+
+  // Moving the selection re-reads what that replay was recorded under, which
+  // is the only sensible starting point: it is the answer that reproduces the
+  // score in the panel. Anything not written by this client starts on osu!'s
+  // rules, which is what the client plays by now.
+  void syncReplayRulesToSelection() {
+    const auto *replay = this->selectedReplay();
+    if (replay == nullptr) {
+      fReplayLegacyRules = false;
+      return;
+    }
+    fReplayLegacyRules = replay->fLegacyFormat || replay->fRules == 1;
   }
 
   // `replay` is null for the score in hand, which is contracted whenever some
@@ -7946,8 +8025,30 @@ private:
     score.fTotalScore = static_cast<std::int32_t>(sc.fScore);
     score.fMaxCombo = static_cast<std::uint16_t>(sc.fMaxCombo);
     score.fPerfect = sc.fMiss == 0 && sc.fGood == 0 && sc.fMeh == 0;
+    // The counts the four legacy shorts have no room for, written into the
+    // block osu! reads at the end of the file so an import gets this score's
+    // real accuracy and rank instead of a legacy approximation of them.
+    const auto maxStats = fEngine->maximumStatistics();
+    osu::ReplayStatistics stats;
+    stats.fPresent = true;
+    stats.fGreat = sc.fGreat;
+    stats.fOk = sc.fGood;
+    stats.fMeh = sc.fMeh;
+    stats.fMiss = sc.fMiss;
+    stats.fLargeTickHit = sc.fLargeTickHit;
+    stats.fLargeTickMiss = sc.fLargeTickMiss;
+    stats.fSliderTailHit = sc.fTailHit;
+    stats.fSmallBonus = sc.fSmallBonus;
+    stats.fLargeBonus = sc.fLargeBonus;
+    stats.fMaxGreat = maxStats.fGreat;
+    stats.fMaxLargeTick = maxStats.fLargeTick;
+    stats.fMaxSliderTail = maxStats.fSliderTail;
+    stats.fMaxSmallBonus = maxStats.fSmallBonus;
+    stats.fMaxLargeBonus = maxStats.fLargeBonus;
+    stats.fRank = osu::gradeString(osu::computeGrade(sc));
+    stats.fTotalScore = static_cast<std::int64_t>(sc.fScore);
     auto replayBytes = osu::encodeReplay(fRecordedEvents, this->beatmapMd5(),
-                                         "Player", fMods, score);
+                                         "Player", fMods, score, stats);
     std::error_code ec;
     std::filesystem::create_directories(fReplayDir, ec);
     const std::filesystem::path outPath =
@@ -7957,7 +8058,10 @@ private:
       out.put(static_cast<char>(b));
     out.close();
     fLastSavedReplay = outPath;
-    fReplayIndex.add(outPath);
+    // Which rules this was played under lives here, in the index, and not in
+    // the .osr: every field of that file belongs to osu!'s format.
+    fReplayIndex.add(outPath,
+                     fEngine->rules() == osu::RuleSet::kLegacyClient ? 1 : 0);
     std::println(std::cerr, "[replay] saved {}", outPath.string());
   }
 

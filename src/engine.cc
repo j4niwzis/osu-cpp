@@ -120,6 +120,43 @@ public:
     return total;
   }
 
+  // What a perfect play would have counted, per result kind. This is what
+  // lazer stores as MaximumStatistics beside a score, and what it divides by
+  // to get accuracy when it reads a replay back.
+  struct MaximumStatistics {
+    int fGreat = 0;
+    int fLargeTick = 0;
+    int fSliderTail = 0;
+    int fSmallBonus = 0;
+    int fLargeBonus = 0;
+  };
+
+  [[nodiscard]] MaximumStatistics maximumStatistics() const noexcept {
+    MaximumStatistics max;
+    for (const auto &state : fStates) {
+      ++max.fGreat; // a circle, a slider's head, or a spinner
+      for (const auto &n : state.fNested) {
+        switch (n.fKind) {
+        case HitKind::kLargeTick:
+          ++max.fLargeTick;
+          break;
+        case HitKind::kSliderTail:
+          ++max.fSliderTail;
+          break;
+        case HitKind::kSmallBonus:
+          ++max.fSmallBonus;
+          break;
+        case HitKind::kLargeBonus:
+          ++max.fLargeBonus;
+          break;
+        case HitKind::kBasic:
+          break;
+        }
+      }
+    }
+    return max;
+  }
+
   // Submit an input event. Events must be submitted in non-decreasing time
   // order.
   void submit(const InputEvent &ev) {
