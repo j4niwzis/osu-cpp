@@ -164,6 +164,11 @@ private:
   int fBufferAge = -1;        // frames since this buffer last held a frame
   std::vector<skia::SkIRect> fBlitRegions; // what to carry over; empty = all
   bool fBufferAgeAssumed = false; // ...or what we were told to believe
+  // Whether the window system answered at all, which is a different question
+  // from what the answer was. Carrying a region into the window is sound only
+  // when it did: with no answer, "how old is this buffer" has no value that
+  // makes it safe, including the one the settings assert.
+  bool fAgeReported = false;
   skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
   skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
   bool fDrewOnRaster = false;               // this frame went to the CPU one
@@ -1943,6 +1948,11 @@ private:
     // window system rather than from a constant of mine. -1 when nobody will
     // say, which is when the constants come back.
     fBufferAge = this->partialRedraw() ? present::bufferAge() : -1;
+    // Reported, before anything below asserts one. Every question about what
+    // the window's buffers hold has to be answerable as "nobody said", and
+    // this is the only place that knows.
+    fAgeReported = fBufferAge >= 0;
+    fBufferAgeAssumed = false;
     // Nobody will say, but the answer may still be knowable: a driver that
     // swaps by copying leaves the back buffer holding the last frame, which
     // is an age of one, and a repaint of this frame's damage alone. Asserted
@@ -1954,8 +1964,6 @@ private:
         fBufferAge = assumed;
         fBufferAgeAssumed = true;
       }
-    } else {
-      fBufferAgeAssumed = false;
     }
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
@@ -2125,7 +2133,7 @@ private:
     // leaves the rest as it found it. Blitting whole costs one window-sized
     // copy on a renderer that has the whole frame in memory anyway, and the
     // drawing above is still clipped, which is where the work actually is.
-    if (!fBufferAgeAssumed && !this->historyShorterThan(this->windowReach())) {
+    if (fAgeReported && !this->historyShorterThan(this->windowReach())) {
       const skia::SkIRect carry = this->damageOver(this->windowReach());
       if (!carry.isEmpty()) {
         fBlitRegions.push_back(carry);
@@ -2748,7 +2756,7 @@ private:
     // rectangles are what changed since the buffer coming back was last ours,
     // which is only knowable from a reported age.
     std::vector<std::array<int, 4>> damage;
-    if (!fBufferAgeAssumed && !fComputedClipFull && !fComputedClip.empty()) {
+    if (fAgeReported && !fComputedClipFull && !fComputedClip.empty()) {
       damage.reserve(fComputedClip.size());
       for (const auto &rect : fComputedClip) {
         damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
