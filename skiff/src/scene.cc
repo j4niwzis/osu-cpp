@@ -265,7 +265,6 @@ public:
   // four separate things to get right per node, and three of them were the
   // same every time.
   template <class T, class... Args>
-    requires std::derived_from<T, Drawable>
   T *add(const Spec &spec, Args &&...args) {
     auto child = std::make_unique<T>(std::forward<Args>(args)...);
     T *raw = child.get();
@@ -277,7 +276,6 @@ public:
   // Same, for a node that was already built elsewhere -- returns it typed so
   // that keeping a pointer does not need a separate .get() before the move.
   template <class T>
-    requires std::derived_from<T, Drawable>
   T *adopt(std::unique_ptr<T> child) {
     T *raw = child.get();
     this->add(std::move(child));
@@ -697,7 +695,6 @@ public:
 // else's add(). The same spec as Drawable::add, for the cases where there is
 // no parent yet to hang it on.
 template <class T, class... Args>
-  requires std::derived_from<T, Drawable>
 [[nodiscard]] std::unique_ptr<T> make(const Spec &spec, Args &&...args) {
   auto node = std::make_unique<T>(std::forward<Args>(args)...);
   node->apply(spec);
