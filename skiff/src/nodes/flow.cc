@@ -125,9 +125,9 @@ protected:
         child->fAnchor = Anchor::kTopLeft;
         child->fOrigin = Anchor::kTopLeft;
         child->fX = x;
-        child->fY =
-            y + this->crossOffset(rowHeight, child->fBounds.height() +
-                                                 child->fMargin.totalY());
+        child->fY = y + this->crossOffset(*child, rowHeight,
+                                          child->fBounds.height() +
+                                              child->fMargin.totalY());
         child->layout(box);
         x += child->fBounds.width() + child->fMargin.totalX() + fSpacingX +
              spread.fBetween;
