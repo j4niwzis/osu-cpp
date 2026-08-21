@@ -191,6 +191,11 @@ private:
   const bool fForcePartialRedraw =
       std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
+  // OSU_TRACE_RESIZE=1 prints, for every frame within a second of a size
+  // event, the four numbers that decide whether it may clip. This bug has now
+  // been reasoned about twice and measured zero times; the next time it comes
+  // back, the frame that did it can say so itself.
+  const bool fTraceResize = std::getenv("OSU_TRACE_RESIZE") != nullptr;
   // OSU_BUFFER_AGE=N overrides the setting of the same meaning, for measuring.
   const int fForcedBufferAge = [] {
     const char *value = std::getenv("OSU_BUFFER_AGE");
@@ -1964,6 +1969,25 @@ private:
       fFrameClip.clear();
     }
     this->rememberBlitRegion();
+
+    // Every number the clip decision is made from, for the frames around a
+    // size event. This has been reasoned about twice and measured zero times;
+    // when it comes back, the frame that did it can say so itself.
+    if (fTraceResize && wallMs() - fLastResizeWall < 1000.0) {
+      const bool willClip = !fComputedClipFull && this->partialRedraw() &&
+                            !this->historyShorterThan(this->drawReach());
+      std::println(std::cerr,
+                   "[resize] +{:4.0f} ms  age {}{}  reach {}  history {}  "
+                   "{}  -> {}{}",
+                   wallMs() - fLastResizeWall, fBufferAge,
+                   fBufferAgeAssumed ? " (assumed)" : "", this->drawReach(),
+                   fBlitHistory.size(),
+                   fComputedClipFull ? "whole screen" : "a region",
+                   willClip ? "CLIPS" : "repaints whole",
+                   fComputedClipFull
+                       ? std::string(" -- ") + fFullDamageReason
+                       : std::string());
+    }
 
     if (!fSurface) {
       return;
