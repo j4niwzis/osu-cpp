@@ -118,6 +118,8 @@ void printUsage(std::string_view program) {
          "strain\n"
       << "  --ranked           With --stars, use the calculator the servers "
          "run\n"
+      << "  --trace-replay     Play a replay through the engine and print "
+         "every judgement\n"
       << "  --dt               Apply DoubleTime\n"
       << "  --ht               Apply HalfTime\n"
       << "  --hr               Apply HardRock\n"
@@ -140,6 +142,7 @@ int main(int argc, char **argv) {
   bool starsOnly = false;
   double until = std::numeric_limits<double>::infinity();
   bool dumpAim = false;
+  bool traceReplay = false;
   osu::StarAlgorithm algorithm = osu::StarAlgorithm::kLazerMaster;
   osu::ModSet mods = osu::mod::kNone;
 
@@ -176,6 +179,8 @@ int main(int argc, char **argv) {
       dumpAim = true;
     } else if (arg == "--ranked") {
       algorithm = osu::StarAlgorithm::kRanked;
+    } else if (arg == "--trace-replay") {
+      traceReplay = true;
     } else if (arg == "--until" && i + 1 < args.size()) {
       until = std::stod(std::string(args[++i]));
     } else if (arg == "--beatmap" && i + 1 < args.size()) {
@@ -232,6 +237,80 @@ int main(int argc, char **argv) {
     }
     if (skinPath.empty()) {
       skinPath = std::filesystem::path{"skin"};
+    }
+  }
+
+  // A replay, judged: every result the engine produces, with the health and
+  // the score after it. This is the sequence to hold against lazer's own
+  // processors -- they are plain classes, so the same list can be fed to them
+  // and compared line for line.
+  if (traceReplay) {
+    if (beatmapPath.empty() || replayPath.empty()) {
+      std::cerr << "Error: --trace-replay needs a beatmap and --replay\n";
+      return 1;
+    }
+    try {
+      std::ifstream mapFile(beatmapPath, std::ios::binary);
+      const std::string text((std::istreambuf_iterator<char>(mapFile)),
+                             std::istreambuf_iterator<char>());
+      const osu::Beatmap map = osu::loadBeatmap(text);
+
+      std::ifstream replayFile(replayPath, std::ios::binary);
+      const std::vector<std::uint8_t> bytes{
+          std::istreambuf_iterator<char>(replayFile),
+          std::istreambuf_iterator<char>()};
+      const osu::ReplayData replay = osu::decodeReplay(bytes);
+
+      const osu::RuleSet rules = replay.fVersion < osu::kLazerRulesVersion
+                                     ? osu::RuleSet::kLegacyClient
+                                     : osu::RuleSet::kLazer;
+      std::cout << std::format(
+          "replay version {} rules {} mods {} events {}\n", replay.fVersion,
+          rules == osu::RuleSet::kLazer ? "lazer" : "legacy",
+          replay.fMods.fValue, replay.fEvents.size());
+
+      osu::Engine engine(map, replay.fMods, rules);
+      std::size_t seen = 0;
+      const auto flush = [&] {
+        const auto events = engine.events();
+        while (seen < events.size()) {
+          const auto &e = events[seen++];
+          const char *kind = e.fKind == osu::HitKind::kBasic     ? "basic"
+                             : e.fKind == osu::HitKind::kLargeTick ? "tick"
+                             : e.fKind == osu::HitKind::kSliderTail
+                                 ? "tail"
+                             : e.fKind == osu::HitKind::kSmallBonus
+                                 ? "smallbonus"
+                                 : "largebonus";
+          const auto &s = engine.score();
+          std::cout << std::format(
+              "judge {:8.1f} obj {:4} {:<10} {:<5} health {:.9f} score {:7}"
+              " combo {:4} acc {:.9f}\n",
+              e.fIndex < map.fObjects.size()
+                  ? osu::startTime(map.fObjects[e.fIndex])
+                  : 0.0,
+              e.fIndex, kind, osu::judgementInfo(e.fResult).first, s.fHealth,
+              s.fScore, s.fCombo, s.accuracy());
+        }
+      };
+      for (const auto &ev : replay.fEvents) {
+        engine.submit(ev);
+        flush();
+      }
+      engine.advance(map.lastObjectEndTime() + 1000.0);
+      flush();
+      const auto &s = engine.score();
+      std::cout << std::format(
+          "final health {:.9f} score {} accuracy {:.9f} combo {}/{} "
+          "great {} ok {} meh {} miss {} tick {}/{} tail {}/{} failed {}\n",
+          s.fHealth, s.fScore, s.accuracy(), s.fMaxCombo,
+          engine.maxAchievableCombo(), s.fGreat, s.fGood, s.fMeh, s.fMiss,
+          s.fLargeTickHit, s.fLargeTickHit + s.fLargeTickMiss, s.fTailHit,
+          s.fTailHit + s.fTailMiss, engine.failed());
+      return 0;
+    } catch (const std::exception &e) {
+      std::cerr << "Error: " << e.what() << '\n';
+      return 1;
     }
   }
 
