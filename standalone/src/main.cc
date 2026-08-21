@@ -384,6 +384,8 @@ int main(int argc, char **argv) {
         }
         const std::size_t processed = counted.fObjects.size();
         const osu::Engine engine(counted, mods);
+        osu::StarRating attrs = rating;
+        attrs.fMaxCombo = engine.maxAchievableCombo();
         std::cout << std::format("{}\n", target.filename().string())
                   << std::format("  stars     {:.13f}\n", rating.fTotal)
                   << std::format("  aim       {:.13f}\n", rating.fAim)
@@ -394,6 +396,26 @@ int main(int argc, char **argv) {
                   << std::format("  max combo {}\n",
                                  engine.maxAchievableCombo())
                   << std::format("  objects   {}\n", processed);
+        if (algorithm == osu::StarAlgorithm::kRanked) {
+          // What a performance calculation is built from. Printed so it can
+          // be diffed against a reference implementation one number at a
+          // time, the way the ratings themselves were.
+          std::cout << std::format("  sliderfactor  {:.13f}\n",
+                                   attrs.fSliderFactor)
+                    << std::format("  speednotes    {:.13f}\n",
+                                   attrs.fSpeedNoteCount)
+                    << std::format("  aimstrains    {:.13f}\n",
+                                   attrs.fAimDifficultStrains)
+                    << std::format("  speedstrains  {:.13f}\n",
+                                   attrs.fSpeedDifficultStrains)
+                    << std::format("  windows       {:.4f} {:.4f} {:.4f}\n",
+                                   attrs.fGreatWindow, attrs.fOkWindow,
+                                   attrs.fMehWindow)
+                    << std::format("  counts        {} circles {} sliders "
+                                   "{} spinners, combo {}\n",
+                                   attrs.fCircles, attrs.fSliders,
+                                   attrs.fSpinners, attrs.fMaxCombo);
+        }
         if (dumpStrains) {
           // One line per 400ms section, which is what a reference
           // implementation's strain series can be diffed against.

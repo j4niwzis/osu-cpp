@@ -15,6 +15,20 @@ struct StarRating {
   double fReading = 0.0;
   double fReadingValue = 0.0;   // before the rating curve
   double fReducedNotes = 0.0;   // how many notes the first minute covers
+
+  // What a performance calculation needs beyond the rating itself. Filled in
+  // by the calculator that produced this; zero from one that does not know.
+  double fSliderFactor = 1.0;        // aim without sliders over aim with
+  double fSpeedNoteCount = 0.0;      // notes carrying the speed rating
+  double fAimDifficultStrains = 0.0; // objects carrying the aim rating
+  double fSpeedDifficultStrains = 0.0;
+  double fGreatWindow = 0.0; // milliseconds, after the clock rate
+  double fOkWindow = 0.0;
+  double fMehWindow = 0.0;
+  int fCircles = 0;
+  int fSliders = 0;
+  int fSpinners = 0;
+  int fMaxCombo = 0;
 };
 
 namespace diffutil {

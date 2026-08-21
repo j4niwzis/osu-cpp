@@ -458,6 +458,27 @@ private:
   int fReduced;
 };
 
+// StrainSkill.CountTopWeightedStrains: how many objects carry a strain worth
+// counting, as a soft count rather than a threshold. The reference strain is
+// what the top one would be if every object were equally hard, which is the
+// difficulty value times (1 - DecayWeight).
+[[nodiscard]] inline double
+countTopWeightedStrains(const std::vector<double> &strains,
+                        double difficultyValue) {
+  if (strains.empty()) {
+    return 0.0;
+  }
+  const double consistentTop = difficultyValue * (1.0 - kDecayWeight);
+  if (consistentTop == 0.0) {
+    return static_cast<double>(strains.size());
+  }
+  double total = 0.0;
+  for (const double s : strains) {
+    total += diffutil::logistic(s / consistentTop, 0.88, 10.0, 1.1);
+  }
+  return total;
+}
+
 class AimSkill {
 public:
   explicit AimSkill(bool withSliders)
@@ -475,11 +496,17 @@ public:
     fStrain *= strainDecay(c.fRawDT, kDecayBase);
     fStrain += AimEvaluator::eval(c, fWithSliders) * kSkillMultiplier;
     fPeaks.record(fStrain);
+    fObjectStrains.push_back(fStrain);
   }
 
   [[nodiscard]] double difficulty() const { return fPeaks.difficulty(); }
   [[nodiscard]] std::vector<double> sectionPeaks() const {
     return fPeaks.sectionPeaks();
+  }
+  // Per object rather than per section: the counts below are about how many
+  // objects are hard, which the section peaks have already thrown away.
+  [[nodiscard]] const std::vector<double> &objectStrains() const noexcept {
+    return fObjectStrains;
   }
 
 private:
@@ -488,6 +515,7 @@ private:
   bool fWithSliders;
   double fStrain = 0.0;
   SectionPeaks fPeaks;
+  std::vector<double> fObjectStrains;
 };
 
 class SpeedSkill {
@@ -506,6 +534,29 @@ public:
     fStrain += SpeedEvaluator::eval(c, fHitWindow) * kSkillMultiplier;
     fRhythm = RhythmEvaluator::eval(c, fHitWindow);
     fPeaks.record(fStrain * fRhythm);
+    fObjectStrains.push_back(fStrain * fRhythm);
+  }
+
+  [[nodiscard]] const std::vector<double> &objectStrains() const noexcept {
+    return fObjectStrains;
+  }
+
+  // Speed.RelevantNoteCount: the notes that carry the speed rating, weighted
+  // by how close each one is to the hardest of them rather than counted past
+  // a threshold.
+  [[nodiscard]] double relevantNoteCount() const {
+    double top = 0.0;
+    for (const double s : fObjectStrains) {
+      top = std::max(top, s);
+    }
+    if (top <= 0.0) {
+      return 0.0;
+    }
+    double total = 0.0;
+    for (const double s : fObjectStrains) {
+      total += 1.0 / (1.0 + std::exp(-(s / top * 12.0 - 6.0)));
+    }
+    return total;
   }
 
   [[nodiscard]] double difficulty() const { return fPeaks.difficulty(); }
@@ -518,6 +569,7 @@ private:
   static constexpr double kSkillMultiplier = 1.47;
   double fHitWindow;
   double fStrain = 0.0;
+  std::vector<double> fObjectStrains;
   double fRhythm = 0.0;
   SectionPeaks fPeaks;
 };
@@ -562,9 +614,14 @@ lengthBonus(int totalHits) noexcept {
 
   const double hitWindow = objs.front().fHW;
   AimSkill aim(true);
+  // The same skill again with sliders left out: the ratio of the two is what
+  // a performance calculation uses to tell how much of the aim is slider
+  // movement, which it nerfs when the sliders were not followed.
+  AimSkill aimNoSliders(false);
   SpeedSkill speed(hitWindow);
   for (const auto &o : objs) {
     aim.process(o);
+    aimNoSliders.process(o);
     speed.process(o);
   }
 
@@ -616,7 +673,39 @@ lengthBonus(int totalHits) noexcept {
                            basePerformance) +
                  4.0);
 
-  return {aimRating, speedRating, total};
+  StarRating out;
+  out.fAim = aimRating;
+  out.fSpeed = speedRating;
+  out.fTotal = total;
+  // Ratios and counts, taken before the rating multipliers so that they say
+  // what they mean: sliderFactor is a property of the aim skill, not of the
+  // approach rate.
+  const double aimNoSlidersValue = aimNoSliders.difficulty();
+  const double plainAim = std::sqrt(aimValue) * kDifficultyMultiplier;
+  const double plainAimNoSliders =
+      std::sqrt(aimNoSlidersValue) * kDifficultyMultiplier;
+  out.fSliderFactor = plainAim > 0.0 ? plainAimNoSliders / plainAim : 1.0;
+  out.fSpeedNoteCount = speed.relevantNoteCount();
+  out.fAimDifficultStrains =
+      countTopWeightedStrains(aim.objectStrains(), aimValue);
+  out.fSpeedDifficultStrains =
+      countTopWeightedStrains(speed.objectStrains(), speedValue);
+  out.fGreatWindow = windowGreat(bm.fDiff.fOd) / rate;
+  out.fOkWindow = windowGood(bm.fDiff.fOd) / rate;
+  out.fMehWindow = windowMeh(bm.fDiff.fOd) / rate;
+  for (const auto &obj : bm.fObjects) {
+    std::visit(Overloaded{
+                   [&out](const Circle &) { ++out.fCircles; },
+                   [&out](const Slider &) { ++out.fSliders; },
+                   [&out](const Spinner &) { ++out.fSpinners; },
+               },
+               obj);
+  }
+  // fMaxCombo is left alone: the combo a map can reach depends on the ticks
+  // and tails the engine builds, and building them here to count them would
+  // be a second implementation of the same thing. Whoever holds an Engine
+  // fills it in.
+  return out;
 }
 
 } // namespace ranked
