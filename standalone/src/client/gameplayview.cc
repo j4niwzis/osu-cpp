@@ -1035,16 +1035,23 @@ public:
       const float nxOut = -ty * (w + feather);
       const float nyOut = tx * (w + feather);
 
-      const auto a8 = static_cast<std::uint8_t>(
+      // The fade lives in the brightness, not in the alpha, and every vertex
+      // is opaque. That is what stops a fold from glowing: inside the layer
+      // the strips meet with kLighten, which takes the brighter colour but
+      // unions the alpha -- 0.6 over 0.6 comes out 0.84, not 0.6, which is
+      // why maxing the colour alone did not fix this. With the alpha already
+      // 1 there is nothing left to accumulate, and the layer is put down
+      // additively, where black is nothing and white is everything.
+      const auto v = static_cast<std::uint8_t>(
           std::clamp(pts[i].fAlpha, 0.0f, 1.0f) * 255.0f + 0.5f);
       pos[i * 4 + 0] = {pts[i].fX + nxOut, pts[i].fY + nyOut};
       pos[i * 4 + 1] = {pts[i].fX + nxCore, pts[i].fY + nyCore};
       pos[i * 4 + 2] = {pts[i].fX - nxCore, pts[i].fY - nyCore};
       pos[i * 4 + 3] = {pts[i].fX - nxOut, pts[i].fY - nyOut};
-      col[i * 4 + 0] = skia::colorSetARGB(0, 255, 255, 255);
-      col[i * 4 + 1] = skia::colorSetARGB(a8, 255, 255, 255);
-      col[i * 4 + 2] = skia::colorSetARGB(a8, 255, 255, 255);
-      col[i * 4 + 3] = skia::colorSetARGB(0, 255, 255, 255);
+      col[i * 4 + 0] = skia::colorSetARGB(255, 0, 0, 0);
+      col[i * 4 + 1] = skia::colorSetARGB(255, v, v, v);
+      col[i * 4 + 2] = skia::colorSetARGB(255, v, v, v);
+      col[i * 4 + 3] = skia::colorSetARGB(255, 0, 0, 0);
     }
 
     std::vector<std::uint16_t> idx;
@@ -1084,7 +1091,11 @@ public:
       bounds.fRight = std::max(bounds.fRight, p.fX);
       bounds.fBottom = std::max(bounds.fBottom, p.fY);
     }
-    canvas->saveLayer(&bounds, nullptr);
+    // The layer meets the playfield additively, which is what makes the
+    // black edges disappear rather than paint themselves on.
+    skia::SkPaint layerPaint;
+    layerPaint.setBlendMode(skia::SkBlendMode::kPlus);
+    canvas->saveLayer(&bounds, &layerPaint);
     skia::SkPaint paint;
     paint.setBlendMode(skia::SkBlendMode::kLighten);
     // No shader on the paint: kDst keeps the interpolated vertex colors.
