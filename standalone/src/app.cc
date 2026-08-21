@@ -29,6 +29,7 @@ import client.settingspanel;
 import client.overlays;
 import client.filtercontrol;
 import client.listing;
+import client.mirrors;
 import client.carousel;
 import client.pause;
 import client.results;
@@ -297,15 +298,12 @@ private:
   struct LibraryState {
     std::vector<LibraryEntry> fLibrary;
     std::vector<int> fVisible; // indices into fLibrary passing the filter
-    std::vector<client::listing::Entry> fFound;
     std::deque<int> fLoadedOrder; // LRU of entries holding a full set
     int fSelSet = 0;
     int fSelDiff = 0;
     std::vector<std::uint8_t>
         fEntryStates; // what each card last drew as its own
     int fBackgroundForSet = -1;
-    bool fSearchPending = false;
-    std::map<long, std::shared_ptr<client::http::Handle>> fTransfers;
   };
   LibraryState fLib;
   static constexpr std::size_t kMaxLoadedSets = 4;
@@ -341,21 +339,12 @@ private:
   // Download screen (mirror search + .osz fetch).
   client::listing::Listing fListing;
   client::setpage::SetPage fSetPage;
-  // Track previews come from osu!'s own preview endpoint and play on their
-  // own source, so the menu music is untouched.
-  client::AudioPlayer fPreview;
-  long fPreviewId = -1;
-  bool fPreviewPending = false;
-  std::uint32_t fPreviewGeneration = 0; // stale fetches must not start playing
-  bool fMusicDucked = false;            // menu music paused for a preview
+  // Searching the mirrors, fetching covers and previews, downloading a set.
+  client::mirrors::Mirrors fMirrors;
   // Transfers in flight, so progress can be polled without the view knowing
   // anything about HTTP.
-  int fSearchOffset = 0; // how much of the current search is loaded
-  std::uint32_t fSearchGeneration = 0; // results from older queries are dropped
-  bool fMoreAvailable = true; // a full page came back, so ask for the next
   bool fSwallowChar = false;  // the 'D' that opened the screen also arrives
                               // as a char event; it must not enter the query
-  std::string fDownloadStatus;
   // A short-lived message in the corner, as lazer's notification overlay
   // shows when an import finishes.
   std::string fToast;
@@ -1330,8 +1319,9 @@ private:
   void openDownloads() {
     fSwallowChar = true;
     this->switchState(State::kDownload);
-    if (fLib.fFound.empty() && !fLib.fSearchPending) {
-      this->startSearch(); // the listing opens on results, not a blank page
+    if (fMirrors.results().empty() && !fMirrors.searching()) {
+      fMirrors.startSearch(
+          fListing.filters()); // the listing opens on results, not a blank page
     }
   }
 
@@ -1344,14 +1334,13 @@ private:
         this->damageAll("beatmap page closed");
         return;
       }
-      fPreview.stop();
-      fPreviewId = -1;
-      this->restoreMusic();
+      fMirrors.stopPreview();
+      fMirrors.restoreMusic();
       this->switchState(State::kSongSelect);
       return;
     }
     if (key == glfw::kKeyEnter) {
-      this->startSearch();
+      fMirrors.startSearch(fListing.filters());
       return;
     }
     if (key == glfw::kKeyBackspace) {
@@ -1473,28 +1462,28 @@ private:
         const auto page = fSetPage.click(x, y);
         using PageAction = client::setpage::SetPage::Action;
         if (page.fAction == PageAction::kDownload) {
-          this->startDownloadForSet(fSetPage.setId());
+          fMirrors.startDownloadForSet(fSetPage.setId());
         } else if (page.fAction == PageAction::kPreview) {
-          this->togglePreviewForSet(fSetPage.setId());
+          fMirrors.togglePreviewForSet(fSetPage.setId());
         }
         return; // the page covers the listing underneath
       }
       const auto result = fListing.click(x, y);
       switch (result.fAction) {
       case client::listing::Listing::Action::kSearch:
-        this->startSearch();
+        fMirrors.startSearch(fListing.filters());
         break;
       case client::listing::Listing::Action::kDownload:
-        this->startDownload(result.fIndex);
+        fMirrors.startDownload(result.fIndex);
         break;
       case client::listing::Listing::Action::kOpen:
-        if (result.fIndex < fLib.fFound.size()) {
-          fSetPage.show(fLib.fFound[result.fIndex]);
-          this->requestPageCover(result.fIndex);
+        if (result.fIndex < fMirrors.results().size()) {
+          fSetPage.show(fMirrors.results()[result.fIndex]);
+          fMirrors.requestPageCover(result.fIndex);
         }
         break;
       case client::listing::Listing::Action::kPreview:
-        this->togglePreview(result.fIndex);
+        fMirrors.togglePreview(result.fIndex);
         break;
       case client::listing::Listing::Action::kRefilter:
       case client::listing::Listing::Action::kNone:
@@ -2221,7 +2210,7 @@ private:
     }
     // A preview still being fetched has nothing on screen to show for it
     // yet; once it plays, the ring marks the card it is on.
-    if (fPreviewPending) {
+    if (fMirrors.previewPending()) {
       return false;
     }
     // Things the screen draws that live on a clock rather than on damage.
@@ -2285,11 +2274,12 @@ private:
           "pause triangles"); // triangles drift inside the buttons, as lazer's
                               // do
     }
-    if (fLib.fSearchPending || fPreviewPending || !fLib.fTransfers.empty()) {
+    if (fMirrors.searching() || fMirrors.previewPending() ||
+        fMirrors.transferring()) {
       return this->frameBecause(
           "a search, preview or transfer"); // progress that is being watched
     }
-    if (fPreviewId >= 0 || fExportDialog.open()) {
+    if (fMirrors.previewId() >= 0 || fExportDialog.open()) {
       return this->frameBecause(
           "a preview or the export dialog"); // a transfer or a dialog with live
                                              // status in it
@@ -3086,9 +3076,7 @@ private:
     // button starts the count again.
     fPlay.fRetryCount = fRetryPending ? fPlay.fRetryCount + 1 : 0;
     fRetryPending = false;
-    fPreview.stop();
-    fPreviewId = -1;
-    fMusicDucked = false; // gameplay takes the track over anyway
+    fMirrors.forgetPreview();
     if (setIdx < 0 || setIdx >= static_cast<int>(fLib.fLibrary.size())) {
       return;
     }
@@ -3269,6 +3257,32 @@ private:
     fReplayIndex.load(fMapsDir.parent_path() / "replay-index.json");
     fReplayIndex.refresh(fReplayDir);
     fSettings.load(fMapsDir.parent_path() / "settings.json");
+    // What the mirrors cannot do for themselves: the library they import
+    // into, the corner they report to, and the music that steps aside for a
+    // preview.
+    fMirrors.configure({
+                           [this](std::string text, skia::SkColor colour) {
+                             this->notify(std::move(text), colour);
+                           },
+                           [this](long id) {
+                             return this->libraryIndexForSet(
+                                        static_cast<int>(id)) >= 0;
+                           },
+                           [this](const std::filesystem::path &path) {
+                             return this->addOszToLibrary(path, true);
+                           },
+                           [this](int entry) { fListing.entryChanged(entry); },
+                           [this] {
+                             fListing.resetSortForSearch();
+                             fListing.scrollToStart();
+                           },
+                           [this] { return this->musicGain(); },
+                           [this] { return fAudio.playing(); },
+                           [this] { fAudio.pause(); },
+                           [this] { fAudio.resume(); },
+                           [this] { this->syncMapsDir(); },
+                       },
+                       fMapsDir);
     fSwapIntervalRequest.store(fSettings.flag("vsync") ? 1 : 0,
                                std::memory_order_release);
     fAppliedDim = fSettings.value("dim");
@@ -3375,7 +3389,7 @@ private:
       // The track is given a moment to start before its silence counts as
       // having ended; OpenAL reports a source as stopped until it does.
       // Paused for a preview is not the same as finished.
-      if (!fAudio.playing() && !fMusicDucked &&
+      if (!fAudio.playing() && !fMirrors.ducked() &&
           wallMs() - fMenuTrackWall > 1000.0 && fState != State::kResults) {
         // The results screen belongs to the map that was just played, and
         // moving on from it would move the selection out from under the
@@ -3941,18 +3955,6 @@ private:
     return -1;
   }
 
-  // Marks the results that are already installed, so they read as owned and
-  // cannot be downloaded a second time.
-  void markOwnedResults() {
-    for (auto &e : fLib.fFound) {
-      if (e.fSt == client::listing::Entry::St::kFetching) {
-        continue;
-      }
-      e.fSt = this->libraryIndexForSet(static_cast<int>(e.fSetId)) >= 0
-                  ? client::listing::Entry::St::kDone
-                  : client::listing::Entry::St::kIdle;
-    }
-  }
 
   bool addOszToLibrary(const std::filesystem::path &path, bool select) {
     const std::size_t before = fLib.fLibrary.size();
@@ -4150,632 +4152,23 @@ private:
 
   // ---- Download screen logic -------------------------------------------
 
-  // Mirrors, in the order they are tried. None of them serves the whole
-  // filter set, so each says what it can do and the rest is applied to the
-  // page after it arrives.
-  //
-  // Verified by hand against each API:
-  //   nerinyan   q, m, s (name), sort, e (video/storyboard), nsfw, p/ps
-  //   osu.direct q, mode, status (id), sort (<field>:<dir>), amount/offset
-  //   mino       query, mode, status (id), limit/offset
-  enum class MirrorStyle : std::uint8_t { kNerinyan, kOsuDirect, kMino };
-  struct Mirror {
-    const char *fName;
-    MirrorStyle fStyle;
-    const char *fDownload; // {} takes the set id
-  };
-  static constexpr std::array<Mirror, 3> kMirrors{
-      Mirror{"nerinyan", MirrorStyle::kNerinyan,
-             "https://api.nerinyan.moe/d/{}"},
-      Mirror{"osu.direct", MirrorStyle::kOsuDirect,
-             "https://osu.direct/api/d/{}"},
-      Mirror{"mino", MirrorStyle::kMino, "https://catboy.best/d/{}"}};
-  std::size_t fMirror = 0;
-  static constexpr int kSearchPageSize = 50;
 
-  // "2020-04-24T18:08:56+02:00" -> a number that sorts by date. Only the
-  // ordering matters, so the digits are simply concatenated.
-  [[nodiscard]] static std::int64_t dateStamp(std::string_view iso) {
-    std::int64_t v = 0;
-    int digits = 0;
-    for (const char c : iso) {
-      if (c >= '0' && c <= '9') {
-        v = v * 10 + (c - '0');
-        if (++digits == 14) {
-          break;
-        }
-      }
-    }
-    return v;
-  }
 
-  // osu! status ids, which two of the three mirrors take directly.
-  [[nodiscard]] static int statusId(client::listing::Category c) {
-    using Category = client::listing::Category;
-    switch (c) {
-    case Category::kRanked:
-      return 1;
-    case Category::kQualified:
-      return 3;
-    case Category::kLoved:
-      return 4;
-    case Category::kPending:
-      return 0;
-    case Category::kWip:
-      return -1;
-    case Category::kGraveyard:
-      return -2;
-    default:
-      return 100; // no server-side status
-    }
-  }
 
-  [[nodiscard]] static const char *statusName(client::listing::Category c) {
-    using Category = client::listing::Category;
-    switch (c) {
-    case Category::kRanked:
-      return "ranked";
-    case Category::kQualified:
-      return "qualified";
-    case Category::kLoved:
-      return "loved";
-    case Category::kPending:
-      return "pending";
-    case Category::kWip:
-      return "wip";
-    case Category::kGraveyard:
-      return "graveyard";
-    case Category::kLeaderboard:
-      return "leaderboard";
-    default:
-      return "";
-    }
-  }
 
-  // lazer's criteria mapped onto what each mirror calls them. An empty string
-  // means the mirror cannot sort by it and the listing does it itself.
-  [[nodiscard]] static std::string
-  sortParam(client::listing::Sort sort, bool descending, MirrorStyle style) {
-    using Sort = client::listing::Sort;
-    const char *field = nullptr;
-    switch (sort) {
-    case Sort::kTitle:
-      field = "title";
-      break;
-    case Sort::kArtist:
-      field = "artist";
-      break;
-    case Sort::kRanked:
-      field = style == MirrorStyle::kOsuDirect ? "ranked_date" : "ranked";
-      break;
-    case Sort::kUpdated:
-      field = style == MirrorStyle::kOsuDirect ? "last_updated" : "updated";
-      break;
-    case Sort::kPlays:
-      field = style == MirrorStyle::kOsuDirect ? "play_count" : "plays";
-      break;
-    case Sort::kFavourites:
-      field =
-          style == MirrorStyle::kOsuDirect ? "favourite_count" : "favourites";
-      break;
-    default:
-      return {}; // difficulty, rating, relevance, nominations
-    }
-    const char *dir = descending ? "desc" : "asc";
-    return style == MirrorStyle::kOsuDirect ? std::format("{}:{}", field, dir)
-                                            : std::format("{}_{}", field, dir);
-  }
 
-  [[nodiscard]] std::string searchUrl(int offset) const {
-    const auto &f = fListing.filters();
-    const auto &mirror = kMirrors[fMirror];
-    const std::string q = client::http::urlEncode(f.fQuery);
-    const std::string sort = sortParam(f.fSort, f.fDescending, mirror.fStyle);
-    const int status = statusId(f.fCategory);
-    std::string url;
-    switch (mirror.fStyle) {
-    case MirrorStyle::kNerinyan: {
-      url =
-          std::format("https://api.nerinyan.moe/search?q={}&m={}&ps={}&p={}", q,
-                      f.fRuleset, kSearchPageSize, offset / kSearchPageSize);
-      if (const char *name = statusName(f.fCategory); *name != '\0') {
-        url += std::format("&s={}", name);
-      }
-      // Extra and explicit content are server-side here, and only here.
-      std::string extra;
-      if (f.fExtra[0]) {
-        extra += "video";
-      }
-      if (f.fExtra[1]) {
-        extra += extra.empty() ? "storyboard" : ".storyboard";
-      }
-      if (!extra.empty()) {
-        url += "&e=" + extra;
-      }
-      url += f.fExplicit == client::listing::Explicit::kShow ? "&nsfw=true"
-                                                             : "&nsfw=false";
-      break;
-    }
-    case MirrorStyle::kOsuDirect:
-      url = std::format(
-          "https://osu.direct/api/v2/search?q={}&mode={}&amount={}&offset={}",
-          q, f.fRuleset, kSearchPageSize, offset);
-      if (status != 100) {
-        url += std::format("&status={}", status);
-      }
-      break;
-    case MirrorStyle::kMino:
-      url = std::format("https://catboy.best/api/v2/"
-                        "search?query={}&mode={}&limit={}&offset={}",
-                        q, f.fRuleset, kSearchPageSize, offset);
-      if (status != 100) {
-        url += std::format("&status={}", status);
-      }
-      break;
-    }
-    if (!sort.empty()) {
-      url += "&sort=" + sort;
-    }
-    return url;
-  }
 
-  void startSearch() {
-    fSearchOffset = 0;
-    fMoreAvailable = true;
-    // Pages already in flight belong to the previous query; without this they
-    // arrive afterwards and are appended to the new results.
-    ++fSearchGeneration;
-    fLib.fSearchPending = false;
-    fListing.resetSortForSearch();
-    fListing.scrollToStart();
-    fLib.fFound.clear();
-    this->fetchPage();
-  }
 
-  // The next page of the current search, appended to what is already there.
-  void fetchPage() {
-    if (fLib.fSearchPending || !fMoreAvailable) {
-      return;
-    }
-    fLib.fSearchPending = true;
-    fDownloadStatus = fSearchOffset == 0 ? "Searching..." : "Loading more...";
-    const int offset = fSearchOffset;
-    const std::uint32_t generation = fSearchGeneration;
-    auto handle = std::make_shared<client::http::Handle>();
-    client::http::get(this->searchUrl(offset), std::move(handle),
-                      [this, offset, generation](client::http::Response r) {
-                        if (generation != fSearchGeneration) {
-                          return; // the query moved on while this was in flight
-                        }
-                        this->onSearchDone(offset, std::move(r));
-                      });
-  }
 
-  void onSearchDone(int offset, client::http::Response r) {
-    fLib.fSearchPending = false;
-    if (!r.fOk) {
-      // A mirror that will not answer is replaced by the next one; the same
-      // page is then asked of it.
-      if (fMirror + 1 < kMirrors.size()) {
-        ++fMirror;
-        std::println(std::cerr, "[listing] {} failed ({}), falling back to {}",
-                     kMirrors[fMirror - 1].fName, r.fError,
-                     kMirrors[fMirror].fName);
-        this->fetchPage();
-        return;
-      }
-      fDownloadStatus = "Search failed: " + r.fError;
-      fMoreAvailable = false; // stop the scroll from asking again every frame
-      this->notify("search failed: " + r.fError,
-                   skia::colorSetARGB(255, 255, 110, 110));
-      return;
-    }
-    const auto parsed = bjson::tryParse(r.fBody);
-    if (!parsed) {
-      fDownloadStatus = "Search failed: malformed JSON";
-      fMoreAvailable = false;
-      return;
-    }
-    const bjson::array *arr = parsed->if_array();
-    if (arr == nullptr) {
-      // Some mirrors wrap the array in an envelope object.
-      if (const bjson::object *obj = parsed->if_object()) {
-        if (const bjson::value *data = obj->if_contains("data")) {
-          arr = data->if_array();
-        }
-      }
-    }
-    if (arr == nullptr) {
-      fDownloadStatus = "Search failed: unexpected response shape";
-      fMoreAvailable = false;
-      return;
-    }
 
-    const auto getNum = [](const bjson::object &o,
-                           std::string_view key) -> double {
-      if (const bjson::value *v = o.if_contains(key)) {
-        if (v->is_number()) {
-          return v->to_number<double>();
-        }
-      }
-      return 0.0;
-    };
-    const auto getBool = [](const bjson::object &o,
-                            std::string_view key) -> bool {
-      if (const bjson::value *v = o.if_contains(key)) {
-        if (const bool *b = v->if_bool()) {
-          return *b;
-        }
-      }
-      return false;
-    };
-    const auto getStr = [](const bjson::object &o,
-                           std::string_view key) -> std::string {
-      if (const bjson::value *v = o.if_contains(key)) {
-        if (const bjson::string *str = v->if_string()) {
-          return std::string(str->begin(), str->end());
-        }
-      }
-      return {};
-    };
 
-    if (offset == 0) {
-      fLib.fFound.clear();
-    }
-    const std::size_t before = fLib.fFound.size();
-    for (const auto &e : *arr) {
-      const bjson::object *o = e.if_object();
-      if (o == nullptr) {
-        continue;
-      }
-      client::listing::Entry d;
-      const bjson::value *id = o->if_contains("id");
-      if (id == nullptr || !id->is_int64()) {
-        continue;
-      }
-      d.fSetId = static_cast<long>(id->as_int64());
-      d.fTitle = getStr(*o, "title");
-      d.fTitleUnicode = getStr(*o, "title_unicode");
-      d.fArtist = getStr(*o, "artist");
-      d.fArtistUnicode = getStr(*o, "artist_unicode");
-      d.fCreator = getStr(*o, "creator");
-      d.fStatus = getStr(*o, "status");
-      d.fUpdated = getStr(*o, "last_updated").substr(0, 10);
-      d.fUpdatedDate = dateStamp(getStr(*o, "last_updated"));
-      d.fRankedDate = dateStamp(getStr(*o, "ranked_date"));
-      d.fSource = getStr(*o, "source");
-      if (const bjson::value *covers = o->if_contains("covers")) {
-        if (const bjson::object *co = covers->if_object()) {
-          // card@2x for the cards, cover@2x for the set page: the sizes
-          // lazer's BeatmapSetCoverType picks for each.
-          d.fCardCover = getStr(*co, "card@2x");
-          if (d.fCardCover.empty()) {
-            d.fCardCover = getStr(*co, "card");
-          }
-          d.fFullCover = getStr(*co, "cover@2x");
-          if (d.fFullCover.empty()) {
-            d.fFullCover = getStr(*co, "cover");
-          }
-        }
-      }
-      if (const bjson::value *ratings = o->if_contains("ratings")) {
-        if (const bjson::array *ra = ratings->if_array()) {
-          for (const auto &v : *ra) {
-            d.fRatings.push_back(
-                v.is_number() ? static_cast<int>(v.to_number<double>()) : 0);
-          }
-        }
-      }
-      d.fTags = getStr(*o, "tags");
-      d.fBpm = getNum(*o, "bpm");
-      d.fRating = getNum(*o, "rating");
-      d.fPlayCount = static_cast<long>(getNum(*o, "play_count"));
-      d.fFavouriteCount = static_cast<long>(getNum(*o, "favourite_count"));
-      d.fVideo = getBool(*o, "video");
-      d.fStoryboard = getBool(*o, "storyboard");
-      d.fNsfw = getBool(*o, "nsfw");
-      d.fSpotlight = getBool(*o, "spotlight");
-      if (const bjson::value *track = o->if_contains("track_id")) {
-        d.fFeatured = !track->is_null();
-      }
-      if (const bjson::value *g = o->if_contains("genre")) {
-        if (const bjson::object *go = g->if_object()) {
-          d.fGenre = static_cast<int>(getNum(*go, "id"));
-        }
-      }
-      if (const bjson::value *l = o->if_contains("language")) {
-        if (const bjson::object *lo = l->if_object()) {
-          d.fLanguage = static_cast<int>(getNum(*lo, "id"));
-        }
-      }
-      if (const bjson::value *bms = o->if_contains("beatmaps")) {
-        if (const bjson::array *ba = bms->if_array()) {
-          for (const auto &bm : *ba) {
-            const bjson::object *bo = bm.if_object();
-            if (bo == nullptr) {
-              continue;
-            }
-            const bjson::value *sr = bo->if_contains("difficulty_rating");
-            if (sr == nullptr || !sr->is_number()) {
-              continue;
-            }
-            const auto v = static_cast<float>(sr->to_number<double>());
-            client::listing::Entry::Difficulty diff;
-            diff.fStars = v;
-            diff.fVersion = getStr(*bo, "version");
-            diff.fMode = static_cast<int>(getNum(*bo, "mode_int"));
-            diff.fLengthMs = getNum(*bo, "total_length") * 1000.0;
-            diff.fCs = getNum(*bo, "cs");
-            diff.fAr = getNum(*bo, "ar");
-            diff.fOd = getNum(*bo, "accuracy");
-            diff.fHp = getNum(*bo, "drain");
-            diff.fMaxCombo = static_cast<int>(getNum(*bo, "max_combo"));
-            d.fDiffs.push_back(std::move(diff));
-            if (d.fDiffCount == 0) {
-              d.fStarsMin = d.fStarsMax = v;
-            } else {
-              d.fStarsMin = std::min(d.fStarsMin, v);
-              d.fStarsMax = std::max(d.fStarsMax, v);
-            }
-            ++d.fDiffCount;
-          }
-          std::ranges::sort(d.fDiffs, {},
-                            &client::listing::Entry::Difficulty::fStars);
-        }
-      }
-      fLib.fFound.push_back(std::move(d));
-    }
-    this->markOwnedResults();
-    const std::size_t added = fLib.fFound.size() - before;
-    fSearchOffset = offset + kSearchPageSize;
-    fMoreAvailable = added >= static_cast<std::size_t>(kSearchPageSize) / 2;
-    fDownloadStatus = std::format("{} results", fLib.fFound.size());
-  }
 
-  // PlayButton on the card thumbnail: fetches the 10-second preview osu!
-  // serves for every set and plays it on its own source.
-  void togglePreview(std::size_t idx) {
-    if (idx >= fLib.fFound.size()) {
-      std::println(std::cerr, "[preview] no entry at {}", idx);
-      return;
-    }
-    const long id = fLib.fFound[idx].fSetId;
-    if (fPreviewId == id) {
-      fPreview.stop();
-      fPreviewId = -1;
-      this->restoreMusic();
-      return;
-    }
-    fPreview.stop();
-    fPreviewId = -1;
-    ++fPreviewGeneration; // whatever is in flight is no longer wanted
-    const std::uint32_t generation = fPreviewGeneration;
-    fPreviewPending = true;
-    // A preview replaces the menu music while it runs, as lazer's does;
-    // playing both at once doubles the level and the limiter clamps it.
-    if (!fMusicDucked && fAudio.playing()) {
-      fAudio.pause();
-      fMusicDucked = true;
-    }
-    const std::string url = std::format("https://b.ppy.sh/preview/{}.mp3", id);
-    std::println(std::cerr, "[preview] fetching {}", url);
-    auto handle = std::make_shared<client::http::Handle>();
-    client::http::get(
-        url, std::move(handle),
-        [this, id, generation](client::http::Response r) {
-          if (generation != fPreviewGeneration) {
-            return; // superseded by a later click
-          }
-          fPreviewPending = false;
-          if (!r.fOk || r.fBody.size() < 1024) {
-            std::println(std::cerr, "[preview] fetch failed: {} ({} bytes) {}",
-                         r.fStatus, r.fBody.size(), r.fError);
-            this->notify("preview unavailable",
-                         skia::colorSetARGB(255, 255, 110, 110));
-            return;
-          }
-          const std::vector<std::uint8_t> bytes(r.fBody.begin(), r.fBody.end());
-          if (!fPreview.load(bytes, ".mp3")) {
-            std::println(std::cerr, "[preview] decode failed ({} bytes)",
-                         bytes.size());
-            return;
-          }
-          fPreview.setLooping(false);
-          fPreview.setVolume(this->musicGain());
-          fPreview.play();
-          fPreviewId = id;
-          std::println(std::cerr, "[preview] playing {} ({:.1f}s)", id,
-                       fPreview.durationSec());
-        });
-  }
 
-  void restoreMusic() {
-    if (fMusicDucked) {
-      fMusicDucked = false;
-      fAudio.resume();
-    }
-  }
 
-  // How far through the preview is, for the ring around the play button.
-  [[nodiscard]] float previewProgress() const {
-    const double duration = fPreview.durationSec();
-    if (fPreviewId < 0 || duration <= 0.0) {
-      return 0.0f;
-    }
-    return static_cast<float>(fPreview.positionSec() / duration);
-  }
 
-  // The page shows covers.cover@2x (1920x360), not the card crop.
-  void requestPageCover(std::size_t idx) {
-    if (idx >= fLib.fFound.size()) {
-      return;
-    }
-    auto &d = fLib.fFound[idx];
-    if (d.fPageCoverSt != client::listing::Entry::Cover::kNone) {
-      return;
-    }
-    d.fPageCoverSt = client::listing::Entry::Cover::kFetching;
-    const long id = d.fSetId;
-    const std::string url =
-        d.fFullCover.empty()
-            ? std::format(
-                  "https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg", id)
-            : d.fFullCover;
-    auto handle = std::make_shared<client::http::Handle>();
-    client::http::get(
-        url, std::move(handle), [this, id](client::http::Response r) {
-          for (auto &e : fLib.fFound) {
-            if (e.fSetId != id) {
-              continue;
-            }
-            if (r.fOk && r.fBody.size() > 256) {
-              const std::vector<std::uint8_t> bytes(r.fBody.begin(),
-                                                    r.fBody.end());
-              e.fPageCover = loadImage(bytes);
-            }
-            e.fPageCoverSt = e.fPageCover
-                                 ? client::listing::Entry::Cover::kReady
-                                 : client::listing::Entry::Cover::kFailed;
-            break;
-          }
-        });
-  }
 
-  void requestThumb(std::size_t idx) {
-    if (idx >= fLib.fFound.size()) {
-      return;
-    }
-    auto &d = fLib.fFound[idx];
-    if (d.fThumbSt != client::listing::Entry::Thumb::kNone) {
-      return;
-    }
-    int inflight = 0;
-    for (const auto &e : fLib.fFound) {
-      if (e.fThumbSt == client::listing::Entry::Thumb::kFetching) {
-        ++inflight;
-      }
-    }
-    if (inflight >= 4) {
-      return; // retry on a later frame
-    }
-    d.fThumbSt = client::listing::Entry::Thumb::kFetching;
-    const long id = d.fSetId;
-    const std::string url =
-        d.fCardCover.empty()
-            ? std::format(
-                  "https://assets.ppy.sh/beatmaps/{}/covers/card@2x.jpg", id)
-            : d.fCardCover;
-    auto handle = std::make_shared<client::http::Handle>();
-    client::http::get(
-        url, std::move(handle), [this, id](client::http::Response r) {
-          for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
-            auto &e = fLib.fFound[i];
-            if (e.fSetId != id) {
-              continue;
-            }
-            if (r.fOk && r.fBody.size() > 256) {
-              std::vector<std::uint8_t> bytes(r.fBody.begin(), r.fBody.end());
-              e.fThumb = loadImage(bytes);
-              e.fThumbSt = e.fThumb ? client::listing::Entry::Thumb::kReady
-                                    : client::listing::Entry::Thumb::kFailed;
-            } else {
-              e.fThumbSt = client::listing::Entry::Thumb::kFailed;
-            }
-            // The card draws the image out of the entry, so it cannot notice
-            // this by itself: one card is marked, rather than the screen.
-            fListing.entryChanged(static_cast<int>(i));
-            break;
-          }
-        });
-  }
 
-  [[nodiscard]] std::size_t indexOfSet(long id) const {
-    for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
-      if (fLib.fFound[i].fSetId == id) {
-        return i;
-      }
-    }
-    return fLib.fFound.size();
-  }
 
-  void startDownloadForSet(long id) {
-    this->startDownload(this->indexOfSet(id));
-  }
-  void togglePreviewForSet(long id) {
-    this->togglePreview(this->indexOfSet(id));
-  }
-
-  void startDownload(std::size_t idx) {
-    if (idx >= fLib.fFound.size()) {
-      return;
-    }
-    auto &d = fLib.fFound[idx];
-    if (d.fSt == client::listing::Entry::St::kFetching) {
-      return;
-    }
-    if (this->libraryIndexForSet(static_cast<int>(d.fSetId)) >= 0) {
-      d.fSt = client::listing::Entry::St::kDone;
-      this->notify("already in the library");
-      return;
-    }
-    if (d.fSt == client::listing::Entry::St::kDone) {
-      return;
-    }
-    d.fSt = client::listing::Entry::St::kFetching;
-    const long id = d.fSetId;
-    auto handle = std::make_shared<client::http::Handle>();
-    fLib.fTransfers[id] = handle;
-    d.fProgress = 0.0f;
-    const std::string url =
-        std::vformat(kMirrors[fMirror].fDownload, std::make_format_args(id));
-    client::http::get(url, std::move(handle),
-                      [this, id](client::http::Response r) {
-                        this->onDownloadDone(id, std::move(r));
-                      });
-  }
-
-  void onDownloadDone(long id, client::http::Response r) {
-    fLib.fTransfers.erase(id);
-    client::listing::Entry *d = nullptr;
-    for (auto &e : fLib.fFound) {
-      if (e.fSetId == id) {
-        d = &e;
-        break;
-      }
-    }
-    if (!r.fOk || r.fBody.size() < 1024) {
-      if (d != nullptr) {
-        d->fSt = client::listing::Entry::St::kError;
-      }
-      fDownloadStatus =
-          "Download failed: " + (r.fError.empty() ? "empty file" : r.fError);
-      this->notify(std::format("download failed: {}",
-                               r.fError.empty() ? "empty file" : r.fError),
-                   skia::colorSetARGB(255, 255, 110, 110));
-      return;
-    }
-    const auto path = fMapsDir / std::format("{}.osz", id);
-    {
-      std::ofstream out(path, std::ios::binary);
-      out.write(r.fBody.data(), static_cast<std::streamsize>(r.fBody.size()));
-    }
-#ifdef __EMSCRIPTEN__
-    EM_ASM(FS.syncfs(false, function(err){}));
-#endif
-    if (this->addOszToLibrary(path, true)) {
-      if (d != nullptr) {
-        d->fSt = client::listing::Entry::St::kDone;
-      }
-      fDownloadStatus = "Added to library: " +
-                        (d != nullptr ? d->fTitle : std::to_string(id));
-      this->notify(std::format("imported {}",
-                               d != nullptr ? d->fTitle : std::to_string(id)),
-                   skia::colorSetARGB(255, 120, 220, 120));
-      this->markOwnedResults();
-    } else if (d != nullptr) {
-      d->fSt = client::listing::Entry::St::kError;
-    }
-  }
 
 #ifdef __EMSCRIPTEN__
   static void emscriptenFrameProc(void *arg) {
@@ -5112,7 +4505,7 @@ private:
 
   void applyAudioSettings() {
     fAudio.setVolume(this->musicGain());
-    fPreview.setVolume(this->musicGain());
+    fMirrors.setVolume(this->musicGain());
     for (auto &[name, player] : fSamples) {
       player.setVolume(this->effectGain());
     }
@@ -6686,29 +6079,15 @@ private:
   // client has committed to a frame, so what it marks as damaged is the
   // answer to "is this frame worth drawing".
   void updateDownload() {
-    // Progress lives on the transfer handles; the view just reads a float.
-    // A card whose number moved says so, which is what keeps a download from
-    // being worth the whole screen on every frame of it.
-    for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
-      auto &e = fLib.fFound[i];
-      const auto it = fLib.fTransfers.find(e.fSetId);
-      if (it != fLib.fTransfers.end() && it->second) {
-        const float progress =
-            it->second->fProgress.load(std::memory_order_relaxed);
-        if (progress != e.fProgress) {
-          e.fProgress = progress;
-          fListing.entryChanged(static_cast<int>(i));
-        }
-      }
-    }
+    fMirrors.pollProgress();
     // A card also draws its own state -- idle, fetching, done, failed -- out
     // of the entry, and that is written from a dozen places: a transfer
     // starting, one finishing, an import marking everything already owned.
     // Comparing it here catches all of them, including the ones written after
     // this was, which a call at each site would not.
-    fLib.fEntryStates.resize(fLib.fFound.size(), 0xFF);
-    for (std::size_t i = 0; i < fLib.fFound.size(); ++i) {
-      const auto state = static_cast<std::uint8_t>(fLib.fFound[i].fSt);
+    fLib.fEntryStates.resize(fMirrors.results().size(), 0xFF);
+    for (std::size_t i = 0; i < fMirrors.results().size(); ++i) {
+      const auto state = static_cast<std::uint8_t>(fMirrors.results()[i].fSt);
       if (fLib.fEntryStates[i] != state) {
         fLib.fEntryStates[i] = state;
         fListing.entryChanged(static_cast<int>(i));
@@ -6722,31 +6101,29 @@ private:
     ctx.fMouseY = fWin.fMouseY;
     ctx.fNowMs = wallMs();
     ctx.fDtMs = fUiDt;
-    ctx.fEntries = fLib.fFound;
-    ctx.fLoading = fLib.fSearchPending;
-    if (fPreviewId >= 0 && !fPreviewPending && !fPreview.playing()) {
-      fPreviewId = -1; // the clip ran out; the button goes back to play
-      this->restoreMusic();
-    }
-    fListing.setPreview(fPreviewId, this->previewProgress());
+    ctx.fEntries = fMirrors.results();
+    ctx.fLoading = fMirrors.searching();
+    fMirrors.pollPreview();
+    fListing.setPreview(fMirrors.previewId(), fMirrors.previewProgress());
     fListing.update(ctx);
     this->damage(fListing.takeDamage());
     if (fSetPage.open()) {
-      const std::size_t idx = this->indexOfSet(fSetPage.setId());
-      if (idx >= fLib.fFound.size()) {
+      const std::size_t idx = fMirrors.indexOfSet(fSetPage.setId());
+      if (idx >= fMirrors.results().size()) {
         fSetPage.close(); // the set fell out of the results
         this->damageAll("beatmap page closed");
       }
       client::setpage::SetPage::Ctx page;
-      page.fEntry = idx < fLib.fFound.size() ? &fLib.fFound[idx] : nullptr;
+      page.fEntry =
+          idx < fMirrors.results().size() ? &fMirrors.results()[idx] : nullptr;
       page.fFont = &fFont;
       page.fWidth = ctx.fWidth;
       page.fHeight = ctx.fHeight;
       page.fMouseX = fWin.fMouseX;
       page.fMouseY = fWin.fMouseY;
       page.fNowMs = wallMs();
-      page.fPreviewPlaying = fPreviewId == fSetPage.setId();
-      page.fPreviewProgress = this->previewProgress();
+      page.fPreviewPlaying = fMirrors.previewId() == fSetPage.setId();
+      page.fPreviewProgress = fMirrors.previewProgress();
       fSetPage.update(page);
       this->damage(fSetPage.takeDamage());
     }
@@ -6754,12 +6131,12 @@ private:
     // and the client did not: this used to walk every result that passed the
     // filters, on screen or four hundred cards below it.
     for (const int idx : fListing.onScreen()) {
-      this->requestThumb(static_cast<std::size_t>(idx));
+      fMirrors.requestThumb(static_cast<std::size_t>(idx));
     }
     // Scrolling near the end pages the next batch in, as the overlay's
     // scroll container asks for the next cursor.
     if (fListing.wantsMore()) {
-      this->fetchPage();
+      fMirrors.fetchPage();
     }
     // The caret blinks on a clock of its own. Rather than keeping frames
     // coming so the moment is not missed, the screen says when the moment is
