@@ -2020,6 +2020,24 @@ private:
     auto *canvas = fSurface->getCanvas();
     fFrameSave = canvas->save();
 
+    // A full repaint paints every pixel only if every screen covers every
+    // pixel, and the clipped path below is the only one that clears. That
+    // holds while the surface being drawn into held the last frame: whatever
+    // a screen leaves uncovered was already right. It stops holding the
+    // moment the surface is new -- resize() drops the raster one and the
+    // next frame allocates a fresh one, and a window buffer coming round for
+    // the first time is fresh too. Then what a screen leaves uncovered is
+    // not the last frame, it is nothing, and nothing is black.
+    //
+    // Only while there is reason to doubt the surface, which is the frames a
+    // repaint is owed for and the settle after a size event. In the steady
+    // state this would be a full-screen memset on every gameplay frame, paid
+    // to cover a case that cannot happen there.
+    if (fComputedClipFull && (fFullRepaintsOwed > 0 ||
+                              wallMs() - fLastResizeWall < kResizeSettleMs)) {
+      canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
+    }
+
     // Partial repainting draws straight into the window: there is no second
     // surface and nothing is copied. The buffer being drawn into is one of
     // several the window cycles through, so it is missing everything the last
