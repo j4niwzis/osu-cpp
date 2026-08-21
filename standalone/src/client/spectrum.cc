@@ -88,10 +88,14 @@ public:
 
 private:
   void decay(double nowMs) noexcept {
-    const double dt =
-        fLastDecayMs > 0.0 ? std::min(50.0, nowMs - fLastDecayMs) : 0.0;
+    // Linear, not exponential: the bars fall by a fixed amount per
+    // millisecond, so a late frame would drop them a long way at once. Capped
+    // at a whole bar's worth of fall, which is as far as one can go and still
+    // mean anything -- in the decay's own units rather than in a guess at how
+    // late a frame may be.
+    const double dt = fLastDecayMs > 0.0 ? nowMs - fLastDecayMs : 0.0;
     fLastDecayMs = nowMs;
-    const float factor = static_cast<float>(dt) * kDecayPerMs;
+    const float factor = std::min(1.0f, static_cast<float>(dt) * kDecayPerMs);
     for (float &bar : fBars_) {
       // lazer adds 3% of a full bar so the tail finishes faster.
       bar -= factor * (bar + 0.03f);

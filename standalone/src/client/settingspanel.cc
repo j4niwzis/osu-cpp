@@ -512,7 +512,7 @@ private:
     }
 
     void update(double nowMs) override {
-      const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
+      const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
       fLastMs = nowMs;
       const bool active = fOwner->fActiveSection == static_cast<int>(fIndex);
       const float previous = fGrow;

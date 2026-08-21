@@ -175,7 +175,7 @@ private:
     }
 
     void update(double nowMs) override {
-      const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
+      const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
       fLastMs = nowMs;
       // Only a moving triangle is worth a repaint; held still, the button is
       // as static as the rest of a paused screen.

@@ -394,7 +394,7 @@ private:
   // ---- UI animation state ----
   double fStateEnterWall = 0.0;
   double fUiPrevWall = 0.0;
-  double fUiDt = 16.0;         // ms, clamped
+  double fUiDt = 16.0; // ms since the last frame, as measured
   // What the parts of song select that are still drawn immediately last drew,
   // so they can say when it changes rather than repainting on every frame.
   int fHotFilter = 0;   // which filter control the pointer is on
@@ -2475,17 +2475,13 @@ private:
     this->drainInput();
     {
       const double wallNow = wallMs();
-      // Clamped against a stall -- a debugger, a load, a compositor holding
-      // the window -- and not against a sparse frame. Fifty milliseconds was
-      // the latter: a frame arriving half a second after the last one moved
-      // an ease by a fiftieth of a second, so anything easing while frames
-      // were sparse took ten of them to arrive instead of one. That is what
-      // an animation running at two frames a second for several seconds is.
-      //
-      // An exponential ease is a function of elapsed time, so handing it the
-      // time that elapsed is the whole of its contract; a gap it is given in
-      // full comes out as one large step, which is what it should look like.
-      fUiDt = fUiPrevWall > 0.0 ? std::min(250.0, wallNow - fUiPrevWall) : 16.0;
+      // The time that actually passed. An exponential ease is a function of
+      // elapsed time and converges for any of it, so a frame that arrives
+      // late produces one large step, which is what a gap should look like.
+      // What cannot take an arbitrary step is anything integrating time
+      // linearly, and the only such thing here is the triangle field, which
+      // caps its own travel at one triangle's height.
+      fUiDt = fUiPrevWall > 0.0 ? wallNow - fUiPrevWall : 16.0;
       fUiPrevWall = wallNow;
     }
     // The music belongs to the client rather than to the screen that happens

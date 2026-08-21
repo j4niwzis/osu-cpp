@@ -49,8 +49,15 @@ public:
     }
     this->refill(width);
 
+    // Triangles integrate time linearly, so a frame that arrives late moves
+    // them proportionally far. Capped at one triangle's own height per frame,
+    // which is the distance past which the drift stops reading as drift and
+    // starts reading as a jump -- a number in the field's own units rather
+    // than a guess at how late a frame is allowed to be.
     const float elapsed = static_cast<float>(dtMs) / 1000.0f;
-    const float moved = elapsed * fVelocity * kBaseVelocity / height;
+    const float travel = elapsed * fVelocity * kBaseVelocity;
+    const float step = kSize * fScaleAdjust * kEquilateralRatio;
+    const float moved = std::min(travel, step) / height;
     const float size = kSize * fScaleAdjust;
 
     skia::SkPaint paint;

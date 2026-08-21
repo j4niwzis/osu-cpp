@@ -120,7 +120,7 @@ protected:
   }
 
   void update(double nowMs) override {
-    const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
+    const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
     fLastMs = nowMs;
     const float previous = fKnob;
     fKnob = skiff::paint::approach(fKnob, fOn ? 1.0f : 0.0f, fTauMs, dt);
