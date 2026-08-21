@@ -1207,6 +1207,15 @@ float4 main(float2 coords) {
     canvas->drawPath(builder.detach(), paint);
   }
 
+  // Which image the cursor is drawn from, and how big it is, for the report
+  // at map start: the size on screen is the setting times a constant times
+  // this width times the playfield scale, and only the first of those was
+  // being printed.
+  [[nodiscard]] std::pair<bool, int> cursorSprite() {
+    auto img = this->cursor();
+    return {static_cast<bool>(img), img ? img->width() : 0};
+  }
+
   void drawCursor(skia::SkCanvas *canvas, osu::Vec2 pos, float scale) {
     auto cursorImg = this->cursor();
     const float x = static_cast<float>(pos.fX);

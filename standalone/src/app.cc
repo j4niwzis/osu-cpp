@@ -620,10 +620,22 @@ private:
     // size is a pure function of the setting, read fresh every frame. Either
     // the number below is not what the settings panel shows, in which case it
     // is the plumbing, or it is, in which case it is the drawing.
-    std::println(std::cerr, "[cursor] setting {:.3f} -> drawn scale {:.5f}",
-                 fSettings.value("cursorsize"),
-                 fSettings.value("cursorsize") *
-                     client::GameplayView::kCursorUnitScale);
+    {
+      const float size = fSettings.value("cursorsize");
+      const float drawn = size * client::GameplayView::kCursorUnitScale;
+      const auto [hasSprite, spriteW] = fSkin.cursorSprite();
+      // On screen the cursor is all four of these multiplied together, so all
+      // four are worth seeing: which one differs between runs is which one is
+      // at fault.
+      std::println(std::cerr,
+                   "[cursor] setting {:.3f} scale {:.5f} sprite {} {}px "
+                   "playfield {:.4f} -> {:.1f}px wide",
+                   size, drawn, hasSprite ? "yes" : "NO(fallback circle)",
+                   spriteW, fScale,
+                   hasSprite ? static_cast<float>(spriteW) * 0.35f * drawn *
+                                   fScale
+                             : 8.0f * drawn * fScale);
+    }
 
     // The clock is not started here. Everything between this point and the
     // first frame actually being on screen would be charged to the map: the
