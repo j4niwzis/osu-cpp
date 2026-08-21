@@ -167,6 +167,16 @@ namespace paint = skiff::paint;
 namespace widgets = skiff::widgets;
 
 // The listing's greys, handed to the widgets rather than baked into them.
+inline const widgets::Theme kTabTheme = {
+    .fSurface = kBackground4,
+    .fText = kContent1,
+    .fLabel = kContent2,
+    .fTextDim = kLight2,
+    .fTextFaint = kLight3,
+    .fAccent = kColour1,
+    .fOnAccent = kBackground6,
+};
+
 inline const widgets::Theme kTextBoxTheme = {
     .fSurface = kBackground4,
     .fSurfaceHover = kBackground3,
@@ -450,138 +460,40 @@ private:
 
   // ---- nodes ---------------------------------------------------------------
 
-  // BeatmapSearchFilterRow: a 100px label column beside a wrapping tab flow.
-  class FilterRowNode : public scene::Drawable {
-  public:
-    FilterRowNode(Listing *owner, const char *header,
-                  std::span<const char *const> labels, Kind kind)
-        : fOwner(owner), fHeader(header), fLabels(labels), fKind(kind) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-    }
-
-  protected:
-    // The height depends on how the tabs wrap, which depends on the width
-    // this row is being given -- so it is worked out here, where that is
-    // known, and the positions are kept for drawing and for hit testing.
-    void measure(const skia::SkRect &parent) override {
-      auto &font = *fOwner->fFont;
-      const paint::Painter p(nullptr, font);
-      const float width = parent.width();
-      const float tabsX = kRowLabelWidth;
-      float cx = tabsX;
-      float cy = 0.0f;
-      fTabs.clear();
-      for (std::size_t i = 0; i < fLabels.size(); ++i) {
-        const std::string label = fLabels[i];
-        // Measured bold either way, so toggling a filter does not shuffle
-        // the row around.
-        const float w = p.measure(label, kFilterFontSize, true);
-        if (cx > tabsX && cx + w > width) {
-          cx = tabsX;
-          cy += kFilterLineHeight;
-        }
-        fTabs.push_back({skia::SkRect::MakeXYWH(cx, cy, w, kFilterLineHeight),
-                         static_cast<int>(i)});
-        cx += w + kTabSpacing;
-      }
-      fHeight = cy + kFilterLineHeight;
-    }
-
-    // The row lights the tab under the pointer, so moving between two tabs
-    // of the same row changes what it draws while the row itself stays
-    // hovered. Nothing else would notice that.
-    void update(double) override {
-      int hot = -1;
-      for (std::size_t i = 0; i < fTabs.size(); ++i) {
-        if (this->tabBounds(i).contains(fOwner->fMouseX, fOwner->fMouseY)) {
-          hot = static_cast<int>(i);
-          break;
-        }
-      }
-      if (hot != fHotTab) {
-        fHotTab = hot;
-        this->markDamaged();
-      }
-    }
-
-    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      auto &font = *fOwner->fFont;
-      const paint::Painter p(canvas, font);
-      p.text(fHeader, fBounds.fLeft, fBounds.fTop + kFilterFontSize,
-             kFilterFontSize, kContent2, alpha);
-      for (std::size_t i = 0; i < fTabs.size(); ++i) {
-        const bool active = fOwner->filterActive(fKind, fTabs[i].fValue);
-        const skia::SkRect box = this->tabBounds(i);
-        const bool hovered = box.contains(fOwner->fMouseX, fOwner->fMouseY);
-        skia::SkColor colour = active ? kContent1 : kLight2;
-        if (hovered) {
-          colour = paint::lighten(colour, 0.2f);
-        }
-        p.text(fLabels[fTabs[i].fValue], box.fLeft, box.fTop + kFilterFontSize,
-               kFilterFontSize, colour, alpha, active);
-      }
-    }
-
-    bool acceptsInput() const override { return true; }
-
-    bool onClick(float x, float y) override {
-      for (std::size_t i = 0; i < fTabs.size(); ++i) {
-        if (this->tabBounds(i).contains(x, y)) {
-          fOwner->activateFilter(fKind, fTabs[i].fValue);
-          return true;
-        }
-      }
-      return false;
-    }
-
-  private:
-    [[nodiscard]] skia::SkRect tabBounds(std::size_t i) const {
-      const skia::SkRect &local = fTabs[i].fRect;
-      return skia::SkRect::MakeXYWH(fBounds.fLeft + local.fLeft,
-                                    fBounds.fTop + local.fTop, local.width(),
-                                    local.height());
-    }
-
-    int fHotTab = -1;
-
-    struct Tab {
-      skia::SkRect fRect; // relative to the row
-      int fValue;
-    };
-    Listing *fOwner;
-    const char *fHeader;
-    std::span<const char *const> fLabels;
-    Kind fKind;
-    std::vector<Tab> fTabs;
-  };
-
-  // The 40px sort bar: criteria on the left, card size on the right.
-  class SortBarNode : public scene::Drawable {
+  // The 40px sort bar: criteria on the left, card size on the right. The
+  // criteria are a tab bar; the chevron after the active one and the two
+  // card-size icons belong to this screen, so they stay here.
+  class SortBarNode : public widgets::TabBar {
   public:
     explicit SortBarNode(Listing *owner) : fOwner(owner) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fHeight = kSortBarHeight;
+      fTheme = kTabTheme;
+      fHeaderWidth = 20.0f;
+      fFontSize = kFilterFontSize;
+      fLineHeight = kSortBarHeight;
+      fBaseline = kSortBarHeight * 0.5f + 5.0f;
+      fSpacing = kTabSpacing * 1.5f;
+      fSelectedExtra = 13.0f; // room for the direction chevron
+      fWrap = false;
+      fOnSelect = [owner](int value) {
+        owner->activateFilter(Kind::kSort, value);
+      };
     }
 
   protected:
     void measure(const skia::SkRect &parent) override {
-      auto &font = *fOwner->fFont;
-      const paint::Painter p(nullptr, font);
-      fSorts.clear();
-      float x = 20.0f;
+      // Which criteria exist depends on the category, so the list is rebuilt
+      // before it is laid out rather than when the tree was.
+      std::vector<Tab> tabs;
       for (int i = 0; i < static_cast<int>(std::size(kSortLabels)); ++i) {
-        const auto sort = static_cast<Sort>(i);
-        if (!fOwner->sortAvailable(sort)) {
-          continue;
+        if (fOwner->sortAvailable(static_cast<Sort>(i))) {
+          tabs.push_back({kSortLabels[i], i});
         }
-        const float w = p.measure(kSortLabels[i], kFilterFontSize, true);
-        fSorts.push_back({skia::SkRect::MakeXYWH(x, 0.0f, w, kSortBarHeight),
-                          i});
-        x += w + kTabSpacing * 1.5f +
-             (static_cast<int>(fOwner->fFilters.fSort) == i ? 13.0f : 0.0f);
       }
+      this->setTabs(std::move(tabs));
+      this->setSelected(static_cast<int>(fOwner->fFilters.fSort));
+      widgets::TabBar::measure(parent);
+      fHeight = kSortBarHeight;
+
       fCardSizes.clear();
       for (int i = 0; i < 2; ++i) {
         const float ix = parent.width() - 20.0f - 14.0f -
@@ -593,70 +505,24 @@ private:
       }
     }
 
-    // Same as the filter rows: the bar lights whichever criterion or card
-    // size the pointer is on, and that changes without the bar's own hover
-    // state changing.
-    void update(double) override {
-      const auto hotOf = [this](const auto &items) {
-        int hot = -1;
-        for (std::size_t i = 0; i < items.size(); ++i) {
-          if (this->localToScreen(items[i].fRect)
-                  .contains(fOwner->fMouseX, fOwner->fMouseY)) {
-            hot = static_cast<int>(i);
-            break;
-          }
+    void update(double nowMs) override {
+      widgets::TabBar::update(nowMs);
+      int hot = -1;
+      for (std::size_t i = 0; i < fCardSizes.size(); ++i) {
+        if (this->localToScreen(fCardSizes[i].fRect)
+                .contains(this->hoverX(), this->hoverY())) {
+          hot = static_cast<int>(i);
+          break;
         }
-        return hot;
-      };
-      const int sort = hotOf(fSorts);
-      const int size = hotOf(fCardSizes);
-      if (sort != fHotSort || size != fHotSize) {
-        fHotSort = sort;
-        fHotSize = size;
+      }
+      if (hot != fHotSize) {
+        fHotSize = hot;
         this->markDamaged();
       }
     }
 
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      auto &font = *fOwner->fFont;
-      const paint::Painter p(canvas, font);
-      p.fillRect(fBounds, kBackground4, alpha);
-      const float baseline = fBounds.fTop + kSortBarHeight * 0.5f + 5.0f;
-      for (const auto &item : fSorts) {
-        const bool active =
-            static_cast<int>(fOwner->fFilters.fSort) == item.fValue;
-        const skia::SkRect box = this->localToScreen(item.fRect);
-        const bool hovered = box.contains(fOwner->fMouseX, fOwner->fMouseY);
-        skia::SkColor colour = active ? kContent1 : kLight2;
-        if (hovered) {
-          colour = paint::lighten(colour, 0.2f);
-        }
-        p.text(kSortLabels[item.fValue], box.fLeft, baseline, kFilterFontSize,
-               colour, alpha, active);
-        if (!active) {
-          continue;
-        }
-        // The active criterion carries the direction chevron.
-        skia::SkPaint arrow;
-        arrow.setAntiAlias(true);
-        arrow.setColor(kContent1);
-        arrow.setAlphaf(alpha);
-        skia::SkPathBuilder pb;
-        const float ax = box.fRight + 5.0f;
-        const float ay = baseline - 4.0f;
-        if (fOwner->fFilters.fDescending) {
-          pb.moveTo(ax, ay - 3.0f)
-              .lineTo(ax + 8.0f, ay - 3.0f)
-              .lineTo(ax + 4.0f, ay + 3.0f)
-              .close();
-        } else {
-          pb.moveTo(ax, ay + 3.0f)
-              .lineTo(ax + 8.0f, ay + 3.0f)
-              .lineTo(ax + 4.0f, ay - 3.0f)
-              .close();
-        }
-        canvas->drawPath(pb.detach(), arrow);
-      }
+      widgets::TabBar::drawSelf(canvas, alpha);
 
       // BeatmapListingCardSizeTabControl: two icons, 10 apart, 20 from the
       // right edge.
@@ -664,7 +530,7 @@ private:
         const skia::SkRect box = this->localToScreen(item.fRect);
         const bool active =
             static_cast<int>(fOwner->fFilters.fCardSize) == item.fValue;
-        const bool hovered = box.contains(fOwner->fMouseX, fOwner->fMouseY);
+        const bool hovered = box.contains(this->hoverX(), this->hoverY());
         skia::SkPaint stroke;
         stroke.setAntiAlias(true);
         stroke.setStyle(skia::kStrokeStyle);
@@ -685,14 +551,33 @@ private:
       }
     }
 
-    bool acceptsInput() const override { return true; }
+    // The active criterion carries the direction chevron.
+    void drawDecoration(skia::SkCanvas *canvas, const skia::SkRect &box,
+                        float alpha) override {
+      skia::SkPaint arrow;
+      arrow.setAntiAlias(true);
+      arrow.setColor(kContent1);
+      arrow.setAlphaf(alpha);
+      skia::SkPathBuilder pb;
+      const float ax = box.fRight + 5.0f;
+      const float ay = box.fTop + fBaseline - 4.0f;
+      if (fOwner->fFilters.fDescending) {
+        pb.moveTo(ax, ay - 3.0f)
+            .lineTo(ax + 8.0f, ay - 3.0f)
+            .lineTo(ax + 4.0f, ay + 3.0f)
+            .close();
+      } else {
+        pb.moveTo(ax, ay + 3.0f)
+            .lineTo(ax + 8.0f, ay + 3.0f)
+            .lineTo(ax + 4.0f, ay - 3.0f)
+            .close();
+      }
+      canvas->drawPath(pb.detach(), arrow);
+    }
 
     bool onClick(float x, float y) override {
-      for (const auto &item : fSorts) {
-        if (this->localToScreen(item.fRect).contains(x, y)) {
-          fOwner->activateFilter(Kind::kSort, item.fValue);
-          return true;
-        }
+      if (widgets::TabBar::onClick(x, y)) {
+        return true;
       }
       for (const auto &item : fCardSizes) {
         if (this->localToScreen(item.fRect).contains(x, y)) {
@@ -715,9 +600,7 @@ private:
       int fValue;
     };
     Listing *fOwner;
-    std::vector<Item> fSorts;
     std::vector<Item> fCardSizes;
-    int fHotSort = -1;
     int fHotSize = -1;
   };
 
@@ -1284,27 +1167,39 @@ private:
     rows->fAutoSizeAxes = scene::Axes::kY;
     rows->fPadding = {0.0f, 10.0f, 0.0f, 10.0f};
     rows->setSpacing(0.0f, kRowSpacing);
-    rows->add(std::make_unique<FilterRowNode>(this, "General", kGeneralLabels,
-                                              Kind::kGeneral));
-    rows->add(std::make_unique<FilterRowNode>(this, "Mode", kRulesetLabels,
-                                              Kind::kRuleset));
-    rows->add(std::make_unique<FilterRowNode>(this, "Categories",
-                                              kCategoryLabels,
-                                              Kind::kCategory));
-    rows->add(std::make_unique<FilterRowNode>(this, "Genre", kGenreLabels,
-                                              Kind::kGenre));
-    rows->add(std::make_unique<FilterRowNode>(this, "Language",
-                                              kLanguageLabels,
-                                              Kind::kLanguage));
-    rows->add(std::make_unique<FilterRowNode>(this, "Extra", kExtraLabels,
-                                              Kind::kExtra));
-    rows->add(std::make_unique<FilterRowNode>(this, "Rank Achieved",
-                                              kRankLabels, Kind::kRank));
-    rows->add(std::make_unique<FilterRowNode>(this, "Played", kPlayedLabels,
-                                              Kind::kPlayed));
-    rows->add(std::make_unique<FilterRowNode>(this, "Explicit Content",
-                                              kExplicitLabels,
-                                              Kind::kExplicit));
+    // BeatmapSearchFilterRow: a 100px caption column beside a wrapping row
+    // of tabs. Three of these are sets of toggles rather than one-of-many,
+    // which is why the bar asks rather than being told what is on.
+    const auto filterRow = [&](const char *header,
+                               std::span<const char *const> labels, Kind kind) {
+      auto *row = rows->add<widgets::TabBar>({.fillX = true});
+      row->fTheme = kTabTheme;
+      row->fHeader = header;
+      row->fHeaderWidth = kRowLabelWidth;
+      row->fFontSize = kFilterFontSize;
+      row->fLineHeight = kFilterLineHeight;
+      row->fSpacing = kTabSpacing;
+      std::vector<widgets::TabBar::Tab> tabs;
+      for (std::size_t i = 0; i < labels.size(); ++i) {
+        tabs.push_back({labels[i], static_cast<int>(i)});
+      }
+      row->setTabs(std::move(tabs));
+      row->fIsActive = [this, kind](int value) {
+        return this->filterActive(kind, value);
+      };
+      row->fOnSelect = [this, kind](int value) {
+        this->activateFilter(kind, value);
+      };
+    };
+    filterRow("General", kGeneralLabels, Kind::kGeneral);
+    filterRow("Mode", kRulesetLabels, Kind::kRuleset);
+    filterRow("Categories", kCategoryLabels, Kind::kCategory);
+    filterRow("Genre", kGenreLabels, Kind::kGenre);
+    filterRow("Language", kLanguageLabels, Kind::kLanguage);
+    filterRow("Extra", kExtraLabels, Kind::kExtra);
+    filterRow("Rank Achieved", kRankLabels, Kind::kRank);
+    filterRow("Played", kPlayedLabels, Kind::kPlayed);
+    filterRow("Explicit Content", kExplicitLabels, Kind::kExplicit);
     panelColumn->add(std::move(rows));
     panel->add(std::move(panelColumn));
     column->add(std::move(panel));

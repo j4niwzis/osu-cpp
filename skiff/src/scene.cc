@@ -565,6 +565,8 @@ public:
     this->applyHover(x, y);
   }
   [[nodiscard]] bool hovered() const noexcept { return fHovered; }
+  [[nodiscard]] float hoverX() const noexcept { return fLastHoverX; }
+  [[nodiscard]] float hoverY() const noexcept { return fLastHoverY; }
 
   // Where this drawable is, and where it was: a drawable that moved damages
   // both, or it leaves a copy of itself behind.
@@ -619,6 +621,12 @@ public:
   }
 
   void applyHover(float x, float y) {
+    // Every node remembers where the pointer was, not just the root: a
+    // control with parts -- a row of tabs, a bar of icons -- has to know
+    // which of its own parts is under it, and asking the screen that owns it
+    // was how the screens ended up passing their mouse position down by hand.
+    fLastHoverX = x;
+    fLastHoverY = y;
     const bool hovered = fVisible && fBounds.contains(x, y);
     if (hovered != fHovered) {
       fHovered = hovered;
