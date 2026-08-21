@@ -191,11 +191,17 @@ private:
   const bool fForcePartialRedraw =
       std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
   const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-  // OSU_TRACE_RESIZE=1 prints, for every frame within a second of a size
-  // event, the four numbers that decide whether it may clip. This bug has now
-  // been reasoned about twice and measured zero times; the next time it comes
-  // back, the frame that did it can say so itself.
-  const bool fTraceResize = std::getenv("OSU_TRACE_RESIZE") != nullptr;
+  // OSU_TRACE_REPAINT=1 prints the numbers a frame's clip decision is made
+  // from -- but only when one of them changes, so a session is a handful of
+  // lines rather than one per frame. A screen going black but for the live
+  // region is a frame that clipped into a buffer it had never drawn into, and
+  // the line where clipping resumes is the one that says why it thought it
+  // could. OSU_TRACE_RESIZE is the old name and still works.
+  const bool fTraceRepaint = std::getenv("OSU_TRACE_REPAINT") != nullptr ||
+                             std::getenv("OSU_TRACE_RESIZE") != nullptr;
+  bool fTracedClipping = false;
+  int fTracedAge = -2;
+  std::size_t fTracedHistory = 0;
   // OSU_BUFFER_AGE=N overrides the setting of the same meaning, for measuring.
   const int fForcedBufferAge = [] {
     const char *value = std::getenv("OSU_BUFFER_AGE");
@@ -1970,23 +1976,31 @@ private:
     }
     this->rememberBlitRegion();
 
-    // Every number the clip decision is made from, for the frames around a
-    // size event. This has been reasoned about twice and measured zero times;
-    // when it comes back, the frame that did it can say so itself.
-    if (fTraceResize && wallMs() - fLastResizeWall < 1000.0) {
+    // Every number the clip decision is made from, at the point it is made:
+    // after the blit history has been updated for this frame, so the line
+    // cannot disagree with what the frame then does. Printed when the answer
+    // or the buffer age changes, and for the second after a size event.
+    if (fTraceRepaint) {
       const bool willClip = !fComputedClipFull && this->partialRedraw() &&
                             !this->historyShorterThan(this->drawReach());
-      std::println(std::cerr,
-                   "[resize] +{:4.0f} ms  age {}{}  reach {}  history {}  "
-                   "{}  -> {}{}",
-                   wallMs() - fLastResizeWall, fBufferAge,
-                   fBufferAgeAssumed ? " (assumed)" : "", this->drawReach(),
-                   fBlitHistory.size(),
-                   fComputedClipFull ? "whole screen" : "a region",
-                   willClip ? "CLIPS" : "repaints whole",
-                   fComputedClipFull
-                       ? std::string(" -- ") + fFullDamageReason
-                       : std::string());
+      const bool resizing = wallMs() - fLastResizeWall < 1000.0;
+      if (willClip != fTracedClipping || fBufferAge != fTracedAge ||
+          (fBlitHistory.size() < fTracedHistory) || resizing) {
+        std::println(std::cerr,
+                     "[repaint] {:8.0f} ms  age {}{}  reach {}  history {}  "
+                     "{}  -> {}{}",
+                     wallMs(), fBufferAge,
+                     fBufferAgeAssumed ? " (assumed)" : "", this->drawReach(),
+                     fBlitHistory.size(),
+                     fComputedClipFull ? "whole screen" : "a region",
+                     willClip ? "CLIPS" : "repaints whole",
+                     fComputedClipFull
+                         ? std::string(" -- ") + fFullDamageReason
+                         : std::string());
+      }
+      fTracedClipping = willClip;
+      fTracedAge = fBufferAge;
+      fTracedHistory = fBlitHistory.size();
     }
 
     if (!fSurface) {
