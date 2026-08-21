@@ -98,6 +98,17 @@ inline constexpr double kCircleVisualScale = 1.05;
 
 export class Skin {
 public:
+  // Declared up here rather than beside the members that hold them: a member
+  // type has to exist before it can be named in another member's signature,
+  // and bodySetBytes takes one.
+  struct PrecomputedBody {
+    skia::Sp<skia::SkImage> image;
+    float originX, originY;
+    float width, height;
+    std::vector<skia::SkIRect> tiles;
+  };
+  using BodySet = std::unordered_map<std::uint64_t, PrecomputedBody>;
+
   explicit Skin(std::filesystem::path root = {}) : fRoot(std::move(root)) {
     fComboPaint.setAntiAlias(true);
     fComboFallbackPaint.setColor(skia::kWhite);
@@ -1289,14 +1300,6 @@ private:
   bool fDisableGlow = false;
   skia::SkPaint fComboPaint;
   skia::SkPaint fComboFallbackPaint;
-
-  struct PrecomputedBody {
-    skia::Sp<skia::SkImage> image;
-    float originX, originY;
-    float width, height;
-    std::vector<skia::SkIRect> tiles;
-  };
-  using BodySet = std::unordered_map<std::uint64_t, PrecomputedBody>;
 
   // Building these costs on the order of a second on a map with hundreds of
   // sliders, and the commonest thing a player does is retry the map they are
