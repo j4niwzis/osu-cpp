@@ -7,6 +7,7 @@ import client.palette;
 import client.settings;
 import skiff.scene;
 import skiff.nodes;
+import skiff.widgets.dropdown;
 
 // The framework lives in skiff:: now; these keep the screens below
 // writing scene:: and nodes:: as they did when it sat in client::.
@@ -16,6 +17,16 @@ namespace nodes = skiff::nodes;
 // skiff::paint is the framework's drawing side; the short name keeps
 // the lines below at the width they were written at.
 namespace paint = skiff::paint;
+namespace widgets = skiff::widgets;
+
+// The panel's own shades for an open list: the plate, the rows on it, and a
+// row under the pointer.
+inline const widgets::Theme kListTheme = {
+    .fSurface = skia::colorSetARGB(255, 32, 26, 40),
+    .fSurfaceHover = skia::colorSetARGB(255, 44, 36, 54),
+    .fSurfaceActive = client::palette::kCardSel,
+    .fText = skia::kWhite,
+};
 
 export namespace client {
 
@@ -316,16 +327,14 @@ private:
       const skia::SkRect box = this->choiceBox(measurer);
       const auto &def = fOwner->fSettings->defs()[fIndex];
       const float height =
-          static_cast<float>(def.fOptions.size()) * 26.0f + 4.0f;
+          widgets::DropdownList::heightFor(def.fOptions.size());
       return skia::SkRect::MakeXYWH(box.fLeft, box.fBottom + 4.0f, box.width(),
                                     height);
     }
 
     [[nodiscard]] static skia::SkRect optionBox(const skia::SkRect &list,
                                                 std::size_t option) {
-      return skia::SkRect::MakeXYWH(
-          list.fLeft, list.fTop + 2.0f + static_cast<float>(option) * 26.0f,
-          list.width(), 24.0f);
+      return widgets::DropdownList::optionBox(list, option);
     }
 
   protected:
@@ -552,9 +561,18 @@ private:
   // than a part of the row, because a dropdown belongs over what is under it:
   // as a child of the row it would have been drawn before the rows below it
   // and hit-tested after them, which is exactly backwards.
-  class ChoiceListNode : public scene::Drawable {
+  // The list a choice row opens. Where it goes and what is in it are this
+  // panel's; the plate, the rows, the hovering and the clicking are the
+  // widget's.
+  class ChoiceListNode : public widgets::DropdownList {
   public:
-    explicit ChoiceListNode(SettingsPanel *owner) : fOwner(owner) {}
+    explicit ChoiceListNode(SettingsPanel *owner) : fOwner(owner) {
+      fTheme = kListTheme;
+      fOnChoose = [owner](int option) {
+        owner->fAction = {Action::kChoiceSet,
+                          static_cast<std::size_t>(owner->fOpenChoice), option};
+      };
+    }
 
   protected:
     // Placed by hand from the row it belongs to: measure() is where a
@@ -565,86 +583,23 @@ private:
       if (!fVisible) {
         fWidth = 0.0f;
         fHeight = 0.0f;
+        this->setOptions({});
         return;
       }
       fX = list.fLeft - parent.fLeft;
       fY = list.fTop - parent.fTop;
       fWidth = list.width();
       fHeight = list.height();
-    }
 
-    void update(double) override {
-      const int open = fOwner->fOpenChoice;
-      const int hot = this->hotOption();
-      if (open != fDrawnOpen || hot != fDrawnHot) {
-        fDrawnOpen = open;
-        fDrawnHot = hot;
-        this->markDamaged();
-      }
-    }
-
-    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-      const RowNode *row = fOwner->openRow();
-      if (row == nullptr) {
-        return;
-      }
-      const paint::Painter p(canvas, *fOwner->fFont);
       const auto &def =
-          fOwner->fSettings->defs()[static_cast<std::size_t>(
-              fOwner->fOpenChoice)];
-      const auto chosen =
-          static_cast<std::size_t>(fOwner->fSettings->choice(def.fKey));
-      // Its own backing plate, since what is underneath it stays where it is.
-      p.fillRounded(fBounds, 6.0f, skia::colorSetARGB(255, 32, 26, 40), alpha);
-      for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
-        const skia::SkRect item = RowNode::optionBox(fBounds, o);
-        const bool hovered = item.contains(fOwner->fMouseX, fOwner->fMouseY);
-        p.fillRounded(item, 6.0f,
-                      hovered ? palette::kCardSel
-                              : skia::colorSetARGB(255, 44, 36, 54),
-                      alpha);
-        p.textClipped(def.fOptions[o], item.fLeft + 12.0f,
-                      item.centerY() + 4.0f, item.width() - 24.0f, 13.0f,
-                      skia::kWhite, alpha * (o == chosen ? 1.0f : 0.8f));
-      }
-    }
-
-    bool acceptsInput() const override { return fVisible; }
-
-    bool onClick(float x, float y) override {
-      const int option = this->optionAt(x, y);
-      if (option < 0) {
-        return true; // inside the list but between rows: swallow it
-      }
-      fOwner->fAction = {Action::kChoiceSet,
-                         static_cast<std::size_t>(fOwner->fOpenChoice), option};
-      return true;
+          fOwner->fSettings
+              ->defs()[static_cast<std::size_t>(fOwner->fOpenChoice)];
+      this->setOptions({def.fOptions.begin(), def.fOptions.end()});
+      this->setCurrent(fOwner->fSettings->choice(def.fKey));
     }
 
   private:
-    [[nodiscard]] int optionAt(float x, float y) const {
-      const RowNode *row = fOwner->openRow();
-      if (row == nullptr) {
-        return -1;
-      }
-      const auto &def =
-          fOwner->fSettings->defs()[static_cast<std::size_t>(
-              fOwner->fOpenChoice)];
-      for (std::size_t o = 0; o < def.fOptions.size(); ++o) {
-        if (RowNode::optionBox(fBounds, o).contains(x, y)) {
-          return static_cast<int>(o);
-        }
-      }
-      return -1;
-    }
-
-    [[nodiscard]] int hotOption() const {
-      return this->optionAt(fOwner->fMouseX, fOwner->fMouseY);
-    }
-
     SettingsPanel *fOwner;
-    int fDrawnOpen = -1;
-    int fDrawnHot = -1;
   };
 
   [[nodiscard]] RowNode *openRow() const {
