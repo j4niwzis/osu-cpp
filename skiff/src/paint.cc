@@ -189,6 +189,9 @@ private:
     hash ^= std::hash<const void *>{}(font.getTypeface()) * 0x9e3779b97f4a7c15ull;
     hash ^= static_cast<std::uint64_t>(font.getSize() * 64.0f) << 17;
     hash ^= static_cast<std::uint64_t>(font.isEmbolden()) << 61;
+    // Linear metrics measure wider than hinted ones by a fraction of a pixel
+    // per glyph, so a width cached under one is wrong under the other.
+    hash ^= static_cast<std::uint64_t>(font.isLinearMetrics()) << 60;
     return hash;
   }
 
@@ -372,6 +375,40 @@ inline void imageFilled(skia::SkCanvas *canvas, const skia::SkImage *image,
                         alpha < 1.0f ? &p : nullptr,
                         skia::SkCanvas::kStrict_SrcRectConstraint);
 }
+
+// Text whose size is animating -- a logo on the beat, a judgement popping --
+// has to be drawn without grid fitting and without rounded advances. Every
+// outline snaps to the pixel grid at its own threshold as the size passes
+// through it, and every advance rounds to a whole pixel at its own, so the
+// letters stop moving together: one jumps while its neighbours stay, which
+// reads as a single twitching letter rather than as text being resampled.
+//
+// Held for the duration of the draw and put back afterwards, because static
+// text wants exactly the opposite -- grid fitting is what makes a label at
+// 11 points legible on a screen with no pixels to spare.
+class SmoothScaling {
+public:
+  explicit SmoothScaling(skia::SkFont &font)
+      : fFont(&font), fSubpixel(font.isSubpixel()),
+        fLinearMetrics(font.isLinearMetrics()), fHinting(font.getHinting()) {
+    font.setSubpixel(true);
+    font.setLinearMetrics(true);
+    font.setHinting(skia::kNoHinting);
+  }
+  ~SmoothScaling() {
+    fFont->setSubpixel(fSubpixel);
+    fFont->setLinearMetrics(fLinearMetrics);
+    fFont->setHinting(fHinting);
+  }
+  SmoothScaling(const SmoothScaling &) = delete;
+  SmoothScaling &operator=(const SmoothScaling &) = delete;
+
+private:
+  skia::SkFont *fFont;
+  bool fSubpixel;
+  bool fLinearMetrics;
+  skia::SkFontHinting fHinting;
+};
 
 // ---- Drawing helpers -----------------------------------------------------
 //

@@ -69,6 +69,7 @@ using ::SkFont;
 using ::SkFontMetrics;
 using ::SkFontMgr;
 using ::SkFontArguments;
+using ::SkFontHinting;
 using ::SkFontStyle;
 using ::SkFontStyleSet;
 using ::SkImage;
@@ -158,6 +159,11 @@ inline constexpr SkColor kMagenta = SK_ColorMAGENTA;
 using Style = ::SkPaint::Style;
 inline constexpr Style kFillStyle = ::SkPaint::Style::kFill_Style;
 inline constexpr Style kStrokeStyle = ::SkPaint::Style::kStroke_Style;
+
+// Grid fitting is what makes small static text crisp, and what makes text
+// whose size is animating jump a glyph at a time: each outline snaps to the
+// pixel grid at its own threshold as the size passes through it.
+inline constexpr ::SkFontHinting kNoHinting = ::SkFontHinting::kNone;
 inline constexpr Style kStrokeAndFillStyle =
     ::SkPaint::Style::kStrokeAndFill_Style;
 

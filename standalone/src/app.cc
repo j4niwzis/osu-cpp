@@ -5236,12 +5236,21 @@ private:
     // wobble. It also missed the width cache every frame: the cache filled
     // with one dead entry per frame until it was dropped whole, taking the
     // measurements of every other label on the screen with it.
+    //
+    // Scaling the canvas is not on its own enough: the device size the glyphs
+    // are rasterised at still moves with the beat, and grid fitting snaps
+    // each outline to the pixel grid at its own threshold as it passes
+    // through one. That is the letter that twitches -- not the text sliding,
+    // one glyph stepping while the rest hold still.
     const float base = fLogoBaseRadius > 0.0f ? fLogoBaseRadius : r;
     canvas->save();
     canvas->translate(fLogoX, fLogoY);
     canvas->scale(r / base, r / base);
-    this->drawTextCentered(canvas, "osu!", 0.0f, base * 0.22f, base * 0.55f,
-                           skia::kWhite);
+    {
+      const skiff::paint::SmoothScaling smooth(fFont);
+      this->drawTextCentered(canvas, "osu!", 0.0f, base * 0.22f, base * 0.55f,
+                             skia::kWhite);
+    }
     canvas->restore();
   }
 

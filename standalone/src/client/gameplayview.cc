@@ -1216,6 +1216,10 @@ public:
 
       skia::SkFont &font = c.fDisplayFont ? *c.fDisplayFont : *c.fFont;
       font.setSize(kBaseSize);
+      // Drawn at a fixed size under a scale that moves every frame, which is
+      // the case grid fitting is worst at: each outline snaps to the pixel
+      // grid at its own threshold, so a word stops moving as a word.
+      const skiff::paint::SmoothScaling smooth(font);
 
       const float total =
           font.measureText(str.data(), str.size(), skia::SkTextEncoding::kUTF8);
