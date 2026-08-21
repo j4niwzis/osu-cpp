@@ -39,7 +39,7 @@ export namespace present {
 // has never been painted. Neither the event queue nor an atomic written by
 // the callback is any fresher than the callback itself, which is the mistake
 // that took two attempts. The X server knows now.
-[[nodiscard]] bool surfaceSize(int *width, int *height);
+[[nodiscard]] bool surfaceSize(void *glfwWindow, int *width, int *height);
 
 
 // Hands the compositor the rectangles that changed since the last swap, in
@@ -58,7 +58,7 @@ export namespace present {
 
 namespace present {
 int bufferAge() { return -1; }
-bool surfaceSize(int *, int *) { return false; }
+bool surfaceSize(void *, int *, int *) { return false; }
 bool swapWithDamage(int, std::span<const std::array<int, 4>>) { return false; }
 const char *backend() { return "none"; }
 } // namespace present
@@ -94,12 +94,15 @@ struct Egl {
 };
 
 struct X11 {
-  // XGetGeometry answers for a plain Window, which glXQueryDrawable does not:
-  // that one is specified for GLXWindow and friends and leaves its outputs
-  // untouched for a drawable it does not recognise.
+  // XGetGeometry wants an X drawable. glXGetCurrentDrawable does not give one:
+  // it gives the GLX drawable, which on this driver is a GLXWindow -- a
+  // different XID that X_GetGeometry rejects, fatally, because an unhandled
+  // Xlib error ends the process. The window itself has to come from GLFW.
   int (*getGeometry)(XDisplay *, GLXDrawable, GLXDrawable *, int *, int *,
                      unsigned int *, unsigned int *, unsigned int *,
                      unsigned int *) = nullptr;
+  XDisplay *(*glfwDisplay)() = nullptr;
+  GLXDrawable (*glfwWindow)(void *) = nullptr;
 };
 
 struct Glx {
@@ -196,6 +199,18 @@ struct Loaded {
     out.fX11.getGeometry = reinterpret_cast<decltype(out.fX11.getGeometry)>(
         ::dlsym(x11, "XGetGeometry"));
   }
+  // GLFW is already linked in, so these are looked up in the process and its
+  // libraries rather than in one opened by name. Absent when GLFW was built
+  // without X11 native access, which is answered by not asking.
+  if (void *self = ::dlopen(nullptr, RTLD_LAZY); self != nullptr) {
+    out.fX11.glfwDisplay = reinterpret_cast<decltype(out.fX11.glfwDisplay)>(
+        ::dlsym(self, "glfwGetX11Display"));
+    out.fX11.glfwWindow = reinterpret_cast<decltype(out.fX11.glfwWindow)>(
+        ::dlsym(self, "glfwGetX11Window"));
+  }
+  if (out.fX11.getGeometry == nullptr || out.fX11.glfwWindow == nullptr) {
+    note("x11: no XGetGeometry on a window GLFW will name");
+  }
 
   void *glLib = ::dlopen("libGL.so.1", RTLD_LAZY | RTLD_LOCAL);
   if (glLib == nullptr) {
@@ -272,7 +287,7 @@ int bufferAge() {
   return -1;
 }
 
-bool surfaceSize(int *width, int *height) {
+bool surfaceSize(void *glfwWindow, int *width, int *height) {
   const Loaded &state = loaded();
   // EGL answers from the client side without a round trip, so it is asked
   // first where it is current at all.
@@ -292,31 +307,32 @@ bool surfaceSize(int *width, int *height) {
       return true;
     }
   }
-  // Otherwise the X server, which costs a round trip and is the only thing
-  // that knows the answer at the moment it is asked.
-  if (state.fX11.getGeometry != nullptr &&
-      state.fGlx.getCurrentDisplay != nullptr &&
-      state.fGlx.getCurrentDrawable != nullptr) {
-    XDisplay *display = state.fGlx.getCurrentDisplay();
-    const GLXDrawable drawable = state.fGlx.getCurrentDrawable();
-    if (display != nullptr && drawable != 0) {
-      GLXDrawable root = 0;
-      int x = 0;
-      int y = 0;
-      unsigned int w = 0;
-      unsigned int h = 0;
-      unsigned int border = 0;
-      unsigned int depth = 0;
-      if (state.fX11.getGeometry(display, drawable, &root, &x, &y, &w, &h,
-                                 &border, &depth) != 0 &&
-          w > 0 && h > 0) {
-        *width = static_cast<int>(w);
-        *height = static_cast<int>(h);
-        return true;
-      }
-    }
+  // Otherwise the X server, about the window GLFW made -- not about the GLX
+  // drawable, which is a different XID and not one X_GetGeometry accepts.
+  if (state.fX11.getGeometry == nullptr || state.fX11.glfwWindow == nullptr ||
+      state.fX11.glfwDisplay == nullptr || glfwWindow == nullptr) {
+    return false;
   }
-  return false;
+  XDisplay *display = state.fX11.glfwDisplay();
+  const GLXDrawable window = state.fX11.glfwWindow(glfwWindow);
+  if (display == nullptr || window == 0) {
+    return false;
+  }
+  GLXDrawable root = 0;
+  int x = 0;
+  int y = 0;
+  unsigned int w = 0;
+  unsigned int h = 0;
+  unsigned int border = 0;
+  unsigned int depth = 0;
+  if (state.fX11.getGeometry(display, window, &root, &x, &y, &w, &h, &border,
+                             &depth) == 0 ||
+      w == 0 || h == 0) {
+    return false;
+  }
+  *width = static_cast<int>(w);
+  *height = static_cast<int>(h);
+  return true;
 }
 
 bool swapWithDamage(int surfaceHeight,

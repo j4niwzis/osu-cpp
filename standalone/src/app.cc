@@ -1042,7 +1042,7 @@ private:
     // alternative was two days of this.
     int liveW = 0;
     int liveH = 0;
-    if (present::surfaceSize(&liveW, &liveH) &&
+    if (present::surfaceSize(fWindow, &liveW, &liveH) &&
         (liveW != fScreenW || liveH != fScreenH)) {
       this->resize(liveW, liveH);
     }
