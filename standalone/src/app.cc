@@ -1919,6 +1919,21 @@ private:
         fFullDamageReason = "buffer has not had this screen yet";
       }
     }
+    // A window being dragged by its corner does not stop reallocating buffers
+    // when the last size event arrives, and it reallocates them on frames
+    // where the size came back the same -- which is a frame resize() is not
+    // called for, so nothing clears the blit history and nothing owes a full
+    // repaint. The frame then clips to what moved and lands in a buffer that
+    // has never been drawn into, which is the whole screen black but the live
+    // region. Counting frames cannot cover that, because the frames are not
+    // the thing that ends: the drag is. So the settle is in wall time, and
+    // every frame inside it repaints whole.
+    if (wallMs() - fLastResizeWall < kResizeSettleMs) {
+      if (!fFullDamage) {
+        fFullDamage = true;
+        fFullDamageReason = "resize settling";
+      }
+    }
     // What the frame repaints. A frame drawn with nothing marked repaints
     // everything -- the buffer being drawn into is several frames old and
     // there is no region to trust -- so it is reported as full, honestly.
@@ -2658,6 +2673,10 @@ private:
   // that repaint whole after one are counted with some to spare.
   static constexpr std::size_t kSwapChainDepth = 4;
   static constexpr int kFullRepaintsAfterChange = 6;
+  // How long after the last size event a window is still assumed to be
+  // throwing its buffers away. The same quarter second the slider bodies wait
+  // for, and for the same reason: that is how long a drag keeps arriving.
+  static constexpr double kResizeSettleMs = 250.0;
   // Kept longer than the guess, so that a window system reporting an age of
   // six has six frames of history to be told about.
   static constexpr std::size_t kBlitHistoryDepth = 8;
