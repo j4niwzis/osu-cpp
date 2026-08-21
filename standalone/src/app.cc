@@ -18,6 +18,7 @@ import client.audio;
 import client.input;
 import client.timing;
 import client.http;
+import client.logo;
 import client.spectrum;
 import client.mapcache;
 import client.replaycache;
@@ -438,13 +439,12 @@ private:
   // Set while anything in the menu is still easing towards a target, so the
   // frames that carry it there are asked for rather than waited for.
   bool fMenuMoving = false;
-  float fLogoX = 0.0f;
-  float fLogoY = 0.0f;
-  float fLogoScale = 1.0f;
-  bool fLogoPlaced = false;
-  float fLogoHover = 0.0f;
-  float fLogoPunch = 0.0f; // click/beat impact, decays
-  float fLogoBaseRadius = 0.0f; // radius before beat, hover and punch
+  // Where the menu wants the logo; the logo eases towards it and owns
+  // everything else about itself.
+  struct LogoTarget {
+    float fX = 0.0f, fY = 0.0f, fScale = 1.0f;
+  };
+  LogoTarget fLogoTarget;
   // Slider bodies are rasterised once, at the scale the playfield had when
   // the map was loaded. A resize changes that scale and leaves them behind,
   // to be stretched by the blit -- so they are rebuilt, but not while the
@@ -457,8 +457,6 @@ private:
   // The difficulty of the map being played, under the ranked calculator and
   // with the mods applied, kept so the play can be priced when it ends.
   osu::StarRating fPlayAttributes;
-  float fLogoAmp = 0.0f;    // beat amplitude the logo settled at
-  float fLogoRadius = 0.0f;
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
   float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
   int fHotResultButton = -1; // which action the pointer is on
@@ -472,8 +470,7 @@ private:
   std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
   int fHotDialogPiece = -1; // which piece of the export dialog is under it
   client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
-  skia::SkRect fLogoRect = skia::SkRect::MakeEmpty();
-  client::Spectrum fSpectrum;
+  client::logo::Logo fLogo;     // and the one in the middle of them
 
   // ---- Settings overlay -------------------------------------------------
   // SettingsPanel: a 170px sidebar plus a 400px content column sliding in
@@ -494,15 +491,9 @@ private:
   double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
   double fLastMenuPosMs = 0.0;
   client::triangles::Field fBackgroundTriangles;
-  client::triangles::Field fLogoTriangles;
   float fMenuDim = 1.0f;
   // MainMenu.cs: Gray(1) idle, Gray(0.8) with buttons.
   float fDrawnMenuDim = -1.0f; // the dim the screen currently shows
-  struct Angle {
-    float fCos = 0.0f, fSin = 0.0f;
-  };
-  std::vector<Angle> fVisualiserAngles; // fixed per bar count, not per frame
-  int fVisualiserCount = 0;
   // Seeded per run: a fixed seed meant the same "random" map on launch, the
   // same order of tracks after it, and the same triangles behind the logo,
   // every single time.
@@ -1489,9 +1480,9 @@ private:
         // The logo's box is square, reaches as far as its visualiser does,
         // and the logo is a circle inside it -- so the circle has the last
         // word, and a miss falls through to the buttons the box covers.
-        const float dx = x - fLogoRect.centerX();
-        const float dy = y - fLogoRect.centerY();
-        const float r = fLogoRect.width() * 0.5f;
+        const float dx = x - fLogo.bounds().centerX();
+        const float dy = y - fLogo.bounds().centerY();
+        const float r = fLogo.bounds().width() * 0.5f;
         if (r > 0.0f && dx * dx + dy * dy <= r * r) {
           this->triggerLogo();
           return;
@@ -3458,7 +3449,7 @@ private:
           // The analysis clock is anchored to the *old* track until reset.
           fMenuClock.reset(wallMs(), 0.0);
           fMenuClockSyncWall = std::numeric_limits<double>::lowest();
-          fSpectrum.reset();
+          fLogo.spectrum().reset();
         });
   }
 
@@ -3499,7 +3490,7 @@ private:
     fMenuMusicForSet = -1;
     fAudio.setLooping(false);
     fAudio.stop();
-    fSpectrum.reset();
+    fLogo.spectrum().reset();
   }
 
   [[nodiscard]] static std::pair<std::uintmax_t, std::int64_t>
@@ -4964,6 +4955,20 @@ private:
     return skiff::paint::approach(current, target, tauMs, fUiDt);
   }
 
+  // What the logo is told each frame. Nothing it could work out itself.
+  [[nodiscard]] client::logo::Logo::Ctx logoCtx() {
+    return {&fFont,
+            fMouseX,
+            fMouseY,
+            fUiDt,
+            fSettings.flag("visualiser"),
+            fSettings.flag("menutriangles"),
+            fLogoBase,
+            fLogoTarget.fX,
+            fLogoTarget.fY,
+            fLogoTarget.fScale};
+  }
+
   void menuTrigger(std::size_t index) {
     MenuBtn &b = fMenuBtns[index];
     fMenu.flashButton(index);
@@ -5027,7 +5032,7 @@ private:
   // The logo is the menu's primary control: clicking advances a level, and at
   // a populated level it triggers that level's first button (onOsuLogo).
   void triggerLogo() {
-    fLogoPunch = 1.0f;
+    fLogo.strike();
     switch (fMenuState) {
     case MenuState::kInitial:
       this->setMenuState(MenuState::kTopLevel);
@@ -5132,20 +5137,14 @@ private:
         sh * (fMenuState == MenuState::kInitial ? 0.46f : 0.5f);
     const float targetScale = fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
 
-    if (!fLogoPlaced) {
-      fLogoX = targetLogoX;
-      fLogoY = targetLogoY;
-      fLogoScale = targetScale;
-      fLogoPlaced = true;
-    }
-    fLogoX = this->approach(fLogoX, targetLogoX, 140.0f);
-    fLogoY = this->approach(fLogoY, targetLogoY, 140.0f);
-    fLogoScale = this->approach(fLogoScale, targetScale, 140.0f);
+    fLogoTarget = {targetLogoX, targetLogoY, targetScale};
+    fLogo.moveTowards(this->logoCtx());
 
     // ---- Buttons: animate and lay out, without drawing any of them.
-    const float rowY = fLogoY - btnH * 0.5f;
-    float xRight = fLogoX + fLogoBase * fLogoScale + 28.0f * uiScale;
-    float xLeft = fLogoX - fLogoBase * fLogoScale - 28.0f * uiScale;
+    const float logoReach = fLogoBase * fLogo.scale();
+    const float rowY = fLogo.y() - btnH * 0.5f;
+    float xRight = fLogo.x() + logoReach + 28.0f * uiScale;
+    float xLeft = fLogo.x() - logoReach - 28.0f * uiScale;
 
     fMenu.ensure(fMenuBtns.size(), skia::SkRect::MakeWH(sw, sh));
 
@@ -5182,25 +5181,18 @@ private:
     // The dim and the logo are the client's, not a node's: one covers the
     // screen and the other is drawn by the piece it sits in.
     constexpr float kMoving = 0.002f;
+    fLogo.settle(this->logoCtx());
     fMenuMoving = std::abs(fMenuDim - dimTarget) > kMoving ||
-                  std::abs(fLogoX - targetLogoX) > kMoving ||
-                  std::abs(fLogoY - targetLogoY) > kMoving ||
-                  std::abs(fLogoScale - targetScale) > kMoving;
+                  fLogo.moving(this->logoCtx());
 
-    this->settleLogo(fLogoBase);
     fMenu.setPointer(fMouseX, fMouseY);
 
     // How far the bars actually reach this frame. A flat guess of three
     // quarters of the logo's width was covering 40% of the screen on its own,
     // which with the counter in the opposite corner pushed the frame over the
     // "repaint it whole" threshold and saved nothing at all.
-    float loudest = 0.0f;
-    for (const float amp : fSettings.flag("visualiser") ? fSpectrum.bars()
-                                                        : this->stillBars()) {
-      loudest = std::max(loudest, amp);
-    }
-    const float reach = fLogoRadius * 2.0f * (600.0f / 480.0f) * loudest;
-    skia::SkRect moving = fLogoRect;
+    const float reach = fLogo.reach(this->logoCtx());
+    skia::SkRect moving = fLogo.bounds();
     moving.outset(reach + 4.0f, reach + 4.0f);
     // Marked while something in there is actually moving -- a live
     // visualiser, drifting triangles inside the logo, or the logo itself
@@ -5311,263 +5303,10 @@ private:
                            skia::kWhite, contentAlpha * 0.95f);
   }
 
-  // OsuLogo: a circular container filled with a vertical pink gradient
-  // (#ff66ab -> #cc5289) with TrianglesV2 masked inside it, the logo mark on
-  // top, a ripple of the same shape that scales out and fades on each beat,
-  // and a white impact ring that only appears when the logo is struck. There
-  // is no permanent halo -- the earlier glow ring was invented.
-  // Where the logo is and how big, worked out without drawing anything.
-  void settleLogo(float logoBase) {
-    const bool hovered =
-        (fMouseX - fLogoX) * (fMouseX - fLogoX) +
-            (fMouseY - fLogoY) * (fMouseY - fLogoY) <=
-        (logoBase * fLogoScale) * (logoBase * fLogoScale);
-    fLogoHover = this->approach(fLogoHover, hovered ? 1.0f : 0.0f, 110.0f);
-    fLogoPunch = this->approach(fLogoPunch, 0.0f, 180.0f);
-
-    // Amplitude-driven beat: lazer drives these from timing points, which the
-    // menu has not loaded, so bass energy stands in. Switched off with the
-    // visualiser, or the logo would keep breathing on a screen that has
-    // stopped drawing frames and would jump whenever one happened.
-    fLogoAmp = fSettings.flag("visualiser") ? fSpectrum.bass() : 0.0f;
-    const float beat = 1.0f - 0.02f * fLogoAmp;
-    // The radius the logo sits at with nothing happening to it, kept so the
-    // mark can be typeset once against it and scaled rather than re-typeset.
-    fLogoBaseRadius = logoBase * fLogoScale;
-    fLogoRadius = fLogoBaseRadius * beat *
-                  (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
-    fLogoRect = skia::SkRect::MakeXYWH(fLogoX - fLogoRadius,
-                                       fLogoY - fLogoRadius, fLogoRadius * 2,
-                                       fLogoRadius * 2);
-  }
-
-  void drawLogo(skia::SkCanvas *canvas, float) {
-    const float wall = static_cast<float>(wallMs());
-    const float amp = fLogoAmp;
-    const float r = fLogoRadius;
-
-    this->drawVisualiser(canvas, r);
-
-    // Ripple: same circle, scaled slightly out, alpha 0.15 * amplitude.
-    if (amp > 0.01f) {
-      skia::SkPaint ripple;
-      ripple.setAntiAlias(true);
-      ripple.setColor(skia::colorSetARGB(255, 0xff, 0x66, 0xab));
-      ripple.setAlphaf(0.15f * std::min(1.0f, amp * 2.0f));
-      canvas->drawCircle(fLogoX, fLogoY, r * (1.0f + 0.04f * amp), ripple);
-    }
-
-    // Body: vertical gradient disc, clipped triangles, then the mark.
-    canvas->save();
-    skia::SkPathBuilder disc;
-    disc.addCircle(fLogoX, fLogoY, r);
-    canvas->clipPath(disc.detach(), true);
-    skiff::paint::verticalGradient(canvas, fLogoRect,
-                                   skia::colorSetARGB(255, 0xff, 0x66, 0xab),
-                                   skia::colorSetARGB(255, 0xcc, 0x52, 0x89));
-    this->drawLogoTriangles(canvas, fLogoRect);
-    canvas->restore();
-
-    // Impact ring: white border, only while punching.
-    if (fLogoPunch > 0.01f) {
-      skia::SkPaint ring;
-      ring.setAntiAlias(true);
-      ring.setStyle(skia::kStrokeStyle);
-      ring.setStrokeWidth(r * 0.08f);
-      ring.setColor(skia::kWhite);
-      ring.setAlphaf(fLogoPunch * 0.8f);
-      canvas->drawCircle(fLogoX, fLogoY, r * (1.0f + 0.12f * (1.0f - fLogoPunch)),
-                         ring);
-    }
-
-    // Scaled with the logo rather than re-typeset at a new size every frame.
-    // A font size that moves with the beat is measured afresh each frame, and
-    // the width comes back a little different each time -- so the centred
-    // text shifts sideways by a fraction of a pixel, unevenly, which is the
-    // wobble. It also missed the width cache every frame: the cache filled
-    // with one dead entry per frame until it was dropped whole, taking the
-    // measurements of every other label on the screen with it.
-    //
-    // Scaling the canvas is not on its own enough: the device size the glyphs
-    // are rasterised at still moves with the beat, and grid fitting snaps
-    // each outline to the pixel grid at its own threshold as it passes
-    // through one. That is the letter that twitches -- not the text sliding,
-    // one glyph stepping while the rest hold still.
-    const float base = fLogoBaseRadius > 0.0f ? fLogoBaseRadius : r;
-    canvas->save();
-    canvas->translate(fLogoX, fLogoY);
-    canvas->scale(r / base, r / base);
-    {
-      const skiff::paint::SmoothScaling smooth(fFont);
-      this->drawTextCentered(canvas, "osu!", 0.0f, base * 0.22f, base * 0.55f,
-                             skia::kWhite);
-    }
-    canvas->restore();
-  }
-
-  // TrianglesV2 inside the logo: Thickness 0.009, ScaleAdjust 3, SpawnRatio
-  // 1.4, tinted #ff66ab at the top to #b6346f at the bottom.
-  void drawLogoTriangles(skia::SkCanvas *canvas, const skia::SkRect &rect) {
-    fLogoTriangles.setScaleAdjust(1.05f);
-    fLogoTriangles.setSpawnRatio(1.4f);
-    fLogoTriangles.setThickness(0.009f);
-    fLogoTriangles.setAlphaRange(0.85f, 0.85f);
-    fLogoTriangles.setColours(skia::colorSetARGB(255, 0xff, 0x66, 0xab),
-                              skia::colorSetARGB(255, 0xb6, 0x34, 0x6f));
-    fLogoTriangles.draw(canvas, rect,
-                        fSettings.flag("menutriangles") ? fUiDt : 0.0, 1.0f);
-  }
-
-  // LogoVisualisation.VisualisationDrawNode, transcribed. Each bar is a quad
-  // sitting on the logo's circumference, `bar_length * amplitude` long, with
-  // width equal to the chord subtended by one bar; the whole ring is drawn
-  // `visualiser_rounds` times, rotated, additively at 20% white.
-  // What the bars stand at when the visualiser is switched off: a fixed
-  // shape, so the logo keeps its skirt instead of sitting on the background
-  // as a bare circle. Deterministic on purpose -- it is drawn once and never
-  // asks to be drawn again.
-  [[nodiscard]] std::span<const float> stillBars() const {
-    static const std::vector<float> kBars = [] {
-      constexpr int kCount = 200;
-      std::vector<float> bars(static_cast<std::size_t>(kCount));
-      // A spectrum does not undulate; it spikes. Neighbouring bins differ by
-      // a lot, the whole thing slopes down as the frequency rises, and a
-      // handful of partials stand well above the rest. So: a falling
-      // envelope, a hash per bin for the jumps, and a few peaks on top.
-      const auto hash01 = [](std::uint32_t x) {
-        x ^= x >> 16;
-        x *= 0x7feb352dU;
-        x ^= x >> 15;
-        x *= 0x846ca68bU;
-        x ^= x >> 16;
-        return static_cast<float>(x & 0xffffffU) /
-               static_cast<float>(0x1000000U);
-      };
-      for (int i = 0; i < kCount; ++i) {
-        const auto index = static_cast<std::uint32_t>(i);
-        const float t = static_cast<float>(i) / static_cast<float>(kCount);
-        // Loud at the bass end, thin at the top, as music is.
-        const float envelope = 0.06f + 0.30f * std::pow(1.0f - t, 1.6f);
-        // Squared, so most bins sit low and the occasional one jumps.
-        const float jump = hash01(index * 2654435761U);
-        float amp = envelope * (0.25f + 1.35f * jump * jump);
-        if (hash01(index * 40503U + 17U) > 0.94f) {
-          amp *= 2.1f; // a partial standing out of the noise
-        }
-        // Shorter than a loud moment of music: this one is on screen for as
-        // long as the menu is, and a skirt that reaches out as far as a drop
-        // does looks wrong standing still.
-        bars[static_cast<std::size_t>(i)] = std::clamp(amp * 0.62f, 0.01f,
-                                                       0.55f);
-      }
-      return bars;
-    }();
-    return kBars;
-  }
-
-  void drawVisualiser(skia::SkCanvas *canvas, float logoRadius) {
-    const auto bars = fSettings.flag("visualiser") ? fSpectrum.bars()
-                                                   : this->stillBars();
-    if (bars.empty()) {
-      return;
-    }
-    constexpr int kRounds = 5;          // visualiser_rounds
-    constexpr float kAmplitudeDeadZone = 1.0f / 600.0f;
-    const auto count = static_cast<int>(bars.size());
-
-    // Nothing above the dead zone is the usual case between tracks.
-    bool anyAudible = false;
-    for (const float amp : bars) {
-      if (amp >= kAmplitudeDeadZone) {
-        anyAudible = true;
-        break;
-      }
-    }
-    if (!anyAudible) {
-      return;
-    }
-
-    // A bar at a time, as a small convex path with antialiasing.
-    //
-    // Two attempts at making this cheaper both cost more, and both for
-    // reasons worth keeping written down. Collecting the bars of a round into
-    // one path takes Skia off the analytic route it has for convex shapes and
-    // onto a coverage mask over the whole circle. Sending them as vertices
-    // removes the per-draw overhead but also the antialiasing, and adding it
-    // back as a ring of transparent geometry means blending five times the
-    // triangles -- which on a software rasteriser is paid per pixel, and cost
-    // more than the draws it saved. What is here is what measured best.
-    const float barLength = logoRadius * 2.0f * (600.0f / 480.0f);
-    // barSize.X = size * sqrt(2 * (1 - cos(360/bars))) / 2  -- the chord.
-    const float chord =
-        logoRadius * 2.0f *
-        std::sqrt(2.0f * (1.0f - std::cos(2.0f * std::numbers::pi_v<float> /
-                                          static_cast<float>(count)))) /
-        2.0f;
-
-    this->ensureVisualiserAngles(count, kRounds);
-
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
-    paint.setColor(skia::kWhite);
-    paint.setAlphaf(0.2f); // transparent_white
-    paint.setBlendMode(skia::SkBlendMode::kPlus);
-
-    for (int round = 0; round < kRounds; ++round) {
-      for (int i = 0; i < count; ++i) {
-        const float amp = bars[static_cast<std::size_t>(i)];
-        if (amp < kAmplitudeDeadZone) {
-          continue;
-        }
-        const auto &angle =
-            fVisualiserAngles[static_cast<std::size_t>(round * count + i)];
-        const float bx = fLogoX + angle.fCos * logoRadius;
-        const float by = fLogoY + angle.fSin * logoRadius;
-        // bottomOffset is perpendicular; amplitudeOffset is radial.
-        const float ox = -angle.fSin * chord * 0.5f;
-        const float oy = angle.fCos * chord * 0.5f;
-        const float ax = angle.fCos * barLength * amp;
-        const float ay = angle.fSin * barLength * amp;
-
-        skia::SkPathBuilder bar;
-        bar.moveTo(bx - ox, by - oy);
-        bar.lineTo(bx - ox + ax, by - oy + ay);
-        bar.lineTo(bx + ox + ax, by + oy + ay);
-        bar.lineTo(bx + ox, by + oy);
-        bar.close();
-        canvas->drawPath(bar.detach(), paint);
-      }
-    }
-  }
-
-  // The bars sit at fixed angles; only their lengths change. Computing two
-  // trigonometric functions per bar per frame -- two thousand of them at five
-  // rounds of two hundred -- was work repeated for an answer that never
-  // changes.
-  void ensureVisualiserAngles(int count, int rounds) {
-    const auto needed = static_cast<std::size_t>(count) *
-                        static_cast<std::size_t>(rounds);
-    if (fVisualiserAngles.size() == needed && fVisualiserCount == count) {
-      return;
-    }
-    fVisualiserAngles.resize(needed);
-    fVisualiserCount = count;
-    for (int round = 0; round < rounds; ++round) {
-      for (int i = 0; i < count; ++i) {
-        const float rotation =
-            2.0f * std::numbers::pi_v<float> *
-            (static_cast<float>(i) / static_cast<float>(count) +
-             static_cast<float>(round) / static_cast<float>(rounds));
-        fVisualiserAngles[static_cast<std::size_t>(round * count + i)] = {
-            std::cos(rotation), std::sin(rotation)};
-      }
-    }
-  }
-
   void updateMenuSpectrum() {
     const double wall = wallMs();
     if (!fAudio.playing()) {
-      fSpectrum.update({}, 0, 0.0, wall);
+      fLogo.spectrum().update({}, 0, 0.0, wall);
       return;
     }
     // Same anchored-clock trick as gameplay: querying the device every frame
@@ -5585,8 +5324,8 @@ private:
       fLastMenuPosMs = devicePos;
     }
     const double posMs = fMenuClock.sample(wall);
-    fSpectrum.update(fAudio.monoSamples(), fAudio.sampleRate(),
-                     posMs / 1000.0, wall);
+    fLogo.spectrum().update(fAudio.monoSamples(), fAudio.sampleRate(),
+                            posMs / 1000.0, wall);
   }
 
   void keyMainMenu(int key) {
@@ -7931,7 +7670,7 @@ private:
           }
         },
         [this](skia::SkCanvas *canvas, const skia::SkRect &, int) {
-          this->drawLogo(canvas, fLogoBase);
+          fLogo.draw(canvas, this->logoCtx());
         });
     fCarousel.setPainter([this](skia::SkCanvas *canvas,
                                 const skia::SkRect &rect,
