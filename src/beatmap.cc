@@ -748,7 +748,11 @@ struct BeatmapInfo {
   Difficulty fDiff;
   double fLengthMs = 0.0;
   int fObjectCount = 0;
+  // Two ratings, because there are two calculators: the one in osu!'s master
+  // branch and the one the servers actually rank with. Which of them is shown
+  // is a setting; both are computed once and kept.
   double fStars = 0.0;
+  double fStarsRanked = 0.0;
 };
 
 class BeatmapSet {

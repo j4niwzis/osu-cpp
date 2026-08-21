@@ -3188,6 +3188,7 @@ private:
     info.fMeta.fAudioFilename = d.fAudioFilename;
     info.fMeta.fBackground = d.fBackground;
     info.fStars = d.fStars;
+    info.fStarsRanked = d.fStarsRanked;
     info.fDiff.fCs = d.fCs;
     info.fDiff.fAr = d.fAr;
     info.fDiff.fOd = d.fOd;
@@ -3195,6 +3196,15 @@ private:
     info.fLengthMs = d.fLengthMs;
     info.fObjectCount = d.fObjectCount;
     return info;
+  }
+
+  // Which of the two ratings to put in front of the user. The order maps and
+  // difficulties are kept in is not this: that stays on the master rating,
+  // because the cached list is written in that order and a difficulty is
+  // chosen by its position in it. Flipping the setting would otherwise
+  // reorder one side and not the other.
+  [[nodiscard]] double shownStars(const osu::BeatmapInfo &info) const {
+    return fSettings.choice("stars") == 1 ? info.fStarsRanked : info.fStars;
   }
 
   [[nodiscard]] static std::vector<client::CachedDifficulty>
@@ -3207,7 +3217,8 @@ private:
                        info.fMeta.fTitleUnicode, info.fMeta.fArtist,
                        info.fMeta.fArtistUnicode, info.fMeta.fCreator,
                        info.fMeta.fVersion, info.fMeta.fAudioFilename,
-                       info.fMeta.fBackground, info.fStars, info.fDiff.fCs,
+                       info.fMeta.fBackground, info.fStars,
+                       info.fStarsRanked, info.fDiff.fCs,
                        info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp,
                        info.fLengthMs, info.fObjectCount});
     }
@@ -3331,6 +3342,7 @@ private:
       for (const auto &cached : known) {
         if (cached.fFilename == info.fFilename) {
           info.fStars = cached.fStars;
+          info.fStarsRanked = cached.fStarsRanked;
           break;
         }
       }
@@ -3396,7 +3408,7 @@ private:
     case client::FilterControl::SortMode::kDifficulty:
       std::ranges::stable_sort(fLibrary, {}, [&](const LibraryEntry &e) {
         const auto *i = key(e);
-        return i ? i->fStars : 0.0;
+        return i ? this->shownStars(*i) : 0.0;
       });
       break;
     case client::FilterControl::SortMode::kLength:
@@ -3466,12 +3478,13 @@ private:
                                      const osu::Metadata &setMeta,
                                      const osu::BeatmapInfo &info) const {
     // DifficultyRangeSlider is an additional constraint on top of the query.
-    if (info.fStars < fFilter.rangeMin() ||
+    const double stars = this->shownStars(info);
+    if (stars < fFilter.rangeMin() ||
         (fFilter.rangeMax() < client::FilterControl::kDiffRangeCap &&
-         info.fStars > fFilter.rangeMax())) {
+         stars > fFilter.rangeMax())) {
       return false;
     }
-    if (!c.fStars.matches(info.fStars) || !c.fAr.matches(info.fDiff.fAr) ||
+    if (!c.fStars.matches(stars) || !c.fAr.matches(info.fDiff.fAr) ||
         !c.fCs.matches(info.fDiff.fCs) || !c.fOd.matches(info.fDiff.fOd) ||
         !c.fHp.matches(info.fDiff.fHp) ||
         !c.fLengthSec.matches(info.fLengthMs / 1000.0) ||
@@ -6115,7 +6128,7 @@ private:
     for (auto it = infos.rbegin(); it != infos.rend(); ++it) {
       skia::SkPaint dot;
       dot.setAntiAlias(true);
-      dot.setColor(starColor(it->fStars));
+      dot.setColor(starColor(this->shownStars(*it)));
       canvas->drawCircle(dotX, rect.centerY(), 4.0f, dot);
       dotX -= 12.0f;
       if (dotX < rect.fRight - 120.0f) {
@@ -6291,8 +6304,9 @@ private:
     const float pad = 16.0f;
     const skia::SkRect badge = skia::SkRect::MakeXYWH(
         rect.fLeft + pad, rect.centerY() - 11.0f, 62.0f, 22.0f);
-    this->fillRounded(canvas, badge, 11.0f, starColor(info.fStars));
-    this->drawTextCentered(canvas, std::format("{:.2f}", info.fStars),
+    this->fillRounded(canvas, badge, 11.0f, starColor(this->shownStars(info)));
+    this->drawTextCentered(canvas,
+                           std::format("{:.2f}", this->shownStars(info)),
                            badge.centerX(), badge.centerY() + 5.0f, 13.0f,
                            skia::colorSetARGB(255, 20, 16, 26));
     this->drawTextClipped(canvas, info.fMeta.fVersion, badge.fRight + 14.0f,
@@ -6337,9 +6351,11 @@ private:
     this->drawTextClipped(
         canvas,
         std::format("{}   {:.2f}*   CS {:.1f}  AR {:.1f}  OD {:.1f}  HP {:.1f}",
-                    info.fMeta.fVersion, info.fStars, info.fDiff.fCs,
+                    info.fMeta.fVersion, this->shownStars(info),
+                    info.fDiff.fCs,
                     info.fDiff.fAr, info.fDiff.fOd, info.fDiff.fHp),
-        pad, top + 128.0f, w - pad * 2, 15.0f, starColor(info.fStars));
+        pad, top + 128.0f, w - pad * 2, 15.0f,
+        starColor(this->shownStars(info)));
     this->drawTextClipped(
         canvas,
         std::format("{} objects   {:.0f}:{:02.0f}", info.fObjectCount,
@@ -6356,7 +6372,7 @@ private:
       const bool isSelected = static_cast<int>(i) == fSelDiff;
       skia::SkPaint dot;
       dot.setAntiAlias(true);
-      dot.setColor(starColor(d.fStars));
+      dot.setColor(starColor(this->shownStars(d)));
       canvas->drawCircle(dotX, dotY, isSelected ? 9.0f : 6.0f, dot);
       if (isSelected) {
         skia::SkPaint ring;
@@ -7290,8 +7306,10 @@ private:
         const skia::SkRect chip = skia::SkRect::MakeXYWH(
             panel.centerX() - 88.0f * scale, y - 11.0f * scale, 60.0f * scale,
             22.0f * scale);
-        p.fillRounded(chip, 11.0f * scale, client::ui::starColor(info.fStars));
-        p.textCentered(std::format("{:.2f}", info.fStars), chip.centerX(),
+        p.fillRounded(chip, 11.0f * scale,
+                      client::ui::starColor(this->shownStars(info)));
+        p.textCentered(std::format("{:.2f}", this->shownStars(info)),
+                       chip.centerX(),
                        chip.centerY() + 5.0f * scale, 12.0f * scale,
                        skia::colorSetARGB(255, 20, 16, 26));
         p.textClipped(info.fMeta.fVersion, chip.fRight + 10.0f * scale,

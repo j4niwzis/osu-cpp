@@ -21,6 +21,7 @@ struct CachedDifficulty {
   std::string fTitle, fTitleUnicode, fArtist, fArtistUnicode, fCreator,
       fVersion, fAudioFilename, fBackground;
   double fStars = 0.0;
+  double fStarsRanked = 0.0;
   double fCs = 5.0, fAr = 9.0, fOd = 8.0, fHp = 5.0;
   double fLengthMs = 0.0;
   int fObjectCount = 0;
@@ -42,7 +43,7 @@ public:
   // 4: slider path extension, RepeatCount off by one, the normalised vector
   //    angle of a zero vector. This is the version that matches lazer's own
   //    diffcalc tests to within a ten-thousandth.
-  static constexpr int kStarAlgorithmVersion = 4;
+  static constexpr int kStarAlgorithmVersion = 5;
   // Bump when this file's field layout changes.
   static constexpr int kSchemaVersion = 3;
 
@@ -102,6 +103,7 @@ public:
           cd.fAudioFilename = strOf(dobj, "audio");
           cd.fBackground = strOf(dobj, "bg");
           cd.fStars = numOf(dobj, "stars");
+          cd.fStarsRanked = numOf(dobj, "starsRanked");
           cd.fCs = numOf(dobj, "cs");
           cd.fAr = numOf(dobj, "ar");
           cd.fOd = numOf(dobj, "od");
@@ -169,6 +171,7 @@ public:
         dobj["audio"] = d.fAudioFilename;
         dobj["bg"] = d.fBackground;
         dobj["stars"] = d.fStars;
+        dobj["starsRanked"] = d.fStarsRanked;
         dobj["cs"] = d.fCs;
         dobj["ar"] = d.fAr;
         dobj["od"] = d.fOd;

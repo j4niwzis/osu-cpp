@@ -84,6 +84,9 @@ public:
     this->add({2, "rules", "Gameplay rules", SettingKind::kChoice, 0.0f, 1.0f,
                1.0f, 0.0f, "",
                {"osu!lazer", "This client, before 2026"}});
+    this->add({2, "stars", "Star rating", SettingKind::kChoice, 0.0f, 1.0f,
+               1.0f, 0.0f, "",
+               {"osu!lazer (master)", "Ranked (what the servers use)"}});
     this->add({2, "hitlighting", "Hit lighting", SettingKind::kToggle, 0.0f,
                1.0f, 0.0f, 1.0f, ""});
     this->add({2, "savereplay", "Save replays automatically",

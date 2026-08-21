@@ -110,6 +110,11 @@ loadBeatmapSet(const std::filesystem::path &path, bool computeStars = true) {
     auto info = osu::buildBeatmapInfo(target, bm);
     if (computeStars) {
       info.fStars = osu::calculateStars(bm).fTotal;
+      info.fStarsRanked =
+          osu::calculateStars(bm, osu::mod::kNone, nullptr,
+                              std::numeric_limits<double>::infinity(),
+                              osu::StarAlgorithm::kRanked)
+              .fTotal;
     }
     info.fMd5 = osu::md5HashString(it->second);
     set.fBeatmaps.push_back(std::move(info));
@@ -128,8 +133,13 @@ loadBeatmapSet(const std::filesystem::path &path, bool computeStars = true) {
         auto info = osu::buildBeatmapInfo(name, bm);
         if (computeStars) {
           info.fStars = osu::calculateStars(bm).fTotal;
-          std::println(std::cerr, "[stars] {} -> {:.2f}*", info.fMeta.fVersion,
-                       info.fStars);
+          info.fStarsRanked =
+              osu::calculateStars(bm, osu::mod::kNone, nullptr,
+                                  std::numeric_limits<double>::infinity(),
+                                  osu::StarAlgorithm::kRanked)
+                  .fTotal;
+          std::println(std::cerr, "[stars] {} -> {:.2f}* / {:.2f}* ranked",
+                       info.fMeta.fVersion, info.fStars, info.fStarsRanked);
         }
         info.fMd5 = osu::md5HashString(bytes);
         set.fBeatmaps.push_back(std::move(info));
