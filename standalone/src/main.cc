@@ -118,6 +118,8 @@ void printUsage(std::string_view program) {
          "strain\n"
       << "  --ranked           With --stars, use the calculator the servers "
          "run\n"
+      << "  --dump-strains     With --stars --ranked, print every section "
+         "peak\n"
       << "  --trace-replay     Play a replay through the engine and print "
          "every judgement\n"
       << "  --legacy-rules     With --trace-replay, use this client's old "
@@ -144,6 +146,7 @@ int main(int argc, char **argv) {
   bool starsOnly = false;
   double until = std::numeric_limits<double>::infinity();
   bool dumpAim = false;
+  bool dumpStrains = false;
   bool traceReplay = false;
   bool legacyRules = false;
   osu::StarAlgorithm algorithm = osu::StarAlgorithm::kLazerMaster;
@@ -182,6 +185,8 @@ int main(int argc, char **argv) {
       dumpAim = true;
     } else if (arg == "--ranked") {
       algorithm = osu::StarAlgorithm::kRanked;
+    } else if (arg == "--dump-strains") {
+      dumpStrains = true;
     } else if (arg == "--trace-replay") {
       traceReplay = true;
     } else if (arg == "--legacy-rules") {
@@ -359,8 +364,12 @@ int main(int argc, char **argv) {
                                std::istreambuf_iterator<char>());
         const osu::Beatmap map = osu::loadBeatmap(text);
         std::vector<osu::stars::AimSkill::TracePoint> aimTrace;
+        std::vector<double> aimPeaks;
+        std::vector<double> speedPeaks;
         const osu::StarRating rating = osu::calculateStars(
-            map, mods, dumpAim ? &aimTrace : nullptr, until, algorithm);
+            map, mods, dumpAim ? &aimTrace : nullptr, until, algorithm,
+            dumpStrains ? &aimPeaks : nullptr,
+            dumpStrains ? &speedPeaks : nullptr);
         // The combo and object counts are of the part that was processed,
         // which is what the timed tests assert.
         osu::Beatmap counted = map;
@@ -385,6 +394,15 @@ int main(int argc, char **argv) {
                   << std::format("  max combo {}\n",
                                  engine.maxAchievableCombo())
                   << std::format("  objects   {}\n", processed);
+        if (dumpStrains) {
+          // One line per 400ms section, which is what a reference
+          // implementation's strain series can be diffed against.
+          for (std::size_t i = 0; i < aimPeaks.size(); ++i) {
+            std::cout << std::format(
+                "  strain {:4} aim {:.10f} speed {:.10f}\n", i, aimPeaks[i],
+                i < speedPeaks.size() ? speedPeaks[i] : 0.0);
+          }
+        }
         if (dumpAim) {
           // The geometry behind those numbers: what each slider's path came
           // out as, which is the other half of any disagreement about aim.

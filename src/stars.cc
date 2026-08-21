@@ -33,9 +33,12 @@ enum class StarAlgorithm { kLazerMaster, kRanked };
 calculateStars(const Beatmap &bm, ModSet mods = mod::kNone,
                std::vector<stars::AimSkill::TracePoint> *aimTrace = nullptr,
                double untilTime = std::numeric_limits<double>::infinity(),
-               StarAlgorithm algorithm = StarAlgorithm::kLazerMaster) {
+               StarAlgorithm algorithm = StarAlgorithm::kLazerMaster,
+               std::vector<double> *rankedAimPeaks = nullptr,
+               std::vector<double> *rankedSpeedPeaks = nullptr) {
   if (algorithm == StarAlgorithm::kRanked) {
-    return stars::ranked::calculate(bm, mods);
+    return stars::ranked::calculate(bm, mods, rankedAimPeaks,
+                                    rankedSpeedPeaks);
   }
   using namespace stars;
   if (bm.fObjects.size() < 2)

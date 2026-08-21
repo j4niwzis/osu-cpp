@@ -390,17 +390,32 @@ public:
     fSectionEnd = std::ceil(startTime / kSectionLength) * kSectionLength;
   }
 
-  // `initial` is the strain the new section would start from, which for these
-  // skills is the running strain decayed to the section's beginning.
-  void advance(double startTime, double initial) {
+  // A new section starts from the running strain decayed to *that section's*
+  // end -- StrainSkill.startNewSectionFrom is handed currentSectionEnd, which
+  // moves with every turn of the loop, and StrainDecaySkill decays from the
+  // previous object's start time to it. Decaying to the current object's
+  // start instead, which is what this did, is a longer gap and so too small a
+  // strain, and it gave every section in a run of them the same value rather
+  // than a falling one.
+  void advance(double startTime, double strain, double decayBase,
+               double previousStart) {
     while (startTime > fSectionEnd) {
       fPeaks.push_back(fSectionPeak);
-      fSectionPeak = initial;
+      fSectionPeak = strain * strainDecay(fSectionEnd - previousStart,
+                                          decayBase);
       fSectionEnd += kSectionLength;
     }
   }
 
   void record(double strain) { fSectionPeak = std::max(strain, fSectionPeak); }
+
+  // Every section's peak, in order, which is what a reference implementation
+  // can be diffed against section by section.
+  [[nodiscard]] std::vector<double> sectionPeaks() const {
+    std::vector<double> peaks(fPeaks.begin(), fPeaks.end());
+    peaks.push_back(fSectionPeak);
+    return peaks;
+  }
 
   [[nodiscard]] double difficulty() const {
     std::vector<double> peaks;
@@ -453,8 +468,8 @@ public:
       fPeaks.start(c.fStart);
     } else {
       const auto *prev = c.prev(0);
-      const double since = c.fStart - (prev != nullptr ? prev->fStart : 0.0);
-      fPeaks.advance(c.fStart, fStrain * strainDecay(since, kDecayBase));
+      fPeaks.advance(c.fStart, fStrain, kDecayBase,
+                     prev != nullptr ? prev->fStart : 0.0);
     }
     // The aim strain decays over the raw delta, not the capped one.
     fStrain *= strainDecay(c.fRawDT, kDecayBase);
@@ -463,6 +478,9 @@ public:
   }
 
   [[nodiscard]] double difficulty() const { return fPeaks.difficulty(); }
+  [[nodiscard]] std::vector<double> sectionPeaks() const {
+    return fPeaks.sectionPeaks();
+  }
 
 private:
   static constexpr double kDecayBase = 0.15;
@@ -481,9 +499,8 @@ public:
       fPeaks.start(c.fStart);
     } else {
       const auto *prev = c.prev(0);
-      const double since = c.fStart - (prev != nullptr ? prev->fStart : 0.0);
-      fPeaks.advance(c.fStart,
-                     fStrain * fRhythm * strainDecay(since, kDecayBase));
+      fPeaks.advance(c.fStart, fStrain * fRhythm, kDecayBase,
+                     prev != nullptr ? prev->fStart : 0.0);
     }
     fStrain *= strainDecay(c.fADT, kDecayBase);
     fStrain += SpeedEvaluator::eval(c, fHitWindow) * kSkillMultiplier;
@@ -492,6 +509,9 @@ public:
   }
 
   [[nodiscard]] double difficulty() const { return fPeaks.difficulty(); }
+  [[nodiscard]] std::vector<double> sectionPeaks() const {
+    return fPeaks.sectionPeaks();
+  }
 
 private:
   static constexpr double kDecayBase = 0.3;
@@ -519,8 +539,10 @@ lengthBonus(int totalHits) noexcept {
   return bonus;
 }
 
-[[nodiscard]] inline StarRating calculate(const Beatmap &bm,
-                                          ModSet mods = mod::kNone) {
+[[nodiscard]] inline StarRating calculate(
+    const Beatmap &bm, ModSet mods = mod::kNone,
+    std::vector<double> *aimPeaks = nullptr,
+    std::vector<double> *speedPeaks = nullptr) {
   if (bm.fObjects.size() < 2) {
     return {};
   }
@@ -544,6 +566,13 @@ lengthBonus(int totalHits) noexcept {
   for (const auto &o : objs) {
     aim.process(o);
     speed.process(o);
+  }
+
+  if (aimPeaks != nullptr) {
+    *aimPeaks = aim.sectionPeaks();
+  }
+  if (speedPeaks != nullptr) {
+    *speedPeaks = speed.sectionPeaks();
   }
 
   const double aimValue = aim.difficulty();
