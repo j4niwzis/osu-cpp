@@ -15,3 +15,4 @@ export import skiff.widgets.textbox;
 export import skiff.widgets.button;
 export import skiff.widgets.tabbar;
 export import skiff.widgets.dropdown;
+export import skiff.widgets.sliderbar;

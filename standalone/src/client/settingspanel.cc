@@ -8,6 +8,7 @@ import client.settings;
 import skiff.scene;
 import skiff.nodes;
 import skiff.widgets.dropdown;
+import skiff.widgets.sliderbar;
 
 // The framework lives in skiff:: now; these keep the screens below
 // writing scene:: and nodes:: as they did when it sat in client::.
@@ -21,6 +22,14 @@ namespace widgets = skiff::widgets;
 
 // The panel's own shades for an open list: the plate, the rows on it, and a
 // row under the pointer.
+// A row's own control: the unfilled part of a track, an unlit pill, and the
+// knob on either.
+inline const widgets::Theme kControlTheme = {
+    .fSurface = skia::colorSetARGB(255, 58, 48, 70),
+    .fText = skia::kWhite,
+    .fAccent = client::palette::kAccent,
+};
+
 inline const widgets::Theme kListTheme = {
     .fSurface = skia::colorSetARGB(255, 32, 26, 40),
     .fSurfaceHover = skia::colorSetARGB(255, 44, 36, 54),
@@ -253,11 +262,11 @@ public:
     if (index >= fRowNodes.size() || fRowNodes[index] == nullptr) {
       return false;
     }
-    const skia::SkRect track = fRowNodes[index]->trackRect();
-    if (track.width() <= 0.0f) {
+    const widgets::SliderBar *bar = fRowNodes[index]->slider();
+    if (bar == nullptr) {
       return false;
     }
-    settings.setFromFraction(index, (x - track.fLeft) / track.width());
+    settings.setFromFraction(index, bar->fractionAt(x));
     this->markRow(index);
     return true;
   }
@@ -283,24 +292,6 @@ private:
     int fOption = 0;
   };
 
-  [[nodiscard]] static skia::SkColor lerpColour(skia::SkColor from,
-                                                skia::SkColor to, float t) {
-    const auto mix = [t](std::uint8_t a, std::uint8_t b) {
-      return static_cast<std::uint8_t>(static_cast<float>(a) +
-                                       (static_cast<float>(b) -
-                                        static_cast<float>(a)) *
-                                           t);
-    };
-    const auto channel = [](skia::SkColor c, int shift) {
-      return static_cast<std::uint8_t>((c >> shift) & 0xffu);
-    };
-    return skia::colorSetARGB(
-        mix(channel(from, 24), channel(to, 24)),
-        mix(channel(from, 16), channel(to, 16)),
-        mix(channel(from, 8), channel(to, 8)),
-        mix(channel(from, 0), channel(to, 0)));
-  }
-
   // ---- rows ---------------------------------------------------------------
 
   // One setting. It draws its own kind -- slider, toggle or choice -- and
@@ -314,7 +305,6 @@ private:
         : fOwner(owner), fIndex(index) {
       fAnchor = scene::Anchor::kTopRight;
       fOrigin = scene::Anchor::kTopRight;
-      fX = -kContentMargins;
       fY = 3.0f;
       fHeight = 24.0f;
     }
@@ -377,19 +367,35 @@ private:
         : fOwner(owner), fIndex(index) {
       fRelativeSizeAxes = scene::Axes::kX;
       fWidth = 1.0f;
-      if (owner->fSettings->defs()[index].fKind == SettingKind::kChoice) {
+      fPadding = {0.0f, kContentMargins, 0.0f, kContentMargins};
+      switch (owner->fSettings->defs()[index].fKind) {
+      case SettingKind::kChoice:
         fControl = this->add<ChoiceControlNode>({}, owner, index);
+        break;
+      case SettingKind::kSlider:
+        fSlider = this->add<widgets::SliderBar>({.y = 30.0f, .height = 6.0f});
+        fSlider->fTheme = kControlTheme;
+        break;
+      case SettingKind::kToggle:
+        fToggle =
+            this->add<widgets::Toggle>({.anchor = scene::Anchor::kTopRight,
+                                        .origin = scene::Anchor::kTopRight,
+                                        .x = -6.0f,
+                                        .y = 4.0f});
+        fToggle->fTheme = kControlTheme;
+        fToggle->fOnToggle = [owner, index] {
+          owner->fAction = {Action::kToggle, index, 0};
+        };
+        break;
       }
+    }
+
+    [[nodiscard]] widgets::SliderBar *slider() const noexcept {
+      return fSlider;
     }
 
     // Null unless this is a choice row. What its list is hung off.
     [[nodiscard]] scene::Drawable *control() const noexcept { return fControl; }
-
-    [[nodiscard]] skia::SkRect trackRect() const {
-      const skia::SkRect content = this->contentRect();
-      return skia::SkRect::MakeXYWH(content.fLeft, fBounds.fTop + 30.0f,
-                                    content.width(), 6.0f);
-    }
 
   protected:
     void measure(const skia::SkRect &) override {
@@ -402,9 +408,7 @@ private:
 
     // The value is read out of the settings rather than held here, so this is
     // where a row finds out that something else changed it.
-    void update(double nowMs) override {
-      const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
-      fLastMs = nowMs;
+    void update(double) override {
       const Settings &settings = *fOwner->fSettings;
       const auto &def = settings.defs()[fIndex];
       const float value = def.fKind == SettingKind::kToggle
@@ -418,14 +422,12 @@ private:
         fDrawnModified = modified;
         this->markDamaged();
       }
-      // The knob slides between its two ends rather than teleporting.
-      if (def.fKind == SettingKind::kToggle) {
-        const float previous = fKnob;
-        fKnob = paint::approach(fKnob, settings.flag(def.fKey) ? 1.0f : 0.0f,
-                             60.0f, dt);
-        if (fKnob != previous) {
-          this->markDamaged();
-        }
+      if (fSlider != nullptr) {
+        fSlider->setFraction((settings.value(def.fKey) - def.fMin) /
+                             (def.fMax - def.fMin));
+      }
+      if (fToggle != nullptr) {
+        fToggle->setOn(settings.flag(def.fKey));
       }
     }
 
@@ -447,32 +449,16 @@ private:
                     14.0f, skia::kWhite, alpha * 0.95f);
 
       if (def.fKind == SettingKind::kSlider) {
-        const float t = (settings.value(def.fKey) - def.fMin) /
-                        (def.fMax - def.fMin);
-        const skia::SkRect track = this->trackRect();
-        p.fillRounded(track, 3.0f, skia::colorSetARGB(255, 58, 48, 70), alpha);
-        p.fillRounded(skia::SkRect::MakeXYWH(track.fLeft, track.fTop,
-                                             track.width() * t, track.height()),
-                      3.0f, palette::kAccent, alpha);
-        p.circle(track.fLeft + track.width() * t, track.centerY(), 7.0f,
-                 skia::kWhite, alpha);
         p.textClipped(settings.displayValue(fIndex), content.fRight - 76.0f,
                       baseline, 76.0f, 13.0f, skia::kWhite, alpha * 0.75f);
-        return;
+        return; // the bar is a child and draws itself
       }
 
       if (def.fKind == SettingKind::kChoice) {
         return; // the control is a child and draws itself
       }
 
-      const skia::SkRect box = skia::SkRect::MakeXYWH(
-          content.fRight - 46.0f, fBounds.fTop + 4.0f, 40.0f, 22.0f);
-      p.fillRounded(box, 11.0f,
-                    lerpColour(skia::colorSetARGB(255, 58, 48, 70), palette::kAccent,
-                               fKnob),
-                    alpha);
-      p.circle(box.fLeft + 11.0f + (box.width() - 22.0f) * fKnob,
-               box.centerY(), 8.0f, skia::kWhite, alpha);
+      // A toggle's pill is a child and draws itself.
     }
 
     bool acceptsInput() const override { return true; }
@@ -505,11 +491,11 @@ private:
 
     SettingsPanel *fOwner;
     std::size_t fIndex;
-    ChoiceControlNode *fControl = nullptr; // null unless this is a choice row
+    ChoiceControlNode *fControl = nullptr; // one of these three, by kind
+    widgets::SliderBar *fSlider = nullptr;
+    widgets::Toggle *fToggle = nullptr;
     float fDrawnValue = std::numeric_limits<float>::quiet_NaN();
     bool fDrawnModified = false;
-    float fKnob = 0.0f; // eased position of a toggle's knob
-    double fLastMs = 0.0;
   };
 
   // One entry in the sidebar: an icon, a label, and the elastic indicator
