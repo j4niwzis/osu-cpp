@@ -723,6 +723,11 @@ private:
 
   void tryHitHead(double time, Vec2 pos) {
     for (std::size_t i = fProcessedObjects; i < fMap.fObjects.size(); ++i) {
+      // Same as above: an object whose window has not opened cannot take the
+      // press, and neither can anything after it.
+      if (startTime(fMap.fObjects[i]) - windowMeh(fDiff.fOd) > time) {
+        break;
+      }
       if (fStates[i].fJudged)
         continue;
 
@@ -811,6 +816,14 @@ private:
 
   void updateTracking(double time) {
     for (std::size_t i = fProcessedObjects; i < fMap.fObjects.size(); ++i) {
+      // Objects are in start order, so nothing past the current time can be
+      // tracked and there is no reason to look at the rest of the map. This
+      // runs on every input event, which on a moving mouse is a thousand
+      // times a second; without the break it walked to the end of the map
+      // each time.
+      if (startTime(fMap.fObjects[i]) > time) {
+        break;
+      }
       if (fStates[i].fJudged)
         continue;
       std::visit(Overloaded{

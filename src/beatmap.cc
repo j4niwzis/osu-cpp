@@ -66,7 +66,14 @@ public:
     return this->baseSliderVelocity() * sv / beatLength;
   }
 
+  // Settled when the map was loaded. sliderVelocityAt walks every timing
+  // point on the map three times over, and this is asked for once per slider
+  // per input event -- on a long map with a lot of timing points, moving the
+  // mouse was costing more than drawing the frame.
   [[nodiscard]] double sliderSpanDuration(const Slider &s) const noexcept {
+    if (s.fSpanDuration > 0.0) {
+      return s.fSpanDuration;
+    }
     const double vel = this->sliderVelocityAt(s.fTime);
     return vel > 0.0 ? s.fPixelLength / vel : 0.0;
   }
@@ -735,6 +742,10 @@ inline Beatmap parseBeatmap(std::string_view text) {
   for (std::size_t i = 0; i < bm.fObjects.size(); ++i) {
     if (auto *s = std::get_if<Slider>(&bm.fObjects[i])) {
       bm.fSliderPaths[i] = SliderPath::from(*s);
+      // Timing does not change under a slider, so this is a constant of the
+      // map and is settled here rather than being rebuilt on every ask.
+      const double vel = bm.sliderVelocityAt(s->fTime);
+      s->fSpanDuration = vel > 0.0 ? s->fPixelLength / vel : 0.0;
     }
   }
 
