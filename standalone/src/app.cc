@@ -8182,9 +8182,17 @@ private:
     const osu::Vec2 delta{(raw.fX - fRawPrev.fX) * s,
                           (raw.fY - fRawPrev.fY) * s};
     fRawPrev = raw;
-    fVirtualCursor = {
-        std::clamp(fVirtualCursor.fX + delta.fX, 0.0, osu::kPlayfieldWidth),
-        std::clamp(fVirtualCursor.fY + delta.fY, 0.0, osu::kPlayfieldHeight)};
+    // Held inside the window, not inside the playfield. An absolute pointer
+    // is bounded by the window and nothing else -- the branch above does not
+    // clamp at all -- so confining the integrated one to the playfield made
+    // turning this on put walls across the middle of the screen: on a 16:9
+    // display the playfield is 60% of the width, and the pointer stopped
+    // dead at its edge with the desk still going.
+    const osu::Vec2 lo = this->toPlayfield(0.0f, 0.0f);
+    const osu::Vec2 hi = this->toPlayfield(static_cast<float>(fScreenW),
+                                           static_cast<float>(fScreenH));
+    fVirtualCursor = {std::clamp(fVirtualCursor.fX + delta.fX, lo.fX, hi.fX),
+                      std::clamp(fVirtualCursor.fY + delta.fY, lo.fY, hi.fY)};
     return fVirtualCursor;
   }
 

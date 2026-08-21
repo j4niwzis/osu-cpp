@@ -879,6 +879,33 @@ public:
         static_cast<float>(img->width()) * 0.35f * scale * c.fCursorSize;
     const float interval = std::max(0.5f * scale, spriteW / 2.5f);
 
+    // All of it through one layer. The stamps overlap each other on purpose,
+    // so adding them together is what makes the chain read as a stroke -- but
+    // where the path folds back on itself the whole trail lands on itself a
+    // second time and that fold comes out twice as bright as it should. So
+    // inside the layer a stamp takes the brighter of itself and what is
+    // already there, and the layer as a whole is what meets the playfield
+    // additively. The bounds are given explicitly: an offscreen the size of
+    // the trail rather than the size of the clip.
+    float minX = pts.front().fX, maxX = pts.front().fX;
+    float minY = pts.front().fY, maxY = pts.front().fY;
+    for (const auto &p : pts) {
+      minX = std::min(minX, p.fX);
+      maxX = std::max(maxX, p.fX);
+      minY = std::min(minY, p.fY);
+      maxY = std::max(maxY, p.fY);
+    }
+    const skia::SkRect bounds =
+        skia::SkRect::MakeLTRB(minX - spriteW, minY - spriteW, maxX + spriteW,
+                               maxY + spriteW);
+    skia::SkPaint layerPaint;
+    if (!c.fNoGlow) {
+      layerPaint.setBlendMode(skia::SkBlendMode::kPlus);
+    }
+    canvas->saveLayer(&bounds, &layerPaint);
+    const auto blend = c.fNoGlow ? skia::SkBlendMode::kSrcOver
+                                 : skia::SkBlendMode::kLighten;
+
     float carried = 0.0f;
     for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
       const float dx = pts[i + 1].fX - pts[i].fX;
@@ -895,10 +922,11 @@ public:
         }
         c.fSkin->drawCursorTrail(
             canvas, {pts[i].fX + dx * u, pts[i].fY + dy * u},
-            scale * c.fCursorSize, a);
+            scale * c.fCursorSize, a, blend);
       }
       carried = std::fmod(carried + len, interval);
     }
+    canvas->restore();
   }
 
   void drawCursorTrail(const Ctx &c, skia::SkCanvas *canvas, double now) {

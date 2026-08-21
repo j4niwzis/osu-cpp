@@ -1225,8 +1225,13 @@ float4 main(float2 coords) {
     }
   }
 
+  // `blend` is how this stamp meets the ones already down. Adding them makes
+  // a fold in the path glow twice as brightly as the rest of it, since the
+  // stamps overlap each other by design; taking the brighter of the two keeps
+  // the chain continuous without that.
   void drawCursorTrail(skia::SkCanvas *canvas, osu::Vec2 pos, float scale,
-                       float alpha) {
+                       float alpha,
+                       skia::SkBlendMode blend = skia::SkBlendMode::kPlus) {
     auto img = this->cursorTrail();
     const float x = static_cast<float>(pos.fX);
     const float y = static_cast<float>(pos.fY);
@@ -1235,7 +1240,7 @@ float4 main(float2 coords) {
     paint.setAlphaf(alpha);
     if (img) {
       if (!fDisableGlow)
-        paint.setBlendMode(skia::SkBlendMode::kPlus);
+        paint.setBlendMode(blend);
       detail::drawImageCentered(canvas, img.get(), x, y, 0.35f * scale, paint);
     } else {
       paint.setColor(skia::kWhite);
