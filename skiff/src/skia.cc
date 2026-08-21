@@ -27,6 +27,7 @@ module;
 #include <skia/core/SkRefCnt.h>
 #include <skia/core/SkSamplingOptions.h>
 #include <skia/core/SkShader.h>
+#include <skia/effects/SkGradientShader.h>
 #include <skia/core/SkStream.h>
 #include <skia/core/SkRegion.h>
 #include <skia/core/SkString.h>
@@ -88,6 +89,7 @@ using ::SkRRect;
 using ::SkRuntimeEffect;
 using ::SkRuntimeEffectBuilder;
 using ::SkSamplingOptions;
+using ::SkGradientShader;
 using ::SkShader;
 using ::SkStream;
 using ::SkStreamAsset;

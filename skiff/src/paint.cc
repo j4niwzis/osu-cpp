@@ -407,6 +407,44 @@ private:
   skia::SkFontHinting fHinting;
 };
 
+// A two-stop gradient down a rectangle, in one draw. Drawn as a stack of
+// bands before this existed, which was two dozen draw calls and a step size
+// to pick.
+inline void verticalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                             skia::SkColor top, skia::SkColor bottom,
+                             float alpha = 1.0f) {
+  if (canvas == nullptr || rect.isEmpty()) {
+    return;
+  }
+  const skia::SkPoint ends[2] = {{rect.fLeft, rect.fTop},
+                                 {rect.fLeft, rect.fBottom}};
+  const skia::SkColor stops[2] = {top, bottom};
+  skia::SkPaint p;
+  p.setAntiAlias(true);
+  p.setAlphaf(alpha);
+  p.setShader(skia::SkGradientShader::MakeLinear(ends, stops, nullptr, 2,
+                                                 skia::SkTileMode::kClamp));
+  canvas->drawRect(rect, p);
+}
+
+// The same across it.
+inline void horizontalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
+                               skia::SkColor left, skia::SkColor right,
+                               float alpha = 1.0f) {
+  if (canvas == nullptr || rect.isEmpty()) {
+    return;
+  }
+  const skia::SkPoint ends[2] = {{rect.fLeft, rect.fTop},
+                                 {rect.fRight, rect.fTop}};
+  const skia::SkColor stops[2] = {left, right};
+  skia::SkPaint p;
+  p.setAntiAlias(true);
+  p.setAlphaf(alpha);
+  p.setShader(skia::SkGradientShader::MakeLinear(ends, stops, nullptr, 2,
+                                                 skia::SkTileMode::kClamp));
+  canvas->drawRect(rect, p);
+}
+
 // ---- Drawing helpers -----------------------------------------------------
 //
 // A thin wrapper around the canvas and the shared font, so screens do not
@@ -515,6 +553,104 @@ public:
   void imageFilled(const skia::SkImage *image, const skia::SkRect &dst,
                    float alpha = 1.0f) const {
     skiff::paint::imageFilled(fCanvas, image, dst, alpha);
+  }
+
+  void verticalGradient(const skia::SkRect &rect, skia::SkColor top,
+                        skia::SkColor bottom, float alpha = 1.0f) const {
+    skiff::paint::verticalGradient(fCanvas, rect, top, bottom, alpha);
+  }
+
+  // The longest prefix of `str` that fits in `width`, with a single-character
+  // ellipsis where something was dropped. Cut on UTF-8 boundaries, so a
+  // multi-byte character is never halved.
+  [[nodiscard]] std::string elide(const std::string &str, float width,
+                                  float size, bool bold = false) const {
+    if (width <= 0.0f) {
+      return {};
+    }
+    if (this->measure(str, size, bold) <= width) {
+      return str;
+    }
+    static constexpr std::string_view kEllipsis = "\u2026";
+    const float room =
+        width - this->measure(std::string(kEllipsis), size, bold);
+    if (room <= 0.0f) {
+      return std::string(kEllipsis);
+    }
+    // Binary search on the cut, snapped outwards to a character boundary.
+    const auto boundary = [&str](std::size_t at) {
+      while (at > 0 && (static_cast<unsigned char>(str[at]) & 0xc0u) == 0x80u) {
+        --at;
+      }
+      return at;
+    };
+    std::size_t low = 0;
+    std::size_t high = str.size();
+    while (low < high) {
+      const std::size_t mid = boundary(low + (high - low + 1) / 2);
+      if (mid == low) {
+        break;
+      }
+      if (this->measure(str.substr(0, mid), size, bold) <= room) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return str.substr(0, boundary(low)) + std::string(kEllipsis);
+  }
+
+  // The text broken into lines that each fit in `width`, split at spaces. A
+  // word longer than the width gets a line of its own and overhangs, which is
+  // what a browser does with an unbreakable string.
+  [[nodiscard]] std::vector<std::string> wrap(const std::string &str,
+                                              float width, float size,
+                                              bool bold = false) const {
+    std::vector<std::string> lines;
+    if (str.empty()) {
+      return lines;
+    }
+    if (width <= 0.0f) {
+      lines.push_back(str);
+      return lines;
+    }
+    std::string line;
+    std::size_t at = 0;
+    while (at < str.size()) {
+      const std::size_t space = str.find(' ', at);
+      const std::string word =
+          str.substr(at, space == std::string::npos ? space : space - at);
+      const std::string candidate = line.empty() ? word : line + " " + word;
+      if (!line.empty() && this->measure(candidate, size, bold) > width) {
+        lines.push_back(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+      if (space == std::string::npos) {
+        break;
+      }
+      at = space + 1;
+    }
+    if (!line.empty()) {
+      lines.push_back(line);
+    }
+    return lines;
+  }
+
+  // Text that says it was cut rather than stopping mid-glyph.
+  void textElided(const std::string &str, float x, float y, float maxW,
+                  float size, skia::SkColor color, float alpha = 1.0f,
+                  bool bold = false) const {
+    this->text(this->elide(str, maxW, size, bold), x, y, size, color, alpha,
+               bold);
+  }
+
+  void textElidedIn(const skia::SkRect &box, const std::string &str, float size,
+                    skia::SkColor color, float alpha = 1.0f, bool bold = false,
+                    float inset = 0.0f) const {
+    this->textElided(str, box.fLeft + inset, this->middleBaseline(box, size),
+                     box.width() - inset * 2.0f, size, color, alpha, bold);
   }
 
   // The baseline that puts a line of this size in the middle of a box, from

@@ -33,19 +33,12 @@ inline constexpr float kHeaderHeight = 250.0f;
 class CoverGradient : public scene::Drawable {
 protected:
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
-    constexpr int kSteps = 24;
-    skia::SkPaint paint;
-    const float step = fBounds.width() / static_cast<float>(kSteps);
-    for (int i = 0; i < kSteps; ++i) {
-      const float t = static_cast<float>(i) / static_cast<float>(kSteps);
-      paint.setColor(skia::colorSetARGB(255, 0, 0, 0));
-      paint.setAlphaf(alpha * 0.85f * (1.0f - t * 0.75f));
-      canvas->drawRect(skia::SkRect::MakeXYWH(fBounds.fLeft + step *
-                                                                static_cast<float>(i),
-                                              fBounds.fTop, step + 1.0f,
-                                              fBounds.height()),
-                       paint);
-    }
+    paint::horizontalGradient(
+        canvas, fBounds,
+        skia::colorSetARGB(static_cast<std::uint32_t>(255.0f * 0.85f), 0, 0, 0),
+        skia::colorSetARGB(static_cast<std::uint32_t>(255.0f * 0.85f * 0.25f),
+                           0, 0, 0),
+        alpha);
   }
 };
 

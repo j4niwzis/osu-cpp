@@ -356,22 +356,17 @@ private:
 
     // GameplayMenuOverlay is a GridContainer of four rows: one that takes
     // what is left, the buttons at their own height, another that takes what
-    // is left, and a footer at its own height. The footer is empty here, so
-    // the two flexible rows split everything the buttons do not use, and each
-    // row centres what is in it. That puts the buttons in the middle of the
-    // screen and the other two in the middle of the space above and below --
-    // which is not the same as a fixed offset from the centre, and was how
-    // the header ended up inside the column of buttons and behind them.
-    const float columnHeight = kButtonHeight * 3.0f + kButtonSpacing * 2.0f;
-    const float flexible = std::max(0.0f, (fBuiltH - columnHeight) * 0.5f);
+    // is left, and a footer at its own height. Written down rather than
+    // worked out.
+    auto *grid = root->add<nodes::Grid>({.fill = true});
+    grid->setRows(
+        {nodes::Grid::Track::fraction(), nodes::Grid::Track::automatic(),
+         nodes::Grid::Track::fraction(), nodes::Grid::Track::automatic()});
 
-    root->add<HeaderNode>({.anchor = scene::Anchor::kTopCentre,
-                           .origin = scene::Anchor::kCentre,
-                           .y = flexible * 0.5f},
-                          this);
+    grid->add<HeaderNode>({.place = scene::Anchor::kCentre}, this);
 
-    auto *column = root->add<nodes::FillFlow>(
-        {.place = scene::Anchor::kCentreLeft,
+    auto *column = grid->add<nodes::FillFlow>(
+        {.place = scene::Anchor::kCentre,
          .fillX = true,
          .autoSize = scene::Axes::kY,
          .padding = {0.0f, kHorizontalPadding, 0.0f, kHorizontalPadding}},
@@ -380,9 +375,8 @@ private:
     column->add<ButtonNode>({}, this, 1, "Retry", kYellowDark);
     column->add<ButtonNode>({}, this, 2, "Quit", kRed);
 
-    root->add<InfoNode>({.origin = scene::Anchor::kCentreLeft,
-                         .y = flexible * 1.5f + columnHeight},
-                        this);
+    grid->add<InfoNode>({.place = scene::Anchor::kCentre}, this);
+
     return root;
   }
 

@@ -5260,9 +5260,9 @@ private:
     skia::SkPathBuilder disc;
     disc.addCircle(fLogoX, fLogoY, r);
     canvas->clipPath(disc.detach(), true);
-    this->drawVerticalGradient(canvas, fLogoRect,
-                               skia::colorSetARGB(255, 0xff, 0x66, 0xab),
-                               skia::colorSetARGB(255, 0xcc, 0x52, 0x89));
+    skiff::paint::verticalGradient(canvas, fLogoRect,
+                                   skia::colorSetARGB(255, 0xff, 0x66, 0xab),
+                                   skia::colorSetARGB(255, 0xcc, 0x52, 0x89));
     this->drawLogoTriangles(canvas, fLogoRect);
     canvas->restore();
 
@@ -5301,32 +5301,6 @@ private:
                              skia::kWhite);
     }
     canvas->restore();
-  }
-
-  // Cheap vertical two-stop gradient without pulling in a shader: a stack of
-  // horizontal bands. The logo is small enough that 24 steps are seamless.
-  void drawVerticalGradient(skia::SkCanvas *canvas, const skia::SkRect &rect,
-                            skia::SkColor top, skia::SkColor bottom) {
-    constexpr int kSteps = 24;
-    skia::SkPaint p;
-    p.setAntiAlias(false);
-    for (int i = 0; i < kSteps; ++i) {
-      const float t = static_cast<float>(i) / static_cast<float>(kSteps - 1);
-      const auto lerp = [t](std::uint32_t a, std::uint32_t b) {
-        return static_cast<std::uint8_t>(
-            static_cast<float>(a) + (static_cast<float>(b) - static_cast<float>(a)) * t);
-      };
-      p.setColor(skia::colorSetARGB(
-          255, lerp((top >> 16) & 0xFF, (bottom >> 16) & 0xFF),
-          lerp((top >> 8) & 0xFF, (bottom >> 8) & 0xFF),
-          lerp(top & 0xFF, bottom & 0xFF)));
-      const float y0 =
-          rect.fTop + rect.height() * static_cast<float>(i) / kSteps;
-      canvas->drawRect(
-          skia::SkRect::MakeLTRB(rect.fLeft, y0, rect.fRight,
-                                 y0 + rect.height() / kSteps + 1.0f),
-          p);
-    }
   }
 
   // TrianglesV2 inside the logo: Thickness 0.009, ScaleAdjust 3, SpawnRatio

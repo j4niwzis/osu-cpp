@@ -35,9 +35,32 @@ public:
   [[nodiscard]] const std::string &text() const noexcept { return fText; }
 
   // Set to clip instead of auto-sizing: the text is cut to the given width.
+  // fMaxWidth is the drawable's own, so a Spec can set it as well.
   void setMaxWidth(float width) {
     fMaxWidth = width;
     fMeasuredSize = -1.0f;
+  }
+
+  // Broken across lines at spaces instead of running past the width. The
+  // width comes from wherever the drawable's does -- a maximum, a relative
+  // size, or a flow that grew it.
+  void setWrapped(bool wrapped) {
+    if (wrapped == fWrapped) {
+      return;
+    }
+    fWrapped = wrapped;
+    fMeasuredSize = -1.0f;
+    this->invalidateLayout();
+  }
+
+  // What it says when it does not say the whole thing, rather than stopping
+  // mid-glyph. Ignored when wrapped, since nothing is dropped then.
+  void setElided(bool elided) {
+    if (elided == fElided) {
+      return;
+    }
+    fElided = elided;
+    this->markDamaged();
   }
 
   static void setFont(skia::SkFont *font) {
@@ -46,18 +69,27 @@ public:
 
 protected:
   // Text sizes itself: a flow then reads the size off like any other child.
-  void measure(const skia::SkRect &) override {
-    if (fMeasuredSize == fSize) {
+  void measure(const skia::SkRect &parent) override {
+    if (fMeasuredSize == fSize && !fWrapped) {
       return; // already measured at this size, and the text has not changed
     }
     skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr) {
       return;
     }
-    font->setSize(fSize);
-    skiff::paint::fonts().applyWeight(*font, fBold);
-    const float measured = skiff::paint::fonts().measure(*font, fText);
-    skiff::paint::fonts().applyWeight(*font, false);
+    const skiff::paint::Painter p(nullptr, *font);
+    if (fWrapped) {
+      const float room = this->roomFor(parent);
+      fLines = p.wrap(fText, room, fSize, fBold);
+      fHeight = static_cast<float>(std::max<std::size_t>(1, fLines.size())) *
+                fSize * 1.25f;
+      if (!hasX(fGrowAxes)) {
+        fWidth = room;
+      }
+      fMeasuredSize = fSize;
+      return;
+    }
+    const float measured = p.measure(fText, fSize, fBold);
     // A growing text is sized by its flow, and clips to whatever it was
     // given rather than asking for what it wants.
     if (!hasX(fGrowAxes)) {
@@ -67,26 +99,46 @@ protected:
     fMeasuredSize = fSize;
   }
 
+  // The width a wrapped line has to fit into: whatever the drawable has been
+  // told, in the order the layout would resolve it.
+  [[nodiscard]] float roomFor(const skia::SkRect &parent) const {
+    if (fMaxWidth > 0.0f) {
+      return fMaxWidth;
+    }
+    if (hasX(fRelativeSizeAxes)) {
+      return parent.width() * fWidth - fMargin.totalX();
+    }
+    return fWidth > 0.0f ? fWidth : parent.width() - fMargin.totalX();
+  }
+
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
     skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr || fText.empty()) {
       return;
     }
-    font->setSize(fSize);
-    skiff::paint::fonts().applyWeight(*font, fBold);
-    skia::SkPaint paint;
-    paint.setAntiAlias(true);
-    paint.setColor(fColour);
-    paint.setAlphaf(alpha);
+    const skiff::paint::Painter p(canvas, *font);
     const int saved = canvas->save();
+    if (fWrapped) {
+      float y = fBounds.fTop + fSize;
+      for (const std::string &line : fLines) {
+        p.text(line, fBounds.fLeft, y, fSize, fColour, alpha, fBold);
+        y += fSize * 1.25f;
+      }
+      canvas->restoreToCount(saved);
+      return;
+    }
     if (fMaxWidth > 0.0f || hasX(fGrowAxes)) {
       canvas->clipRect(fBounds, true);
     }
     // The baseline sits at the top plus the ascent share of the line box.
-    skiff::paint::fonts().draw(canvas, *font, fText, fBounds.fLeft,
-                               fBounds.fTop + fSize, paint);
+    if (fElided) {
+      p.textElided(fText, fBounds.fLeft, fBounds.fTop + fSize, fBounds.width(),
+                   fSize, fColour, alpha, fBold);
+    } else {
+      p.text(fText, fBounds.fLeft, fBounds.fTop + fSize, fSize, fColour, alpha,
+             fBold);
+    }
     canvas->restoreToCount(saved);
-    skiff::paint::fonts().applyWeight(*font, false);
   }
 
 private:
@@ -94,7 +146,9 @@ private:
   float fSize;
   skia::SkColor fColour;
   bool fBold;
-  float fMaxWidth = 0.0f;
+  bool fWrapped = false;
+  bool fElided = false;
+  std::vector<std::string> fLines;
   float fMeasuredSize = -1.0f; // the size the cached width was measured at
 };
 

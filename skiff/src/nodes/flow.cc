@@ -33,11 +33,19 @@ public:
   float fSpacingY = 0.0f;
   bool fWrap = true;
   bool fCentreRows = false; // rows centred in the container, as the cards are
-  // Where a child sits across the flow's axis. Its own enum rather than an
-  // Anchor, because across a column means horizontally and across a row means
-  // vertically, and one Anchor cannot mean both without being read twice.
-  enum class Cross : std::uint8_t { kStart, kMiddle, kEnd };
-  Cross fCrossAlign = Cross::kStart;
+  // Where children sit across the flow's axis, and how the room left over
+  // along it is handed out. A child can override the first for itself with
+  // fAlignSelf.
+  using Align = skiff::scene::Align;
+  enum class Justify : std::uint8_t {
+    kStart,
+    kMiddle,
+    kEnd,
+    kSpaceBetween,
+    kSpaceAround
+  };
+  Align fCrossAlign = Align::kStart;
+  Justify fJustify = Justify::kStart;
 
   void setSpacing(float x, float y) {
     fSpacingX = x;
@@ -49,7 +57,24 @@ protected:
     const skia::SkRect box = this->contentBox();
     if (fDirection == Direction::kVertical) {
       this->grow(box, false);
-      float y = 0.0f;
+      // Everything is laid out once to learn its height, so the room the
+      // column does not use is known before anything is placed in it.
+      float used = 0.0f;
+      int count = 0;
+      for (auto &child : fChildren) {
+        if (!child->fVisible) {
+          continue;
+        }
+        child->fX = 0.0f;
+        child->fY = 0.0f;
+        child->layout(box);
+        used += child->fBounds.height() + child->fMargin.totalY();
+        ++count;
+      }
+      const Spread spread = this->spread(
+          box.height(),
+          used + fSpacingY * static_cast<float>(std::max(0, count - 1)), count);
+      float y = spread.fStart;
       for (auto &child : fChildren) {
         if (!child->fVisible) {
           continue;
@@ -59,14 +84,16 @@ protected:
         child->fX = 0.0f;
         child->fY = y;
         child->layout(box);
-        if (fCrossAlign != Cross::kStart) {
+        if (this->alignOf(*child) != Align::kStart) {
           // Its width is only known once it has been laid out, so the offset
           // that centres it is applied on a second pass over the same child.
-          child->fX = this->crossOffset(
-              box.width(), child->fBounds.width() + child->fMargin.totalX());
+          child->fX = this->crossOffset(*child, box.width(),
+                                        child->fBounds.width() +
+                                            child->fMargin.totalX());
           child->layout(box);
         }
-        y += child->fBounds.height() + child->fMargin.totalY() + fSpacingY;
+        y += child->fBounds.height() + child->fMargin.totalY() + fSpacingY +
+             spread.fBetween;
       }
       return;
     }
@@ -87,7 +114,13 @@ protected:
         rowHeight = std::max(rowHeight,
                              child->fBounds.height() + child->fMargin.totalY());
       }
-      float x = fCentreRows ? (box.width() - rowWidth) * 0.5f : 0.0f;
+      // fCentreRows predates fJustify and means the same thing for a
+      // wrapped row, so it reads as kMiddle when it is set.
+      const Spread spread = fCentreRows
+                                ? Spread{(box.width() - rowWidth) * 0.5f, 0.0f}
+                                : this->spread(box.width(), rowWidth,
+                                               static_cast<int>(row.size()));
+      float x = spread.fStart;
       for (Drawable *child : row) {
         child->fAnchor = Anchor::kTopLeft;
         child->fOrigin = Anchor::kTopLeft;
@@ -96,7 +129,8 @@ protected:
             y + this->crossOffset(rowHeight, child->fBounds.height() +
                                                  child->fMargin.totalY());
         child->layout(box);
-        x += child->fBounds.width() + child->fMargin.totalX() + fSpacingX;
+        x += child->fBounds.width() + child->fMargin.totalX() + fSpacingX +
+             spread.fBetween;
       }
       y += rowHeight + fSpacingY;
       row.clear();
@@ -134,16 +168,47 @@ protected:
   // choosing.
   // How far across the line a child sits: how much room the line has, less
   // how much the child takes.
-  [[nodiscard]] float crossOffset(float line, float own) const {
-    switch (fCrossAlign) {
-    case Cross::kMiddle:
+  [[nodiscard]] Align alignOf(const Drawable &child) const {
+    return child.fAlignSelf.value_or(fCrossAlign);
+  }
+
+  [[nodiscard]] float crossOffset(const Drawable &child, float line,
+                                  float own) const {
+    switch (this->alignOf(child)) {
+    case Align::kMiddle:
       return (line - own) * 0.5f;
-    case Cross::kEnd:
+    case Align::kEnd:
       return line - own;
-    case Cross::kStart:
+    case Align::kStart:
       break;
     }
     return 0.0f;
+  }
+
+  // Where a line starts and how much extra goes between its children, given
+  // how much room it did not use.
+  struct Spread {
+    float fStart = 0.0f;
+    float fBetween = 0.0f;
+  };
+
+  [[nodiscard]] Spread spread(float room, float used, int count) const {
+    const float slack = std::max(0.0f, room - used);
+    const auto gaps = static_cast<float>(std::max(0, count - 1));
+    switch (fJustify) {
+    case Justify::kMiddle:
+      return {slack * 0.5f, 0.0f};
+    case Justify::kEnd:
+      return {slack, 0.0f};
+    case Justify::kSpaceBetween:
+      return {0.0f, gaps > 0.0f ? slack / gaps : 0.0f};
+    case Justify::kSpaceAround:
+      return {count > 0 ? slack / static_cast<float>(count) * 0.5f : 0.0f,
+              count > 0 ? slack / static_cast<float>(count) : 0.0f};
+    case Justify::kStart:
+      break;
+    }
+    return {};
   }
 
   void grow(const skia::SkRect &box, bool horizontal) {

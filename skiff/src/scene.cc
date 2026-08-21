@@ -86,6 +86,9 @@ enum class Anchor : std::uint8_t {
   }
 }
 
+// Where something sits across the axis it is being laid out along.
+enum class Align : std::uint8_t { kStart, kMiddle, kEnd };
+
 struct Margin {
   float fTop = 0.0f, fRight = 0.0f, fBottom = 0.0f, fLeft = 0.0f;
 
@@ -217,6 +220,10 @@ struct Spec {
   std::optional<Axes> relativeSize{};
   std::optional<Axes> autoSize{};
   std::optional<Axes> grow{};
+  std::optional<float> minWidth{}, maxWidth{};
+  std::optional<float> minHeight{}, maxHeight{};
+  std::optional<Align> alignSelf{};
+  std::optional<float> depth{};
 
   // These two are plain, not optional, because std::optional cannot be given
   // a braced list -- `.padding = {2, 6, 2, 6}` would stop compiling. An
@@ -249,7 +256,16 @@ public:
   // Inside a flow, takes an equal share of what the other children leave
   // along the flow's axis. Ignored anywhere else.
   Axes fGrowAxes = Axes::kNone;
-  Anchor fAnchor = Anchor::kTopLeft;    // point in the parent to attach to
+  // Bounds on the computed size, applied after everything else has had its
+  // say. Zero means no limit, on the maximums.
+  float fMinWidth = 0.0f, fMaxWidth = 0.0f;
+  float fMinHeight = 0.0f, fMaxHeight = 0.0f;
+  // Overrides the container's alignment for this child alone.
+  std::optional<Align> fAlignSelf{};
+  // Drawn and hit-tested in this order within the parent, low first. Lets a
+  // child be over its siblings without being moved up the tree.
+  float fDepth = 0.0f;
+  Anchor fAnchor = Anchor::kTopLeft; // point in the parent to attach to
   Anchor fOrigin = Anchor::kTopLeft; // point in this drawable that lands there
   Margin fMargin;                    // outside the drawable
   Margin fPadding;                   // inside, applied to children
@@ -313,6 +329,24 @@ public:
     if (spec.grow) {
       fGrowAxes = *spec.grow;
     }
+    if (spec.minWidth) {
+      fMinWidth = *spec.minWidth;
+    }
+    if (spec.maxWidth) {
+      fMaxWidth = *spec.maxWidth;
+    }
+    if (spec.minHeight) {
+      fMinHeight = *spec.minHeight;
+    }
+    if (spec.maxHeight) {
+      fMaxHeight = *spec.maxHeight;
+    }
+    if (spec.alignSelf) {
+      fAlignSelf = *spec.alignSelf;
+    }
+    if (spec.depth) {
+      fDepth = *spec.depth;
+    }
 
     if (spec.margin.totalX() != 0.0f || spec.margin.totalY() != 0.0f) {
       fMargin = spec.margin;
@@ -348,10 +382,8 @@ public:
     }
     // A flow writes a grown child's size, so anything else claiming that axis
     // would be overwritten every frame without saying so.
-    if ((hasX(fGrowAxes) &&
-         (hasX(fRelativeSizeAxes) || hasX(fAutoSizeAxes))) ||
-        (hasY(fGrowAxes) &&
-         (hasY(fRelativeSizeAxes) || hasY(fAutoSizeAxes)))) {
+    if ((hasX(fGrowAxes) && (hasX(fRelativeSizeAxes) || hasX(fAutoSizeAxes))) ||
+        (hasY(fGrowAxes) && (hasY(fRelativeSizeAxes) || hasY(fAutoSizeAxes)))) {
       std::println(std::cerr,
                    "[scene] growing and sized another way on the same axis");
       fGrowAxes = Axes::kNone;
@@ -480,7 +512,7 @@ public:
     // order that puts the follower on top, so the two requirements agree.
     const skia::SkRect parent =
         (fFollow != nullptr && !fFollow->fBounds.isEmpty()) ? fFollow->fBounds
-                                                           : parentBox;
+                                                            : parentBox;
 
     // A drawable that knows its own size -- text, mainly -- says so before
     // anything is computed from it. It is told the box it is going into,
@@ -509,6 +541,15 @@ public:
       if (hasY(fAutoSizeAxes)) {
         height = content.height() + fPadding.totalY();
       }
+    }
+
+    width = std::max(width, fMinWidth);
+    height = std::max(height, fMinHeight);
+    if (fMaxWidth > 0.0f) {
+      width = std::min(width, fMaxWidth);
+    }
+    if (fMaxHeight > 0.0f) {
+      height = std::min(height, fMaxHeight);
     }
 
     width *= fScale;
@@ -563,7 +604,7 @@ public:
       }
     }
     this->drawSelf(canvas, alpha);
-    for (auto &child : fChildren) {
+    for (Drawable *child : this->inDepthOrder()) {
       child->draw(canvas, alpha);
     }
     canvas->restoreToCount(saved);
@@ -597,7 +638,9 @@ public:
     if (fMasking && !fBounds.contains(x, y)) {
       return false;
     }
-    for (auto it = fChildren.rbegin(); it != fChildren.rend(); ++it) {
+    // Topmost first, which is the reverse of the order they are drawn in.
+    const std::vector<Drawable *> order = this->inDepthOrder();
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
       if ((*it)->click(x, y)) {
         return true;
       }
@@ -725,6 +768,27 @@ protected:
   virtual bool hoverChangesAppearance() const { return this->acceptsInput(); }
   virtual bool onClick(float, float) { return false; }
   virtual bool onScroll(float) { return false; }
+
+  // The children in the order they are drawn: the order they were added,
+  // unless one of them has been given a depth. Sorting is stable, so an
+  // untouched tree keeps exactly the order it was built in and pays nothing
+  // for the feature.
+  [[nodiscard]] std::vector<Drawable *> inDepthOrder() const {
+    std::vector<Drawable *> order;
+    order.reserve(fChildren.size());
+    bool sorted = true;
+    for (const auto &child : fChildren) {
+      order.push_back(child.get());
+      sorted = sorted && child->fDepth == 0.0f;
+    }
+    if (!sorted) {
+      std::stable_sort(order.begin(), order.end(),
+                       [](const Drawable *a, const Drawable *b) {
+                         return a->fDepth < b->fDepth;
+                       });
+    }
+    return order;
+  }
 
   [[nodiscard]] skia::SkRect childBounds() const {
     skia::SkRect content = skia::SkRect::MakeEmpty();
