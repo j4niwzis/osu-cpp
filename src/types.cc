@@ -149,10 +149,6 @@ struct Circle {
   HitSample fSample;
   int fStack = 0;
   int fCombo = 1;
-  // How long one span takes, worked out once when the beatmap is loaded.
-  // Deriving it on demand means walking every timing point on the map --
-  // three times -- and it is asked for per slider, per input event.
-  double fSpanDuration = 0.0;
 };
 
 struct Slider {
@@ -168,6 +164,10 @@ struct Slider {
   std::vector<HitSample> fEdgeSamples;
   int fStack = 0;
   int fCombo = 1;
+  // How long one span takes, worked out once when the beatmap is loaded.
+  // Deriving it on demand means walking every timing point on the map --
+  // three times over -- and it is asked for per slider, per input event.
+  double fSpanDuration = 0.0;
 };
 
 struct Spinner {
