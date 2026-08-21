@@ -460,7 +460,7 @@ private:
     std::string fGlyph; // drawn as a text glyph; no icon font here
     skia::SkColor fColor{};
     MenuAction fAction{};
-    MenuState fLib.fVisible{}; // menu state this button belongs to
+    MenuState fVisible{}; // menu state this button belongs to
     bool fLeftSide = false;    // back button sits left of the logo, as in lazer
     // How far out, how hovered and how freshly clicked live on the node that
     // draws the button, which is what asks for the frames they need.
@@ -5676,8 +5676,8 @@ private:
     std::shared_ptr<client::VideoExporter> fExporter =
         std::make_shared<client::VideoExporter>();
     client::VideoOptions fOpts;
-    skia::Sp<skia::SkSurface> fFrame.fSurface; // raster: no GL on this thread
-    osu::Beatmap fPlay.fMap;
+    skia::Sp<skia::SkSurface> fSurface; // raster: no GL on this thread
+    osu::Beatmap fMap;
     osu::ComboInfo fCombo;
     std::vector<osu::InputEvent> fEvents;
     osu::ModSet fMods = osu::mod::kNone;
