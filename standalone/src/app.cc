@@ -422,6 +422,7 @@ private:
   bool fLogoPlaced = false;
   float fLogoHover = 0.0f;
   float fLogoPunch = 0.0f; // click/beat impact, decays
+  float fLogoBaseRadius = 0.0f; // radius before beat, hover and punch
   float fLogoAmp = 0.0f;    // beat amplitude the logo settled at
   float fLogoRadius = 0.0f;
   float fLogoBase = 0.0f;   // unscaled radius for this screen size
@@ -4982,7 +4983,10 @@ private:
     // stopped drawing frames and would jump whenever one happened.
     fLogoAmp = fSettings.flag("visualiser") ? fSpectrum.bass() : 0.0f;
     const float beat = 1.0f - 0.02f * fLogoAmp;
-    fLogoRadius = logoBase * fLogoScale * beat *
+    // The radius the logo sits at with nothing happening to it, kept so the
+    // mark can be typeset once against it and scaled rather than re-typeset.
+    fLogoBaseRadius = logoBase * fLogoScale;
+    fLogoRadius = fLogoBaseRadius * beat *
                   (1.0f + 0.06f * fLogoHover + 0.10f * fLogoPunch);
     fLogoRect = skia::SkRect::MakeXYWH(fLogoX - fLogoRadius,
                                        fLogoY - fLogoRadius, fLogoRadius * 2,
@@ -5028,8 +5032,20 @@ private:
                          ring);
     }
 
-    this->drawTextCentered(canvas, "osu!", fLogoX, fLogoY + r * 0.22f,
-                           r * 0.55f, skia::kWhite);
+    // Scaled with the logo rather than re-typeset at a new size every frame.
+    // A font size that moves with the beat is measured afresh each frame, and
+    // the width comes back a little different each time -- so the centred
+    // text shifts sideways by a fraction of a pixel, unevenly, which is the
+    // wobble. It also missed the width cache every frame: the cache filled
+    // with one dead entry per frame until it was dropped whole, taking the
+    // measurements of every other label on the screen with it.
+    const float base = fLogoBaseRadius > 0.0f ? fLogoBaseRadius : r;
+    canvas->save();
+    canvas->translate(fLogoX, fLogoY);
+    canvas->scale(r / base, r / base);
+    this->drawTextCentered(canvas, "osu!", 0.0f, base * 0.22f, base * 0.55f,
+                           skia::kWhite);
+    canvas->restore();
   }
 
   // Cheap vertical two-stop gradient without pulling in a shader: a stack of
