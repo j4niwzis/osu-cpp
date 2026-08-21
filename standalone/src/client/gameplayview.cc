@@ -580,7 +580,10 @@ public:
                      static_cast<float>(endPos.fY), 10.0f);
     }
 
-    dirty.join(skia::SkIRect::MakeXYWH(0, 0, c.fScreenW, 160));
+    // The HUD strip scales with the HUD: a fixed 160 pixels was enough while
+    // the text was small, and the pp figure at the top is not.
+    dirty.join(skia::SkIRect::MakeXYWH(
+        0, 0, c.fScreenW, static_cast<int>(160.0f * c.fUiScale)));
 
     // The frame breakdown sits in the opposite corner from the HUD strip
     // above, and changes every frame. Without saying so it would be clipped
@@ -1335,15 +1338,22 @@ public:
 
     // Score, accuracy, grade (top-center).
     (*c.fFont).setSize(22.0f * ui);
-    // pp alongside the score: a performance calculation is arithmetic over
-    // counts this client already has, so it costs nothing to answer it every
-    // frame and it is the number people actually want while playing.
     const std::string statsText =
-        std::format("{:.0f}  {:.2f}%  {}  {:.0f}pp", fDisplayScore,
+        std::format("{:.0f}  {:.2f}%  {}", fDisplayScore,
                     std::clamp(fDisplayAccuracy, 0.0, 1.0) * 100.0,
-                    osu::gradeString(osu::computeGrade(score)), c.fPp);
+                    osu::gradeString(osu::computeGrade(score)));
     client::ui::fonts().draw(canvas, *c.fFont, statsText, 20.0f * ui,
                              90.0f * ui, fHudPaint);
+
+    // pp across the top, in the middle, where nothing else is. A performance
+    // calculation is arithmetic over counts this client already keeps, so it
+    // can be answered every frame, and it is the figure worth watching while
+    // the map is still running rather than only after it.
+    (*c.fFont).setSize(34.0f * ui);
+    const std::string ppText = std::format("{:.0f}pp", c.fPp);
+    const float ppWidth = client::ui::fonts().measure(*c.fFont, ppText);
+    client::ui::fonts().draw(canvas, *c.fFont, ppText,
+                             (sw - ppWidth) * 0.5f, 62.0f * ui, fHudPaint);
 
     // Difficulty / mods (top-right).
     (*c.fFont).setSize(16.0f * ui);
