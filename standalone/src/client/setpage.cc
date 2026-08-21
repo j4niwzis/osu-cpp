@@ -213,7 +213,7 @@ public:
     const std::string fingerprint = this->fingerprintFor(e, ctx);
     if (!fScene || fingerprint != fFingerprint) {
       fFingerprint = fingerprint;
-      fScene = this->build(e, ctx);
+      fScene = this->build(e);
       fRebuilt = true;
     }
     if (fPreviewGlyph != nullptr) {
@@ -276,8 +276,7 @@ private:
   }
 
   // ---- tree ---------------------------------------------------------------
-  [[nodiscard]] std::unique_ptr<scene::Drawable> build(const Entry &e,
-                                                       const Ctx &ctx) {
+  [[nodiscard]] std::unique_ptr<scene::Drawable> build(const Entry &e) {
     fPreviewGlyph = nullptr;
 
     auto root = scene::make<nodes::Box>({.fill = true}, listing::kBackground6);
@@ -286,13 +285,12 @@ private:
         {.fillX = true, .autoSize = scene::Axes::kY},
         nodes::FillFlow::Direction::kVertical);
 
-    column->add(this->buildHeader(e, ctx));
-    column->add(this->buildInfo(e, ctx));
+    column->add(this->buildHeader(e));
+    column->add(this->buildInfo(e));
     return root;
   }
 
-  [[nodiscard]] std::unique_ptr<scene::Drawable> buildHeader(const Entry &e,
-                                                             const Ctx &ctx) {
+  [[nodiscard]] std::unique_ptr<scene::Drawable> buildHeader(const Entry &e) {
     auto header = scene::make<nodes::Box>(
         {.fillX = true, .height = kHeaderHeight, .masking = true},
         listing::kBackground5);
@@ -306,7 +304,6 @@ private:
 
     header->add(this->buildHeaderLeft(e));
     header->add(this->buildPicker(e));
-    static_cast<void>(ctx);
     return header;
   }
 
@@ -462,8 +459,7 @@ private:
   }
 
   // Info: the selected difficulty's numbers, the metadata, the ratings.
-  [[nodiscard]] std::unique_ptr<scene::Drawable> buildInfo(const Entry &e,
-                                                           const Ctx &ctx) {
+  [[nodiscard]] std::unique_ptr<scene::Drawable> buildInfo(const Entry &e) {
     auto section = scene::make<nodes::Box>(
         {.fillX = true,
          .autoSize = scene::Axes::kY,
@@ -471,10 +467,14 @@ private:
                      kHorizontalPadding}},
         listing::kBackground5);
 
-    const float leftWidth = std::max(
-        200.0f, ctx.fWidth - kHorizontalPadding * 2.0f - kRightWidth - 30.0f);
-    auto *left = section->add<nodes::FillFlow>(
-        {.width = leftWidth, .autoSize = scene::Axes::kY},
+    // Two columns, 30 apart: the ratings at a fixed width and the rest
+    // taking what is left.
+    auto *columns = section->add<nodes::FillFlow>(
+        {.fillX = true, .autoSize = scene::Axes::kY},
+        nodes::FillFlow::Direction::kHorizontal, 30.0f, 0.0f);
+    columns->fWrap = false;
+    auto *left = columns->add<nodes::FillFlow>(
+        {.grow = scene::Axes::kX, .autoSize = scene::Axes::kY},
         nodes::FillFlow::Direction::kVertical, 0.0f, 8.0f);
 
     if (!e.fDiffs.empty()) {
@@ -497,17 +497,19 @@ private:
       auto *stats = left->add<nodes::FillFlow>(
           {.fillX = true, .autoSize = scene::Axes::kY},
           nodes::FillFlow::Direction::kHorizontal, 0.0f, 10.0f);
-      const float cellWidth = leftWidth / 4.0f - 1.0f;
       const auto stat = [&](const char *label, std::string value, float bar) {
         auto *cell = stats->add<nodes::FillFlow>(
-            {.width = cellWidth, .autoSize = scene::Axes::kY},
+            {.width = 0.25f,
+             .relativeSize = scene::Axes::kX,
+             .autoSize = scene::Axes::kY},
             nodes::FillFlow::Direction::kVertical, 0.0f, 2.0f);
         cell->add<nodes::Text>({}, label, 11.0f, listing::kContent2, false);
         cell->add<nodes::Text>({}, std::move(value), 17.0f, listing::kContent1,
                                true);
         if (bar > 0.0f) {
-          cell->add<nodes::Box>({.width = cellWidth - 16.0f,
+          cell->add<nodes::Box>({.fillX = true,
                                  .height = 4.0f,
+                                 .margin = {0.0f, 16.0f, 0.0f, 0.0f},
                                  .cornerRadius = 2.0f},
                                 listing::kBackground6)
               ->add<nodes::Box>({.width = std::clamp(bar, 0.0f, 1.0f),
@@ -540,9 +542,8 @@ private:
       row->add<nodes::Text>({.width = 110.0f}, label, 11.0f,
                             listing::kContent2, false)
           ->setMaxWidth(110.0f);
-      row->add<nodes::Text>({}, std::move(value), 13.0f, listing::kContent1,
-                            false)
-          ->setMaxWidth(leftWidth - 120.0f);
+      row->add<nodes::Text>({.grow = scene::Axes::kX}, std::move(value), 13.0f,
+                            listing::kContent1, false);
     };
     metaRow("Source", e.fSource.empty() ? "-" : e.fSource);
     metaRow("Genre", listing::kGenreLabels[genreIndex(e.fGenre)]);
@@ -550,10 +551,8 @@ private:
     metaRow("Tags", e.fTags.empty() ? "-" : e.fTags);
     metaRow("Last updated", e.fUpdated);
 
-    auto *right = section->add<nodes::FillFlow>(
-        {.place = scene::Anchor::kTopRight,
-         .width = kRightWidth,
-         .autoSize = scene::Axes::kY},
+    auto *right = columns->add<nodes::FillFlow>(
+        {.width = kRightWidth, .autoSize = scene::Axes::kY},
         nodes::FillFlow::Direction::kVertical, 0.0f, 6.0f);
     right->add<nodes::Text>({}, "User Rating", 12.0f, listing::kContent2,
                             false);

@@ -182,6 +182,7 @@ struct Spec {
   std::optional<float> height{};
   std::optional<Axes> relativeSize{};
   std::optional<Axes> autoSize{};
+  std::optional<Axes> grow{};
 
   // These two are plain, not optional, because std::optional cannot be given
   // a braced list -- `.padding = {2, 6, 2, 6}` would stop compiling. An
@@ -211,6 +212,9 @@ public:
   float fWidth = 0.0f, fHeight = 0.0f;  // absolute, or a fraction if relative
   Axes fRelativeSizeAxes = Axes::kNone; // size is a fraction of the parent
   Axes fAutoSizeAxes = Axes::kNone;     // size follows the children
+  // Inside a flow, takes an equal share of what the other children leave
+  // along the flow's axis. Ignored anywhere else.
+  Axes fGrowAxes = Axes::kNone;
   Anchor fAnchor = Anchor::kTopLeft;    // point in the parent to attach to
   Anchor fOrigin = Anchor::kTopLeft; // point in this drawable that lands there
   Margin fMargin;                    // outside the drawable
@@ -272,6 +276,9 @@ public:
     if (spec.autoSize) {
       fAutoSizeAxes = *spec.autoSize;
     }
+    if (spec.grow) {
+      fGrowAxes = *spec.grow;
+    }
 
     if (spec.margin.totalX() != 0.0f || spec.margin.totalY() != 0.0f) {
       fMargin = spec.margin;
@@ -304,6 +311,16 @@ public:
       std::println(std::cerr,
                    "[scene] relative and automatic sizing on the same axis");
       fAutoSizeAxes = Axes::kNone;
+    }
+    // A flow writes a grown child's size, so anything else claiming that axis
+    // would be overwritten every frame without saying so.
+    if ((hasX(fGrowAxes) &&
+         (hasX(fRelativeSizeAxes) || hasX(fAutoSizeAxes))) ||
+        (hasY(fGrowAxes) &&
+         (hasY(fRelativeSizeAxes) || hasY(fAutoSizeAxes)))) {
+      std::println(std::cerr,
+                   "[scene] growing and sized another way on the same axis");
+      fGrowAxes = Axes::kNone;
     }
   }
 

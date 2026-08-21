@@ -58,7 +58,11 @@ protected:
     skiff::paint::fonts().applyWeight(*font, fBold);
     const float measured = skiff::paint::fonts().measure(*font, fText);
     skiff::paint::fonts().applyWeight(*font, false);
-    fWidth = fMaxWidth > 0.0f ? std::min(fMaxWidth, measured) : measured;
+    // A growing text is sized by its flow, and clips to whatever it was
+    // given rather than asking for what it wants.
+    if (!hasX(fGrowAxes)) {
+      fWidth = fMaxWidth > 0.0f ? std::min(fMaxWidth, measured) : measured;
+    }
     fHeight = fSize * 1.25f;
     fMeasuredSize = fSize;
   }
@@ -75,7 +79,7 @@ protected:
     paint.setColor(fColour);
     paint.setAlphaf(alpha);
     const int saved = canvas->save();
-    if (fMaxWidth > 0.0f) {
+    if (fMaxWidth > 0.0f || hasX(fGrowAxes)) {
       canvas->clipRect(fBounds, true);
     }
     // The baseline sits at the top plus the ascent share of the line box.
