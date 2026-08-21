@@ -466,11 +466,18 @@ private:
     // draws the button, which is what asks for the frames they need.
     skia::SkRect fRect = skia::SkRect::MakeEmpty();
   };
+  // Where the menu wants the logo; the logo eases towards it and owns
+  // everything else about itself.
+  struct LogoTarget {
+    float fX = 0.0f, fY = 0.0f, fScale = 1.0f;
+  };
   // The main menu screen: which level it is on, where the logo is going,
   // the buttons and the dim behind them. What moves out with the menu.
   struct MenuUi {
     MenuState fMenuState = MenuState::kInitial;
     std::vector<MenuBtn> fMenuBtns;
+    // Set while anything in the menu is still easing towards a target, so
+    // the frames that carry it there are asked for rather than waited for.
     bool fMenuMoving = false;
     LogoTarget fLogoTarget;
     float fLogoBase = 0.0f;   // unscaled radius for this screen size
@@ -483,13 +490,6 @@ private:
     float fDrawnMenuDim = -1.0f; // the dim the screen currently shows
   };
   MenuUi fMenuUi;
-  // Set while anything in the menu is still easing towards a target, so the
-  // frames that carry it there are asked for rather than waited for.
-  // Where the menu wants the logo; the logo eases towards it and owns
-  // everything else about itself.
-  struct LogoTarget {
-    float fX = 0.0f, fY = 0.0f, fScale = 1.0f;
-  };
   // Slider bodies are rasterised once, at the scale the playfield had when
   // the map was loaded. A resize changes that scale and leaves them behind,
   // to be stretched by the blit -- so they are rebuilt, but not while the
