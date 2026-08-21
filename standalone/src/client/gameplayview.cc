@@ -528,8 +528,7 @@ public:
     (*c.fFont).setSize(20.0f / c.fScale);
     const std::string label =
         std::format("{}/{}", std::max(0, c.fEngine->spinnerRotations(index)),
-                    static_cast<int>(std::ceil(
-                        osu::spinnerRequiredRotations(s.fEnd - s.fTime, od))));
+                    osu::spinsRequired(s.fEnd - s.fTime, od));
     client::ui::fonts().draw(canvas, *c.fFont, label, cx,
                              cy + 6.0f / c.fScale, textPaint);
   }

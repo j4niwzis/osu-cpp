@@ -442,12 +442,31 @@ private:
                  j);
     }
 
-    if (hit && this->lastInCombo(i) && this->isFinalJudgement(i, kind)) {
-      increase += comboBonusFor(fComboResult);
+    fScore.fHealth = std::min(1.0, fScore.fHealth + increase);
+
+    // HealthProcessor.ApplyResultInternal checks the fail condition after the
+    // increase has landed, and CheckDefaultFailCondition skips bonus results
+    // and IgnoreHit outright. Nothing fails on a spinner's bonus spin.
+    if (!isBonus(kind)) {
+      this->checkFailure();
     }
 
-    fScore.fHealth = std::min(1.0, fScore.fHealth + increase);
-    this->checkFailure();
+    // Then the object's own judgement, which is where the end-of-combo bonus
+    // lives. A slider judges itself with IgnoreHit -- DrawableSlider always
+    // applies its maximum result -- so it counts as a hit however the tail
+    // went, and a dropped tail does not cost the bonus. A circle or a spinner
+    // has to have been hit. IgnoreHit is never a fail condition either.
+    if (this->isFinalJudgement(i, kind)) {
+      const bool slider = i < fMap.fObjects.size() &&
+                          std::holds_alternative<Slider>(fMap.fObjects[i]);
+      if (this->lastInCombo(i) && (slider || hit)) {
+        fScore.fHealth =
+            std::min(1.0, fScore.fHealth + comboBonusFor(fComboResult));
+      }
+      if (!slider) {
+        this->checkFailure();
+      }
+    }
   }
 
   // NoFail keeps the bar from ending the play; everything else does not.
@@ -494,9 +513,11 @@ private:
         elapsed -= overlap;
       }
     }
+    // DrainingHealthProcessor.Update only subtracts; the fail condition is
+    // checked in ApplyResultInternal, so a bar that dips below zero between
+    // judgements and is brought back by the next one does not fail.
     if (elapsed > 0.0 && !fFailed) {
       fScore.fHealth -= fDrainRate * elapsed;
-      this->checkFailure();
     }
     fLastDrainTime = time;
   }
@@ -540,15 +561,11 @@ private:
     fGameplayEnd = this->objectEnd(fMap.fObjects.size() - 1);
 
     std::vector<std::pair<double, double>> increases;
-    ComboResult combo = ComboResult::kPerfect;
     for (std::size_t i = 0; i < fMap.fObjects.size(); ++i) {
       const bool slider = std::holds_alternative<Slider>(fMap.fObjects[i]);
       double head =
           healthIncreaseFor(HitKind::kBasic, judgement::Great{}, true,
                             fDiff.fHp);
-      if (!slider && this->lastInCombo(i)) {
-        head += comboBonusFor(combo);
-      }
       increases.emplace_back(startTime(fMap.fObjects[i]), head);
       for (const auto &n : fStates[i].fNested) {
         if (isBonus(n.fKind)) {
@@ -557,14 +574,18 @@ private:
         double amount = healthIncreaseFor(n.fKind, judgement::Great{}, true,
                                           fDiff.fHp,
                                           n.fKind == HitKind::kLargeTick);
-        if (slider && n.fKind == HitKind::kSliderTail &&
-            this->lastInCombo(i)) {
-          amount += comboBonusFor(combo);
-        }
         increases.emplace_back(n.fTime, amount);
       }
+      if (slider) {
+        // The slider judges itself once its nested objects are done. It gives
+        // no health, but it is an entry in the list all the same, and on a map
+        // with breaks that changes which entry swallows the break.
+        increases.emplace_back(this->objectEnd(i), 0.0);
+      }
     }
-    std::ranges::stable_sort(increases, {}, &std::pair<double, double>::first);
+    // Left in simulation order, which is the order lazer builds them in: the
+    // list is not sorted there.
+
     fDrainRate = computeDrainRate(increases, fMap.fBreaks, fDrainStart,
                                   targetMinimumHealth(fDiff.fHp));
   }
