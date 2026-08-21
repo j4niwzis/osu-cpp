@@ -1822,8 +1822,19 @@ private:
     // the screen it was called from underneath.
     // With a real buffer age each frame works out for itself how far back it
     // has to repaint, so the margin is only for the case where nobody says.
+    //
+    // An assumed age is not a real one, and this is where treating it as one
+    // hurts: the assumption cannot be zero, so a buffer whose contents are
+    // undefined can never say so, and a chain deeper than the assumption
+    // hands out buffers this client has never drawn a whole frame into.
+    // Asserting an age of one on a driver that does not copy on swap then
+    // shows the screen black everywhere but the region that moved -- not
+    // after a resize, not after anything in particular, just whenever one of
+    // those buffers comes round. Owing a full repaint per buffer costs six
+    // frames at a screen change and takes the failure away.
+    const bool reportedAge = fBufferAge >= 0 && !fBufferAgeAssumed;
     fFullRepaintsOwed =
-        (!buffersGone && fBufferAge >= 0) ? 0 : kFullRepaintsAfterChange;
+        (!buffersGone && reportedAge) ? 0 : kFullRepaintsAfterChange;
     if (!fDrawing) {
       fDamageDrives = true;
       this->oweFrames(kFullRepaintsAfterChange + 1);

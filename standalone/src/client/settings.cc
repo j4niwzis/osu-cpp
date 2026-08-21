@@ -63,8 +63,15 @@ public:
     // How old the contents of the buffer being drawn into are. The window
     // system answers this where it can (EGL_EXT_buffer_age and its GLX twin);
     // where it cannot -- a driver without DRI3, say -- it can be asserted,
-    // and a driver that swaps by copying is always one. Too low a number
-    // leaves the last frames' leftovers on screen, which is unmistakable.
+    // and a driver that swaps by copying is always one.
+    //
+    // Assert it only if it is known. Too low a number does not merely leave
+    // the last frames' leftovers on screen: a chain deeper than the number
+    // hands out buffers that have never held a whole frame, and those are
+    // black. "Ask the driver" is not a worse guess than a wrong assertion --
+    // when nobody answers, the client reaches back as far as the deepest
+    // chain it is willing to believe in and repaints whole until it is sure,
+    // which costs frames and cannot go black.
     this->add({1, "bufferage", "Assume buffer age", SettingKind::kChoice, 0.0f,
                3.0f, 1.0f, 0.0f, "",
                {"ask the driver", "1 (swap copies)", "2", "3"}});
