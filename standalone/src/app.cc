@@ -1933,6 +1933,26 @@ private:
     // Take the accumulator as this frame's damage and hand a fresh one to the
     // screens, which fill it in as they draw for the frame after this.
     //
+    // The window is resized by the server; the event saying so reaches this
+    // thread through a queue. Every frame in between is drawn into a buffer
+    // that has already been reallocated at the new size -- and a buffer that
+    // has just been reallocated holds nothing, so a frame clipped to what
+    // moved leaves the rest of it black. That is the flicker: not the frames
+    // after a size event, which repaint whole and always did, but the ones
+    // before it arrives.
+    //
+    // Nothing in the damage bookkeeping can know that, because the whole of
+    // it is downstream of the event. So the size is asked of the window
+    // system directly, on the thread that is drawing, once a frame.
+    int windowW = 0;
+    int windowH = 0;
+    if (present::surfaceSize(&windowW, &windowH) &&
+        (windowW != fScreenW || windowH != fScreenH)) {
+      fBlitHistory.clear();
+      fFullDamage = true;
+      fFullDamageReason = "the window is not the size we were told";
+    }
+
     // A full repaint still owed to a buffer that has not had one.
     if (fFullRepaintsOwed > 0) {
       --fFullRepaintsOwed;

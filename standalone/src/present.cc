@@ -29,6 +29,16 @@ export namespace present {
 // everything), N >= 1 when the buffer holds the frame from N swaps ago.
 [[nodiscard]] int bufferAge();
 
+// The size of the drawable actually being drawn into, asked of the window
+// system on the thread that owns the context. False when nobody will say.
+//
+// This is not the same question as "what size did the last resize event say":
+// the window is resized by the server, and the event telling this client so
+// travels through another thread and a queue. The frames in between are drawn
+// into a buffer that has already been reallocated at the new size, and a
+// buffer that has just been reallocated holds nothing.
+[[nodiscard]] bool surfaceSize(int *width, int *height);
+
 // Hands the compositor the rectangles that changed since the last swap, in
 // top-left coordinates. False when the platform will not take them, and the
 // caller should swap the ordinary way.
@@ -45,6 +55,7 @@ export namespace present {
 
 namespace present {
 int bufferAge() { return -1; }
+bool surfaceSize(int *, int *) { return false; }
 bool swapWithDamage(int, std::span<const std::array<int, 4>>) { return false; }
 const char *backend() { return "none"; }
 } // namespace present
@@ -61,10 +72,14 @@ using EGLint = std::int32_t;
 constexpr EGLint kEglDraw = 0x3059;
 constexpr EGLint kEglBufferAge = 0x313D; // EGL_BUFFER_AGE_EXT / _KHR
 constexpr EGLint kEglExtensions = 0x3055;
+constexpr EGLint kEglWidth = 0x3057;
+constexpr EGLint kEglHeight = 0x3056;
 
 using XDisplay = void;
 using GLXDrawable = unsigned long;
 constexpr int kGlxBackBufferAge = 0x20F4; // GLX_BACK_BUFFER_AGE_EXT
+constexpr int kGlxWidth = 0x801D;
+constexpr int kGlxHeight = 0x801E;
 
 struct Egl {
   EGLDisplay (*getCurrentDisplay)() = nullptr;
@@ -238,6 +253,47 @@ int bufferAge() {
     return static_cast<int>(age);
   }
   return -1;
+}
+
+bool surfaceSize(int *width, int *height) {
+  const Loaded &state = loaded();
+  // Asked of whichever of the two resolved, extension or no extension: the
+  // size of a surface is not an extension, and a backend that cannot report
+  // a buffer age can still report how big it is.
+  if (state.fEgl.getCurrentDisplay != nullptr &&
+      state.fEgl.getCurrentSurface != nullptr &&
+      state.fEgl.querySurface != nullptr) {
+    const EGLDisplay display = state.fEgl.getCurrentDisplay();
+    const EGLSurface surface = state.fEgl.getCurrentSurface(kEglDraw);
+    EGLint w = 0;
+    EGLint h = 0;
+    if (display != nullptr && surface != nullptr &&
+        state.fEgl.querySurface(display, surface, kEglWidth, &w) != 0 &&
+        state.fEgl.querySurface(display, surface, kEglHeight, &h) != 0 &&
+        w > 0 && h > 0) {
+      *width = static_cast<int>(w);
+      *height = static_cast<int>(h);
+      return true;
+    }
+  }
+  if (state.fGlx.getCurrentDisplay != nullptr &&
+      state.fGlx.getCurrentDrawable != nullptr &&
+      state.fGlx.queryDrawable != nullptr) {
+    XDisplay *display = state.fGlx.getCurrentDisplay();
+    const GLXDrawable drawable = state.fGlx.getCurrentDrawable();
+    if (display != nullptr && drawable != 0) {
+      unsigned int w = 0;
+      unsigned int h = 0;
+      state.fGlx.queryDrawable(display, drawable, kGlxWidth, &w);
+      state.fGlx.queryDrawable(display, drawable, kGlxHeight, &h);
+      if (w > 0 && h > 0) {
+        *width = static_cast<int>(w);
+        *height = static_cast<int>(h);
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 bool swapWithDamage(int surfaceHeight,
