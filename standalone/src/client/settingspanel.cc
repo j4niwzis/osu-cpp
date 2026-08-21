@@ -306,29 +306,89 @@ private:
   // One setting. It draws its own kind -- slider, toggle or choice -- and
   // notices when the value under it changes, which is the only way a row that
   // is never hovered ever needs repainting.
+  // The box a choice row opens its list from. A node so that it sizes itself
+  // to its widest option and the list can be hung off its bounds.
+  class ChoiceControlNode : public scene::Drawable {
+  public:
+    ChoiceControlNode(SettingsPanel *owner, std::size_t index)
+        : fOwner(owner), fIndex(index) {
+      fAnchor = scene::Anchor::kTopRight;
+      fOrigin = scene::Anchor::kTopRight;
+      fX = -kContentMargins;
+      fY = 3.0f;
+      fHeight = 24.0f;
+    }
+
+  protected:
+    void measure(const skia::SkRect &) override {
+      const paint::Painter measurer(nullptr, *fOwner->fFont);
+      const auto &def = fOwner->fSettings->defs()[fIndex];
+      float width = 0.0f;
+      for (const auto &candidate : def.fOptions) {
+        width = std::max(width, measurer.measure(candidate, 13.0f));
+      }
+      fWidth = width + 40.0f;
+    }
+
+    void update(double) override {
+      const bool open = fOwner->fOpenChoice == static_cast<int>(fIndex);
+      if (open != fDrawnOpen) {
+        fDrawnOpen = open;
+        this->markDamaged();
+      }
+    }
+
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      const Settings &settings = *fOwner->fSettings;
+      const auto &def = settings.defs()[fIndex];
+      const paint::Painter p(canvas, *fOwner->fFont);
+      const bool open = fOwner->fOpenChoice == static_cast<int>(fIndex);
+      const auto index = static_cast<std::size_t>(settings.choice(def.fKey));
+      const std::string &option = index < def.fOptions.size()
+                                      ? def.fOptions[index]
+                                      : def.fOptions.front();
+      p.fillRounded(
+          fBounds, 6.0f,
+          open ? palette::kAccent : skia::colorSetARGB(255, 58, 48, 70), alpha);
+      p.textClipped(option, fBounds.fLeft + 12.0f, fBounds.centerY() + 4.0f,
+                    fBounds.width() - 32.0f, 13.0f, skia::kWhite, alpha);
+      // The chevron, so it reads as something that opens.
+      p.textClipped(open ? "^" : "v", fBounds.fRight - 18.0f,
+                    fBounds.centerY() + 4.0f, 12.0f, 12.0f, skia::kWhite,
+                    alpha * 0.8f);
+    }
+
+    bool acceptsInput() const override { return true; }
+
+    bool onClick(float, float) override {
+      fOwner->fAction = {Action::kChoiceOpen, fIndex, 0};
+      return true;
+    }
+
+  private:
+    SettingsPanel *fOwner;
+    std::size_t fIndex;
+    bool fDrawnOpen = false;
+  };
+
   class RowNode : public scene::Drawable {
   public:
     RowNode(SettingsPanel *owner, std::size_t index)
         : fOwner(owner), fIndex(index) {
       fRelativeSizeAxes = scene::Axes::kX;
       fWidth = 1.0f;
+      if (owner->fSettings->defs()[index].fKind == SettingKind::kChoice) {
+        fControl = this->add<ChoiceControlNode>({}, owner, index);
+      }
     }
+
+    // Null unless this is a choice row. What its list is hung off.
+    [[nodiscard]] scene::Drawable *control() const noexcept { return fControl; }
 
     [[nodiscard]] skia::SkRect trackRect() const {
       const skia::SkRect content = this->contentRect();
       return skia::SkRect::MakeXYWH(content.fLeft, fBounds.fTop + 30.0f,
                                     content.width(), 6.0f);
-    }
-
-    // Where the open list goes: under the control, one row per option, in
-    // screen coordinates, for the overlay that draws it.
-    // Where a list opened from this row starts, and how wide it is. Not how
-    // tall: the list is a flow of rows and sizes itself to them.
-    [[nodiscard]] skia::SkRect listAnchor() const {
-      const paint::Painter measurer(nullptr, *fOwner->fFont);
-      const skia::SkRect box = this->choiceBox(measurer);
-      return skia::SkRect::MakeXYWH(box.fLeft, box.fBottom + 4.0f, box.width(),
-                                    0.0f);
     }
 
   protected:
@@ -353,14 +413,9 @@ private:
                               ? static_cast<float>(settings.choice(def.fKey))
                               : settings.value(def.fKey);
       const bool modified = settings.isModified(fIndex);
-      const bool open = fOwner->fOpenChoice == static_cast<int>(fIndex);
       if (value != fDrawnValue || modified != fDrawnModified) {
         fDrawnValue = value;
         fDrawnModified = modified;
-        this->markDamaged();
-      }
-      if (open != fDrawnOpen) {
-        fDrawnOpen = open; // the control itself is tinted while its list is up
         this->markDamaged();
       }
       // The knob slides between its two ends rather than teleporting.
@@ -407,21 +462,7 @@ private:
       }
 
       if (def.fKind == SettingKind::kChoice) {
-        const skia::SkRect box = this->choiceBox(p);
-        const bool open = fOwner->fOpenChoice == static_cast<int>(fIndex);
-        const auto index = static_cast<std::size_t>(settings.choice(def.fKey));
-        const std::string &option =
-            index < def.fOptions.size() ? def.fOptions[index]
-                                        : def.fOptions.front();
-        p.fillRounded(box, 6.0f,
-                      open ? palette::kAccent : skia::colorSetARGB(255, 58, 48, 70),
-                      alpha);
-        p.textClipped(option, box.fLeft + 12.0f, box.centerY() + 4.0f,
-                      box.width() - 32.0f, 13.0f, skia::kWhite, alpha);
-        // The chevron, so it reads as something that opens.
-        p.textClipped(open ? "^" : "v", box.fRight - 18.0f, box.centerY() + 4.0f,
-                      12.0f, 12.0f, skia::kWhite, alpha * 0.8f);
-        return; // the list, if it is open, belongs to the overlay above
+        return; // the control is a child and draws itself
       }
 
       const skia::SkRect box = skia::SkRect::MakeXYWH(
@@ -444,12 +485,7 @@ private:
         return true;
       }
       if (def.fKind == SettingKind::kChoice) {
-        const paint::Painter p(nullptr, *fOwner->fFont);
-        if (this->choiceBox(p).contains(x, y)) {
-          fOwner->fAction = {Action::kChoiceOpen, fIndex, 0};
-          return true;
-        }
-        return true; // inside the row, but not on the control
+        return true; // the control is a child and was asked first
       }
       if (def.fKind == SettingKind::kToggle) {
         fOwner->fAction = {Action::kToggle, fIndex, 0};
@@ -467,25 +503,11 @@ private:
                                     fBounds.fBottom);
     }
 
-    // Sized to the widest option, so the control does not resize as it is
-    // used.
-    [[nodiscard]] skia::SkRect choiceBox(const paint::Painter &p) const {
-      const auto &def = fOwner->fSettings->defs()[fIndex];
-      float width = 0.0f;
-      for (const auto &candidate : def.fOptions) {
-        width = std::max(width, p.measure(candidate, 13.0f));
-      }
-      width += 40.0f;
-      const skia::SkRect content = this->contentRect();
-      return skia::SkRect::MakeXYWH(content.fRight - width,
-                                    fBounds.fTop + 3.0f, width, 24.0f);
-    }
-
     SettingsPanel *fOwner;
     std::size_t fIndex;
+    ChoiceControlNode *fControl = nullptr; // null unless this is a choice row
     float fDrawnValue = std::numeric_limits<float>::quiet_NaN();
     bool fDrawnModified = false;
-    bool fDrawnOpen = false;
     float fKnob = 0.0f; // eased position of a toggle's knob
     double fLastMs = 0.0;
   };
@@ -562,27 +584,33 @@ private:
   public:
     explicit ChoiceListNode(SettingsPanel *owner) : fOwner(owner) {
       fTheme = kListTheme;
+      // Hung off the control that opens it: fFollow makes the anchor and the
+      // relative width come from that node instead of from the parent.
+      fRelativeSizeAxes = scene::Axes::kX;
+      fWidth = 1.0f;
+      fAnchor = scene::Anchor::kBottomLeft;
+      fOrigin = scene::Anchor::kTopLeft;
+      fY = 4.0f;
+      fVisible = false;
       fOnChoose = [owner](int option) {
         owner->fAction = {Action::kChoiceSet,
                           static_cast<std::size_t>(owner->fOpenChoice), option};
       };
     }
 
+    // Set when a row opens or closes, not per frame: layout() reads fFollow
+    // before measure() runs, so it cannot be decided in measure().
+    void openFor(const RowNode *row) {
+      fFollow = row != nullptr ? row->control() : nullptr;
+      fVisible = fFollow != nullptr;
+    }
+
   protected:
-    // Where it goes comes from the row that opened it; how big it is does
-    // not come from anywhere, because the list is a flow and sizes itself.
-    void measure(const skia::SkRect &parent) override {
-      const skia::SkRect anchor = fOwner->openListAnchor();
-      fVisible = anchor.width() > 0.0f;
+    void measure(const skia::SkRect &) override {
       if (!fVisible) {
-        fWidth = 0.0f;
         this->setOptions({});
         return;
       }
-      fX = anchor.fLeft - parent.fLeft;
-      fY = anchor.fTop - parent.fTop;
-      fWidth = anchor.width();
-
       const auto &def =
           fOwner->fSettings
               ->defs()[static_cast<std::size_t>(fOwner->fOpenChoice)];
@@ -600,11 +628,6 @@ private:
       return nullptr;
     }
     return fRowNodes[static_cast<std::size_t>(fOpenChoice)];
-  }
-
-  [[nodiscard]] skia::SkRect openListAnchor() const {
-    const RowNode *row = this->openRow();
-    return row != nullptr ? row->listAnchor() : skia::SkRect::MakeEmpty();
   }
 
   // ---- the tree -----------------------------------------------------------
@@ -719,6 +742,8 @@ private:
 
     auto list = std::make_unique<ChoiceListNode>(this);
     fChoiceList = list.get();
+    // A tree can be rebuilt with a list already open.
+    fChoiceList->openFor(this->openRow());
     panel->add(std::move(list));
 
     auto hint = std::make_unique<nodes::Text>("Ctrl+O to close", 12.0f,
@@ -774,7 +799,8 @@ private:
     fOpenChoice = index;
     fTouched = true;
     if (fChoiceList != nullptr) {
-      fChoiceList->invalidateLayout(); // it is placed from the open row
+      fChoiceList->openFor(this->openRow());
+      fChoiceList->invalidateLayout();
     }
   }
 
