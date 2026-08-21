@@ -18,8 +18,6 @@ import client.audio;
 import client.input;
 import client.timing;
 import client.http;
-import client.logo;
-import client.spectrum;
 import client.mapcache;
 import client.replaycache;
 import client.filter;
@@ -34,7 +32,6 @@ import client.listing;
 import client.carousel;
 import client.pause;
 import client.mainmenu;
-import client.triangles;
 import present;
 import client.setpage;
 import skiff.scene;
@@ -439,34 +436,14 @@ private:
   std::string fDrawnFilterText;
   std::int64_t fWedgeKey = -1;
 
-  // ---- Main menu button system (port of lazer's ButtonSystem) ----------
+  // ---- Main menu --------------------------------------------------------
   //
-  // The state machine, the actions and what a button is live in
-  // client.mainmenu with the tree that draws them; these are the names the
-  // rest of this class already calls them by.
-  using MenuState = client::mainmenu::State;
+  // The screen lives in client.mainmenu: the state machine, the row of
+  // buttons, the logo and everything that decides what any of it looks like.
+  // What is left here is the artwork behind it, the actions it asks for, and
+  // the frame it is drawn into.
   using MenuAction = client::mainmenu::Action;
-  using MenuBtn = client::mainmenu::Btn;
-  using LogoTarget = client::mainmenu::LogoTarget;
-  // The main menu screen: which level it is on, where the logo is going,
-  // the buttons and the dim behind them. What moves out with the menu.
-  struct MenuUi {
-    MenuState fMenuState = MenuState::kInitial;
-    std::vector<MenuBtn> fMenuBtns;
-    // Set while anything in the menu is still easing towards a target, so
-    // the frames that carry it there are asked for rather than waited for.
-    bool fMenuMoving = false;
-    LogoTarget fLogoTarget;
-    float fLogoBase = 0.0f;   // unscaled radius for this screen size
-    float fMenuWedge = 20.0f; // the shear on the menu's parallelograms
-    AnchoredClock fMenuClock;
-    double fMenuClockSyncWall = std::numeric_limits<double>::lowest();
-    double fLastMenuPosMs = 0.0;
-    client::triangles::Field fBackgroundTriangles;
-    float fMenuDim = 1.0f;
-    float fDrawnMenuDim = -1.0f; // the dim the screen currently shows
-  };
-  MenuUi fMenuUi;
+  client::mainmenu::Screen fMainMenu;
   // Slider bodies are rasterised once, at the scale the playfield had when
   // the map was loaded. A resize changes that scale and leaves them behind,
   // to be stretched by the blit -- so they are rebuilt, but not while the
@@ -487,8 +464,6 @@ private:
   struct ExportJob;
   std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
   int fHotDialogPiece = -1;     // which piece of the export dialog is under it
-  client::mainmenu::Menu fMenu; // where the menu's pieces are, and what moved
-  client::logo::Logo fLogo;     // and the one in the middle of them
 
   // ---- Settings overlay -------------------------------------------------
   // SettingsPanel: a 170px sidebar plus a 400px content column sliding in
@@ -1231,7 +1206,9 @@ private:
 
     switch (fState) {
     case State::kMainMenu:
-      this->keyMainMenu(key);
+      if (const auto requested = fMainMenu.key(menuKey(key))) {
+        this->menuAction(*requested);
+      }
       return;
     case State::kSongSelect:
       this->keySongSelect(key);
@@ -1479,39 +1456,12 @@ private:
       return;
     }
     switch (fState) {
-    case State::kMainMenu: {
-      this->ensureMenuButtons();
-      const int piece = fMenu.hit(x, y);
-      if (piece == client::mainmenu::Menu::kLogo) {
-        // The logo's box is square, reaches as far as its visualiser does,
-        // and the logo is a circle inside it -- so the circle has the last
-        // word, and a miss falls through to the buttons the box covers.
-        const float dx = x - fLogo.bounds().centerX();
-        const float dy = y - fLogo.bounds().centerY();
-        const float r = fLogo.bounds().width() * 0.5f;
-        if (r > 0.0f && dx * dx + dy * dy <= r * r) {
-          this->triggerLogo();
-          return;
-        }
-        for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
-          auto &b = fMenuUi.fMenuBtns[i];
-          if (b.fVisible == fMenuUi.fMenuState &&
-              fMenu.buttonExpand(i) > 0.5f && b.fRect.contains(x, y)) {
-            this->menuTrigger(i);
-            return;
-          }
-        }
-      } else if (piece >= 0 &&
-                 piece < static_cast<int>(fMenuUi.fMenuBtns.size())) {
-        const auto index = static_cast<std::size_t>(piece);
-        if (fMenuUi.fMenuBtns[index].fVisible == fMenuUi.fMenuState &&
-            fMenu.buttonExpand(index) > 0.5f) {
-          this->menuTrigger(index);
-          return;
-        }
+    case State::kMainMenu:
+      if (const auto requested = fMainMenu.click(x, y)) {
+        this->menuAction(*requested);
+        return;
       }
       break;
-    }
     case State::kSongSelect:
       if (this->filterClick(x, y, true)) {
         return;
@@ -1725,7 +1675,7 @@ private:
     if (st == State::kMainMenu) {
       // Returning to the menu always lands on the top level, never on a
       // stale submenu, and the logo re-eases into place from where it was.
-      fMenuUi.fMenuState = MenuState::kTopLevel;
+      fMainMenu.enterTopLevel();
     }
   }
 
@@ -2349,8 +2299,7 @@ private:
     // Something in the menu is part-way to where it is going: the buttons say
     // so through the tree, and the dim and the logo through the flag, since
     // neither of those is a node.
-    if (fState == State::kMainMenu &&
-        (fMenuUi.fMenuMoving || fMenu.animating())) {
+    if (fState == State::kMainMenu && fMainMenu.animating()) {
       return this->frameBecause("menu still easing");
     }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
@@ -2415,9 +2364,8 @@ private:
     // this long rather than never.
     if (fDiag.fTraceRepaint && fState == State::kMainMenu &&
         now - fFrame.fLastDrawWall > 500.0) {
-      std::println(std::cerr,
-                   "[menu] idle: moving {} animating {} dt {:.0f} ms",
-                   fMenuUi.fMenuMoving, fMenu.animating(), fUiDt);
+      std::println(std::cerr, "[menu] idle: animating {} dt {:.0f} ms",
+                   fMainMenu.animating(), fUiDt);
     }
     return now - fFrame.fLastDrawWall > 500.0
                ? this->frameBecause("the half-second safety net")
@@ -3512,10 +3460,7 @@ private:
           fMenuTrackWall = wallMs();
           fAudio.setVolume(this->musicGain());
           fAudio.play();
-          // The analysis clock is anchored to the *old* track until reset.
-          fMenuUi.fMenuClock.reset(wallMs(), 0.0);
-          fMenuUi.fMenuClockSyncWall = std::numeric_limits<double>::lowest();
-          fLogo.spectrum().reset();
+          fMainMenu.trackChanged(wallMs());
         });
   }
 
@@ -3556,7 +3501,7 @@ private:
     fMenuMusicForSet = -1;
     fAudio.setLooping(false);
     fAudio.stop();
-    fLogo.spectrum().reset();
+    fMainMenu.stopped();
   }
 
   [[nodiscard]] static std::pair<std::uintmax_t, std::int64_t>
@@ -4992,72 +4937,8 @@ private:
 
   // ---- Main menu button system (port of lazer's ButtonSystem) -----------
 
-  // The row is built once and then belongs to the menu; the pointer and the
-  // keyboard both look themselves up in it.
-  void ensureMenuButtons() {
-    if (fMenuUi.fMenuBtns.empty()) {
-      fMenuUi.fMenuBtns = client::mainmenu::defaultButtons();
-    }
-  }
-
-  void setMenuState(MenuState st) {
-    if (fMenuUi.fMenuState == st) {
-      return;
-    }
-    std::println(std::cerr, "[menu] {} -> {}",
-                 client::mainmenu::stateName(fMenuUi.fMenuState),
-                 client::mainmenu::stateName(st));
-    fMenuUi.fMenuState = st;
-  }
-
   [[nodiscard]] float approach(float current, float target, float tauMs) const {
     return skiff::paint::approach(current, target, tauMs, fUiDt);
-  }
-
-  // What the logo is told each frame. Nothing it could work out itself.
-  [[nodiscard]] client::logo::Logo::Ctx logoCtx() {
-    return {&fFont,
-            fWin.fMouseX,
-            fWin.fMouseY,
-            fUiDt,
-            fSettings.flag("visualiser"),
-            fSettings.flag("menutriangles"),
-            fMenuUi.fLogoBase,
-            fMenuUi.fLogoTarget.fX,
-            fMenuUi.fLogoTarget.fY,
-            fMenuUi.fLogoTarget.fScale};
-  }
-
-  void menuTrigger(std::size_t index) {
-    MenuBtn &b = fMenuUi.fMenuBtns[index];
-    fMenu.flashButton(index);
-    switch (b.fAction) {
-    case MenuAction::kOpenPlay:
-      this->setMenuState(MenuState::kPlay);
-      break;
-    case MenuAction::kBrowse:
-      this->openDownloads();
-      break;
-    case MenuAction::kImport:
-      this->importOsz();
-      break;
-    case MenuAction::kExit:
-      this->requestQuit();
-      break;
-    case MenuAction::kSolo:
-      fSwallowChar = true; // the 's' that triggered this must not be typed
-      this->switchState(State::kSongSelect);
-      break;
-    case MenuAction::kRandom:
-      this->playRandom();
-      break;
-    case MenuAction::kBack:
-      this->setMenuState(MenuState::kTopLevel);
-      break;
-    case MenuAction::kSettings:
-      this->toggleSettings();
-      break;
-    }
   }
 
   // F2 in song select: move the selection (lazer's FooterButtonRandom).
@@ -5090,355 +4971,118 @@ private:
     this->startPlay(fLib.fSelSet, fLib.fSelDiff);
   }
 
-  // The logo is the menu's primary control: clicking advances a level, and at
-  // a populated level it triggers that level's first button (onOsuLogo).
-  void triggerLogo() {
-    fLogo.strike();
-    switch (fMenuUi.fMenuState) {
-    case MenuState::kInitial:
-      this->setMenuState(MenuState::kTopLevel);
-      break;
-    case MenuState::kTopLevel:
-    case MenuState::kPlay:
-      for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
-        if (fMenuUi.fMenuBtns[i].fVisible == fMenuUi.fMenuState &&
-            !fMenuUi.fMenuBtns[i].fLeftSide) {
-          this->menuTrigger(i);
-          break;
-        }
-      }
-      break;
-    }
-  }
-
-  // The background field, when there is no artwork to show: client.triangles
-  // is the port of TrianglesV2, and this is the same one the pause buttons
-  // and the logo use.
-  void drawMenuTriangles(skia::SkCanvas *canvas) {
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-    fMenuUi.fBackgroundTriangles.setScaleAdjust(2.4f);
-    fMenuUi.fBackgroundTriangles.setAlphaRange(0.06f, 0.16f);
-    fMenuUi.fBackgroundTriangles.draw(
-        canvas, skia::SkRect::MakeWH(sw, sh),
-        fSettings.flag("menutriangles") ? fUiDt : 0.0, 1.0f);
-  }
-
   // ---- Main menu ---------------------------------------------------------
   //
   // Split the way the ported screens are: everything that decides what the
   // menu looks like happens here, with nothing drawn, so that what changed is
   // known before the client commits to a frame.
 
-  void updateMainMenu() {
-    this->ensureMenuButtons();
-    this->updateMenuSpectrum();
-
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-
-    if (!fLib.fLibrary.empty() && fLib.fBackgroundForSet != fLib.fSelSet) {
-      // setFor() is asynchronous: only mark the background as up to date once
-      // the set has actually arrived, otherwise the first frame consumes the
-      // request and the artwork never appears.
-      if (auto set = this->setFor(fLib.fSelSet)) {
-        fLib.fBackgroundForSet = fLib.fSelSet;
-        this->requestBackground(fLib.fSelSet, set);
-      }
+  // The artwork behind the menu and behind song select is the same picture of
+  // the same selection, fetched the same way. setFor() is asynchronous: the
+  // selection is only marked as done once the set has actually arrived, or
+  // the first frame consumes the request and the artwork never appears.
+  void ensureBackgroundForSelection() {
+    if (fLib.fLibrary.empty() || fLib.fBackgroundForSet == fLib.fSelSet) {
+      return;
     }
-    const float dimTarget =
-        fMenuUi.fMenuState == MenuState::kInitial ? 1.0f : 0.8f;
-    fMenuUi.fMenuDim = this->approach(fMenuUi.fMenuDim, dimTarget, 220.0f);
-
-    // What moves here is the logo with its visualiser and the buttons; the
-    // background is the beatmap's artwork, which sits still. The dim fade and
-    // the triangle fallback do cover the screen, so those say so.
-    // Compared with a tolerance: an eased value that has settled must stop
-    // counting as a change, or this fires on every frame for ever.
-    if (std::abs(fMenuUi.fMenuDim - fMenuUi.fDrawnMenuDim) > 0.001f) {
-      this->damageAll("menu dim");
-    } else if (!fView.hasBackground() && fLib.fLibrary.empty() &&
-               fSettings.flag("menutriangles")) {
-      this->damageAll("triangle background, drifting");
+    if (auto set = this->setFor(fLib.fSelSet)) {
+      fLib.fBackgroundForSet = fLib.fSelSet;
+      this->requestBackground(fLib.fSelSet, set);
     }
-    fMenuUi.fDrawnMenuDim = fMenuUi.fMenuDim;
-
-    // ---- Layout: logo plus the visible button row, centred as a group.
-    const float uiScale = std::clamp(sh / 900.0f, 0.75f, 1.6f);
-    const float btnW = 150.0f * uiScale;
-    const float btnH = 96.0f * uiScale;
-    const float btnGap = 6.0f * uiScale;
-    fMenuUi.fMenuWedge = 20.0f * uiScale; // lazer's parallelogram shear
-
-    int rightCount = 0;
-    int leftCount = 0;
-    for (const auto &b : fMenuUi.fMenuBtns) {
-      if (b.fVisible != fMenuUi.fMenuState) {
-        continue;
-      }
-      if (b.fLeftSide) {
-        ++leftCount;
-      } else {
-        ++rightCount;
-      }
-    }
-
-    fMenuUi.fLogoBase = std::min(sw, sh) * 0.17f;
-    const float logoR =
-        fMenuUi.fLogoBase *
-        (fMenuUi.fMenuState == MenuState::kInitial ? 1.0f : 0.62f);
-    const float rightW = static_cast<float>(rightCount) * (btnW + btnGap);
-    const float leftW = static_cast<float>(leftCount) * (btnW + btnGap);
-    const float groupW = leftW + 2.0f * logoR + 28.0f * uiScale + rightW;
-
-    const float targetLogoX = fMenuUi.fMenuState == MenuState::kInitial
-                                  ? sw * 0.5f
-                                  : (sw - groupW) * 0.5f + leftW + logoR;
-    const float targetLogoY =
-        sh * (fMenuUi.fMenuState == MenuState::kInitial ? 0.46f : 0.5f);
-    const float targetScale =
-        fMenuUi.fMenuState == MenuState::kInitial ? 1.0f : 0.62f;
-
-    fMenuUi.fLogoTarget = {targetLogoX, targetLogoY, targetScale};
-    fLogo.moveTowards(this->logoCtx());
-
-    // ---- Buttons: animate and lay out, without drawing any of them.
-    const float logoReach = fMenuUi.fLogoBase * fLogo.scale();
-    const float rowY = fLogo.y() - btnH * 0.5f;
-    float xRight = fLogo.x() + logoReach + 28.0f * uiScale;
-    float xLeft = fLogo.x() - logoReach - 28.0f * uiScale;
-
-    fMenu.ensure(fMenuUi.fMenuBtns.size(), skia::SkRect::MakeWH(sw, sh));
-
-    // The eased values live on the button's node: how far out it is, whether
-    // the pointer is on it, and the click flash. Driven here because the
-    // order matters -- how far out decides how wide, how wide decides whether
-    // the pointer is on it, and that decides where the hover is going.
-    for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
-      auto &b = fMenuUi.fMenuBtns[i];
-      const bool visible = b.fVisible == fMenuUi.fMenuState;
-      const float expand = fMenu.easeExpand(i, visible ? 1.0f : 0.0f, fUiDt);
-      fMenu.decayFlash(i, fUiDt);
-
-      if (expand < 0.01f) {
-        b.fRect = skia::SkRect::MakeEmpty();
-        continue;
-      }
-
-      const float w = btnW * expand * (1.0f + 0.18f * fMenu.buttonHover(i));
-      skia::SkRect rect;
-      if (b.fLeftSide) {
-        rect = skia::SkRect::MakeXYWH(xLeft - w, rowY, w, btnH);
-        xLeft -= w + btnGap;
-      } else {
-        rect = skia::SkRect::MakeXYWH(xRight, rowY, w, btnH);
-        xRight += w + btnGap;
-      }
-      b.fRect = rect;
-
-      const bool hovered = visible && rect.contains(fWin.fMouseX, fWin.fMouseY);
-      fMenu.easeHover(i, hovered ? 1.0f : 0.0f, fUiDt);
-    }
-
-    // The dim and the logo are the client's, not a node's: one covers the
-    // screen and the other is drawn by the piece it sits in.
-    constexpr float kMoving = 0.002f;
-    fLogo.settle(this->logoCtx());
-    fMenuUi.fMenuMoving = std::abs(fMenuUi.fMenuDim - dimTarget) > kMoving ||
-                          fLogo.moving(this->logoCtx());
-
-    fMenu.setPointer(fWin.fMouseX, fWin.fMouseY);
-
-    // How far the bars actually reach this frame. A flat guess of three
-    // quarters of the logo's width was covering 40% of the screen on its own,
-    // which with the counter in the opposite corner pushed the frame over the
-    // "repaint it whole" threshold and saved nothing at all.
-    const float reach = fLogo.reach(this->logoCtx());
-    skia::SkRect moving = fLogo.bounds();
-    moving.outset(reach + 4.0f, reach + 4.0f);
-    // Marked while something in there is actually moving -- a live
-    // visualiser, drifting triangles inside the logo, or the logo itself
-    // having shifted. Marking it every frame regardless is a repaint of the
-    // busiest part of the screen for a picture that is identical.
-    fMenu.placeLogo(moving);
-    if (fSettings.flag("menutriangles") || fSettings.flag("visualiser")) {
-      fMenu.markLogo(); // something inside the same box is moving
-    }
-
-    // A button only needs repainting while something about it changes. Its
-    // drawn shape is a parallelogram sheared by the wedge, and the label and
-    // glow reach past that, so the marked area is its rectangle grown by the
-    // shear plus a margin -- and by the rectangle it occupied before, or a
-    // button that moved leaves its old self behind.
-    for (auto &b : fMenuUi.fMenuBtns) {
-      // The box a button occupies, grown by the shear and a margin: its
-      // parallelogram leans out of its rectangle, and the label and glow
-      // reach past that.
-      skia::SkRect box = b.fRect;
-      if (!box.isEmpty()) {
-        box.outset(fMenuUi.fMenuWedge + 12.0f, 12.0f);
-      }
-      fMenu.placeButton(static_cast<std::size_t>(&b - fMenuUi.fMenuBtns.data()),
-                        box);
-      // What moved inside the box is the node's own business now: it eased
-      // the value and marked itself. What is left here is the box.
-    }
-    this->damage(fMenu.takeDamage());
   }
 
-  // lazer's main menu shows the beatmap background at full brightness --
-  // MainMenu.cs fades it to Gray(1) at the logo-only state and Gray(0.8)
-  // once the buttons are out. There is no triangle overlay over artwork;
-  // triangles are only the fallback background when no art exists at all.
-  void drawMenuBackground(skia::SkCanvas *canvas) {
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-    if (fView.hasBackground()) {
-      fView.drawBackground(this->gameplayCtx(canvas), canvas);
-      if (fMenuUi.fMenuDim < 0.999f) {
-        skia::SkPaint dim;
-        dim.setColor(skia::colorSetARGB(
-            static_cast<std::uint8_t>((1.0f - fMenuUi.fMenuDim) * 255.0f), 0, 0,
-            0));
-        canvas->drawRect(skia::SkRect::MakeXYWH(0, 0, sw, sh), dim);
-      }
-    } else if (fLib.fLibrary.empty()) {
-      // Only with no beatmaps at all does lazer's default (triangle)
-      // background show; while artwork is still loading, stay dark.
-      canvas->clear(skia::colorSetARGB(255, 32, 24, 44));
-      this->drawMenuTriangles(canvas);
-    } else {
-      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
+  // Which keys the menu answers to. The screen names them rather than taking
+  // the window system's numbers, so that nothing under client.mainmenu has to
+  // know what a GLFW key code is.
+  [[nodiscard]] static client::mainmenu::Screen::Key menuKey(int key) {
+    using Key = client::mainmenu::Screen::Key;
+    switch (key) {
+    case glfw::kKeyEscape:
+      return Key::kEscape;
+    case glfw::kKeyEnter:
+      return Key::kEnter;
+    case glfw::kKeySpace:
+      return Key::kSpace;
+    case glfw::kKeyP:
+      return Key::kP;
+    case glfw::kKeyB:
+      return Key::kB;
+    case glfw::kKeyD:
+      return Key::kD;
+    case glfw::kKeyI:
+      return Key::kI;
+    case glfw::kKeyQ:
+      return Key::kQ;
+    case glfw::kKeyS:
+      return Key::kS;
+    case glfw::kKeyR:
+      return Key::kR;
+    default:
+      return Key::kOther;
     }
+  }
+
+  // What the menu asked for. Moving between its own levels it does itself;
+  // these are the ones that need the client.
+  void menuAction(MenuAction action) {
+    switch (action) {
+    case MenuAction::kBrowse:
+      this->openDownloads();
+      break;
+    case MenuAction::kImport:
+      this->importOsz();
+      break;
+    case MenuAction::kExit:
+      this->requestQuit();
+      break;
+    case MenuAction::kSolo:
+      fSwallowChar = true; // the 's' that triggered this must not be typed
+      this->switchState(State::kSongSelect);
+      break;
+    case MenuAction::kRandom:
+      this->playRandom();
+      break;
+    case MenuAction::kSettings:
+      this->toggleSettings();
+      break;
+    case MenuAction::kOpenPlay:
+    case MenuAction::kBack:
+      break; // answered inside the screen
+    }
+  }
+
+  void updateMainMenu() {
+    this->ensureBackgroundForSelection();
+
+    client::mainmenu::Screen::Ctx ctx;
+    ctx.fWidth = static_cast<float>(fWin.fScreenW);
+    ctx.fHeight = static_cast<float>(fWin.fScreenH);
+    ctx.fMouseX = fWin.fMouseX;
+    ctx.fMouseY = fWin.fMouseY;
+    ctx.fDtMs = fUiDt;
+    ctx.fNowWall = wallMs();
+    ctx.fFont = &fFont;
+    ctx.fVisualiser = fSettings.flag("visualiser");
+    ctx.fTriangles = fSettings.flag("menutriangles");
+    ctx.fHasArtwork = fView.hasBackground();
+    ctx.fLibraryEmpty = fLib.fLibrary.empty();
+    ctx.fAudioPlaying = fAudio.playing();
+    ctx.fSamples = fAudio.monoSamples();
+    ctx.fSampleRate = fAudio.sampleRate();
+    ctx.fAudioPositionMs = [this] { return fAudio.positionSec() * 1000.0; };
+    fMainMenu.update(ctx);
+
+    if (const char *reason = fMainMenu.takeFullDamage()) {
+      this->damageAll(reason);
+    }
+    this->damage(fMainMenu.takeDamage());
   }
 
   void frameMainMenu() {
     auto *canvas = fFrame.fSurface->getCanvas();
-    fMenu.render(canvas);
+    fMainMenu.render(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
-  }
-
-  // A lazer menu button is a parallelogram: vertical edges sheared by a fixed
-  // wedge width, label under a glyph, both fading in only once the button is
-  // most of the way open (lazer clamps content alpha the same way).
-  void drawMenuWedge(skia::SkCanvas *canvas, std::size_t index, float wedge) {
-    const MenuBtn &b = fMenuUi.fMenuBtns[index];
-    const float expandWeight = fMenu.buttonExpand(index);
-    const float hoverWeight = fMenu.buttonHover(index);
-    const float flashWeight = fMenu.buttonFlash(index);
-    const skia::SkRect &r = b.fRect;
-    skia::SkPathBuilder shape;
-    shape.moveTo(r.fLeft + wedge, r.fTop);
-    shape.lineTo(r.fRight + wedge, r.fTop);
-    shape.lineTo(r.fRight, r.fBottom);
-    shape.lineTo(r.fLeft, r.fBottom);
-    shape.close();
-    const auto path = shape.detach();
-
-    skia::SkPaint fill;
-    fill.setAntiAlias(true);
-    fill.setColor(b.fColor);
-    // Hover brightens; the click flash blows it out briefly, then decays.
-    fill.setAlphaf(
-        std::clamp(expandWeight * (0.86f + 0.14f * hoverWeight), 0.0f, 1.0f));
-    canvas->drawPath(path, fill);
-
-    if (flashWeight > 0.01f) {
-      skia::SkPaint flashPaint;
-      flashPaint.setAntiAlias(true);
-      flashPaint.setColor(skia::kWhite);
-      flashPaint.setAlphaf(0.55f * flashWeight);
-      flashPaint.setBlendMode(skia::SkBlendMode::kPlus);
-      canvas->drawPath(path, flashPaint);
-    }
-
-    const float contentAlpha =
-        std::clamp((expandWeight - 0.5f) / 0.3f, 0.0f, 1.0f);
-    if (contentAlpha <= 0.0f) {
-      return;
-    }
-    const float cx = r.centerX() + wedge * 0.5f;
-    // Icon lifts slightly on hover, mirroring lazer's bouncing icon.
-    const float lift = 6.0f * hoverWeight;
-    this->drawTextCentered(canvas, b.fGlyph, cx, r.centerY() - lift, 30.0f,
-                           skia::kWhite, contentAlpha);
-    this->drawTextCentered(canvas, b.fLabel, cx, r.fBottom - 18.0f, 17.0f,
-                           skia::kWhite, contentAlpha * 0.95f);
-  }
-
-  void updateMenuSpectrum() {
-    const double wall = wallMs();
-    if (!fAudio.playing()) {
-      fLogo.spectrum().update({}, 0, 0.0, wall);
-      return;
-    }
-    // Same anchored-clock trick as gameplay: querying the device every frame
-    // is what used to cost whole milliseconds per call.
-    if (wall - fMenuUi.fMenuClockSyncWall >= kClockSyncIntervalMs) {
-      fMenuUi.fMenuClockSyncWall = wall;
-      const double devicePos = fAudio.positionSec() * 1000.0;
-      // A looping track jumps back to zero; the anchored clock is monotonic
-      // by design, so detect the wrap and re-anchor instead of syncing.
-      if (devicePos + 500.0 < fMenuUi.fLastMenuPosMs) {
-        fMenuUi.fMenuClock.reset(wall, devicePos);
-      } else {
-        fMenuUi.fMenuClock.sync(wall, devicePos);
-      }
-      fMenuUi.fLastMenuPosMs = devicePos;
-    }
-    const double posMs = fMenuUi.fMenuClock.sample(wall);
-    fLogo.spectrum().update(fAudio.monoSamples(), fAudio.sampleRate(),
-                            posMs / 1000.0, wall);
-  }
-
-  void keyMainMenu(int key) {
-    this->ensureMenuButtons();
-    if (key == glfw::kKeyEscape) {
-      switch (fMenuUi.fMenuState) {
-      case MenuState::kPlay:
-        this->setMenuState(MenuState::kTopLevel);
-        break;
-      case MenuState::kTopLevel:
-        this->setMenuState(MenuState::kInitial);
-        break;
-      case MenuState::kInitial:
-        this->requestQuit();
-        break;
-      }
-      return;
-    }
-    if (key == glfw::kKeyEnter || key == glfw::kKeySpace) {
-      this->triggerLogo();
-      return;
-    }
-    // Letter shortcuts, as in lazer.
-    const auto fire = [this](MenuAction act) {
-      for (std::size_t i = 0; i < fMenuUi.fMenuBtns.size(); ++i) {
-        if (fMenuUi.fMenuBtns[i].fVisible == fMenuUi.fMenuState &&
-            fMenuUi.fMenuBtns[i].fAction == act) {
-          this->menuTrigger(i);
-          return;
-        }
-      }
-    };
-    if (fMenuUi.fMenuState == MenuState::kTopLevel) {
-      if (key == glfw::kKeyP) {
-        fire(MenuAction::kOpenPlay);
-      } else if (key == glfw::kKeyB || key == glfw::kKeyD) {
-        fire(MenuAction::kBrowse);
-      } else if (key == glfw::kKeyI) {
-        fire(MenuAction::kImport);
-      } else if (key == glfw::kKeyQ) {
-        fire(MenuAction::kExit);
-      }
-    } else if (fMenuUi.fMenuState == MenuState::kPlay) {
-      if (key == glfw::kKeyS) {
-        fire(MenuAction::kSolo);
-      } else if (key == glfw::kKeyR) {
-        fire(MenuAction::kRandom);
-      }
-    }
   }
 
   // ---- Song select ------------------------------------------------------
@@ -6111,15 +5755,7 @@ private:
     this->refreshReplayFilter();
     this->rebuildVisible();
 
-    if (!fLib.fLibrary.empty() && fLib.fBackgroundForSet != fLib.fSelSet) {
-      // setFor() is asynchronous: only mark the background as up to date once
-      // the set has actually arrived, otherwise the first frame consumes the
-      // request and the artwork never appears.
-      if (auto set = this->setFor(fLib.fSelSet)) {
-        fLib.fBackgroundForSet = fLib.fSelSet;
-        this->requestBackground(fLib.fSelSet, set);
-      }
-    }
+    this->ensureBackgroundForSelection();
 
     const float sw = static_cast<float>(fWin.fScreenW);
     const float sh = static_cast<float>(fWin.fScreenH);
@@ -7724,22 +7360,11 @@ private:
     skiff::nodes::CachedContainer::setContext(fContext.get());
     // The carousel owns where a panel is and when it has to be repainted; the
     // client still owns what one looks like, and hands it over here.
-    // The menu's pieces: the tree owns where they are and what has to be
-    // repainted; what they look like stays here.
-    fMenu.setPainters(
-        [this](skia::SkCanvas *canvas, const skia::SkRect &, int) {
-          this->drawMenuBackground(canvas);
-        },
-        [this](skia::SkCanvas *canvas, const skia::SkRect &, int index) {
-          if (index >= 0 &&
-              index < static_cast<int>(fMenuUi.fMenuBtns.size())) {
-            this->drawMenuWedge(canvas, static_cast<std::size_t>(index),
-                                fMenuUi.fMenuWedge);
-          }
-        },
-        [this](skia::SkCanvas *canvas, const skia::SkRect &, int) {
-          fLogo.draw(canvas, this->logoCtx());
-        });
+    // The artwork behind the menu is the client's: it owns the beatmap and
+    // the view that scales it. The screen draws everything else itself.
+    fMainMenu.setArtworkPainter([this](skia::SkCanvas *canvas) {
+      fView.drawBackground(this->gameplayCtx(canvas), canvas);
+    });
     fCarousel.setPainter([this](skia::SkCanvas *canvas,
                                 const skia::SkRect &rect,
                                 const client::carousel::Row &row, bool selected,
