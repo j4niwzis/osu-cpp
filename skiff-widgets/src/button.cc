@@ -1,10 +1,10 @@
-export module skiff.widgets:button;
+export module skiff.widgets.button;
 
 import std;
 import skia;
 import skiff.paint;
 import skiff.scene;
-import :theme;
+export import skiff.widgets.theme;
 
 namespace skiff::widgets {
 using skiff::scene::Anchor;

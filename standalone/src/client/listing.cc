@@ -6,7 +6,8 @@ import skiff.paint;
 import client.palette;
 import skiff.scene;
 import skiff.nodes;
-import skiff.widgets;
+import skiff.widgets.textbox;
+import skiff.widgets.tabbar;
 
 // osu!lazer's BeatmapListingOverlay, port of the layout and the palette.
 //

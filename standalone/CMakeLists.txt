@@ -74,6 +74,10 @@ endif()
 # what a beatmap is. Kept as its own project so it can be lifted out whole.
 CPMAddPackage(NAME skiff SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/../skiff)
 
+# The widgets that sit on it, one module each. Pulls skiff in behind it.
+CPMAddPackage(NAME skiff_widgets
+  SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/../skiff-widgets)
+
 # ---- Create binary ----
 
 file(GLOB_RECURSE module_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")

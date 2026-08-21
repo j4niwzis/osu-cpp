@@ -1,4 +1,4 @@
-export module skiff.widgets:theme;
+export module skiff.widgets.theme;
 
 import std;
 import skia;

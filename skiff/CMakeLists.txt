@@ -41,42 +41,31 @@ if(NOT SKIFF_EMSCRIPTEN)
   find_package(OpenGL REQUIRED)
 endif()
 
-# Two targets, on purpose. skiff is the primitives -- the Skia wrapper, the
-# painter, the graph, the drawables -- and skiff-widgets is the layer of
-# ready-made things a screen is built out of, themed rather than subclassed.
-# An application that wants only the graph links the first and never pays for
-# the second.
-# Primary interface units first, then their partitions. Globbed per directory
-# rather than recursively, so that adding a widget is adding a file and
-# nothing else.
+# The primary interface unit first, then its partitions. Globbed per
+# directory rather than recursively, so that adding a drawable is adding a
+# file and nothing else.
 file(GLOB skiff_node_partitions CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/nodes/*.cc")
-file(GLOB skiff_widget_partitions CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/widgets/*.cc")
 
-set(skiff_core_sources
+set(skiff_sources
   ${CMAKE_CURRENT_SOURCE_DIR}/src/skia.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/paint.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/scene.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/src/nodes.cc
   ${skiff_node_partitions}
 )
-set(skiff_widget_sources
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/widgets.cc
-  ${skiff_widget_partitions}
-)
 
 if(SKIFF_EMSCRIPTEN)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
 
-add_library(${PROJECT_NAME} STATIC ${skiff_core_sources})
+add_library(${PROJECT_NAME} STATIC ${skiff_sources})
 add_library(skiff::skiff ALIAS ${PROJECT_NAME})
 
 # PUBLIC: anything linking this gets `import skia`, `import skiff.paint`,
 # `import skiff.scene` and `import skiff.nodes`.
 target_sources(${PROJECT_NAME} PUBLIC
-  FILE_SET CXX_MODULES FILES ${skiff_core_sources})
+  FILE_SET CXX_MODULES FILES ${skiff_sources})
 
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 26)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_23)
@@ -92,14 +81,6 @@ if(NOT SKIFF_EMSCRIPTEN)
   target_link_libraries(${PROJECT_NAME} PUBLIC OpenGL::GL)
 endif()
 
-add_library(skiff-widgets STATIC ${skiff_widget_sources})
-add_library(skiff::widgets ALIAS skiff-widgets)
-target_sources(skiff-widgets PUBLIC
-  FILE_SET CXX_MODULES FILES ${skiff_widget_sources})
-set_target_properties(skiff-widgets PROPERTIES CXX_STANDARD 26)
-target_link_libraries(skiff-widgets PUBLIC ${PROJECT_NAME})
-
 if(SKIFF_EMSCRIPTEN)
   target_compile_options(${PROJECT_NAME} PRIVATE -fexceptions -pthread -msimd128)
-  target_compile_options(skiff-widgets PRIVATE -fexceptions -pthread -msimd128)
 endif()
