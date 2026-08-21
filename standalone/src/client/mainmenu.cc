@@ -2,6 +2,7 @@ export module client.mainmenu;
 
 import std;
 import skia;
+import skiff.paint;
 import skiff.scene;
 
 // osu!lazer's MainMenu as a scene tree: the background, the row of
@@ -16,6 +17,7 @@ import skiff.scene;
 // any of that changes.
 // The framework lives in skiff:: now; these keep the screens below
 // writing scene:: and nodes:: as they did when it sat in client::.
+namespace paint = skiff::paint;
 namespace scene = skiff::scene;
 
 export namespace client::mainmenu {
@@ -78,6 +80,49 @@ public:
       fLogoNode->place(box);
     }
   }
+  // The three values a button is drawn from, eased here rather than by the
+  // client: a node that is part-way to somewhere is the one thing the client
+  // could not tell the frame loop, because it reads as damage that has
+  // already been consumed.
+  //
+  // Driven in the order the layout needs them -- how far out a button is
+  // decides how wide it is, how wide it is decides whether the pointer is on
+  // it, and that decides where the hover is going.
+  float easeExpand(std::size_t index, float target, double dtMs) {
+    return index < fButtons.size()
+               ? fButtons[index]->ease(0, target, 95.0f, dtMs)
+               : 0.0f;
+  }
+  float easeHover(std::size_t index, float target, double dtMs) {
+    return index < fButtons.size()
+               ? fButtons[index]->ease(1, target, 110.0f, dtMs)
+               : 0.0f;
+  }
+  float decayFlash(std::size_t index, double dtMs) {
+    return index < fButtons.size()
+               ? fButtons[index]->ease(2, 0.0f, 160.0f, dtMs)
+               : 0.0f;
+  }
+  void flashButton(std::size_t index) {
+    if (index < fButtons.size()) {
+      fButtons[index]->set(2, 1.0f);
+    }
+  }
+  [[nodiscard]] float buttonExpand(std::size_t index) const {
+    return index < fButtons.size() ? fButtons[index]->value(0) : 0.0f;
+  }
+  [[nodiscard]] float buttonHover(std::size_t index) const {
+    return index < fButtons.size() ? fButtons[index]->value(1) : 0.0f;
+  }
+  [[nodiscard]] float buttonFlash(std::size_t index) const {
+    return index < fButtons.size() ? fButtons[index]->value(2) : 0.0f;
+  }
+
+  // Anything in the menu still on its way somewhere.
+  [[nodiscard]] bool animating() const {
+    return fScene && fScene->animatingTree();
+  }
+
   void markButton(std::size_t index) {
     if (index < fButtons.size()) {
       fButtons[index]->markDamaged();
@@ -131,6 +176,23 @@ private:
     PieceNode(Menu *owner, Piece piece, int index)
         : fOwner(owner), fPiece(piece), fIndex(index) {}
 
+    // One of expand, hover and flash. Kept together because they are the same
+    // thing three times and a name each would be three copies of this.
+    float ease(int which, float target, float tauMs, double dtMs) {
+      fTarget[which] = target;
+      const float previous = fValue[which];
+      fValue[which] = paint::approach(fValue[which], target, tauMs, dtMs);
+      if (std::abs(fValue[which] - previous) > 0.0f) {
+        this->markDamaged();
+      }
+      return fValue[which];
+    }
+    void set(int which, float value) {
+      fValue[which] = value;
+      this->markDamaged();
+    }
+    [[nodiscard]] float value(int which) const { return fValue[which]; }
+
     void place(const skia::SkRect &box) {
       if (box == fBounds) {
         return;
@@ -161,6 +223,18 @@ private:
       }
     }
 
+    // Part-way to somewhere, which is what the frame loop cannot work out
+    // from damage: damage says what changed, and this says the next frame
+    // will differ too.
+    bool settling() const override {
+      for (int i = 0; i < 3; ++i) {
+        if (std::abs(fValue[i] - fTarget[i]) > scene::kSettled) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     bool acceptsInput() const override { return fPiece != Piece::kBackground; }
 
     // The client draws its own hover states out of its own eased values and
@@ -173,6 +247,8 @@ private:
     }
 
   private:
+    std::array<float, 3> fValue{}; // expand, hover, flash
+    std::array<float, 3> fTarget{};
     Menu *fOwner;
     Piece fPiece;
     int fIndex;

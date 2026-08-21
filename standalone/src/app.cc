@@ -429,16 +429,9 @@ private:
     MenuAction fAction{};
     MenuState fVisible{};    // menu state this button belongs to
     bool fLeftSide = false;  // back button sits left of the logo, as in lazer
-    float fExpand = 0.0f;    // 0 contracted .. 1 expanded
-    float fHover = 0.0f;     // eased hover weight
-    float fFlash = 0.0f;     // click flash, decays
+    // How far out, how hovered and how freshly clicked live on the node that
+    // draws the button, which is what asks for the frames they need.
     skia::SkRect fRect = skia::SkRect::MakeEmpty();
-    // What was last put on screen, so a button that has stopped moving stops
-    // asking to be repainted.
-    float fDrawnExpand = -1.0f;
-    float fDrawnHover = -1.0f;
-    float fDrawnFlash = -1.0f;
-    skia::SkRect fDrawnRect = skia::SkRect::MakeEmpty();
   };
   std::vector<MenuBtn> fMenuBtns;
   MenuState fMenuState = MenuState::kInitial;
@@ -1503,18 +1496,20 @@ private:
           this->triggerLogo();
           return;
         }
-        for (auto &b : fMenuBtns) {
-          if (b.fVisible == fMenuState && b.fExpand > 0.5f &&
+        for (std::size_t i = 0; i < fMenuBtns.size(); ++i) {
+          auto &b = fMenuBtns[i];
+          if (b.fVisible == fMenuState && fMenu.buttonExpand(i) > 0.5f &&
               b.fRect.contains(x, y)) {
-            this->menuTrigger(b);
+            this->menuTrigger(i);
             return;
           }
         }
       } else if (piece >= 0 &&
                  piece < static_cast<int>(fMenuBtns.size())) {
-        auto &b = fMenuBtns[static_cast<std::size_t>(piece)];
-        if (b.fVisible == fMenuState && b.fExpand > 0.5f) {
-          this->menuTrigger(b);
+        const auto index = static_cast<std::size_t>(piece);
+        if (fMenuBtns[index].fVisible == fMenuState &&
+            fMenu.buttonExpand(index) > 0.5f) {
+          this->menuTrigger(index);
           return;
         }
       }
@@ -2325,9 +2320,10 @@ private:
         (fSettings.flag("visualiser") || fSettings.flag("menutriangles"))) {
       return true;
     }
-    // Something in the menu is part-way to where it is going. Set by the last
-    // update, which is the only thing that knows.
-    if (fState == State::kMainMenu && fMenuMoving) {
+    // Something in the menu is part-way to where it is going: the buttons say
+    // so through the tree, and the dim and the logo through the flag, since
+    // neither of those is a node.
+    if (fState == State::kMainMenu && (fMenuMoving || fMenu.animating())) {
       return true;
     }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
@@ -4968,8 +4964,9 @@ private:
     return skiff::paint::approach(current, target, tauMs, fUiDt);
   }
 
-  void menuTrigger(MenuBtn &b) {
-    b.fFlash = 1.0f;
+  void menuTrigger(std::size_t index) {
+    MenuBtn &b = fMenuBtns[index];
+    fMenu.flashButton(index);
     switch (b.fAction) {
     case MenuAction::kOpenPlay:
       this->setMenuState(MenuState::kPlay);
@@ -5037,9 +5034,9 @@ private:
       break;
     case MenuState::kTopLevel:
     case MenuState::kPlay:
-      for (auto &b : fMenuBtns) {
-        if (b.fVisible == fMenuState && !b.fLeftSide) {
-          this->menuTrigger(b);
+      for (std::size_t i = 0; i < fMenuBtns.size(); ++i) {
+        if (fMenuBtns[i].fVisible == fMenuState && !fMenuBtns[i].fLeftSide) {
+          this->menuTrigger(i);
           break;
         }
       }
@@ -5150,30 +5147,24 @@ private:
     float xRight = fLogoX + fLogoBase * fLogoScale + 28.0f * uiScale;
     float xLeft = fLogoX - fLogoBase * fLogoScale - 28.0f * uiScale;
 
-    // Whether anything here is still on its way somewhere. Damage says what
-    // changed; it cannot say that the next frame will differ too, and an
-    // eased value on its way to a target is exactly that. Without this the
-    // frame that moves a button marks its damage, the frame consumes it, and
-    // nothing asks for another -- so the ease crawls along on the half-second
-    // safety net, and moving the pointer speeds it up because every event
-    // owes frames.
-    constexpr float kMoving = 0.002f;
-    bool easing = std::abs(fMenuDim - dimTarget) > kMoving;
+    fMenu.ensure(fMenuBtns.size(), skia::SkRect::MakeWH(sw, sh));
 
-    for (auto &b : fMenuBtns) {
+    // The eased values live on the button's node: how far out it is, whether
+    // the pointer is on it, and the click flash. Driven here because the
+    // order matters -- how far out decides how wide, how wide decides whether
+    // the pointer is on it, and that decides where the hover is going.
+    for (std::size_t i = 0; i < fMenuBtns.size(); ++i) {
+      auto &b = fMenuBtns[i];
       const bool visible = b.fVisible == fMenuState;
-      b.fExpand = this->approach(b.fExpand, visible ? 1.0f : 0.0f, 95.0f);
-      b.fFlash = this->approach(b.fFlash, 0.0f, 160.0f);
-      easing = easing ||
-               std::abs(b.fExpand - (visible ? 1.0f : 0.0f)) > kMoving ||
-               b.fFlash > kMoving;
+      const float expand = fMenu.easeExpand(i, visible ? 1.0f : 0.0f, fUiDt);
+      fMenu.decayFlash(i, fUiDt);
 
-      if (b.fExpand < 0.01f) {
+      if (expand < 0.01f) {
         b.fRect = skia::SkRect::MakeEmpty();
         continue;
       }
 
-      const float w = btnW * b.fExpand * (1.0f + 0.18f * b.fHover);
+      const float w = btnW * expand * (1.0f + 0.18f * fMenu.buttonHover(i));
       skia::SkRect rect;
       if (b.fLeftSide) {
         rect = skia::SkRect::MakeXYWH(xLeft - w, rowY, w, btnH);
@@ -5185,18 +5176,18 @@ private:
       b.fRect = rect;
 
       const bool hovered = visible && rect.contains(fMouseX, fMouseY);
-      b.fHover = this->approach(b.fHover, hovered ? 1.0f : 0.0f, 110.0f);
-      easing = easing || std::abs(b.fHover - (hovered ? 1.0f : 0.0f)) > kMoving;
+      fMenu.easeHover(i, hovered ? 1.0f : 0.0f, fUiDt);
     }
 
-    easing = easing || std::abs(fLogoX - targetLogoX) > kMoving ||
-             std::abs(fLogoY - targetLogoY) > kMoving ||
-             std::abs(fLogoScale - targetScale) > kMoving;
-    fMenuMoving = easing;
+    // The dim and the logo are the client's, not a node's: one covers the
+    // screen and the other is drawn by the piece it sits in.
+    constexpr float kMoving = 0.002f;
+    fMenuMoving = std::abs(fMenuDim - dimTarget) > kMoving ||
+                  std::abs(fLogoX - targetLogoX) > kMoving ||
+                  std::abs(fLogoY - targetLogoY) > kMoving ||
+                  std::abs(fLogoScale - targetScale) > kMoving;
 
     this->settleLogo(fLogoBase);
-
-    fMenu.ensure(fMenuBtns.size(), skia::SkRect::MakeWH(sw, sh));
     fMenu.setPointer(fMouseX, fMouseY);
 
     // How far the bars actually reach this frame. A flat guess of three
@@ -5234,22 +5225,8 @@ private:
         box.outset(fMenuWedge + 12.0f, 12.0f);
       }
       fMenu.placeButton(static_cast<std::size_t>(&b - fMenuBtns.data()), box);
-      // Eased values approach their target without reaching it; comparing
-      // them exactly kept every button "changing" for ever, which is what
-      // held the repainted region open around the whole row.
-      constexpr float kSettled = 0.002f;
-      const bool changed = std::abs(b.fExpand - b.fDrawnExpand) > kSettled ||
-                           std::abs(b.fHover - b.fDrawnHover) > kSettled ||
-                           std::abs(b.fFlash - b.fDrawnFlash) > kSettled ||
-                           b.fRect != b.fDrawnRect;
-      if (!changed) {
-        continue;
-      }
-      fMenu.markButton(static_cast<std::size_t>(&b - fMenuBtns.data()));
-      b.fDrawnExpand = b.fExpand;
-      b.fDrawnHover = b.fHover;
-      b.fDrawnFlash = b.fFlash;
-      b.fDrawnRect = b.fRect;
+      // What moved inside the box is the node's own business now: it eased
+      // the value and marked itself. What is left here is the box.
     }
     this->damage(fMenu.takeDamage());
   }
@@ -5289,7 +5266,11 @@ private:
   // A lazer menu button is a parallelogram: vertical edges sheared by a fixed
   // wedge width, label under a glyph, both fading in only once the button is
   // most of the way open (lazer clamps content alpha the same way).
-  void drawMenuWedge(skia::SkCanvas *canvas, const MenuBtn &b, float wedge) {
+  void drawMenuWedge(skia::SkCanvas *canvas, std::size_t index, float wedge) {
+    const MenuBtn &b = fMenuBtns[index];
+    const float expand = fMenu.buttonExpand(index);
+    const float hover = fMenu.buttonHover(index);
+    const float flash = fMenu.buttonFlash(index);
     const skia::SkRect &r = b.fRect;
     skia::SkPathBuilder shape;
     shape.moveTo(r.fLeft + wedge, r.fTop);
@@ -5303,27 +5284,25 @@ private:
     fill.setAntiAlias(true);
     fill.setColor(b.fColor);
     // Hover brightens; the click flash blows it out briefly, then decays.
-    fill.setAlphaf(std::clamp(b.fExpand * (0.86f + 0.14f * b.fHover), 0.0f,
-                              1.0f));
+    fill.setAlphaf(std::clamp(expand * (0.86f + 0.14f * hover), 0.0f, 1.0f));
     canvas->drawPath(path, fill);
 
-    if (b.fFlash > 0.01f) {
+    if (flash > 0.01f) {
       skia::SkPaint flash;
       flash.setAntiAlias(true);
       flash.setColor(skia::kWhite);
-      flash.setAlphaf(0.55f * b.fFlash);
+      flash.setAlphaf(0.55f * flash);
       flash.setBlendMode(skia::SkBlendMode::kPlus);
       canvas->drawPath(path, flash);
     }
 
-    const float contentAlpha =
-        std::clamp((b.fExpand - 0.5f) / 0.3f, 0.0f, 1.0f);
+    const float contentAlpha = std::clamp((expand - 0.5f) / 0.3f, 0.0f, 1.0f);
     if (contentAlpha <= 0.0f) {
       return;
     }
     const float cx = r.centerX() + wedge * 0.5f;
     // Icon lifts slightly on hover, mirroring lazer's bouncing icon.
-    const float lift = 6.0f * b.fHover;
+    const float lift = 6.0f * hover;
     this->drawTextCentered(canvas, b.fGlyph, cx, r.centerY() - lift, 30.0f,
                            skia::kWhite, contentAlpha);
     this->drawTextCentered(canvas, b.fLabel, cx, r.fBottom - 18.0f, 17.0f,
@@ -5630,9 +5609,10 @@ private:
     }
     // Letter shortcuts, as in lazer.
     const auto fire = [this](MenuAction act) {
-      for (auto &b : fMenuBtns) {
-        if (b.fVisible == fMenuState && b.fAction == act) {
-          this->menuTrigger(b);
+      for (std::size_t i = 0; i < fMenuBtns.size(); ++i) {
+        if (fMenuBtns[i].fVisible == fMenuState &&
+            fMenuBtns[i].fAction == act) {
+          this->menuTrigger(i);
           return;
         }
       }
@@ -7944,7 +7924,7 @@ private:
         },
         [this](skia::SkCanvas *canvas, const skia::SkRect &, int index) {
           if (index >= 0 && index < static_cast<int>(fMenuBtns.size())) {
-            this->drawMenuWedge(canvas, fMenuBtns[static_cast<std::size_t>(index)],
+            this->drawMenuWedge(canvas, static_cast<std::size_t>(index),
                                 fMenuWedge);
           }
         },
