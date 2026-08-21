@@ -679,7 +679,7 @@ decodeReplayHeader(std::span<const std::uint8_t> data) {
     // Parsed for the side effect: it leaves `sp` at the first byte past the
     // header, which is where the compressed events begin. The header itself
     // says nothing about which shape the replay is in.
-    static_cast<void>(parseReplayHeader(sp));
+    std::ignore = parseReplayHeader(sp);
     if (sp.size() < 4) {
       return false;
     }
