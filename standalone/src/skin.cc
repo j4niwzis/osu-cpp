@@ -167,7 +167,12 @@ public:
   [[nodiscard]] skia::Sp<skia::SkImage> reverseArrow() {
     return image("reversearrow");
   }
-  [[nodiscard]] skia::Sp<skia::SkImage> hitBurst() { return image("hitburst"); }
+  // SkinnableLighting is a SkinnableSprite named "lighting", so this is the
+  // element osu! skins provide it under. It used to look for "hitburst",
+  // which is webosu-2's name for a different thing entirely -- a hard-edged
+  // disc where osu!'s is a soft radial glow. A skin with no lighting of its
+  // own gets none, which is what lazer does with one.
+  [[nodiscard]] skia::Sp<skia::SkImage> hitBurst() { return image("lighting"); }
   [[nodiscard]] skia::Sp<skia::SkImage> followPoint() {
     return image("followpoint");
   }
@@ -1001,7 +1006,7 @@ float4 main(float2 coords) {
   }
 
   void drawHitBurst(skia::SkCanvas *canvas, osu::Vec2 pos, double cs,
-                    double age, std::size_t comboIndex) {
+                    double age, skia::SkColor tint) {
     auto burst = this->hitBurst();
     if (!burst)
       return;
@@ -1029,9 +1034,10 @@ float4 main(float2 coords) {
       return;
 
     const double hitSpriteScale = osu::circleRadius(cs) / 60.0;
+    // SkinnableLighting.updateColour tints by the judgement's own colour, not
+    // by the combo colour, which is what this was using.
     skia::SkPaint paint =
-        detail::tintedPaint(this->tintFilter(this->comboColor(comboIndex)),
-                            static_cast<float>(alpha));
+        detail::tintedPaint(this->tintFilter(tint), static_cast<float>(alpha));
     // DrawableOsuJudgement sets Blending = BlendingParameters.Additive on the
     // lighting. Without it this is a solid disc laid over the playfield --
     // which is what it looked like once the alpha stopped being capped at 0.8

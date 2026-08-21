@@ -52,7 +52,7 @@ public:
   struct HitBurst {
     osu::Vec2 fPos;
     double fTime;
-    std::size_t fComboIndex;
+    skia::SkColor fTint;
   };
   struct CursorTrailPoint {
     osu::Vec2 fPos;
@@ -131,8 +131,10 @@ public:
                     bool countsCombo) {
     fPopups.push_back({result, now, pos});
     fFadingObjects.push_back({index, now, result});
+    // Lighting is coloured by the judgement and is transparent for a miss or
+    // a tick, so those simply do not produce one.
     if (countsCombo) {
-      fHitBursts.push_back({pos, now, comboIndex});
+      fHitBursts.push_back({pos, now, popupInfo(result).second});
     }
     // A miss that actually cost health starts the red display on the bar; the
     // glow hangs back at the old value for half a second before easing down.
@@ -315,7 +317,7 @@ public:
         it = fHitBursts.erase(it);
         continue;
       }
-      c.fSkin->drawHitBurst(canvas, it->fPos, cs, age, it->fComboIndex);
+      c.fSkin->drawHitBurst(canvas, it->fPos, cs, age, it->fTint);
       ++it;
     }
   }
@@ -960,8 +962,9 @@ public:
     }
   }
 
-  // Labels and tints from webosu-2: miss 0xed1121, meh 0xffcc22,
-  // good 0x88b300, great 0x66ccff.
+  // OsuColour.ForHitResult: great is Blue 66ccff, ok Green 88b300, meh
+  // Yellow ffcc22, miss Red ed1121. These reached here through webosu-2,
+  // which took them from the same place.
   [[nodiscard]] static std::pair<const char *, skia::SkColor>
   popupInfo(const osu::Judgement &j) {
     return std::visit(
