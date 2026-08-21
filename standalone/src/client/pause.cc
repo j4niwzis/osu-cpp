@@ -36,9 +36,12 @@ inline constexpr float kHoverMs = 400.0f;
 inline constexpr float kShear = 0.15f; // OsuGame.SHEAR
 inline constexpr float kCorner = 5.0f;
 
-inline constexpr skia::SkColor kYellow = skia::colorSetARGB(255, 0xff, 0xcc, 0x22);
-inline constexpr skia::SkColor kGreen = skia::colorSetARGB(255, 0x88, 0xb3, 0x00);
-inline constexpr skia::SkColor kYellowDark = skia::colorSetARGB(255, 0xee, 0xaa, 0x00);
+inline constexpr skia::SkColor kYellow =
+    skia::colorSetARGB(255, 0xff, 0xcc, 0x22);
+inline constexpr skia::SkColor kGreen =
+    skia::colorSetARGB(255, 0x88, 0xb3, 0x00);
+inline constexpr skia::SkColor kYellowDark =
+    skia::colorSetARGB(255, 0xee, 0xaa, 0x00);
 inline constexpr skia::SkColor kRed = skia::colorSetARGB(255, 170, 27, 39);
 
 class PauseMenu {
@@ -104,9 +107,9 @@ public:
   void selectPrevious() { this->select(fSelected - 1); }
   [[nodiscard]] int selected() const noexcept { return fSelected; }
   [[nodiscard]] Action triggerSelected() const {
-    return fSelected >= 0 && fSelected < 3 ? kActions[static_cast<std::size_t>(
-                                                 fSelected)]
-                                           : Action::kNone;
+    return fSelected >= 0 && fSelected < 3
+               ? kActions[static_cast<std::size_t>(fSelected)]
+               : Action::kNone;
   }
 
   [[nodiscard]] skia::SkRect takeDamage() {
@@ -188,7 +191,7 @@ private:
       const bool selected = fOwner->fSelected == static_cast<int>(fIndex);
       const float previous = fGrow;
       fGrow = skiff::paint::approach(fGrow, selected ? 1.0f : 0.0f,
-                                   kHoverMs / 3.0f, dt);
+                                     kHoverMs / 3.0f, dt);
       if (fGrow != previous) {
         this->markDamaged();
       }
@@ -196,8 +199,8 @@ private:
 
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
       const float eased = skiff::paint::outQuint(fGrow);
-      const float width = fBounds.width() * (kIdleWidth +
-                                             (kHoverWidth - kIdleWidth) * eased);
+      const float width =
+          fBounds.width() * (kIdleWidth + (kHoverWidth - kIdleWidth) * eased);
       const float cx = fBounds.centerX();
       const skia::SkRect bar = skia::SkRect::MakeXYWH(
           cx - width * 0.5f, fBounds.fTop, width, fBounds.height());
@@ -351,16 +354,24 @@ private:
     root->add<nodes::Box>({.fill = true, .alpha = kBackgroundAlpha},
                           skia::colorSetARGB(255, 0, 0, 0));
 
-    // lazer lays this out as a grid of four rows: the header centred in what
-    // is left above, the buttons at their own height, the numbers below, and
-    // a footer. Two centred blocks come out in the same place.
-    root->add<HeaderNode>({.y = fBuiltH * 0.5f - kButtonHeight * 1.5f -
-                                kButtonSpacing - 96.0f},
+    // GameplayMenuOverlay is a GridContainer of four rows: one that takes
+    // what is left, the buttons at their own height, another that takes what
+    // is left, and a footer at its own height. The footer is empty here, so
+    // the two flexible rows split everything the buttons do not use, and each
+    // row centres what is in it. That puts the buttons in the middle of the
+    // screen and the other two in the middle of the space above and below --
+    // which is not the same as a fixed offset from the centre, and was how
+    // the header ended up inside the column of buttons and behind them.
+    const float columnHeight = kButtonHeight * 3.0f + kButtonSpacing * 2.0f;
+    const float flexible = std::max(0.0f, (fBuiltH - columnHeight) * 0.5f);
+
+    root->add<HeaderNode>({.anchor = scene::Anchor::kTopCentre,
+                           .origin = scene::Anchor::kCentre,
+                           .y = flexible * 0.5f},
                           this);
 
     auto *column = root->add<nodes::FillFlow>(
         {.place = scene::Anchor::kCentreLeft,
-         .y = -kButtonHeight * 1.5f,
          .fillX = true,
          .autoSize = scene::Axes::kY,
          .padding = {0.0f, kHorizontalPadding, 0.0f, kHorizontalPadding}},
@@ -369,8 +380,8 @@ private:
     column->add<ButtonNode>({}, this, 1, "Retry", kYellowDark);
     column->add<ButtonNode>({}, this, 2, "Quit", kRed);
 
-    root->add<InfoNode>({.y = fBuiltH * 0.5f + kButtonHeight * 1.5f +
-                              kButtonSpacing + 24.0f},
+    root->add<InfoNode>({.origin = scene::Anchor::kCentreLeft,
+                         .y = flexible * 1.5f + columnHeight},
                         this);
     return root;
   }
