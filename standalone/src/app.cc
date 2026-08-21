@@ -3260,8 +3260,9 @@ private:
                                         static_cast<int>(id)) >= 0;
                            },
                            [this](const std::filesystem::path &path) {
-                             return fLibrary.addOszToLibrary(path, true,
-                                     client::parseQuery(fFilter.text()));
+                             return fLibrary.addOszToLibrary(
+                                 path, true,
+                                 client::parseQuery(fFilter.text()));
                            },
                            [this](int entry) { fListing.entryChanged(entry); },
                            [this] {
@@ -3537,7 +3538,7 @@ private:
       return false;
     }
     if (!fLibrary.addOszToLibrary(dest, true,
-                                     client::parseQuery(fFilter.text()))) {
+                                  client::parseQuery(fFilter.text()))) {
       return false;
     }
     std::println(std::cerr, "[import] added {}", dest.filename().string());
