@@ -3,6 +3,7 @@ export module client.setpage;
 import std;
 import skia;
 import client.palette;
+import skiff.paint;
 import skiff.scene;
 import skiff.nodes;
 import client.listing;
@@ -16,6 +17,7 @@ import client.listing;
 export namespace client::setpage {
 
 using listing::Entry;
+namespace paint = skiff::paint;
 namespace scene = skiff::scene;
 namespace nodes = skiff::nodes;
 
@@ -345,11 +347,11 @@ private:
         {}, e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, 20.0f,
         listing::kContent1, false);
 
-    auto *mapper = left->add<nodes::FillFlow>(
-        {.autoSize = scene::Axes::kBoth},
-        nodes::FillFlow::Direction::kHorizontal);
+    auto *mapper =
+        left->add<nodes::FillFlow>({.autoSize = scene::Axes::kBoth},
+                                   nodes::FillFlow::Direction::kHorizontal);
     mapper->fWrap = false;
-    mapper->fCrossAlign = nodes::FillFlow::Cross::kMiddle;
+    mapper->fCrossAlign = scene::Align::kMiddle;
     mapper->add<nodes::Text>({}, "mapped by ", 14.0f, listing::kContent2,
                              false);
     mapper->add<nodes::Text>({}, e.fCreator, 14.0f, listing::kContent1, true);
@@ -468,7 +470,7 @@ private:
         nodes::FillFlow::Direction::kHorizontal, 30.0f, 0.0f);
     columns->fWrap = false;
     auto *left = columns->add<nodes::FillFlow>(
-        {.grow = scene::Axes::kX, .autoSize = scene::Axes::kY},
+        {.autoSize = scene::Axes::kY, .grow = scene::Axes::kX},
         nodes::FillFlow::Direction::kVertical, 0.0f, 8.0f);
 
     if (!e.fDiffs.empty()) {
@@ -478,7 +480,7 @@ private:
           {.autoSize = scene::Axes::kBoth},
           nodes::FillFlow::Direction::kHorizontal, 8.0f, 0.0f);
       heading->fWrap = false;
-      heading->fCrossAlign = nodes::FillFlow::Cross::kMiddle;
+      heading->fCrossAlign = scene::Align::kMiddle;
       heading
           ->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
                              .padding = {1.0f, 8.0f, 1.0f, 8.0f},
