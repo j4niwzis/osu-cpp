@@ -5644,6 +5644,9 @@ private:
     float fDim = 0.7f;
     bool fNoGlow = false;
     bool fHitLighting = true;
+    // Copied rather than read from the app: the export runs on its own thread
+    // and must not reach back for something the app may be changing.
+    osu::StarRating fAttributes;
     std::thread fThread;
     std::atomic<int> fPercent{0};
     std::atomic<bool> fFinished{false};
@@ -5762,6 +5765,7 @@ private:
     job->fDim = fSettings.value("dim");
     job->fNoGlow = fNoGlow;
     job->fHitLighting = fSettings.flag("hitlighting");
+    job->fAttributes = fPlayAttributes;
     for (const auto &info : fSet.fBeatmaps) {
       if (info.fMeta.fBackground.empty()) {
         continue;
@@ -5871,6 +5875,20 @@ private:
       ctx.fCanvas = job.fSurface->getCanvas();
       ctx.fEngine = &engine;
       ctx.fCursor = cursor;
+      // The HUD draws whatever it is handed, so a field the exporter forgets
+      // is a field the video shows as zero.
+      {
+        const auto &sc = engine.score();
+        osu::ScoreInput input;
+        input.fGreat = sc.fGreat;
+        input.fOk = sc.fGood;
+        input.fMeh = sc.fMeh;
+        input.fMiss = sc.fMiss;
+        input.fMaxCombo = sc.fMaxCombo;
+        input.fSliderTailHits = sc.fTailHit;
+        input.fLargeTickHits = sc.fLargeTickHit;
+        ctx.fPp = osu::performanceRanked(job.fAttributes, input).fTotal;
+      }
       job.fView.render(ctx, now);
       if (job.fSurface->readPixels(info, pixels.data(), rowBytes, 0, 0)) {
         job.fExporter->addFrame(pixels);
