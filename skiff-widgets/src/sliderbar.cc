@@ -115,6 +115,10 @@ public:
   [[nodiscard]] bool on() const noexcept { return fOn; }
 
 protected:
+  bool settling() const override {
+    return std::abs(fKnob - (fOn ? 1.0f : 0.0f)) > skiff::scene::kSettled;
+  }
+
   void update(double nowMs) override {
     const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
     fLastMs = nowMs;

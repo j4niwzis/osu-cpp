@@ -89,6 +89,11 @@ enum class Anchor : std::uint8_t {
 // Where something sits across the axis it is being laid out along.
 enum class Align : std::uint8_t { kStart, kMiddle, kEnd };
 
+// How close to its target an eased value has to be to count as arrived.
+// Exponential easing approaches without reaching, so without a tolerance a
+// node that has visibly stopped goes on asking for frames for ever.
+inline constexpr float kSettled = 0.002f;
+
 struct Margin {
   float fTop = 0.0f, fRight = 0.0f, fBottom = 0.0f, fLeft = 0.0f;
 
@@ -487,7 +492,7 @@ public:
   }
 
   [[nodiscard]] bool animatingTree() const {
-    if (!fTransforms.empty()) {
+    if (!fTransforms.empty() || this->settling()) {
       return true;
     }
     for (const auto &child : fChildren) {
@@ -761,6 +766,16 @@ protected:
   virtual void update(double) {}
   // Chance to set fWidth/fHeight from content before layout uses them.
   virtual void measure(const skia::SkRect &) {}
+  // Whether this drawable is part-way to somewhere and the next frame will
+  // differ from this one. A transform answers for itself; a node easing a
+  // value by hand -- a hover weight, a knob sliding -- has to say so here,
+  // because damage cannot: damage is what changed, and this is the claim that
+  // something is still changing.
+  //
+  // Left unanswered it reads as settled, so a node that does not move never
+  // thinks about it.
+  virtual bool settling() const { return false; }
+
   virtual bool acceptsInput() const { return false; }
   // Whether the pointer entering or leaving changes what this draws. Taking
   // input is the usual reason to light up, so that is the default; a drawable

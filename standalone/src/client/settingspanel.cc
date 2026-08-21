@@ -504,6 +504,13 @@ private:
     }
 
   protected:
+    bool settling() const override {
+      return std::abs(fGrow -
+                      (fOwner->fActiveSection == static_cast<int>(fIndex)
+                           ? 1.0f
+                           : 0.0f)) > scene::kSettled;
+    }
+
     void update(double nowMs) override {
       const double dt = fLastMs > 0.0 ? std::min(50.0, nowMs - fLastMs) : 16.0;
       fLastMs = nowMs;

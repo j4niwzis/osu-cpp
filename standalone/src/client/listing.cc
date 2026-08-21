@@ -640,6 +640,14 @@ private:
     [[nodiscard]] int entry() const noexcept { return fEntry; }
 
   protected:
+    // Two eased values: the hover weight and how far the card is open. Both
+    // are compared against where they were told to go, which is held from the
+    // last update since working it out again needs the pointer and the entry.
+    bool settling() const override {
+      return std::abs(fExpand - fExpandTarget) > scene::kSettled ||
+             std::abs(fExpanded - fExpandedTarget) > scene::kSettled;
+    }
+
     void update(double nowMs) override {
       const double dt = fLastMs > 0.0 ? nowMs - fLastMs : 16.0;
       fLastMs = nowMs;
@@ -649,8 +657,9 @@ private:
       const bool hovered = fHovered || fOwner->expansionHovered(this);
       const float previousExpand = fExpand;
       const float previousExpanded = fExpanded;
-      fExpand = paint::approach(fExpand, hovered ? 1.0f : 0.0f,
-                                kTransitionMs / 6.0f, dt);
+      fExpandTarget = hovered ? 1.0f : 0.0f;
+      fExpand =
+          paint::approach(fExpand, fExpandTarget, kTransitionMs / 6.0f, dt);
       // Hovering the bottom of the card opens it after a moment, as
       // BeatmapCardContent.ExpandAfterDelay does.
       const bool overInfo = hovered && !e.fDiffs.empty() &&
@@ -666,8 +675,9 @@ private:
       if (overInfo && !wantExpanded) {
         fOwner->fTicking = true;
       }
-      fExpanded = paint::approach(fExpanded, wantExpanded ? 1.0f : 0.0f,
-                                  kTransitionMs / 5.0f, dt);
+      fExpandedTarget = wantExpanded ? 1.0f : 0.0f;
+      fExpanded =
+          paint::approach(fExpanded, fExpandedTarget, kTransitionMs / 5.0f, dt);
       // Which card owns the dropdown outlives the pass that decides it: a
       // card asks whether the dropdown under it is hovered, and clearing this
       // before the passes ran meant the answer was always no -- so moving the
@@ -965,6 +975,10 @@ private:
     float fCardHeight = kCardNormalHeight;
     float fExpand = 0.0f;   // button column and statistics
     float fExpanded = 0.0f; // the difficulty list under the card
+    // Where each was last told to go, kept so settling() can answer without
+    // the pointer and the entry it would need to work them out again.
+    float fExpandTarget = 0.0f;
+    float fExpandedTarget = 0.0f;
     double fHoverMs = 0.0;
     double fLastMs = 0.0;
   };
