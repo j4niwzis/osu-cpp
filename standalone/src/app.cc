@@ -2700,37 +2700,38 @@ private:
       return;
     }
     this->submitAutoplay(now);
-    if (fShowProfile) {
-      auto t0 = clock::now();
-      fEngine->advance(now);
-      auto t1 = clock::now();
-      this->playHitsounds(now);
-      fView.render(this->gameplayCtx(fSurface->getCanvas()), now);
-      auto t2 = clock::now();
-      fContext->flushAndSubmit(fSurface.get());
-      auto t3 = clock::now();
-      glfw::glfwSwapBuffers(fWindow);
-      auto t4 = clock::now();
 
+    // One frame path, measured or not. There were two of these, and the one
+    // taken under --profile called flushAndSubmit and glfwSwapBuffers itself
+    // instead of present(). present() is where canvas->restoreToCount runs,
+    // so without it every frame left its save and its clip on the stack, and
+    // clips intersect: the visible area closed in on nothing while the stack
+    // grew without bound. The picture froze and the client slowed down the
+    // longer it ran -- and every number measured that way was measured
+    // against a canvas doing something no normal frame does.
+    const auto t0 = clock::now();
+    fEngine->advance(now);
+    const auto t1 = clock::now();
+    this->playHitsounds(now);
+    fView.render(this->gameplayCtx(fSurface->getCanvas()), now);
+    const auto t2 = clock::now();
+    this->present();
+    const auto t3 = clock::now();
+
+    if (fShowProfile) {
+      const auto us = [](auto from, auto to) {
+        return static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(to - from)
+                .count());
+      };
       auto &p = fView.profileSlot();
-      p.advUs = static_cast<double>(
-          std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0)
-              .count());
-      p.renderUs = static_cast<double>(
-          std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1)
-              .count());
-      p.flushUs = static_cast<double>(
-          std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2)
-              .count());
-      p.swapUs = static_cast<double>(
-          std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3)
-              .count());
+      p.advUs = us(t0, t1);
+      p.renderUs = us(t1, t2);
+      // present() times the swap itself; what is left of it is the overlays,
+      // the blit to the window and the flush.
+      p.swapUs = static_cast<double>(fLastSwapUs);
+      p.flushUs = std::max(0.0, us(t2, t3) - static_cast<double>(fLastSwapUs));
       fView.advanceProfile();
-    } else {
-      fEngine->advance(now);
-      this->playHitsounds(now);
-      fView.render(this->gameplayCtx(fSurface->getCanvas()), now);
-      this->present();
     }
   }
 
