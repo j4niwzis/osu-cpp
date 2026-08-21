@@ -89,7 +89,10 @@ public:
   // Hit lighting outlives its judgement text: 200ms in, 200 held, 1000 out.
   static constexpr double kHitBurstLifetime = 1400.0;
   static constexpr double kCursorTrailLifetime = 140.0;
-  static constexpr std::size_t kCursorTrailMax = 40;
+  // Bounded by how far the pointer travelled rather than by how many events
+  // arrived: a trail's worth of path at this spacing is well under this.
+  static constexpr std::size_t kCursorTrailMax = 256;
+  static constexpr double kTrailSpacing = 2.0; // playfield units
   // LegacyMainCirclePiece's legacy_fade_duration, and DrawableHitCircle's
   // fade on a miss.
   static constexpr double kHitFade = 240.0;
@@ -232,8 +235,28 @@ public:
     return {static_cast<float>(scale), static_cast<float>(alpha)};
   }
 
+  // Points arrive at whatever rate the pointer reports, which is a thousand a
+  // second on a gaming mouse and three a frame on a slow one. Neither is a
+  // shape: what matters is that the samples cover the path, so they are kept
+  // a couple of units apart and the rest are dropped. The curve is worked out
+  // from them at draw time.
   void addTrailPoint(osu::Vec2 pos, double time) {
+    if (!fCursorTrail.empty()) {
+      const auto &last = fCursorTrail.back();
+      const double dx = pos.fX - last.fPos.fX;
+      const double dy = pos.fY - last.fPos.fY;
+      if (dx * dx + dy * dy < kTrailSpacing * kTrailSpacing) {
+        return;
+      }
+    }
     fCursorTrail.push_back({pos, time});
+    while (!fCursorTrail.empty() &&
+           time - fCursorTrail.front().fTime > kCursorTrailLifetime) {
+      fCursorTrail.pop_front();
+    }
+    while (fCursorTrail.size() > kCursorTrailMax) {
+      fCursorTrail.pop_front();
+    }
   }
 
   void setCombo(int combo) noexcept { fCombo = combo; }
@@ -764,31 +787,80 @@ public:
                          rotation, centre * discScale,
                          c.fEngine->spinnerAngle(index));
 
-    skia::SkPaint textPaint;
-    textPaint.setColor(skia::kWhite);
-    textPaint.setStyle(skia::kFillStyle);
-    textPaint.setAntiAlias(true);
-    (*c.fFont).setSize(20.0f / c.fScale);
-    const std::string label =
-        std::format("{}/{}", std::max(0, c.fEngine->spinnerRotations(index)),
-                    osu::spinsRequired(s.fEnd - s.fTime, od));
-    client::ui::fonts().draw(canvas, *c.fFont, label, cx,
-                             cy + 6.0f / c.fScale, textPaint);
+    // No counter in the middle: that was mine, the game has nothing like it,
+    // and it sits exactly where the centre piece is.
   }
 
+  // The frame's own contribution, which matters only when nothing is feeding
+  // the trail from events -- a replay whose frames are sparse, or a pointer
+  // sitting still. Routed through the same door so the spacing rule and the
+  // ageing live in one place.
   void updateCursorTrail(const Ctx &c, double now) {
-    if (!fCursorTrail.empty() && fCursorTrail.back().fPos.fX == c.fCursor.fX &&
-        fCursorTrail.back().fPos.fY == c.fCursor.fY) {
-      return;
-    }
-    fCursorTrail.push_back({c.fCursor, now});
+    this->addTrailPoint(c.fCursor, now);
     while (!fCursorTrail.empty() &&
            now - fCursorTrail.front().fTime > kCursorTrailLifetime) {
       fCursorTrail.pop_front();
     }
-    if (fCursorTrail.size() > kCursorTrailMax) {
-      fCursorTrail.pop_front();
+  }
+
+  // Centripetal Catmull-Rom through the samples, evaluated every `step`
+  // units. Alpha rides along the same parameter, so the fade stays attached
+  // to the sample it came from.
+  template <typename Pt>
+  [[nodiscard]] static std::vector<Pt> resampleTrail(const std::vector<Pt> &in,
+                                                     float step) {
+    if (in.size() < 2) {
+      return in;
     }
+    const auto knotGap = [](const Pt &a, const Pt &b) {
+      const float dx = b.fX - a.fX;
+      const float dy = b.fY - a.fY;
+      // alpha = 0.5: the centripetal parameterisation.
+      return std::max(1e-4f, std::sqrt(std::sqrt(dx * dx + dy * dy)));
+    };
+    std::vector<Pt> out;
+    out.reserve(in.size() * 8);
+    for (std::size_t i = 0; i + 1 < in.size(); ++i) {
+      // The two neighbours the span is shaped by; the ends stand in for
+      // themselves so the curve starts and finishes where the samples do.
+      const Pt &p0 = in[i > 0 ? i - 1 : 0];
+      const Pt &p1 = in[i];
+      const Pt &p2 = in[i + 1];
+      const Pt &p3 = in[i + 2 < in.size() ? i + 2 : in.size() - 1];
+
+      const float t0 = 0.0f;
+      const float t1 = t0 + knotGap(p0, p1);
+      const float t2 = t1 + knotGap(p1, p2);
+      const float t3 = t2 + knotGap(p2, p3);
+
+      const float dx = p2.fX - p1.fX;
+      const float dy = p2.fY - p1.fY;
+      const float chord = std::sqrt(dx * dx + dy * dy);
+      const int steps =
+          std::clamp(static_cast<int>(std::ceil(chord / std::max(0.25f, step))),
+                     1, 64);
+      for (int k = 0; k < steps; ++k) {
+        const float u = static_cast<float>(k) / static_cast<float>(steps);
+        const float t = t1 + u * (t2 - t1);
+        // De Boor's triangle, which is the readable way to say Catmull-Rom
+        // for arbitrary knots.
+        const auto lerpPt = [](const Pt &a, const Pt &b, float w) {
+          Pt r = a;
+          r.fX = a.fX + (b.fX - a.fX) * w;
+          r.fY = a.fY + (b.fY - a.fY) * w;
+          r.fAlpha = a.fAlpha + (b.fAlpha - a.fAlpha) * w;
+          return r;
+        };
+        const Pt a1 = lerpPt(p0, p1, (t - t0) / std::max(1e-4f, t1 - t0));
+        const Pt a2 = lerpPt(p1, p2, (t - t1) / std::max(1e-4f, t2 - t1));
+        const Pt a3 = lerpPt(p2, p3, (t - t2) / std::max(1e-4f, t3 - t2));
+        const Pt b1 = lerpPt(a1, a2, (t - t0) / std::max(1e-4f, t2 - t0));
+        const Pt b2 = lerpPt(a2, a3, (t - t1) / std::max(1e-4f, t3 - t1));
+        out.push_back(lerpPt(b1, b2, (t - t1) / std::max(1e-4f, t2 - t1)));
+      }
+    }
+    out.push_back(in.back());
+    return out;
   }
 
   void drawCursorTrail(const Ctx &c, skia::SkCanvas *canvas, double now) {
@@ -820,20 +892,20 @@ public:
     if (raw.size() < 2)
       return;
 
-    // One round of Chaikin corner cutting rounds off sharp turns that would
-    // otherwise fold the ribbon onto itself.
-    std::vector<TrailPt> pts;
-    pts.reserve(raw.size() * 2);
-    pts.push_back(raw.front());
-    for (std::size_t i = 0; i + 1 < raw.size(); ++i) {
-      const auto &a = raw[i];
-      const auto &b = raw[i + 1];
-      pts.push_back({a.fX * 0.75f + b.fX * 0.25f, a.fY * 0.75f + b.fY * 0.25f,
-                     a.fAlpha * 0.75f + b.fAlpha * 0.25f});
-      pts.push_back({a.fX * 0.25f + b.fX * 0.75f, a.fY * 0.25f + b.fY * 0.75f,
-                     a.fAlpha * 0.25f + b.fAlpha * 0.75f});
-    }
-    pts.push_back(raw.back());
+    // The samples are knots on a curve, not the curve. Cutting corners off the
+    // polygon they form -- which is what a round of Chaikin did here -- gets
+    // smoother the more of them there are, and at twenty frames a second
+    // there are three. So the curve is worked out instead and then walked at
+    // a fixed step in device pixels: how smooth it looks stops depending on
+    // how many points happened to arrive.
+    //
+    // Centripetal Catmull-Rom: it passes through every sample, and unlike the
+    // uniform kind it cannot loop or cusp when the samples are unevenly
+    // spaced, which is exactly what a pointer that speeds up and slows down
+    // produces.
+    const std::vector<TrailPt> pts = this->resampleTrail(raw, 2.0f * scale);
+    if (pts.size() < 2)
+      return;
 
     const float baseW = hasImg ? 6.0f * scale : 12.0f * scale;
     const float feather = 1.5f * scale; // ~1.5 device px of edge fade

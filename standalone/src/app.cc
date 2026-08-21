@@ -981,8 +981,13 @@ private:
       }
       if (fState == State::kPlaying && !fAutoplay) {
         fCursor = this->cursorFromEvent(ev);
-        this->submitTimed({this->eventGameTime(ev.fWallMs), fCursor,
-                           osu::InputAction::kMove});
+        const double at = this->eventGameTime(ev.fWallMs);
+        this->submitTimed({at, fCursor, osu::InputAction::kMove});
+        // The trail is fed from the events, as it already is for a replay.
+        // Taking one point per frame instead meant its shape was drawn from
+        // however many frames the machine managed -- three points across a
+        // whole trail at twenty a second.
+        fView.addTrailPoint(fCursor, at);
       }
       break;
     case EventType::kScroll:
