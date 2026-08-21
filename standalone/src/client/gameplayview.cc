@@ -38,6 +38,9 @@ public:
     float fUiScale = 1.0f;
     float fDim = 0.7f;
     bool fNoGlow = false;
+    // OsuSetting.HitLighting. With it off, DrawableOsuJudgement leaves the
+    // lighting at zero alpha and never animates it.
+    bool fHitLighting = true;
     bool fShowProfile = false;
   };
 
@@ -55,6 +58,20 @@ public:
     osu::Vec2 fPos;
     double fTime;
   };
+  // LegacyFollowCircle is driven by four moments: tracking starting, a tick
+  // or repeat being hit, the tail being hit, and any of them being missed.
+  // None of that is a property of the current frame, so it is remembered here.
+  struct FollowState {
+    double fPress = -1.0e18;   // tracking began
+    double fTick = -1.0e18;    // a tick or repeat was hit
+    double fEnd = -1.0e18;     // the tail was hit: the slider is over
+    double fBreak = -1.0e18;   // a tick, repeat or tail was missed
+    double fPressLimit = 180.0; // min(180, what is left of the slider)
+    double fFadeLimit = 60.0;
+    bool fTracking = false;
+  };
+  std::unordered_map<std::size_t, FollowState> fFollow;
+
   struct FadingObject {
     std::size_t fIndex;
     double fTime;
@@ -66,7 +83,8 @@ public:
   };
 
   static constexpr double kPopupLifetime = 700.0;
-  static constexpr double kHitBurstLifetime = 350.0;
+  // Hit lighting outlives its judgement text: 200ms in, 200 held, 1000 out.
+  static constexpr double kHitBurstLifetime = 1400.0;
   static constexpr double kCursorTrailLifetime = 140.0;
   static constexpr std::size_t kCursorTrailMax = 40;
   // LegacyMainCirclePiece's legacy_fade_duration, and DrawableHitCircle's
@@ -123,6 +141,86 @@ public:
     } else {
       fFlashUntil = now + 330.0; // 30 ms to white, 300 ms back
     }
+  }
+
+  // One of a slider's nested objects was judged. `tail` is the slider's own
+  // end, whose animation lazer plays at the slider's end time rather than at
+  // the tail's, which sits 36ms earlier.
+  void noteSliderNested(std::size_t index, bool tail, bool hit, double when) {
+    auto &st = fFollow[index];
+    if (!hit) {
+      st.fBreak = when;
+    } else if (tail) {
+      st.fEnd = when;
+    } else {
+      st.fTick = when;
+    }
+  }
+
+  // Tracking is a per-frame fact the engine knows; the moment it turns on is
+  // not, so the edge is caught here. The grow and the fade are both cut short
+  // by however little of the slider is left, which is what lazer does so that
+  // a follow circle on a very short slider does not animate past its end.
+  void updateFollowTracking(const Ctx &c, std::size_t index,
+                            const osu::Slider &s, double now) {
+    auto &st = fFollow[index];
+    const bool tracking = c.fEngine->isTracking(index);
+    if (tracking && !st.fTracking) {
+      const double start = std::max(now, s.fTime);
+      const double end = objectEnd(c, index).second;
+      const double remaining = std::max(0.0, end - start);
+      st.fPress = start;
+      st.fPressLimit = std::max(1.0, std::min(180.0, remaining));
+      st.fFadeLimit = std::max(1.0, std::min(60.0, remaining));
+      st.fTick = -1.0e18;
+      st.fEnd = -1.0e18;
+      st.fBreak = -1.0e18;
+    }
+    st.fTracking = tracking;
+  }
+
+  // Where the follow circle is in its animation, in LegacyFollowCircle's own
+  // units: 1 is the size it appears at, 2 the size it settles at while
+  // tracking. Zero alpha means it is not drawn at all.
+  [[nodiscard]] std::pair<float, float>
+  followCircleState(const Ctx &c, std::size_t index, double now) {
+    const auto it = fFollow.find(index);
+    if (it == fFollow.end()) {
+      return {0.0f, 0.0f};
+    }
+    const FollowState &st = it->second;
+    const auto outQuad = [](double t) { return t * (2.0 - t); };
+    const auto inQuad = [](double t) { return t * t; };
+
+    if (st.fPress <= -1.0e17) {
+      return {0.0f, 0.0f}; // never tracked, never shown
+    }
+    // OnSliderPress: 1 -> 2 eased out, fading in over a shorter window.
+    const double sincePress = now - st.fPress;
+    double scale =
+        1.0 + outQuad(std::clamp(sincePress / st.fPressLimit, 0.0, 1.0));
+    double alpha = std::clamp(sincePress / st.fFadeLimit, 0.0, 1.0);
+
+    // OnSliderTick: a pop from 2.2 back down to 2, but only once the circle
+    // has actually reached its tracking size.
+    if (st.fTick > st.fPress && now >= st.fTick && scale >= 2.0) {
+      const double t = std::clamp((now - st.fTick) / 200.0, 0.0, 1.0);
+      scale = 2.2 - 0.2 * t;
+    }
+    // OnSliderBreak wins over everything: out to 4 and gone in 100ms.
+    if (st.fBreak > -1.0e17 && now >= st.fBreak) {
+      const double t = std::clamp((now - st.fBreak) / 100.0, 0.0, 1.0);
+      scale = scale + (4.0 - scale) * t;
+      alpha *= 1.0 - t;
+    } else if (st.fEnd > -1.0e17 && now >= st.fEnd) {
+      // OnSliderEnd: in to 1.6 eased out, fading out eased in.
+      const double t = std::clamp((now - st.fEnd) / 200.0, 0.0, 1.0);
+      const double from = scale;
+      scale = from + (1.6 - from) * outQuad(t);
+      alpha *= 1.0 - inQuad(t);
+    }
+    static_cast<void>(c);
+    return {static_cast<float>(scale), static_cast<float>(alpha)};
   }
 
   void addTrailPoint(osu::Vec2 pos, double time) {
@@ -206,6 +304,10 @@ public:
   }
 
   void drawHitBursts(const Ctx &c, skia::SkCanvas *canvas, double now, double cs) {
+    if (!c.fHitLighting) {
+      fHitBursts.clear();
+      return;
+    }
     auto it = fHitBursts.begin();
     while (it != fHitBursts.end()) {
       const double age = now - it->fTime;
@@ -340,7 +442,9 @@ public:
                      [&](const osu::Spinner &) {
                        addPlayfieldPt(
                            static_cast<float>(osu::kPlayfieldCenter.fX),
-                           static_cast<float>(osu::kPlayfieldCenter.fY), 90.0f);
+                           static_cast<float>(osu::kPlayfieldCenter.fY),
+                           static_cast<float>(osu::kPlayfieldHeight / 2.0 *
+                                              1.3 * 1.2));
                      },
                  },
                  obj);
@@ -472,12 +576,15 @@ public:
                                          o.fCombo, (*c.fCombo).fIndices[index]);
                    },
                    [&](const osu::Slider &o) {
+                     this->updateFollowTracking(c, index, o, now);
+                     const auto [fs, fa] =
+                         this->followCircleState(c, index, now);
                      c.fSkin->drawSlider(canvas, o, index,
                                       c.fMap->fSliderPaths[index],
                                       c.fMap->sliderSpanDuration(o),
                                       c.fMap->sliderTickDistance(o), now, cs, ar,
                                       od, o.fCombo, (*c.fCombo).fIndices[index],
-                                      1.0f, c.fEngine->isTracking(index));
+                                      1.0f, fs, fa);
                    },
                    [&](const osu::Spinner &o) {
                      this->drawSpinner(c, canvas, o, index, now, cs, od);
@@ -513,11 +620,13 @@ public:
                                     alpha, sizeScale);
               },
               [&](const osu::Slider &o) {
+                const auto [fs, fa] =
+                    this->followCircleState(c, it->fIndex, now);
                 c.fSkin->drawSlider(
                     canvas, o, it->fIndex, c.fMap->fSliderPaths[it->fIndex],
                     c.fMap->sliderSpanDuration(o), c.fMap->sliderTickDistance(o),
                     now, cs, ar, od, o.fCombo, (*c.fCombo).fIndices[it->fIndex],
-                    alpha, false);
+                    alpha, fs, fa);
               },
               [&](const osu::Spinner &) {},
           },
@@ -526,19 +635,83 @@ public:
     }
   }
 
+  // DefaultSpinnerDisc. The disc is the height of the playfield, a third
+  // again as large so that its top and bottom clip, and it arrives in two
+  // steps over the preempt rather than simply appearing.
   void drawSpinner(const Ctx &c, skia::SkCanvas *canvas, const osu::Spinner &s,
                    std::size_t index, double now, double cs, double od) {
     const float cx = static_cast<float>(osu::kPlayfieldCenter.fX);
     const float cy = static_cast<float>(osu::kPlayfieldCenter.fY);
-    const float radius = 80.0f;
+    constexpr double kInitialScale = 1.3;
+    constexpr double kInitialFillScale = 0.2;
+    constexpr double kIdleAlpha = 0.2;
+    constexpr double kTrackingAlpha = 0.4;
+    const double half = osu::kPlayfieldHeight / 2.0;
+
+    const double preempt = osu::preemptTime(c.fMap->fDiff.fAr);
+    const double appear = s.fTime - preempt;
+    const double duration = std::max(0.0, s.fEnd - s.fTime);
+    const auto outQuint = [](double t) {
+      const double inv = 1.0 - t;
+      return 1.0 - inv * inv * inv * inv * inv;
+    };
+    const auto phase = [now](double from, double length) {
+      if (length <= 0.0)
+        return 1.0;
+      return std::clamp((now - from) / length, 0.0, 1.0);
+    };
+
+    // The main container goes 0 -> 0.2 over a quarter of the preempt starting
+    // halfway through it, then 0.2 -> 1 over half the preempt from the start
+    // time; the centre goes 0 -> 0.3 -> 0.5 on the same clock.
+    double main = 0.0;
+    double centre = 0.0;
+    if (now >= appear + preempt * 0.5) {
+      main = 0.2 * outQuint(phase(appear + preempt * 0.5, preempt * 0.25));
+      centre = 0.3 * outQuint(phase(appear + preempt * 0.5, preempt * 0.25));
+    }
+    if (now >= s.fTime) {
+      const double t = outQuint(phase(s.fTime, preempt * 0.5));
+      main = 0.2 + 0.8 * t;
+      centre = 0.3 + 0.2 * t;
+    }
+
+    // Cleared or missed, the whole disc takes 320ms to grow or shrink.
+    double discScale = kInitialScale;
+    if (now > s.fEnd) {
+      const double t = phase(s.fEnd, 320.0);
+      const bool cleared = c.fEngine->isJudged(index)
+                               ? c.fEngine->spinnerRotations(index) >=
+                                     osu::spinsRequired(duration, od)
+                               : false;
+      const double target =
+          cleared ? kInitialScale * 1.2 : kInitialScale * 0.8;
+      const double eased = cleared ? t * (2.0 - t) : t * t;
+      discScale = kInitialScale + (target - kInitialScale) * eased;
+    }
+
+    // A constant ambient rotation, so the disc reads as spinning even when it
+    // is not being turned: 25 degrees per two seconds of spinner.
+    double rotation = 0.0;
+    if (now > appear + preempt * 0.5) {
+      const double total = 25.0 * duration / 2000.0;
+      rotation = total * phase(appear + preempt * 0.5, preempt + duration);
+    }
+
+    const double radius = half * discScale * main;
 
     const double progress =
         now < s.fTime
             ? 0.0
             : std::clamp(osu::spinnerProgress(c.fEngine->spinnerRotations(index),
-                                              s.fEnd - s.fTime, od),
+                                              duration, od),
                          0.0, 1.0);
-    c.fSkin->drawSpinner(canvas, cx, cy, radius, progress);
+    const double fill =
+        kInitialFillScale + (1.0 - kInitialFillScale) * progress;
+    const float fillAlpha = static_cast<float>(
+        c.fEngine->isTracking(index) ? kTrackingAlpha : kIdleAlpha);
+    c.fSkin->drawSpinner(canvas, cx, cy, radius, progress, fill, fillAlpha,
+                         rotation, centre);
 
     skia::SkPaint textPaint;
     textPaint.setColor(skia::kWhite);
@@ -691,51 +864,48 @@ public:
                      c.fCursorSize / c.fScale);
   }
 
-  // Judgement text, ported from webosu-2's playback.js. The node there is a
-  // BitmapText at fontSize 20 with anchor 0.5, scaled by
-  // (0.85 * hitSpriteScale, hitSpriteScale) and tinted per result, its
-  // letterSpacing running 70 * ((t/1800 - 1)^5 + 1) as it fades.
-  //
-  // BitmapText advances glyphs by (xAdvance + letterSpacing) * fontSize /
-  // font.size, and venera.fnt declares size="100" against a fontSize of 20 --
-  // so the spacing lands at a fifth of its nominal value. Taking 70 at face
-  // value threw the letters far too wide.
+  // Judgement text. DefaultJudgementPiece and, for anything that is not a
+  // miss, OsuJudgementPiece over it. This was ported from webosu-2 before,
+  // which faked the sideways stretch with letter spacing and gave both
+  // results a fade in and a hold that lazer does not have.
   void drawPopups(const Ctx &c, skia::SkCanvas *canvas, double now,
                   double cs) {
-    const double hitSpriteScale = osu::circleRadius(cs) / 60.0;
+    static_cast<void>(cs);
     auto it = fPopups.begin();
     while (it != fPopups.end()) {
       const double age = now - it->fTime;
       const bool isMiss =
           std::holds_alternative<osu::judgement::Miss>(it->fResult);
-      const double lifetime = isMiss ? 800.0 : 500.0;
-      if (age > lifetime) {
+      // DefaultJudgementPiece: both live for 800ms and fade from full
+      // opacity over the whole of it, with no fade in and no hold.
+      constexpr double kLifetime = 800.0;
+      if (age > kLifetime) {
         it = fPopups.erase(it);
         continue;
       }
 
-      // Node units: everything below is laid out at the base font size and
-      // scaled by the canvas transform, as PIXI scales the node.
       constexpr float kBaseSize = 20.0f;
-      double alpha = 0.0;
+      double alpha = std::clamp(1.0 - age / kLifetime, 0.0, 1.0);
       float yOffset = 0.0f;
       float rotation = 0.0f;
-      float spacingUnits = 0.0f;
+      float stretch = 1.0f;
+      float uniform = 1.0f;
       if (isMiss) {
-        alpha = age < 100.0   ? age / 100.0
-                : age < 600.0 ? 1.0
-                              : 1.0 - (age - 600.0) / 200.0;
-        const double k = std::pow(age / 800.0, 5.0);
-        yOffset = static_cast<float>(100.0 * k * hitSpriteScale);
-        rotation = static_cast<float>(0.7 * k);
+        // Snaps down from 1.6 over 100ms eased in, then drops away and turns
+        // over the rest of its life, both eased in hard.
+        const double snap = std::clamp(age / 100.0, 0.0, 1.0);
+        uniform = static_cast<float>(1.6 - 0.6 * (snap * snap));
+        const double k = std::pow(age / kLifetime, 5.0); // Easing.InQuint
+        yOffset = static_cast<float>(100.0 * k);
+        rotation = static_cast<float>(40.0 * k * std::numbers::pi / 180.0);
       } else {
-        alpha = age < 100.0 ? age / 100.0 : 1.0 - (age - 100.0) / 400.0;
-        constexpr float kBitmapFontSize = 100.0f; // venera.fnt size=
-        spacingUnits = static_cast<float>(
-                           70.0 * (std::pow(age / 1800.0 - 1.0, 5.0) + 1.0)) *
-                       (kBaseSize / kBitmapFontSize);
+        // OsuJudgementPiece stretches the text sideways from 0.8 to 1.2 over
+        // 1800ms eased out -- far longer than the 800ms it is visible for, so
+        // only the first part of that curve is ever seen.
+        const double t = std::clamp(age / 1800.0, 0.0, 1.0);
+        const double eased = 1.0 - std::pow(1.0 - t, 5.0); // Easing.OutQuint
+        stretch = static_cast<float>(0.8 + 0.4 * eased);
       }
-      alpha = std::clamp(alpha, 0.0, 1.0);
 
       const auto [label, color] = popupInfo(it->fResult);
       // Venera is an all-caps display face; the same words in a normal face
@@ -751,13 +921,8 @@ public:
       skia::SkFont &font = c.fDisplayFont ? *c.fDisplayFont : *c.fFont;
       font.setSize(kBaseSize);
 
-      float total = 0.0f;
-      for (std::size_t k = 0; k < str.size(); ++k) {
-        total += font.measureText(&str[k], 1, skia::SkTextEncoding::kUTF8);
-        if (k + 1 < str.size()) {
-          total += spacingUnits;
-        }
-      }
+      const float total =
+          font.measureText(str.data(), str.size(), skia::SkTextEncoding::kUTF8);
 
       // anchor 0.5 centres vertically too, so shift by half the cap height
       // rather than sitting on the baseline.
@@ -781,15 +946,10 @@ public:
       if (rotation != 0.0f) {
         canvas->rotate(rotation * 180.0f / std::numbers::pi_v<float>);
       }
-      canvas->scale(0.85f * static_cast<float>(hitSpriteScale),
-                    static_cast<float>(hitSpriteScale));
-      float pen = -total * 0.5f;
-      for (std::size_t k = 0; k < str.size(); ++k) {
-        canvas->drawSimpleText(&str[k], 1, skia::SkTextEncoding::kUTF8, pen,
-                               centreOffset, font, paint);
-        pen += font.measureText(&str[k], 1, skia::SkTextEncoding::kUTF8) +
-               spacingUnits;
-      }
+      canvas->scale(uniform * stretch, uniform);
+      canvas->drawSimpleText(str.data(), str.size(),
+                             skia::SkTextEncoding::kUTF8, -total * 0.5f,
+                             centreOffset, font, paint);
       canvas->restore();
       ++it;
     }

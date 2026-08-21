@@ -2754,6 +2754,7 @@ private:
     c.fUiScale = std::clamp(static_cast<float>(fScreenH) / 1080.0f, 0.7f, 3.0f);
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
+    c.fHitLighting = fSettings.flag("hitlighting");
     c.fShowProfile = fShowProfile;
     return c;
   }
@@ -5406,6 +5407,7 @@ private:
     float fCursorSize = 1.0f;
     float fDim = 0.7f;
     bool fNoGlow = false;
+    bool fHitLighting = true;
     std::thread fThread;
     std::atomic<int> fPercent{0};
     std::atomic<bool> fFinished{false};
@@ -5523,6 +5525,7 @@ private:
                        (fScale > 0.0f ? exportScale / fScale : 1.0f);
     job->fDim = fSettings.value("dim");
     job->fNoGlow = fNoGlow;
+    job->fHitLighting = fSettings.flag("hitlighting");
     for (const auto &info : fSet.fBeatmaps) {
       if (info.fMeta.fBackground.empty()) {
         continue;
@@ -5577,6 +5580,7 @@ private:
     ctx.fUiScale = std::clamp(static_cast<float>(height) / 1080.0f, 0.7f, 3.0f);
     ctx.fDim = job.fDim;
     ctx.fNoGlow = job.fNoGlow;
+    ctx.fHitLighting = job.fHitLighting;
     job.fView.preScaleBackground(ctx);
 
     osu::Engine engine(job.fMap, job.fMods);
@@ -7805,6 +7809,21 @@ private:
       // Ticks and tails are scored but not shown; lazer pops the head's
       // judgement at the head and nothing at all for what is under it.
       if (ev.fKind != osu::HitKind::kBasic) {
+        // Not shown as a judgement, but the follow circle reacts to every one
+        // of them: it pops on a tick and blows out on a dropped one.
+        if (ev.fKind == osu::HitKind::kLargeTick ||
+            ev.fKind == osu::HitKind::kSliderTail) {
+          const bool tail = ev.fKind == osu::HitKind::kSliderTail;
+          const bool hit =
+              !std::holds_alternative<osu::judgement::Miss>(ev.fResult);
+          // A tail's own time is 36ms before the slider's end; lazer plays
+          // the end animation at the end.
+          const double when =
+              tail && ev.fIndex < fMap->fObjects.size()
+                  ? osu::objectEnd(fMap->fObjects[ev.fIndex], *fMap).second
+                  : now;
+          fView.noteSliderNested(ev.fIndex, tail, hit, when);
+        }
         continue;
       }
       const auto pos = this->objectPosition(ev.fIndex);

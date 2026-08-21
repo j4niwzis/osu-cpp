@@ -381,7 +381,7 @@ public:
                   double spanDuration, double tickDistance, double now,
                   double cs, double ar, double od, int comboNumber,
                   std::size_t comboIndex, float alphaScale = 1.0f,
-                  bool tracking = false) {
+                  float followScale = 0.0f, float followAlpha = 0.0f) {
     const double duration = std::max(0.001, spanDuration);
     const double end = s.fTime + duration * s.fRepeat;
     const double radius = detail::circleVisualRadius(cs);
@@ -475,26 +475,37 @@ public:
         canvas->drawCircle(bx, by, static_cast<float>(radius), ballPaint);
       }
 
-      if (tracking) {
-        if (!fDisableGlow) {
-          auto follow = this->sliderFollowCircle();
-          if (follow) {
-            skia::SkPaint followPaint;
-            followPaint.setAntiAlias(true);
-            followPaint.setBlendMode(skia::SkBlendMode::kPlus);
-            detail::drawImageCentered(canvas, follow.get(), bx, by,
-                                      0.9f * static_cast<float>(radius / 60.0),
-                                      followPaint);
-          } else {
-            skia::SkPaint ringPaint;
-            ringPaint.setColor(skia::kRed);
-            ringPaint.setStyle(skia::kStrokeStyle);
-            ringPaint.setStrokeWidth(3.0f);
-            ringPaint.setAntiAlias(true);
-            ringPaint.setAlphaf(0.7f);
-            canvas->drawCircle(bx, by, static_cast<float>(radius * 2.4),
-                               ringPaint);
-          }
+      // The follow circle's size and opacity are animated by the caller, which
+      // is the only place that knows when tracking started, when a tick was
+      // hit and when one was dropped. `followScale` is in the same units
+      // LegacyFollowCircle works in, where 2 is the steady tracking size.
+      if (followAlpha > 0.0f && followScale > 0.0f) {
+        auto follow = this->sliderFollowCircle();
+        const float rel = followScale * 0.5f;
+        if (follow && !fDisableGlow) {
+          skia::SkPaint followPaint;
+          followPaint.setAntiAlias(true);
+          followPaint.setAlphaf(followAlpha);
+          followPaint.setBlendMode(skia::SkBlendMode::kPlus);
+          detail::drawImageCentered(
+              canvas, follow.get(), bx, by,
+              0.9f * static_cast<float>(radius / 60.0) * rel, followPaint);
+        } else if (follow) {
+          skia::SkPaint followPaint;
+          followPaint.setAntiAlias(true);
+          followPaint.setAlphaf(followAlpha);
+          detail::drawImageCentered(
+              canvas, follow.get(), bx, by,
+              0.9f * static_cast<float>(radius / 60.0) * rel, followPaint);
+        } else {
+          skia::SkPaint ringPaint;
+          ringPaint.setColor(skia::kRed);
+          ringPaint.setStyle(skia::kStrokeStyle);
+          ringPaint.setStrokeWidth(3.0f);
+          ringPaint.setAntiAlias(true);
+          ringPaint.setAlphaf(0.7f * followAlpha);
+          canvas->drawCircle(bx, by,
+                             static_cast<float>(radius * 2.4) * rel, ringPaint);
         }
       }
     }
@@ -917,8 +928,27 @@ float4 main(float2 coords) {
     }
   }
 
+  // `radius` is already the animated outer radius; `fill` is how much of it
+  // the progress disc covers, `fillAlpha` its opacity (idle or tracking), and
+  // `rotation` the ambient spin, in degrees.
   void drawSpinner(skia::SkCanvas *canvas, double cx, double cy, double radius,
-                   double progress) {
+                   double progress, double fill = 1.0, float fillAlpha = 0.4f,
+                   double rotation = 0.0, double centreScale = 0.5) {
+    if (radius <= 0.0) {
+      return;
+    }
+    canvas->save();
+    canvas->translate(static_cast<float>(cx), static_cast<float>(cy));
+    canvas->rotate(static_cast<float>(rotation));
+    canvas->translate(-static_cast<float>(cx), -static_cast<float>(cy));
+    this->drawSpinnerPieces(canvas, cx, cy, radius, progress, fill, fillAlpha,
+                            centreScale);
+    canvas->restore();
+  }
+
+  void drawSpinnerPieces(skia::SkCanvas *canvas, double cx, double cy,
+                         double radius, double progress, double fill,
+                         float fillAlpha, double centreScale) {
     auto base = this->spinnerBase();
     auto prog = this->spinnerProgress();
     auto top = this->spinnerTop();
@@ -930,24 +960,38 @@ float4 main(float2 coords) {
                                 static_cast<float>(radius * 2.0),
                                 static_cast<float>(radius * 2.0), paint);
     }
+    // SpinnerFill is a disc that grows with progress rather than a pie: it
+    // starts at a fifth of the disc and reaches the whole of it when the
+    // spinner is cleared. Its opacity is the caller's, being 0.2 while idle
+    // and 0.4 while the spinner is being turned.
+    const double fillRadius = radius * std::clamp(fill, 0.0, 1.0);
     if (prog) {
-      const float size = static_cast<float>(radius * 2.0);
-      canvas->drawArc(
-          skia::SkRect::MakeXYWH(static_cast<float>(cx - radius),
-                                 static_cast<float>(cy - radius), size, size),
-          -90.0f, static_cast<float>(progress * 360.0), true, paint);
+      skia::SkPaint fp = paint;
+      fp.setAlphaf(fillAlpha);
+      const float size = static_cast<float>(fillRadius * 2.0);
+      detail::drawImageCentered(canvas, prog.get(), static_cast<float>(cx),
+                                static_cast<float>(cy), size, size, fp);
     } else {
-      skia::SkPaint fill;
-      fill.setColor(skia::kCyan);
-      fill.setStyle(skia::kFillStyle);
-      fill.setAntiAlias(true);
-      fill.setAlphaf(0.4f);
-      const float size = static_cast<float>(radius * 2.0);
-      canvas->drawArc(skia::SkRect::MakeXYWH(static_cast<float>(cx - radius),
-                                             static_cast<float>(cy - radius),
-                                             size, size),
-                      -90.0f, static_cast<float>(progress * 360.0), true, fill);
+      skia::SkPaint fillPaint;
+      fillPaint.setColor(skia::colorSetARGB(255, 51, 88, 152));
+      fillPaint.setStyle(skia::kFillStyle);
+      fillPaint.setAntiAlias(true);
+      fillPaint.setAlphaf(fillAlpha);
+      canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
+                         static_cast<float>(fillRadius), fillPaint);
     }
+    // SpinnerCentreLayer, which sits at its own scale on top.
+    if (centreScale > 0.0) {
+      skia::SkPaint centre;
+      centre.setColor(skia::kWhite);
+      centre.setStyle(skia::kStrokeStyle);
+      centre.setStrokeWidth(2.0f);
+      centre.setAntiAlias(true);
+      centre.setAlphaf(0.8f);
+      canvas->drawCircle(static_cast<float>(cx), static_cast<float>(cy),
+                         static_cast<float>(radius * centreScale), centre);
+    }
+    static_cast<void>(progress);
     if (top) {
       detail::drawImageCentered(canvas, top.get(), static_cast<float>(cx),
                                 static_cast<float>(cy),
@@ -961,21 +1005,26 @@ float4 main(float2 coords) {
     auto burst = this->hitBurst();
     if (!burst)
       return;
-    constexpr double kFlashFadeIn = 40.0;
-    constexpr double kFlashFadeOut = 120.0;
-    constexpr double kGlowFadeOut = 350.0;
-    constexpr double kFlashMaxOpacity = 0.8;
+    // DrawableOsuJudgement.ApplyHitAnimations: the lighting grows from 0.8 to
+    // 1.2 over 600ms eased out, fades in over 200, holds for 200 and fades
+    // out over a full second. It lives for 1400ms, far longer than the
+    // judgement text it sits behind.
+    constexpr double kFadeIn = 200.0;
+    constexpr double kHold = 200.0;
+    constexpr double kFadeOut = 1000.0;
+    constexpr double kGrow = 600.0;
 
+    const double growT = std::clamp(age / kGrow, 0.0, 1.0);
+    const double scale = 0.8 + 0.4 * growT * (2.0 - growT); // Easing.Out
     double alpha;
-    double scale = 1.0;
-    if (age < kFlashFadeIn) {
-      alpha = age / kFlashFadeIn;
+    if (age < kFadeIn) {
+      alpha = age / kFadeIn;
+    } else if (age < kFadeIn + kHold) {
+      alpha = 1.0;
     } else {
-      alpha = 1.0 - (age - kFlashFadeIn) / kFlashFadeOut;
-      const double t = age / kGlowFadeOut;
-      scale = 1.0 + 0.5 * t * (2.0 - t);
+      alpha = 1.0 - (age - kFadeIn - kHold) / kFadeOut;
     }
-    alpha = std::clamp(alpha, 0.0, 1.0) * kFlashMaxOpacity;
+    alpha = std::clamp(alpha, 0.0, 1.0);
     if (alpha <= 0.0)
       return;
 
