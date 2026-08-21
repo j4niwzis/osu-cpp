@@ -863,6 +863,44 @@ public:
     return out;
   }
 
+  // Sprites laid down every `interval` along the path, each carrying the
+  // fade of the place it sits at. The spacing is the texture's own width over
+  // 2.5, so consecutive stamps cover two thirds of each other and the chain
+  // reads as one stroke -- the same relationship the game uses, since it is a
+  // property of how overlapping quads blend rather than of anything else.
+  template <typename Pt>
+  void stampCursorTrail(const Ctx &c, skia::SkCanvas *canvas,
+                        const std::vector<Pt> &pts, float scale) {
+    auto img = c.fSkin->cursorTrail();
+    if (!img || pts.size() < 2) {
+      return;
+    }
+    const float spriteW =
+        static_cast<float>(img->width()) * 0.35f * scale * c.fCursorSize;
+    const float interval = std::max(0.5f * scale, spriteW / 2.5f);
+
+    float carried = 0.0f;
+    for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
+      const float dx = pts[i + 1].fX - pts[i].fX;
+      const float dy = pts[i + 1].fY - pts[i].fY;
+      const float len = std::sqrt(dx * dx + dy * dy);
+      if (len <= 1e-6f) {
+        continue;
+      }
+      for (float d = interval - carried; d < len; d += interval) {
+        const float u = d / len;
+        const float a = pts[i].fAlpha + (pts[i + 1].fAlpha - pts[i].fAlpha) * u;
+        if (a <= 0.0f) {
+          continue;
+        }
+        c.fSkin->drawCursorTrail(
+            canvas, {pts[i].fX + dx * u, pts[i].fY + dy * u},
+            scale * c.fCursorSize, a);
+      }
+      carried = std::fmod(carried + len, interval);
+    }
+  }
+
   void drawCursorTrail(const Ctx &c, skia::SkCanvas *canvas, double now) {
     const float scale = 1.0f / c.fScale;
     const bool hasImg = static_cast<bool>(c.fSkin->cursorTrail());
@@ -907,7 +945,17 @@ public:
     if (pts.size() < 2)
       return;
 
-    const float baseW = hasImg ? 6.0f * scale : 12.0f * scale;
+    // A skin that ships a trail owns the look of it: its texture is stamped
+    // along the curve, the way the game does it, rather than being reduced to
+    // a blob at the head while geometry draws the rest. Stamped along the
+    // curve and not along the straight lines between samples, which is the
+    // one place this can do better than the original for free.
+    if (hasImg) {
+      this->stampCursorTrail(c, canvas, pts, scale);
+      return;
+    }
+
+    const float baseW = 12.0f * scale;
     const float feather = 1.5f * scale; // ~1.5 device px of edge fade
     const std::size_t n = pts.size();
 
@@ -971,15 +1019,11 @@ public:
         pos.data(), nullptr, col.data(), static_cast<int>(idx.size()),
         idx.data());
 
+    // Only reached when the skin has no trail of its own, so there is no
+    // sprite to blend with or to cap the head with here.
     skia::SkPaint paint;
-    if (hasImg && !c.fNoGlow)
-      paint.setBlendMode(skia::SkBlendMode::kPlus);
     // No shader on the paint: kDst keeps the interpolated vertex colors.
     canvas->drawVertices(verts, skia::SkBlendMode::kDst, paint);
-
-    if (hasImg && !c.fNoGlow) {
-      c.fSkin->drawCursorTrail(canvas, fCursorTrail.back().fPos, scale, 0.6f);
-    }
   }
 
   void drawCursor(const Ctx &c, skia::SkCanvas *canvas) {
