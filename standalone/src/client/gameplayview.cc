@@ -1345,15 +1345,24 @@ public:
     client::ui::fonts().draw(canvas, *c.fFont, statsText, 20.0f * ui,
                              90.0f * ui, fHudPaint);
 
-    // pp across the top, in the middle, where nothing else is. A performance
-    // calculation is arithmetic over counts this client already keeps, so it
-    // can be answered every frame, and it is the figure worth watching while
-    // the map is still running rather than only after it.
-    (*c.fFont).setSize(34.0f * ui);
-    const std::string ppText = std::format("{:.0f}pp", c.fPp);
-    const float ppWidth = client::ui::fonts().measure(*c.fFont, ppText);
-    client::ui::fonts().draw(canvas, *c.fFont, ppText,
-                             (sw - ppWidth) * 0.5f, 62.0f * ui, fHudPaint);
+    // pp across the top, in the middle, where nothing else is, in the same
+    // rounded plate the frame counter uses. A performance calculation is
+    // arithmetic over counts this client already keeps, so it can be answered
+    // every frame, and it is the figure worth watching while the map is
+    // running rather than only after it.
+    {
+      const client::ui::Painter p(canvas, *c.fFont);
+      const std::string ppText = std::format("{:.0f}pp", c.fPp);
+      (*c.fFont).setSize(18.0f * ui);
+      const float textW = client::ui::fonts().measure(*c.fFont, ppText);
+      const float boxW = textW + 24.0f * ui;
+      const float boxH = 30.0f * ui;
+      const skia::SkRect box = skia::SkRect::MakeXYWH(
+          (sw - boxW) * 0.5f, 24.0f * ui, boxW, boxH);
+      p.fillRounded(box, 6.0f * ui, skia::colorSetARGB(150, 8, 6, 12));
+      p.textCentered(ppText, box.centerX(), box.fBottom - 9.0f * ui,
+                     18.0f * ui, skia::kWhite);
+    }
 
     // Difficulty / mods (top-right).
     (*c.fFont).setSize(16.0f * ui);
