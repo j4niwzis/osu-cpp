@@ -4,13 +4,13 @@ import std;
 import skia;
 import skiff.paint;
 import skiff.scene;
+import skiff.nodes;
 export import skiff.widgets.theme;
 
 namespace skiff::widgets {
 using skiff::scene::Anchor;
 using skiff::scene::Axes;
 using skiff::scene::Drawable;
-using skiff::scene::Easing;
 using skiff::scene::Margin;
 using skiff::scene::Spec;
 } // namespace skiff::widgets
@@ -21,58 +21,47 @@ export namespace skiff::widgets {
 // held at full strength and the one under the pointer lit.
 //
 // Only the open half, because that is the half that is the same everywhere.
-// The closed control is a row in a settings panel one place and a labelled
-// box with a chevron another, and both of those are the screen's own; what
-// they share is what happens after the click. Where the list goes is the
-// caller's too -- a list belongs to the control that opened it and has to be
-// drawn over everything below it, which is a question about the tree.
+// The closed control is a row in a settings panel one place and a labelled box
+// with a chevron another, and both of those belong to their screen; what they
+// share is what happens after the click.
 //
-// Geometry is one formula, exposed, because the control that opens the list
-// has to size and place it before the list exists to ask.
-class DropdownList : public Drawable {
+// It is a flow of real rows rather than a rectangle that draws several. That
+// is the difference between a widget that has to be told how tall it is and
+// one that knows: the height comes from the children, each row is placed by
+// the flow, each row is asked whether the click was in it, and each row
+// notices the pointer arriving on its own. None of those is arithmetic anybody
+// has to write down, and none of them can drift from the arithmetic somewhere
+// else that used to have to agree with it.
+class DropdownList : public skiff::nodes::FillFlow {
 public:
-  Theme fTheme = theme();
+  DropdownList() : FillFlow(Direction::kVertical, 0.0f, kRowGap) {
+    fAutoSizeAxes = Axes::kY;
+    // Two above the first row, four below the last, which is where the plate
+    // ends. Asymmetric because that is how it has always looked.
+    fPadding = {kTopInset, 0.0f, kBottomInset, 0.0f};
+    fWrap = false;
+  }
 
-  float fPitch = 26.0f;     // from the top of one row to the top of the next
-  float fRowHeight = 24.0f; // the row itself, the rest being the gap
-  float fInset = 2.0f;      // above the first row and below the last
+  Theme fTheme = theme();
+  float fRowHeight = 24.0f;
   float fFontSize = 13.0f;
   float fPlateRadius = 6.0f;
   float fRowRadius = 6.0f;
   float fTextInset = 12.0f;
-  float fBaseline = 4.0f; // below the row's middle, not derived from the size
-  float fDimAlpha = 0.8f; // what an option that is not the current one is
-
-  std::vector<std::string> fOptions;
-  int fCurrent = -1;
+  float fBaseline = 4.0f; // below a row's middle, not derived from the size
+  float fDimAlpha = 0.8f; // an option that is not the current one
   std::function<void(int)> fOnChoose;
 
-  // How tall a list of that many options comes out, for the control that has
-  // to reserve the space before there is a list to ask.
-  [[nodiscard]] static float heightFor(std::size_t options, float pitch = 26.0f,
-                                       float inset = 2.0f) {
-    return static_cast<float>(options) * pitch + inset * 2.0f;
-  }
-
-  // Where an option sits inside a list occupying that rectangle.
-  [[nodiscard]] static skia::SkRect
-  optionBox(const skia::SkRect &list, std::size_t option, float pitch = 26.0f,
-            float rowHeight = 24.0f, float inset = 2.0f) {
-    return skia::SkRect::MakeXYWH(
-        list.fLeft, list.fTop + inset + static_cast<float>(option) * pitch,
-        list.width(), rowHeight);
-  }
-
-  [[nodiscard]] skia::SkRect optionBox(std::size_t option) const {
-    return optionBox(fBounds, option, fPitch, fRowHeight, fInset);
-  }
-
   void setOptions(std::vector<std::string> options) {
-    if (options == fOptions) {
+    if (options == fLabels) {
       return;
     }
-    fOptions = std::move(options);
-    this->markDamaged();
+    fLabels = std::move(options);
+    this->clear();
+    for (std::size_t i = 0; i < fLabels.size(); ++i) {
+      this->add<Row>({.fillX = true, .height = fRowHeight}, this, i);
+    }
+    this->invalidateLayout();
   }
 
   void setCurrent(int current) {
@@ -82,62 +71,74 @@ public:
     fCurrent = current;
     this->markDamaged();
   }
+  [[nodiscard]] int current() const noexcept { return fCurrent; }
 
 protected:
-  // The list lights the row under the pointer, which changes what it draws
-  // while the list itself stays hovered. Nothing else in the tree notices.
-  void update(double) override {
-    const int hot = this->optionAt(this->hoverX(), this->hoverY());
-    if (hot != fHotOption) {
-      fHotOption = hot;
-      this->markDamaged();
-    }
-  }
-
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
     skia::SkFont *font = skiff::paint::defaultFont();
-    if (font == nullptr || fOptions.empty()) {
+    if (font == nullptr || fLabels.empty()) {
       return;
     }
-    const skiff::paint::Painter p(canvas, *font);
     // Its own backing plate, since what is underneath it stays where it is.
+    // The rows are children and draw themselves over this.
+    const skiff::paint::Painter p(canvas, *font);
     p.fillRounded(fBounds, fPlateRadius, fTheme.fSurface, alpha);
-    for (std::size_t o = 0; o < fOptions.size(); ++o) {
-      const skia::SkRect row = this->optionBox(o);
-      const bool hot = static_cast<int>(o) == fHotOption;
-      p.fillRounded(row, fRowRadius,
-                    hot ? fTheme.fSurfaceActive : fTheme.fSurfaceHover, alpha);
-      p.textClipped(
-          fOptions[o], row.fLeft + fTextInset, row.centerY() + fBaseline,
-          row.width() - fTextInset * 2.0f, fFontSize, fTheme.fText,
-          alpha * (static_cast<int>(o) == fCurrent ? 1.0f : fDimAlpha));
-    }
   }
 
+  // A click that lands between two rows is still a click on the list, and is
+  // swallowed: an open dropdown covers what is under it, and the thing under
+  // it must not receive what was aimed at the gap. Rows are children, so they
+  // are asked first and this is only reached by the gaps.
   bool acceptsInput() const override { return fVisible; }
-
-  // A click between rows is still a click on the list, and is swallowed: an
-  // open dropdown covers what is under it, and the thing under it must not
-  // receive what was aimed at the gap.
-  bool onClick(float x, float y) override {
-    const int option = this->optionAt(x, y);
-    if (option >= 0 && fOnChoose) {
-      fOnChoose(option);
-    }
-    return true;
-  }
-
-  [[nodiscard]] int optionAt(float x, float y) const {
-    for (std::size_t o = 0; o < fOptions.size(); ++o) {
-      if (this->optionBox(o).contains(x, y)) {
-        return static_cast<int>(o);
-      }
-    }
-    return -1;
-  }
+  bool hoverChangesAppearance() const override { return false; }
+  bool onClick(float, float) override { return true; }
 
 private:
-  int fHotOption = -1;
+  static constexpr float kRowGap = 2.0f;
+  static constexpr float kTopInset = 2.0f;
+  static constexpr float kBottomInset = 4.0f;
+
+  // One option. It lights when the pointer is on it, which the framework
+  // tells it, and reports its own click, which the framework routes to it.
+  class Row : public Drawable {
+  public:
+    Row(DropdownList *list, std::size_t index) : fList(list), fIndex(index) {}
+
+  protected:
+    void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+      skia::SkFont *font = skiff::paint::defaultFont();
+      if (font == nullptr || fIndex >= fList->fLabels.size()) {
+        return;
+      }
+      const Theme &theme = fList->fTheme;
+      const skiff::paint::Painter p(canvas, *font);
+      p.fillRounded(fBounds, fList->fRowRadius,
+                    fHovered ? theme.fSurfaceActive : theme.fSurfaceHover,
+                    alpha);
+      const bool chosen = static_cast<int>(fIndex) == fList->fCurrent;
+      p.textClipped(fList->fLabels[fIndex], fBounds.fLeft + fList->fTextInset,
+                    fBounds.centerY() + fList->fBaseline,
+                    fBounds.width() - fList->fTextInset * 2.0f,
+                    fList->fFontSize, theme.fText,
+                    alpha * (chosen ? 1.0f : fList->fDimAlpha));
+    }
+
+    bool acceptsInput() const override { return true; }
+
+    bool onClick(float, float) override {
+      if (fList->fOnChoose) {
+        fList->fOnChoose(static_cast<int>(fIndex));
+      }
+      return true;
+    }
+
+  private:
+    DropdownList *fList;
+    std::size_t fIndex;
+  };
+
+  std::vector<std::string> fLabels;
+  int fCurrent = -1;
 };
 
 } // namespace skiff::widgets

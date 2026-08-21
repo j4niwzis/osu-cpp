@@ -218,6 +218,11 @@ public:
   float fX = 0.0f, fY = 0.0f;        // offset from the anchor
   float fScale = 1.0f;
   float fAlpha = 1.0f;
+  // Positioned and sized against this drawable rather than against the
+  // parent, when set. Not owned, and it has to outlive this one -- which for
+  // the case it exists for, a list against the control that opens it, it
+  // does.
+  Drawable *fFollow = nullptr;
   bool fMasking = false; // clip children to these bounds
   float fCornerRadius = 0.0f;
   bool fVisible = true;
@@ -412,7 +417,20 @@ public:
 
   // Places this drawable inside `parent` (already absolute) and its children
   // inside itself.
-  void layout(const skia::SkRect &parent) {
+  void layout(const skia::SkRect &parentBox) {
+    // Placed against something other than the parent, when asked. A dropdown
+    // list belongs to the control that opened it and has to be drawn over
+    // everything below it, so it lives high in the tree and is positioned low
+    // in it -- which otherwise means the screen copying coordinates across by
+    // hand every frame, and working out the size to copy.
+    //
+    // The followed drawable has to have been laid out already, which for a
+    // sibling means being earlier in the parent's children. That is the same
+    // order that puts the follower on top, so the two requirements agree.
+    const skia::SkRect parent =
+        (fFollow != nullptr && !fFollow->fBounds.isEmpty()) ? fFollow->fBounds
+                                                           : parentBox;
+
     // A drawable that knows its own size -- text, mainly -- says so before
     // anything is computed from it. It is told the box it is going into,
     // since a row that wraps has a height only relative to a width.

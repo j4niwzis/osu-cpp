@@ -322,19 +322,13 @@ private:
 
     // Where the open list goes: under the control, one row per option, in
     // screen coordinates, for the overlay that draws it.
-    [[nodiscard]] skia::SkRect listRect() const {
+    // Where a list opened from this row starts, and how wide it is. Not how
+    // tall: the list is a flow of rows and sizes itself to them.
+    [[nodiscard]] skia::SkRect listAnchor() const {
       const paint::Painter measurer(nullptr, *fOwner->fFont);
       const skia::SkRect box = this->choiceBox(measurer);
-      const auto &def = fOwner->fSettings->defs()[fIndex];
-      const float height =
-          widgets::DropdownList::heightFor(def.fOptions.size());
       return skia::SkRect::MakeXYWH(box.fLeft, box.fBottom + 4.0f, box.width(),
-                                    height);
-    }
-
-    [[nodiscard]] static skia::SkRect optionBox(const skia::SkRect &list,
-                                                std::size_t option) {
-      return widgets::DropdownList::optionBox(list, option);
+                                    0.0f);
     }
 
   protected:
@@ -575,21 +569,19 @@ private:
     }
 
   protected:
-    // Placed by hand from the row it belongs to: measure() is where a
-    // drawable gets to say where it goes before the box is computed.
+    // Where it goes comes from the row that opened it; how big it is does
+    // not come from anywhere, because the list is a flow and sizes itself.
     void measure(const skia::SkRect &parent) override {
-      const skia::SkRect list = fOwner->openListRect();
-      fVisible = !list.isEmpty();
+      const skia::SkRect anchor = fOwner->openListAnchor();
+      fVisible = anchor.width() > 0.0f;
       if (!fVisible) {
         fWidth = 0.0f;
-        fHeight = 0.0f;
         this->setOptions({});
         return;
       }
-      fX = list.fLeft - parent.fLeft;
-      fY = list.fTop - parent.fTop;
-      fWidth = list.width();
-      fHeight = list.height();
+      fX = anchor.fLeft - parent.fLeft;
+      fY = anchor.fTop - parent.fTop;
+      fWidth = anchor.width();
 
       const auto &def =
           fOwner->fSettings
@@ -610,9 +602,9 @@ private:
     return fRowNodes[static_cast<std::size_t>(fOpenChoice)];
   }
 
-  [[nodiscard]] skia::SkRect openListRect() const {
+  [[nodiscard]] skia::SkRect openListAnchor() const {
     const RowNode *row = this->openRow();
-    return row != nullptr ? row->listRect() : skia::SkRect::MakeEmpty();
+    return row != nullptr ? row->listAnchor() : skia::SkRect::MakeEmpty();
   }
 
   // ---- the tree -----------------------------------------------------------
