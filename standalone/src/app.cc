@@ -5268,9 +5268,9 @@ private:
   // most of the way open (lazer clamps content alpha the same way).
   void drawMenuWedge(skia::SkCanvas *canvas, std::size_t index, float wedge) {
     const MenuBtn &b = fMenuBtns[index];
-    const float expand = fMenu.buttonExpand(index);
-    const float hover = fMenu.buttonHover(index);
-    const float flash = fMenu.buttonFlash(index);
+    const float expandWeight = fMenu.buttonExpand(index);
+    const float hoverWeight = fMenu.buttonHover(index);
+    const float flashWeight = fMenu.buttonFlash(index);
     const skia::SkRect &r = b.fRect;
     skia::SkPathBuilder shape;
     shape.moveTo(r.fLeft + wedge, r.fTop);
@@ -5284,25 +5284,27 @@ private:
     fill.setAntiAlias(true);
     fill.setColor(b.fColor);
     // Hover brightens; the click flash blows it out briefly, then decays.
-    fill.setAlphaf(std::clamp(expand * (0.86f + 0.14f * hover), 0.0f, 1.0f));
+    fill.setAlphaf(
+        std::clamp(expandWeight * (0.86f + 0.14f * hoverWeight), 0.0f, 1.0f));
     canvas->drawPath(path, fill);
 
-    if (flash > 0.01f) {
-      skia::SkPaint flash;
-      flash.setAntiAlias(true);
-      flash.setColor(skia::kWhite);
-      flash.setAlphaf(0.55f * flash);
-      flash.setBlendMode(skia::SkBlendMode::kPlus);
-      canvas->drawPath(path, flash);
+    if (flashWeight > 0.01f) {
+      skia::SkPaint flashPaint;
+      flashPaint.setAntiAlias(true);
+      flashPaint.setColor(skia::kWhite);
+      flashPaint.setAlphaf(0.55f * flashWeight);
+      flashPaint.setBlendMode(skia::SkBlendMode::kPlus);
+      canvas->drawPath(path, flashPaint);
     }
 
-    const float contentAlpha = std::clamp((expand - 0.5f) / 0.3f, 0.0f, 1.0f);
+    const float contentAlpha =
+        std::clamp((expandWeight - 0.5f) / 0.3f, 0.0f, 1.0f);
     if (contentAlpha <= 0.0f) {
       return;
     }
     const float cx = r.centerX() + wedge * 0.5f;
     // Icon lifts slightly on hover, mirroring lazer's bouncing icon.
-    const float lift = 6.0f * hover;
+    const float lift = 6.0f * hoverWeight;
     this->drawTextCentered(canvas, b.fGlyph, cx, r.centerY() - lift, 30.0f,
                            skia::kWhite, contentAlpha);
     this->drawTextCentered(canvas, b.fLabel, cx, r.fBottom - 18.0f, 17.0f,
