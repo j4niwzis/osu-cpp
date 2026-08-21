@@ -951,13 +951,15 @@ float4 main(float2 coords) {
     if (radius <= 0.0) {
       return;
     }
-    canvas->save();
-    canvas->translate(static_cast<float>(cx), static_cast<float>(cy));
-    canvas->rotate(static_cast<float>(rotation));
-    canvas->translate(-static_cast<float>(cx), -static_cast<float>(cy));
+    // The ambient rotation is only worth applying to something that is not
+    // rotationally symmetric, and every piece drawn below is a circle about
+    // the same centre. Turning the canvas for them changes no pixel and takes
+    // Skia off its fast path for circles, which on a disc this size -- the
+    // height of the playfield and a third again -- is not cheap. It goes back
+    // when there are ticks on the disc to turn.
+    static_cast<void>(rotation);
     this->drawSpinnerPieces(canvas, cx, cy, radius, progress, fill, fillAlpha,
                             centreScale);
-    canvas->restore();
   }
 
   void drawSpinnerPieces(skia::SkCanvas *canvas, double cx, double cy,

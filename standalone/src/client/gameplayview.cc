@@ -80,6 +80,9 @@ public:
   struct ProfileFrame {
     double advUs, renderUs, flushUs, swapUs;
     double renderFollowUs, renderObjectsUs, renderRestUs, renderHudUs;
+    // objs split by what was drawn, since one spinner and two hundred
+    // circles cost nothing alike.
+    double objCirclesUs, objSlidersUs, objSpinnersUs;
   };
 
   static constexpr double kPopupLifetime = 700.0;
@@ -92,6 +95,10 @@ public:
   static constexpr double kHitFade = 240.0;
   static constexpr double kMissFade = 100.0;
   static constexpr std::size_t kProfileCount = 60;
+  // Anchored to the left edge: right-anchored text with numbers in it runs
+  // off the window as soon as a number gets an extra digit, which is exactly
+  // when it is worth reading.
+  static constexpr float kProfileX = 12.0f;
 
 
   // Small geometry helpers the renderer needs; they only read the beatmap.
@@ -369,8 +376,25 @@ public:
     this->drawFollowPoints(c, canvas, now, ar, cs);
     auto rtb = clock::now();
 
+    double circlesUs = 0.0, slidersUs = 0.0, spinnersUs = 0.0;
     for (std::size_t i = 0; i < c.fMap->fObjects.size(); ++i) {
+      if (!c.fShowProfile) {
+        this->drawObject(c, canvas, c.fMap->fObjects[i], i, now, ar, cs, od);
+        continue;
+      }
+      const auto o0 = clock::now();
       this->drawObject(c, canvas, c.fMap->fObjects[i], i, now, ar, cs, od);
+      const double spent = static_cast<double>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() -
+                                                               o0)
+              .count()) /
+          1000.0;
+      std::visit(osu::Overloaded{
+                     [&](const osu::Circle &) { circlesUs += spent; },
+                     [&](const osu::Slider &) { slidersUs += spent; },
+                     [&](const osu::Spinner &) { spinnersUs += spent; },
+                 },
+                 c.fMap->fObjects[i]);
     }
     auto rtc = clock::now();
 
@@ -401,6 +425,9 @@ public:
       p.renderHudUs = static_cast<double>(
           std::chrono::duration_cast<std::chrono::microseconds>(rte - rtd)
               .count());
+      p.objCirclesUs = circlesUs;
+      p.objSlidersUs = slidersUs;
+      p.objSpinnersUs = spinnersUs;
     }
   }
 
@@ -518,8 +545,8 @@ public:
     // away and never appear -- which it was not, only because the path that
     // drew it was not applying the clip properly either.
     if (c.fShowProfile) {
-      dirty.join(skia::SkIRect::MakeLTRB(c.fScreenW - 320, c.fScreenH - 120,
-                                         c.fScreenW, c.fScreenH));
+      dirty.join(skia::SkIRect::MakeLTRB(0, c.fScreenH - 140, c.fScreenW,
+                                         c.fScreenH));
     }
 
     return dirty;
@@ -1152,23 +1179,34 @@ public:
       const std::string profText =
           std::format("adv {:.0f}  rend {:.0f}  flush {:.0f}  swap {:.0f} us",
                       avgAdv, avgRender, avgFlush, avgSwap);
-      client::ui::fonts().draw(canvas, *c.fFont, profText, sw - 240.0f,
+      client::ui::fonts().draw(canvas, *c.fFont, profText, kProfileX,
                                sh - 60.0f, fHudPaint);
       const std::string subText =
           std::format("follow {:.0f}  objs {:.0f}  rest {:.0f}  hud {:.0f} us",
                       avgFollow, avgObjs, avgRest, avgHud);
-      client::ui::fonts().draw(canvas, *c.fFont, subText, sw - 240.0f,
+      client::ui::fonts().draw(canvas, *c.fFont, subText, kProfileX,
                                sh - 75.0f, fHudPaint);
       const std::string maxText = std::format(
           "worst {:.0f} us = adv {:.0f} rend {:.0f} flush {:.0f} swap {:.0f}",
           maxFrame, maxAdv, maxRender, maxFlush, maxSwap);
-      client::ui::fonts().draw(canvas, *c.fFont, maxText, sw - 240.0f,
+      client::ui::fonts().draw(canvas, *c.fFont, maxText, kProfileX,
                                sh - 90.0f, fHudPaint);
       const std::string maxSub = std::format(
           "worst rend: follow {:.0f} objs {:.0f} rest {:.0f} hud {:.0f}",
           maxFollow, maxObjs, maxRest, maxHud);
-      client::ui::fonts().draw(canvas, *c.fFont, maxSub, sw - 240.0f,
+      client::ui::fonts().draw(canvas, *c.fFont, maxSub, kProfileX,
                                sh - 105.0f, fHudPaint);
+      double maxCircles = 0.0, maxSliders = 0.0, maxSpinners = 0.0;
+      for (std::size_t i = 0; i < fProfileNum; ++i) {
+        maxCircles = std::max(maxCircles, fProfile[i].objCirclesUs);
+        maxSliders = std::max(maxSliders, fProfile[i].objSlidersUs);
+        maxSpinners = std::max(maxSpinners, fProfile[i].objSpinnersUs);
+      }
+      const std::string objSub =
+          std::format("worst objs: circles {:.0f} sliders {:.0f} spinners {:.0f}",
+                      maxCircles, maxSliders, maxSpinners);
+      client::ui::fonts().draw(canvas, *c.fFont, objSub, kProfileX,
+                               sh - 120.0f, fHudPaint);
     }
   }
 
