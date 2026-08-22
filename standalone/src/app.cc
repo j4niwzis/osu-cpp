@@ -31,6 +31,7 @@ import client.library;
 import client.listing;
 import client.mirrors;
 import client.carousel;
+import client.songselect;
 import client.pause;
 import client.results;
 import client.mainmenu;
@@ -372,12 +373,7 @@ private:
   std::filesystem::path fReplayDir;
   std::mutex fDropMutex;             // guards fDropped
   std::vector<std::string> fDropped; // files dropped onto the window
-  skia::SkRect fRandomChip = skia::SkRect::MakeEmpty();  // footer button
-  skia::SkRect fModsChip = skia::SkRect::MakeEmpty();    // footer button
-  skia::SkRect fOptionsChip = skia::SkRect::MakeEmpty(); // footer button
-  skia::SkRect fBackChip = skia::SkRect::MakeEmpty();    // footer back
-  bool fOptionsOpen = false;
-  std::vector<skia::SkRect> fOptionHits;
+  client::songselect::Footer fSelectFooter;
   bool fConfirmDelete = false; // the deletion dialog is up
   // Built as a scene tree rather than drawn by hand: the first screen on the
   // retained renderer, and the pattern the rest follow.
@@ -449,11 +445,8 @@ private:
   double fStateEnterWall = 0.0;
   double fUiPrevWall = 0.0;
   double fUiDt = 16.0; // ms since the last frame, as measured
-  // What the parts of song select that are still drawn immediately last drew,
-  // so they can say when it changes rather than repainting on every frame.
-  int fHotFooter = 0; // which footer chip the pointer is on
-  skia::SkRect fHotFooterRect = skia::SkRect::MakeEmpty();
-  bool fDrawnOptionsOpen = false;
+  // What the song-select info wedge last drew, so it can say when it changes
+  // rather than repainting on every frame.
   bool fDrawnEmpty = false;
   std::int64_t fWedgeKey = -1;
 
@@ -1489,7 +1482,7 @@ private:
       if (this->filterClick(x, y, true)) {
         return;
       }
-      if (this->optionsClick(x, y)) {
+      if (this->selectFooterClick(x, y)) {
         return;
       }
       if (const auto hit = fCarousel.click(x, y); hit.fHit) {
@@ -1760,25 +1753,6 @@ private:
   void requestRedraw(double durationMs = 0.0) {
     fFrame.fRedrawUntilWall =
         std::max(fFrame.fRedrawUntilWall, wallMs() + durationMs);
-  }
-
-  // Which footer element the pointer is on, and where that element is. The
-  // footer draws a highlight on exactly one of them at a time.
-  [[nodiscard]] std::pair<int, skia::SkRect> footerHot() const {
-    const skia::SkRect chips[] = {fBackChip, fModsChip, fRandomChip,
-                                  fOptionsChip};
-    for (int i = 0; i < 4; ++i) {
-      if (chips[static_cast<std::size_t>(i)].contains(fWin.fMouseX,
-                                                      fWin.fMouseY)) {
-        return {i + 1, chips[static_cast<std::size_t>(i)]};
-      }
-    }
-    for (std::size_t i = 0; i < fOptionHits.size(); ++i) {
-      if (fOptionHits[i].contains(fWin.fMouseX, fWin.fMouseY)) {
-        return {100 + static_cast<int>(i), fOptionHits[i]};
-      }
-    }
-    return {0, skia::SkRect::MakeEmpty()};
   }
 
   // A text caret is shown for 600 ms of every 1000; this is when it next
@@ -4624,9 +4598,9 @@ private:
 
   // ---- Song select ------------------------------------------------------
   //
-  // The carousel and filter are scene trees: they decide where their nodes
-  // are, route their input and report what has to be repainted. The info wedge
-  // and footer remain immediate-mode for now.
+  // The carousel, filter and footer are scene trees: they decide where their
+  // nodes are, route their input and report what has to be repainted. The info
+  // wedge remains immediate-mode for now.
 
   void updateSongSelect() {
 #ifdef __EMSCRIPTEN__
@@ -4699,21 +4673,13 @@ private:
       this->wakeAt(nextCaretFlip(wallMs()));
     }
 
-    // The footer lights the chip under the pointer and nothing else, so
-    // crossing it is worth the two chips involved rather than the strip. The
-    // popover grows out of it, and appearing or going away is worth the lot.
-    const bool optionsChanged = fOptionsOpen != fDrawnOptionsOpen;
-    fDrawnOptionsOpen = fOptionsOpen;
-    if (optionsChanged) {
-      this->damage(skia::SkRect::MakeLTRB(0.0f, sh - 320.0f, sw, sh));
-    }
-    const auto [hotFooter, hotFooterRect] = this->footerHot();
-    if (hotFooter != fHotFooter) {
-      fHotFooter = hotFooter;
-      this->damage(fHotFooterRect); // where the highlight was
-      this->damage(hotFooterRect);  // and where it is now
-      fHotFooterRect = hotFooterRect;
-    }
+    fSelectFooter.update({.fFont = &fFont,
+                          .fWidth = sw,
+                          .fHeight = sh,
+                          .fMouseX = fWin.fMouseX,
+                          .fMouseY = fWin.fMouseY,
+                          .fNowMs = wallMs()});
+    this->damage(fSelectFooter.takeDamage());
 
     // The wedge is the selection written out: it changes when the selection
     // does, or when a mod changes what the numbers on it say.
@@ -4757,7 +4723,7 @@ private:
                    : "Drag a .osz onto the window, or press F1 to browse",
           sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
       this->drawFilterControl(canvas);
-      this->drawSelectFooter(canvas);
+      fSelectFooter.render(canvas);
       this->drawScreenFadeIn(canvas);
       this->present();
       return;
@@ -4776,7 +4742,7 @@ private:
     fCarousel.render(canvas);
 
     this->drawFilterControl(canvas);
-    this->drawSelectFooter(canvas);
+    fSelectFooter.render(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
   }
@@ -5056,129 +5022,37 @@ private:
     }
   }
 
-  // SongSelect.CreateFooterButtons gives exactly three: Mods, Random and
-  // Options; Options opens a popover with the per-beatmap actions. The back
-  // button sits on the left, as ScreenBackButton does.
-  void drawSelectFooter(skia::SkCanvas *canvas) {
-    const skiff::paint::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-    constexpr float kFooterHeight = 60.0f;
-    p.fillRect(
-        skia::SkRect::MakeXYWH(0.0f, sh - kFooterHeight, sw, kFooterHeight),
-        client::palette::kBackground5);
-
-    // Back button, bottom-left.
-    fBackChip = skia::SkRect::MakeXYWH(24.0f, sh - 46.0f, 100.0f, 34.0f);
-    const bool backHover = fBackChip.contains(fWin.fMouseX, fWin.fMouseY);
-    p.fillRounded(fBackChip, 17.0f,
-                  backHover ? client::palette::kCardSel
-                            : client::palette::kCardBg);
-    p.textCentered("back", fBackChip.centerX(), fBackChip.centerY() + 5.0f,
-                   14.0f, skia::kWhite, 0.9f);
-
-    struct FooterBtn {
-      const char *fLabel;
-      skia::SkColor fColor;
-      skia::SkRect *fHit;
-    };
-    const FooterBtn btns[] = {
-        {"mods", client::palette::kAccent, &fModsChip},
-        {"random", skia::colorSetARGB(255, 102, 204, 255), &fRandomChip},
-        {"options", skia::colorSetARGB(255, 170, 102, 255), &fOptionsChip},
-    };
-    const float bw = 140.0f;
-    const float gap = 10.0f;
-    float x = (sw - (bw * 3.0f + gap * 2.0f)) * 0.5f;
-    for (const auto &b : btns) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(x, sh - 48.0f, bw, 36.0f);
-      *b.fHit = r;
-      const bool hover = r.contains(fWin.fMouseX, fWin.fMouseY);
-      p.fillRounded(r, 18.0f,
-                    hover ? client::palette::kCardSel
-                          : client::palette::kCardBg);
-      p.strokeRounded(r, 18.0f, b.fColor, hover ? 2.0f : 1.0f);
-      p.textCentered(b.fLabel, r.centerX(), r.centerY() + 5.0f, 14.0f,
-                     hover ? b.fColor : skia::kWhite);
-      x += bw + gap;
-    }
-
-    this->drawOptionsPopover(p, sw, sh);
-  }
-
-  // FooterButtonOptions.Popover: the per-beatmap actions that do not deserve
-  // their own footer slot.
-  void drawOptionsPopover(const skiff::paint::Painter &p, float sw, float sh) {
-    fOptionHits.clear();
-    if (!fOptionsOpen) {
-      return;
-    }
-    static constexpr std::array<const char *, 5> kItems = {
-        "import .osz", "browse beatmaps", "replays", "delete beatmap",
-        "settings"};
-    const float w = 220.0f;
-    const float itemH = 38.0f;
-    const float h = itemH * static_cast<float>(kItems.size()) + 12.0f;
-    const skia::SkRect box = skia::SkRect::MakeXYWH(
-        fOptionsChip.centerX() - w * 0.5f, sh - 60.0f - h - 8.0f, w, h);
-    p.fillRounded(box, 10.0f, client::palette::kBackground4);
-    p.strokeRounded(box, 10.0f, skia::colorSetARGB(255, 170, 102, 255), 2.0f);
-    for (std::size_t i = 0; i < kItems.size(); ++i) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(
-          box.fLeft + 6.0f, box.fTop + 6.0f + static_cast<float>(i) * itemH,
-          w - 12.0f, itemH);
-      fOptionHits.push_back(r);
-      if (r.contains(fWin.fMouseX, fWin.fMouseY)) {
-        p.fillRounded(r, 8.0f, client::palette::kCardSel);
-      }
-      p.textClipped(kItems[i], r.fLeft + 14.0f, r.centerY() + 5.0f,
-                    r.width() - 28.0f, 14.0f, skia::kWhite, 0.95f);
-    }
-  }
-
-  bool optionsClick(float x, float y) {
-    if (fOptionsOpen) {
-      for (std::size_t i = 0; i < fOptionHits.size(); ++i) {
-        if (!fOptionHits[i].contains(x, y)) {
-          continue;
-        }
-        fOptionsOpen = false;
-        switch (i) {
-        case 0:
-          this->importOsz();
-          break;
-        case 1:
-          this->openDownloads();
-          break;
-        case 2:
-          this->toggleReplayList();
-          break;
-        case 3:
-          this->askDeleteBeatmap();
-          break;
-        default:
-          this->toggleSettings();
-          break;
-        }
-        return true;
-      }
-      fOptionsOpen = false;
-    }
-    if (fOptionsChip.contains(x, y)) {
-      fOptionsOpen = !fOptionsOpen;
-      return true;
-    }
-    if (fModsChip.contains(x, y)) {
-      this->toggleMods();
-      return true;
-    }
-    if (fRandomChip.contains(x, y)) {
-      this->selectRandom();
-      return true;
-    }
-    if (fBackChip.contains(x, y)) {
+  bool selectFooterClick(float x, float y) {
+    using Action = client::songselect::Action;
+    switch (fSelectFooter.click(x, y)) {
+    case Action::kBack:
       this->switchState(State::kMainMenu);
       return true;
+    case Action::kMods:
+      this->toggleMods();
+      return true;
+    case Action::kRandom:
+      this->selectRandom();
+      return true;
+    case Action::kImport:
+      this->importOsz();
+      return true;
+    case Action::kBrowse:
+      this->openDownloads();
+      return true;
+    case Action::kReplays:
+      this->toggleReplayList();
+      return true;
+    case Action::kDelete:
+      this->askDeleteBeatmap();
+      return true;
+    case Action::kSettings:
+      this->toggleSettings();
+      return true;
+    case Action::kTaken:
+      return true;
+    case Action::kNone:
+      break;
     }
     return false;
   }

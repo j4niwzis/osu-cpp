@@ -57,12 +57,14 @@ TEST(Dropdown, ButtonAndRowsRouteTheirOwnClicks) {
   list->fOnChoose = [&chosen](int index) { chosen = index; };
   root->layoutIfNeeded(skia::SkRect::MakeWH(200.0f, 120.0f));
 
+  EXPECT_TRUE(list->expanded());
   EXPECT_TRUE(root->click(20.0f, 15.0f));
   EXPECT_EQ(opened, 1);
   EXPECT_TRUE(root->click(20.0f, 64.0f));
   EXPECT_EQ(chosen, 1);
 
   list->setExpanded(false);
+  EXPECT_FALSE(list->expanded());
   EXPECT_FALSE(root->click(20.0f, 64.0f));
 }
 

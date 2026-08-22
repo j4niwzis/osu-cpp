@@ -190,6 +190,7 @@ public:
     fVisible = expanded;
     this->invalidateLayout();
   }
+  [[nodiscard]] bool expanded() const noexcept { return fVisible; }
 
 protected:
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
