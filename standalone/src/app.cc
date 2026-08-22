@@ -1871,7 +1871,10 @@ private:
     if (const char *reason = fMainMenu.takeFullDamage()) {
       fFrame.damageAll(reason);
     }
-    fFrame.consume(fMainMenu.finishFrame());
+    auto menuFrame = fMainMenu.finishFrame();
+    menuFrame.fDamage = fSettingsPanel.composeOver(
+        menuFrame.fDamage, static_cast<float>(fWin.fScreenH));
+    fFrame.consume(menuFrame);
   }
 
   void frameMainMenu() {

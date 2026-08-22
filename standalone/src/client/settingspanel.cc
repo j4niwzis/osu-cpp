@@ -189,6 +189,25 @@ public:
     return (kSidebarWidth + kPanelWidth) * fSlide;
   }
 
+  // A retained overlay is one composited surface even while it is settled.
+  // Repainting an unrelated scene underneath a slice of its text or a
+  // translucent control must replay the visible shell atomically; otherwise
+  // the clip cuts glyph antialiasing and alpha layers into independently
+  // accumulated strips. The damage overlay used to hide this by forcing an
+  // unclipped frame.
+  [[nodiscard]] skia::SkRect
+  composeOver(skia::SkRect underlayDamage, float screenHeight) const {
+    if (!this->visible() || underlayDamage.isEmpty()) {
+      return underlayDamage;
+    }
+    const skia::SkRect shell = skia::SkRect::MakeXYWH(
+        0.0f, 0.0f, this->occupiedWidth(), screenHeight);
+    if (skia::SkRect::Intersects(underlayDamage, shell)) {
+      underlayDamage.join(shell);
+    }
+    return underlayDamage;
+  }
+
   // Still sliding: the only time an untouched panel needs frames.
   //
   // Asked of the clock, not of fSlide, which only advances while the panel is
