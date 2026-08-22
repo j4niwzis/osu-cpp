@@ -53,6 +53,7 @@ import client.appinput;
 import client.applibrary;
 import client.appscreens;
 import client.appoverlays;
+import client.appplayback;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -105,6 +106,7 @@ private:
   friend class client::AppLibrary<App>;
   friend class client::AppScreens<App>;
   friend class client::AppOverlays<App>;
+  friend class client::AppPlayback<App>;
 
   osu::BeatmapSet fSet;
   osu::ModSet fMods = osu::mod::kNone;
@@ -229,6 +231,7 @@ private:
   client::AppLibrary<App> fLibraryRuntime{*this};
   client::AppScreens<App> fScreens{*this};
   client::AppOverlays<App> fOverlays{*this};
+  client::AppPlayback<App> fPlayback{*this};
   State fState = State::kMainMenu;
   bool fHasInitialSet = false;
 
@@ -361,9 +364,6 @@ private:
   static constexpr auto kCardSel = client::palette::kCardSel;
   static constexpr auto kPanelBg = client::palette::kPanelBg;
 
-  // Timing
-  double fLastClockSyncWall = std::numeric_limits<double>::lowest();
-  static constexpr double kClockSyncIntervalMs = 250.0;
   AudioPlayer fAudio;
   client::JudgementPresenter fJudgements;
 
@@ -500,7 +500,7 @@ private:
     fPlay.fAwaitingFirstFrame = false;
     fPlay.fStartMs = wallMs();
     fPlay.fClock.reset(fPlay.fStartMs, 0.0);
-    fLastClockSyncWall = std::numeric_limits<double>::lowest();
+    fPlayback.resetClockSync();
     fAudio.play();
   }
 
@@ -613,9 +613,9 @@ private:
 
     // A play interrupted by closing the window still reports to the console.
     if (fState == State::kPlaying || fState == State::kPaused) {
-      this->printResult();
+      fPlayback.printResult();
       if (fRecord)
-        this->saveReplay();
+        fPlayback.saveReplay();
     }
     fWindowRuntime.setExitCode(0);
     this->requestQuit();
@@ -672,7 +672,7 @@ private:
     fStateEnterWall = wallMs();
     if (st == State::kResults) {
       // The side panels are the other replays for this beatmap.
-      fReplayBrowser.selectBeatmap(this->beatmapMd5(), fReplayPath,
+      fReplayBrowser.selectBeatmap(fPlayback.beatmapMd5(), fReplayPath,
                                    fReplayPath.empty());
     }
     if (st == State::kMainMenu) {
@@ -1348,13 +1348,13 @@ private:
     using clock = std::chrono::steady_clock;
     // Zero until the first frame has been through, so that nothing before it
     // counts against the map.
-    const double now = fPlay.fAwaitingFirstFrame ? 0.0 : this->nowMs();
-    if (this->shouldStop(now)) {
+    const double now = fPlay.fAwaitingFirstFrame ? 0.0 : fPlayback.nowMs();
+    if (fPlayback.shouldStop(now)) {
       this->finishPlay();
       fScreens.frameResults();
       return;
     }
-    this->submitAutoplay(now);
+    fPlayback.submitAutoplay(now);
     this->rebuildSliderBodiesIfStale();
 
     // One frame path, measured or not. There were two of these, and the one
@@ -1400,8 +1400,9 @@ private:
   // pictures, so all three are in the name they are filed under.
   [[nodiscard]] std::string sliderBodyKey() const {
     // The md5 rather than the file name: two sets can both hold a Normal.osu.
-    return std::format("{}:{}:{:.4f}:{}", this->beatmapMd5(), fBeatmapFilename,
-                       fScale, fSettings.choice("renderer"));
+    return std::format("{}:{}:{:.4f}:{}", fPlayback.beatmapMd5(),
+                       fBeatmapFilename, fScale,
+                       fSettings.choice("renderer"));
   }
 
   // A rasterised body is only as sharp as the scale it was built at. Rebuilt
@@ -1511,7 +1512,7 @@ private:
   }
 
   void pauseGame() {
-    fPlay.fPausedNow = this->nowMs();
+    fPlay.fPausedNow = fPlayback.nowMs();
     fAudio.pause();
     this->switchState(State::kPaused);
     this->setCursorVisible(true);
@@ -1521,7 +1522,7 @@ private:
     // Re-anchor the clock at the frozen instant: wall time spent in the
     // pause menu never existed as far as the game timeline is concerned.
     fPlay.fClock.reset(wallMs(), fPlay.fPausedNow);
-    fLastClockSyncWall = wallMs();
+    fPlayback.resetClockSync(wallMs());
     fAudio.resume();
     this->switchState(State::kPlaying);
     fView.invalidate();
@@ -1540,12 +1541,12 @@ private:
   void finishPlay() {
     fResult =
         client::captureResult(*fPlay.fEngine, fPlay.fPlayAttributes);
-    this->printResult();
+    fPlayback.printResult();
     // Replays are kept by default (the setting can turn it off), so a good
     // run is never lost because the flag was not passed.
     // Watching a replay must not write it back out again.
     if (fReplayPath.empty() && (fRecord || fSettings.flag("savereplay"))) {
-      this->saveReplay(); // the index picks it up; the results list follows
+      fPlayback.saveReplay(); // the index picks it up; the results list follows
     }
     this->switchState(State::kResults);
     fView.invalidate();
@@ -1636,9 +1637,9 @@ private:
     if (fWindowRuntime.quitting()) {
       if (fPlay.fEngine &&
           (fState == State::kPlaying || fState == State::kPaused)) {
-        this->printResult();
+        fPlayback.printResult();
         if (fRecord)
-          this->saveReplay();
+          fPlayback.saveReplay();
       }
       emscripten::emscripten_cancel_main_loop();
       return;
@@ -2025,131 +2026,6 @@ private:
     fContext.reset();
     fWindowRuntime.close();
     fWindow = nullptr;
-  }
-
-  [[nodiscard]] double nowMs() {
-#ifdef __EMSCRIPTEN__
-    return glfw::glfwGetTime() * 1000.0 - fPlay.fStartMs;
-#else
-    // The audio device is consulted at most every kClockSyncIntervalMs;
-    // between syncs the game clock extrapolates from the wall clock. This
-    // removes blocking OpenAL round-trips (mixer mutex, PipeWire latency
-    // probes) from the hot path: they used to cost whole milliseconds per
-    // call, several calls per frame. It also makes the timeline seamless
-    // when the music ends: extrapolation simply continues from the last
-    // anchor instead of jumping to an unrelated wall-clock epoch.
-    const double wall = wallMs();
-    if (wall - fLastClockSyncWall >= kClockSyncIntervalMs) {
-      fLastClockSyncWall = wall;
-      if (fAudio.playing()) {
-        fPlay.fClock.sync(wall, fAudio.positionSec() * 1000.0);
-      }
-    }
-    return fPlay.fClock.sample(wall);
-#endif
-  }
-
-  [[nodiscard]] bool shouldStop(double now) const {
-    return fPlay.fEngine->finished() &&
-           now > fPlay.fMap->lastObjectEndTime() + 1000.0;
-  }
-
-  void submitAutoplay(double now) {
-    if (!fAutoplay) {
-      return; // the player is driving
-    }
-    while (fAutoplayIndex < fPlay.fAutoplayEvents.size() &&
-           fPlay.fAutoplayEvents[fAutoplayIndex].fTime <= now) {
-      const auto &ev = fPlay.fAutoplayEvents[fAutoplayIndex];
-      fPlay.fEngine->submit(ev);
-      if (fReplayPath.empty()) {
-        // Generated autoplay is worth recording; a replay being watched is
-        // already on disk.
-        fPlay.fRecordedEvents.push_back(ev);
-      }
-      if (ev.fAction == osu::InputAction::kMove) {
-        fCursor = ev.fPos;
-        fView.addTrailPoint(fCursor, ev.fTime);
-      }
-      ++fAutoplayIndex;
-    }
-  }
-
-
-  // Cursor trail as a single feathered ribbon.
-  //
-  // The old implementation stroked each segment separately with butt caps:
-  // visible notches at joints, alpha banding between segments and double
-  // blending where semi-transparent strokes overlapped. Instead we build one
-  // triangle mesh along the smoothed polyline: an opaque spine that fades to
-  // zero alpha at both edges. The feather is the antialiasing (SkVertices is
-  // not AA'd by itself), there are no joints to mismatch, and the whole
-  // trail is one draw call.
-
-  // Cursor sensitivity scales movement about the playfield centre, which is
-  // what osu! does when the setting is not 1x.
-  // 1:1 maps the pointer straight onto the playfield, which is what a tablet
-  // wants. Otherwise the pointer is grabbed and its motion is integrated at
-  // the chosen sensitivity, so the whole playfield stays reachable however
-  // low the sensitivity is.
-  [[nodiscard]] osu::Vec2 cursorFromEvent(const Event &ev) {
-    const auto raw = this->toPlayfield(ev.fX, ev.fY);
-    if (!this->relativeCursor()) {
-      fVirtualCursor = raw;
-      fHasRawPrev = false;
-      return raw;
-    }
-    const double s = fSettings.value("sensitivity");
-    if (!fHasRawPrev) {
-      fRawPrev = raw;
-      fHasRawPrev = true;
-    }
-    const osu::Vec2 delta{(raw.fX - fRawPrev.fX) * s,
-                          (raw.fY - fRawPrev.fY) * s};
-    fRawPrev = raw;
-    // Held inside the window, not inside the playfield. An absolute pointer
-    // is bounded by the window and nothing else -- the branch above does not
-    // clamp at all -- so confining the integrated one to the playfield made
-    // turning this on put walls across the middle of the screen: on a 16:9
-    // display the playfield is 60% of the width, and the pointer stopped
-    // dead at its edge with the desk still going.
-    const osu::Vec2 lo = this->toPlayfield(0.0f, 0.0f);
-    const osu::Vec2 hi = this->toPlayfield(static_cast<float>(fWin.fScreenW),
-                                           static_cast<float>(fWin.fScreenH));
-    fVirtualCursor = {std::clamp(fVirtualCursor.fX + delta.fX, lo.fX, hi.fX),
-                      std::clamp(fVirtualCursor.fY + delta.fY, lo.fY, hi.fY)};
-    return fVirtualCursor;
-  }
-
-  void printResult() {
-    if (fPlay.fEngine) {
-      client::printResult(*fPlay.fEngine, fWindowRuntime.droppedInput());
-    }
-  }
-
-  [[nodiscard]] std::string beatmapMd5() const {
-    return client::beatmapMd5(fSet, fBeatmapFilename);
-  }
-
-  void saveReplay() {
-    if (!fPlay.fMap || !fPlay.fEngine || !fReplayPath.empty()) {
-      return;
-    }
-    const auto saved =
-        client::saveReplay(fPlay.fRecordedEvents, *fPlay.fMap, *fPlay.fEngine,
-                           this->beatmapMd5(), fMods, fReplayDir);
-    if (!saved) {
-      return;
-    }
-    fPlay.fLastSavedReplay = *saved;
-    fReplayBrowser.add(
-        *saved, fPlay.fEngine->rules() == osu::RuleSet::kLegacyClient ? 1 : 0);
-    std::println(std::cerr, "[replay] saved {}", saved->string());
-  }
-
-  [[nodiscard]] osu::Vec2 toPlayfield(float sx, float sy) const {
-    return {(static_cast<double>(sx) - fOffsetX) / fScale,
-            (static_cast<double>(sy) - fOffsetY) / fScale};
   }
 };
 

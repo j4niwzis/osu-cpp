@@ -33,7 +33,7 @@ public:
   void toggleReplayList() {
     const std::string wanted =
         fApp.fState == State::kResults || fApp.fState == State::kPlaying
-            ? fApp.beatmapMd5()
+            ? fApp.fPlayback.beatmapMd5()
             : this->difficultyMd5(fApp.fLibrary.selSet(), fApp.fLibrary.selDiff());
     fApp.fReplayBrowser.toggle(wanted, fApp.fReplayPath);
   }

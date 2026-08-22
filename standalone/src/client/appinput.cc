@@ -107,7 +107,7 @@ public:
         fApp.fReplayBrowser.dragPanels(ev.fX);
       }
       if (fApp.fState == State::kPlaying && !fApp.fAutoplay) {
-        fApp.fCursor = fApp.cursorFromEvent(ev);
+        fApp.fCursor = fApp.fPlayback.cursorFromEvent(ev);
         const double at = this->eventGameTime(ev.fWallMs);
         this->submitTimed({at, fApp.fCursor, osu::InputAction::kMove});
         // The trail is fed from the events, as it already is for a replay.
