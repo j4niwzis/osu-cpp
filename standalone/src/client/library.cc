@@ -55,6 +55,9 @@ public:
   [[nodiscard]] const std::vector<Entry> &sets() const { return fSets; }
   [[nodiscard]] std::vector<Entry> &sets() { return fSets; }
   [[nodiscard]] const std::vector<int> &visible() const { return fVisible; }
+  [[nodiscard]] std::uint64_t visibleRevision() const {
+    return fVisibleRevision;
+  }
   [[nodiscard]] bool empty() const { return fSets.empty(); }
   // Which set and which of its difficulties is chosen. Handed out as a
   // reference, the way listing hands out its filters: the selection is moved
@@ -480,6 +483,7 @@ public:
       return;
     }
     fDirty = false;
+    ++fVisibleRevision;
     fVisible.clear();
 
     for (int i = 0; i < static_cast<int>(fSets.size()); ++i) {
@@ -895,6 +899,7 @@ public:
 
   std::vector<Entry> fSets;
   std::vector<int> fVisible;    // indices into fSets passing the filter
+  std::uint64_t fVisibleRevision = 0;
   std::deque<int> fLoadedOrder; // LRU of entries holding a full set
   int fSelSet = 0;
   int fSelDiff = 0;

@@ -365,7 +365,6 @@ private:
   int fAppliedStarChoice = -1; // forces the first ordering pass
   client::carousel::Carousel fCarousel;
   client::songselect::InfoWedge fInfoWedge;
-  std::vector<client::carousel::Row> fRows; // what the carousel lays out
   int fMenuMusicForSet = -1;   // set whose audio is playing under the menus
   double fMenuTrackWall = 0.0; // when it started, so its end can be told
   double fMusicPollWall = 0.0; // last time the track was asked if it ended
@@ -4623,23 +4622,17 @@ private:
       this->damageAll("song select has nothing to list");
     }
 
-    // The rows of the list: every set, and the difficulties of the one that
-    // is open. Data, not drawables -- the carousel makes a panel only for
-    // what is actually within the viewport.
-    fRows.clear();
-    for (const int si : fLibrary.visible()) {
-      fRows.push_back({si, -1});
-      if (si != fLibrary.selSet()) {
-        continue;
-      }
-      const auto &infos = fLibrary.infosFor(si);
+    // The carousel retains this projection and rebuilds it only when the
+    // filtered library or expanded set changes.
+    if (!fLibrary.visible().empty()) {
+      const auto &infos = fLibrary.infosFor(fLibrary.selSet());
       fLibrary.selDiff() =
           std::clamp(fLibrary.selDiff(), 0,
                      std::max(0, static_cast<int>(infos.size()) - 1));
-      for (int di = 0; di < static_cast<int>(infos.size()); ++di) {
-        fRows.push_back({si, di});
-      }
     }
+    fCarousel.setRows(
+        fLibrary.visibleRevision(), fLibrary.visible(), fLibrary.selSet(),
+        [this](int set) { return fLibrary.infosFor(set).size(); });
 
     client::carousel::Carousel::Ctx ctx;
     ctx.fWidth = sw;
@@ -4650,7 +4643,6 @@ private:
     ctx.fMouseY = fWin.fMouseY;
     ctx.fNowMs = wallMs();
     ctx.fDtMs = fUiDt;
-    ctx.fRows = fRows;
     ctx.fSelectedSet = fLibrary.selSet();
     ctx.fSelectedDiff = fLibrary.selDiff();
     fCarousel.update(ctx);

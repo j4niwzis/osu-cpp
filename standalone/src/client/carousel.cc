@@ -46,7 +46,6 @@ public:
     float fMouseY = 0.0f;
     double fNowMs = 0.0;
     double fDtMs = 16.0;
-    std::span<const Row> fRows;
     int fSelectedSet = -1;
     int fSelectedDiff = 0;
   };
@@ -58,6 +57,33 @@ public:
   };
 
   void setPainter(PaintPanel painter) { fPaint = std::move(painter); }
+
+  // The carousel owns its presentational rows. The library supplies only the
+  // visible set indices and a way to ask how many difficulties the expanded
+  // set has; an unchanged library revision and expansion make this a no-op.
+  template <class DifficultyCount>
+  void setRows(std::uint64_t sourceRevision, std::span<const int> visible,
+               int expandedSet, DifficultyCount &&difficultyCount) {
+    if (sourceRevision == fSourceRevision && expandedSet == fExpandedSet) {
+      return;
+    }
+    fSourceRevision = sourceRevision;
+    fExpandedSet = expandedSet;
+    fRows.clear();
+    fRows.reserve(visible.size());
+    for (const int set : visible) {
+      fRows.push_back({set, -1});
+      if (set != expandedSet) {
+        continue;
+      }
+      const auto count = std::invoke(difficultyCount, set);
+      fRows.reserve(visible.size() + count);
+      for (std::size_t diff = 0; diff < count; ++diff) {
+        fRows.push_back({set, static_cast<int>(diff)});
+      }
+    }
+    ++fRowsRevision;
+  }
 
   // Everything that decides what the carousel looks like, with nothing drawn:
   // the client runs this before it knows whether the frame is worth drawing.
@@ -208,9 +234,8 @@ private:
     Carousel *fOwner;
   };
 
-  // Row heights and the offsets they add up to. Integer work over the whole
-  // list, no drawables: a library of two thousand sets costs two thousand
-  // additions here and about twenty panels on screen.
+  // Row heights and the offsets they add up to. The offsets are retained: a
+  // stable library does not repeat thousands of additions every update.
   void measure(const Ctx &ctx) {
     const float scale = std::clamp(ctx.fHeight / 900.0f, 0.8f, 1.6f);
     fSetHeight = 45.0f * 1.6f * scale;
@@ -221,10 +246,15 @@ private:
     fPanelWidth = std::min(680.0f * scale, ctx.fWidth * 0.52f);
     fLeft = ctx.fWidth - fPanelWidth - 20.0f * scale;
 
+    if (scale == fMeasuredScale && fRowsRevision == fMeasuredRowsRevision) {
+      return;
+    }
+    fMeasuredScale = scale;
+    fMeasuredRowsRevision = fRowsRevision;
     fOffsets.clear();
-    fOffsets.reserve(ctx.fRows.size());
+    fOffsets.reserve(fRows.size());
     float y = 0.0f;
-    for (const Row &row : ctx.fRows) {
+    for (const Row &row : fRows) {
       fOffsets.push_back(y);
       y += (row.fDiff < 0 ? fSetHeight : fDiffHeight) + fGap;
     }
@@ -247,17 +277,20 @@ private:
   // A selection the client made elsewhere -- a click, a key, a track ending --
   // brings the list to it.
   void follow(const Ctx &ctx) {
-    const int key = ctx.fSelectedSet * 1024 + ctx.fSelectedDiff;
-    if (key == fSelectionKey) {
+    if (ctx.fSelectedSet == fFollowedSet &&
+        ctx.fSelectedDiff == fFollowedDiff &&
+        fRowsRevision == fFollowedRowsRevision) {
       return;
     }
-    fSelectionKey = key;
+    fFollowedSet = ctx.fSelectedSet;
+    fFollowedDiff = ctx.fSelectedDiff;
+    fFollowedRowsRevision = fRowsRevision;
     fPop = 0.0f;
     // The selected difficulty is what the list centres on; a set with no
     // difficulties to show -- one still loading -- centres on its own panel.
     float centre = -1.0f;
-    for (std::size_t i = 0; i < ctx.fRows.size(); ++i) {
-      const Row &row = ctx.fRows[i];
+    for (std::size_t i = 0; i < fRows.size(); ++i) {
+      const Row &row = fRows[i];
       if (row.fSet != ctx.fSelectedSet) {
         continue;
       }
@@ -292,8 +325,16 @@ private:
     const float halfHeight = fCtx.fHeight * 0.5f;
     const float pop = skiff::paint::outQuint(fPop);
     std::size_t used = 0;
-    for (std::size_t i = 0; i < fCtx.fRows.size(); ++i) {
-      const Row &row = fCtx.fRows[i];
+    const float lookBehind = 2.0f * std::max(fSetHeight, fDiffHeight);
+    const float contentBottom = fScrollAnim + viewBottom - viewTop;
+    const std::size_t first = static_cast<std::size_t>(std::distance(
+        fOffsets.begin(),
+        std::ranges::lower_bound(fOffsets, fScrollAnim - lookBehind)));
+    const std::size_t last = static_cast<std::size_t>(std::distance(
+        fOffsets.begin(),
+        std::ranges::upper_bound(fOffsets, contentBottom)));
+    for (std::size_t i = first; i < last; ++i) {
+      const Row &row = fRows[i];
       const float height = this->rowHeight(row);
       const float y = viewTop + fOffsets[i] - fScrollAnim;
       if (y + height < viewTop - height || y > viewBottom) {
@@ -322,7 +363,14 @@ private:
   PaintPanel fPaint;
   Ctx fCtx;
   std::unique_ptr<RootNode> fScene;
+  std::vector<Row> fRows;
   std::vector<float> fOffsets; // where each row starts, before scrolling
+  std::uint64_t fSourceRevision = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t fRowsRevision = 0;
+  std::uint64_t fMeasuredRowsRevision =
+      std::numeric_limits<std::uint64_t>::max();
+  int fExpandedSet = -2;
+  float fMeasuredScale = -1.0f;
   float fTotal = 0.0f;
   float fSetHeight = 72.0f;
   float fDiffHeight = 45.0f;
@@ -334,7 +382,10 @@ private:
   float fTarget = 0.0f;
   float fScrollAnim = 0.0f;
   float fPop = 1.0f;
-  int fSelectionKey = -1;
+  int fFollowedSet = -1;
+  int fFollowedDiff = -1;
+  std::uint64_t fFollowedRowsRevision =
+      std::numeric_limits<std::uint64_t>::max();
   Hit fPending;
 };
 
