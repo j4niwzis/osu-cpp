@@ -289,7 +289,6 @@ private:
   std::vector<std::uint8_t> fEntryStates;
   int fBackgroundForSet = -1;
   static constexpr std::size_t kMaxLoadedSets = 4;
-  client::MapCache fLibrary.cache();
   client::Loader fLoader;
 
   // Filtering / sorting: the control itself lives in client.filtercontrol.
@@ -3332,7 +3331,8 @@ private:
               entry.fPath = misses[i];
               entry.fInfos = set.fBeatmaps;
               auto diffs = fLibrary.cacheRecordFor(set);
-              const auto stamp = fileStamp(misses[i]);
+              const auto stamp =
+                  client::library::Library::fileStamp(misses[i]);
               const std::scoped_lock lock(resultMutex);
               fLibrary.sets().push_back(std::move(entry));
               fLibrary.cache().store(misses[i].filename().string(), stamp.first,
