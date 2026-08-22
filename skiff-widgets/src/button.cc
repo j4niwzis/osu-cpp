@@ -74,7 +74,7 @@ public:
 
 protected:
   bool acceptsInput() const override { return fEnabled; }
-  bool hoverChangesAppearance() const override { return true; }
+  bool hoverChangesAppearance() const override { return fEnabled; }
 
   bool onClick(float x, float y) override {
     if (!fEnabled || !fBounds.contains(x, y)) {

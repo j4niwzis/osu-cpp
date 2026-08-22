@@ -106,7 +106,9 @@ protected:
   }
 
   bool acceptsInput() const override { return static_cast<bool>(fOnOpen); }
-  bool hoverChangesAppearance() const override { return true; }
+  bool hoverChangesAppearance() const override {
+    return static_cast<bool>(fOnOpen) && !fOpen;
+  }
 
   bool onClick(float, float) override {
     if (!fOnOpen) {
@@ -245,7 +247,9 @@ private:
     }
 
     bool acceptsInput() const override { return true; }
-    bool hoverChangesAppearance() const override { return true; }
+    bool hoverChangesAppearance() const override {
+      return static_cast<int>(fIndex) != fList->fCurrent;
+    }
 
     bool onClick(float, float) override {
       if (fList->fOnChoose) {

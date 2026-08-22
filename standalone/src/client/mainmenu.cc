@@ -385,6 +385,10 @@ public:
     float fHeight = 0.0f;
     float fMouseX = 0.0f;
     float fMouseY = 0.0f;
+    // A modal surface above the menu owns the pointer while it covers it.
+    // Keep the menu's last pointer in that case: clearing hover underneath a
+    // panel repaints a state the user cannot see.
+    bool fPointerActive = true;
     double fDtMs = 16.0;
     double fNowWall = 0.0;
     skia::SkFont *fFont = nullptr;
@@ -408,11 +412,17 @@ public:
     fArtwork = std::move(paint);
   }
 
-  void update(const Ctx &ctx) {
+  void update(const Ctx &input) {
+    Ctx ctx = input;
+    if (!ctx.fPointerActive && fHaveLast) {
+      ctx.fMouseX = fLast.fMouseX;
+      ctx.fMouseY = fLast.fMouseY;
+    }
     this->ensurePainters();
     this->ensureButtons();
     this->updateSpectrum(ctx);
     fLast = ctx;
+    fHaveLast = true;
     fLast.fSamples = {}; // borrowed for this call only
     fLast.fAudioPositionMs = {};
 
@@ -864,6 +874,7 @@ private:
   double fLastPosMs = 0.0;
   std::function<void(skia::SkCanvas *)> fArtwork;
   Ctx fLast;
+  bool fHaveLast = false;
   bool fPainted = false;
 };
 

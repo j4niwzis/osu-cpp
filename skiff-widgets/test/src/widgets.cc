@@ -92,6 +92,11 @@ TEST(Button, PrimaryAndEnabledStateOwnDamageAndInput) {
   EXPECT_FALSE(root->takeDamage().isEmpty());
   EXPECT_FALSE(root->click(20.0f, 15.0f));
   EXPECT_EQ(clicks, 1);
+
+  root->setHover(-1.0f, -1.0f);
+  (void)root->takeDamage();
+  root->setHover(20.0f, 15.0f);
+  EXPECT_TRUE(root->takeDamage().isEmpty());
 }
 
 TEST(Hover, OnlyVisibleHoverChangesCauseDamage) {

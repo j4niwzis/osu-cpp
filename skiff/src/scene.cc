@@ -422,6 +422,10 @@ template <class Node, class... Roles> struct StyleRule {
   Style fStyle;
 
   [[nodiscard]] bool matches(const Drawable &node) const;
+  [[nodiscard]] bool usesState(const Drawable &node, StyleState state) const;
+
+private:
+  [[nodiscard]] bool matchesSubject(const Drawable &node) const;
 };
 
 template <class... Rules> class StaticStyleSheet {
@@ -441,6 +445,7 @@ public:
   }
 
   [[nodiscard]] Style resolve(const Drawable &node) const;
+  [[nodiscard]] bool usesState(const Drawable &node, StyleState state) const;
 
 private:
   std::tuple<Rules...> fRules;
@@ -563,8 +568,11 @@ public:
   template <class Theme> void setStyleSheet() {
     static_assert(requires(const Drawable &node) {
       { Theme::styles.resolve(node) } -> std::same_as<Style>;
+      { Theme::styles.usesState(node, StyleState::kHover) } ->
+          std::same_as<bool>;
     });
     fStyleResolver = &resolveTheme<Theme>;
+    fStyleStateResolver = &resolveThemeState<Theme>;
     this->restyleFromHere(false);
   }
   void clearStyleSheet() {
@@ -572,6 +580,7 @@ public:
       return;
     }
     fStyleResolver = nullptr;
+    fStyleStateResolver = nullptr;
     this->restyleFromHere(false);
   }
 
@@ -1061,7 +1070,11 @@ public:
     const bool hovered = visible && fBounds.contains(x, y);
     if (hovered != fHovered) {
       fHovered = hovered;
-      this->restyleFromHere(true);
+      const StyleStateResolver stateResolver = this->activeStyleStateResolver();
+      if (stateResolver != nullptr &&
+          stateResolver(*this, StyleState::kHover)) {
+        this->restyleFromHere(true);
+      }
       // Only where hover is drawn. Every box, flow and container in the tree
       // was marking itself as the pointer crossed it, which is a repaint for
       // a picture that did not change -- and there are a lot more containers
@@ -1385,16 +1398,32 @@ private:
   }
 
   using StyleResolver = Style (*)(const Drawable &);
+  using StyleStateResolver = bool (*)(const Drawable &, StyleState);
 
   template <class Theme>
   [[nodiscard]] static Style resolveTheme(const Drawable &node) {
     return Theme::styles.resolve(node);
   }
 
+  template <class Theme>
+  [[nodiscard]] static bool resolveThemeState(const Drawable &node,
+                                              StyleState state) {
+    return Theme::styles.usesState(node, state);
+  }
+
   [[nodiscard]] StyleResolver activeStyleResolver() const {
     for (const Drawable *node = this; node != nullptr; node = node->fParent) {
       if (node->fStyleResolver != nullptr) {
         return node->fStyleResolver;
+      }
+    }
+    return nullptr;
+  }
+
+  [[nodiscard]] StyleStateResolver activeStyleStateResolver() const {
+    for (const Drawable *node = this; node != nullptr; node = node->fParent) {
+      if (node->fStyleStateResolver != nullptr) {
+        return node->fStyleStateResolver;
       }
     }
     return nullptr;
@@ -1501,6 +1530,7 @@ private:
   bool fLayoutValid = false;
   skia::SkRect fLastParent = skia::SkRect::MakeEmpty();
   StyleResolver fStyleResolver = nullptr;
+  StyleStateResolver fStyleStateResolver = nullptr;
   std::vector<StyleRole> fStyleRoles;
   bool fSelected = false;
   bool fDisabled = false;
@@ -1536,7 +1566,7 @@ public:
 };
 
 template <class Node, class... Roles>
-bool StyleRule<Node, Roles...>::matches(const Drawable &node) const {
+bool StyleRule<Node, Roles...>::matchesSubject(const Drawable &node) const {
   if constexpr (!std::same_as<Node, AnyDrawable>) {
     static_assert(std::derived_from<Node, Drawable>,
                   "a style selector must name a Drawable type");
@@ -1554,13 +1584,24 @@ bool StyleRule<Node, Roles...>::matches(const Drawable &node) const {
   return (!fSelector.fMinViewportWidth ||
           viewportWidth >= *fSelector.fMinViewportWidth) &&
          (!fSelector.fMaxViewportWidth ||
-          viewportWidth <= *fSelector.fMaxViewportWidth) &&
+          viewportWidth <= *fSelector.fMaxViewportWidth);
+}
+
+template <class Node, class... Roles>
+bool StyleRule<Node, Roles...>::matches(const Drawable &node) const {
+  return this->matchesSubject(node) &&
          (!hasState(fSelector.fStates, StyleState::kHover) ||
           node.hovered()) &&
          (!hasState(fSelector.fStates, StyleState::kSelected) ||
           node.selected()) &&
          (!hasState(fSelector.fStates, StyleState::kDisabled) ||
           node.disabled());
+}
+
+template <class Node, class... Roles>
+bool StyleRule<Node, Roles...>::usesState(const Drawable &node,
+                                         StyleState state) const {
+  return hasState(fSelector.fStates, state) && this->matchesSubject(node);
 }
 
 template <class... Rules>
@@ -1578,6 +1619,16 @@ Style StaticStyleSheet<Rules...>::resolve(const Drawable &node) const {
       },
       fRules);
   return out;
+}
+
+template <class... Rules>
+bool StaticStyleSheet<Rules...>::usesState(const Drawable &node,
+                                          StyleState state) const {
+  return std::apply(
+      [&](const auto &...rules) {
+        return (rules.usesState(node, state) || ... || false);
+      },
+      fRules);
 }
 
 // Builds a detached node -- a screen's root, or anything handed to somebody

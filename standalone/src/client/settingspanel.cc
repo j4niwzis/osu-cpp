@@ -623,8 +623,7 @@ private:
       const bool active = fOwner->fActiveSection == static_cast<int>(fIndex);
       const float previous = fGrow;
       fGrow = paint::approach(fGrow, active ? 1.0f : 0.0f, 90.0f, dt);
-      if (fGrow != previous || fHovered != fDrawnHovered) {
-        fDrawnHovered = fHovered;
+      if (fGrow != previous) {
         this->markDamaged();
       }
     }
@@ -651,7 +650,9 @@ private:
     }
 
     bool acceptsInput() const override { return true; }
-    bool hoverChangesAppearance() const override { return true; }
+    bool hoverChangesAppearance() const override {
+      return fOwner->fActiveSection != static_cast<int>(fIndex);
+    }
 
     bool onClick(float, float) override {
       fOwner->fAction = {Action::kSection, fIndex, 0};
@@ -662,7 +663,6 @@ private:
     SettingsPanel *fOwner;
     std::size_t fIndex;
     float fGrow = 0.0f;
-    bool fDrawnHovered = false;
     double fLastMs = 0.0;
   };
 

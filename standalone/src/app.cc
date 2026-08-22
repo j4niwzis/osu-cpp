@@ -3841,6 +3841,8 @@ private:
     ctx.fHeight = static_cast<float>(fWin.fScreenH);
     ctx.fMouseX = fWin.fMouseX;
     ctx.fMouseY = fWin.fMouseY;
+    ctx.fPointerActive = !fSettingsPanel.visible() ||
+                         fWin.fMouseX >= fSettingsPanel.occupiedWidth();
     ctx.fDtMs = fUiDt;
     ctx.fNowWall = wallMs();
     ctx.fFont = &fFont;

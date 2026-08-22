@@ -17,6 +17,7 @@ struct Panel;
 struct OwnText;
 struct Moved;
 struct Widget;
+struct Probe;
 
 inline constexpr skia::SkColor kOriginal = 0xff102030;
 inline constexpr skia::SkColor kCard = 0xff405060;
@@ -58,10 +59,26 @@ public:
   using TypedDrawable::TypedDrawable;
 };
 
+class StyleProbe : public TypedDrawable<StyleProbe> {
+public:
+  [[nodiscard]] int applications() const noexcept { return fApplications; }
+
+protected:
+  void applyNodeStyle(const Style &, bool) override { ++fApplications; }
+
+private:
+  int fApplications = 0;
+};
+
 struct WidgetTheme {
   static constexpr auto styles =
       makeStyleSheet().rule(select<WidgetBox, Widget>(),
                             {.width = 64.0f, .backgroundColour = kCard});
+};
+
+struct ProbeTheme {
+  static constexpr auto styles =
+      makeStyleSheet().rule(select<StyleProbe, Probe>(), {.alpha = 0.9f});
 };
 
 TEST(Style, ResolvesTypedRolesStatesAndViewport) {
@@ -175,6 +192,21 @@ TEST(State, DamagesDrawablesWithoutStateStyleRules) {
 
   child->setDisabled(true);
   EXPECT_FALSE(root->takeDamage().isEmpty());
+}
+
+TEST(State, HoverOnlyRestylesNodesWithHoverRules) {
+  auto root = make<Drawable>({.fill = true});
+  auto *probe = root->add<StyleProbe>(
+      {.width = 40.0f, .height = 20.0f, .roles = {role<Probe>}});
+  root->setStyleSheet<ProbeTheme>();
+  root->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  const int applications = probe->applications();
+  (void)root->takeDamage();
+
+  root->setHover(10.0f, 10.0f);
+  EXPECT_TRUE(probe->hovered());
+  EXPECT_EQ(probe->applications(), applications);
+  EXPECT_TRUE(root->takeDamage().isEmpty());
 }
 
 TEST(TextLayout, RelativeWidthIsOwnedByLayout) {
