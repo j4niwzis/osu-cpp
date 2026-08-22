@@ -181,6 +181,11 @@ public:
                ? fButtons[index]->ease(1, target, 110.0f, dtMs)
                : 0.0f;
   }
+  void settleHover(std::size_t index, float value) {
+    if (index < fButtons.size()) {
+      fButtons[index]->settle(1, value);
+    }
+  }
   float decayFlash(std::size_t index, double dtMs) {
     return index < fButtons.size()
                ? fButtons[index]->ease(2, 0.0f, 160.0f, dtMs)
@@ -268,6 +273,17 @@ private:
     }
     void set(int which, float value) {
       fValue[which] = value;
+      this->markDamaged();
+    }
+    // A value that no longer contributes to the picture must not keep the
+    // scene alive merely to ease invisibly. Set both halves of the animation
+    // state so settling() cannot retain a stale target.
+    void settle(int which, float value) {
+      if (fValue[which] == value && fTarget[which] == value) {
+        return;
+      }
+      fValue[which] = value;
+      fTarget[which] = value;
       this->markDamaged();
     }
     [[nodiscard]] float value(int which) const { return fValue[which]; }
@@ -495,6 +511,10 @@ public:
       fMenu.decayFlash(i, ctx.fDtMs);
 
       if (expand < 0.01f) {
+        // Hover is normally advanced below after hit testing. Once the
+        // button is too small to hit or draw, that path is skipped; leaving
+        // a half-eased hover here makes PieceNode::settling() true forever.
+        fMenu.settleHover(i, 0.0f);
         b.fRect = skia::SkRect::MakeEmpty();
         continue;
       }

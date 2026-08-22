@@ -878,9 +878,10 @@ private:
     // delete confirmation its tree. A frame drawn for one of them with
     // nothing marked repaints the whole window, which is what a pointer
     // resting inside any of them used to cost.
-    if (fFrame.fSceneWantsFrame) {
-      return false;
-    }
+    // Continuation and invalidation are deliberately separate. A retained
+    // scene can need another update without having changed pixels in this
+    // one; treating that scheduling request as damage sends an empty region
+    // to FrameState::begin(), where an empty region means a full repaint.
     // A preview still being fetched has nothing on screen to show for it
     // yet; once it plays, the ring marks the card it is on.
     if (fMirrors.previewPending()) {
