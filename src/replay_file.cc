@@ -351,10 +351,19 @@ encodeReplayData(std::span<const InputEvent> events, std::int32_t seed = 0) {
   int keys = 0;
   std::int64_t last = 0;
   for (const auto &ev : events) {
-    if (ev.fAction == InputAction::kPress)
-      keys |= 5;
-    else if (ev.fAction == InputAction::kRelease)
+    if (ev.fAction == InputAction::kPress) {
+      // InputEvent deliberately carries a logical hit rather than the
+      // physical Z/X/M1/M2 button. A second physical button may be pressed
+      // while the first is still held, so writing every hit as K1 would leave
+      // the replay key mask unchanged and a reader would see a move instead
+      // of another press. Alternate K1 and K2: changing 5 <-> 10 preserves
+      // every logical press while keeping one replay key held until the
+      // application's matching logical release.
+      keys = (keys & 5) != 0 ? 10 : 5;
+    } else if (ev.fAction == InputAction::kRelease) {
       keys &= ~5;
+      keys &= ~10;
+    }
     const auto now = static_cast<std::int64_t>(ev.fTime);
     s += std::format("{}|{:.7f}|{:.7f}|{},", now - last, ev.fPos.fX,
                      ev.fPos.fY, keys);

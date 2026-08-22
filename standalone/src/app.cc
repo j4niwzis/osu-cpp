@@ -395,6 +395,11 @@ private:
                                         std::istreambuf_iterator<char>()};
         try {
           replay = osu::decodeReplay(bytes);
+          // The engine, star attributes and playback clock all have to use
+          // the mods recorded in the replay. Applying these after Engine was
+          // constructed made a watched replay run under whichever mods were
+          // currently selected in the UI instead.
+          fMods = replay->fMods;
           if (replay->fLegacyFormat) {
             rules = osu::RuleSet::kLegacyClient;
           }
@@ -428,7 +433,6 @@ private:
     if (fAutoplay) {
       if (replay) {
         fPlay.fAutoplayEvents = std::move(replay->fEvents);
-        fMods = replay->fMods;
         // The video exporter renders the recorded events; a watched replay
         // is its own recording. saveReplay refuses to write it back out.
         fPlay.fRecordedEvents = fPlay.fAutoplayEvents;

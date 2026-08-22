@@ -177,6 +177,30 @@ TEST(Replay, RunAutoplay) {
   ASSERT_EQ(result.fScore.fTailHit, 1);
 }
 
+TEST(ReplayFile, PreservesPressesWhileAnotherKeyIsHeld) {
+  // The application records logical presses: alternating physical keys can
+  // produce another press before the shared logical release. The .osr key
+  // mask must still change for each one or replay playback loses stream hits.
+  const std::vector<InputEvent> recorded{
+      {100.0, {64.0, 80.0}, InputAction::kPress},
+      {110.0, {96.0, 80.0}, InputAction::kPress},
+      {120.0, {128.0, 80.0}, InputAction::kMove},
+      {130.0, {128.0, 80.0}, InputAction::kRelease},
+      {140.0, {160.0, 80.0}, InputAction::kPress},
+      {150.0, {160.0, 80.0}, InputAction::kRelease},
+  };
+  const auto encoded = encodeReplay(recorded, "map-md5", "Player", mod::kNone);
+  const auto decoded = decodeReplay(encoded).fEvents;
+
+  ASSERT_EQ(decoded.size(), recorded.size());
+  for (std::size_t i = 0; i < recorded.size(); ++i) {
+    EXPECT_DOUBLE_EQ(decoded[i].fTime, recorded[i].fTime);
+    EXPECT_DOUBLE_EQ(decoded[i].fPos.fX, recorded[i].fPos.fX);
+    EXPECT_DOUBLE_EQ(decoded[i].fPos.fY, recorded[i].fPos.fY);
+    EXPECT_EQ(decoded[i].fAction, recorded[i].fAction);
+  }
+}
+
 TEST(Beatmap, ComboInfo) {
   auto bm = parseBeatmap(kTestBeatmap);
   const auto info = buildComboInfo(bm);
