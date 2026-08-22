@@ -163,4 +163,18 @@ TEST(Style, TypesAnExistingDrawableBaseWithoutRtti) {
   EXPECT_EQ(widget->colour(), kCard);
 }
 
+TEST(State, DamagesDrawablesWithoutStateStyleRules) {
+  auto root = make<Box>({.fill = true}, kOriginal);
+  auto *child = root->add<Box>(
+      {.x = 12.0f, .y = 8.0f, .width = 40.0f, .height = 20.0f}, kCard);
+  root->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  (void)root->takeDamage();
+
+  child->setSelected(true);
+  EXPECT_FALSE(root->takeDamage().isEmpty());
+
+  child->setDisabled(true);
+  EXPECT_FALSE(root->takeDamage().isEmpty());
+}
+
 } // namespace

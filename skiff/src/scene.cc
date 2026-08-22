@@ -531,6 +531,10 @@ public:
     }
     fSelected = selected;
     this->restyleFromHere(true);
+    // State is also available directly to custom drawables. A state change
+    // therefore changes their picture even when no stylesheet rule happens
+    // to mention it.
+    this->markDamaged();
   }
   [[nodiscard]] bool selected() const noexcept { return fSelected; }
 
@@ -540,6 +544,7 @@ public:
     }
     fDisabled = disabled;
     this->restyleFromHere(true);
+    this->markDamaged();
   }
   [[nodiscard]] bool disabled() const noexcept { return fDisabled; }
 

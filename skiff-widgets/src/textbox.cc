@@ -67,7 +67,11 @@ protected:
       return;
     }
     const skiff::paint::Painter p(canvas, *font);
-    p.fillRounded(fBounds, fTheme.fCorner, fTheme.fSurface, alpha);
+    const bool active = this->selected();
+    p.fillRounded(fBounds, fTheme.fCorner,
+                  active ? fTheme.fAccent : fTheme.fSurface, alpha);
+    const skia::SkColor textColour =
+        active ? fTheme.fOnAccent : fTheme.fText;
 
     float textLeft = fBounds.fLeft + fTheme.fPaddingX;
     if (fSearchIcon) {
@@ -92,14 +96,14 @@ protected:
              fTheme.fTextFaint, alpha * 0.6f);
     } else {
       p.textClipped(fText, textLeft, baseline, room, fTheme.fFontSize,
-                    fTheme.fText, alpha);
+                    textColour, alpha);
     }
     if (fCaretShown) {
       const float cx =
           textLeft + std::min(room, p.measure(fText, fTheme.fFontSize)) + 2.0f;
       p.fillRect(skia::SkRect::MakeXYWH(cx, fBounds.centerY() - 9.0f, 1.5f,
                                         fTheme.fFontSize + 2.0f),
-                 fTheme.fText, alpha * 0.8f);
+                 textColour, alpha * 0.8f);
     }
   }
 

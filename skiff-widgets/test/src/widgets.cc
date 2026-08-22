@@ -2,8 +2,10 @@ import std;
 import gtest;
 import skia;
 import skiff.scene;
+import skiff.widgets.button;
 import skiff.widgets.dropdown;
 import skiff.widgets.sliderbar;
+import skiff.widgets.textbox;
 
 #include "gtest/gtest-macros.h"
 
@@ -58,6 +60,43 @@ TEST(Dropdown, ButtonAndRowsRouteTheirOwnClicks) {
 
   list->setExpanded(false);
   EXPECT_FALSE(root->click(20.0f, 64.0f));
+}
+
+TEST(Button, PrimaryAndEnabledStateOwnDamageAndInput) {
+  auto root = scene::make<scene::Drawable>({.fill = true});
+  int clicks = 0;
+  auto *button = root->add<widgets::Button>(
+      {.width = 100.0f, .height = 30.0f}, "Render", [&clicks] { ++clicks; });
+  root->layoutIfNeeded(skia::SkRect::MakeWH(120.0f, 50.0f));
+  (void)root->takeDamage();
+
+  button->setPrimary(true);
+  EXPECT_TRUE(button->primary());
+  EXPECT_FALSE(root->takeDamage().isEmpty());
+  EXPECT_TRUE(root->click(20.0f, 15.0f));
+  EXPECT_EQ(clicks, 1);
+
+  button->setEnabled(false);
+  EXPECT_FALSE(button->enabled());
+  EXPECT_FALSE(root->takeDamage().isEmpty());
+  EXPECT_FALSE(root->click(20.0f, 15.0f));
+  EXPECT_EQ(clicks, 1);
+}
+
+TEST(TextBox, TextAndSelectionOwnDamage) {
+  auto root = scene::make<scene::Drawable>({.fill = true});
+  auto *box = root->add<widgets::TextBox>(
+      {.width = 100.0f, .height = 30.0f}, "Size");
+  root->layoutIfNeeded(skia::SkRect::MakeWH(120.0f, 50.0f));
+  (void)root->takeDamage();
+
+  box->setText("1920x1080");
+  EXPECT_EQ(box->text(), "1920x1080");
+  EXPECT_FALSE(root->takeDamage().isEmpty());
+
+  box->setSelected(true);
+  EXPECT_TRUE(box->selected());
+  EXPECT_FALSE(root->takeDamage().isEmpty());
 }
 
 } // namespace

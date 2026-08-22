@@ -28,8 +28,24 @@ public:
   }
 
   Theme fTheme = theme();
-  bool fPrimary = false; // filled in the accent rather than the surface
-  bool fEnabled = true;
+
+  void setPrimary(bool primary) {
+    if (primary == fPrimary) {
+      return;
+    }
+    fPrimary = primary;
+    this->markDamaged();
+  }
+  [[nodiscard]] bool primary() const noexcept { return fPrimary; }
+
+  void setEnabled(bool enabled) {
+    if (enabled == fEnabled) {
+      return;
+    }
+    fEnabled = enabled;
+    this->setDisabled(!enabled);
+  }
+  [[nodiscard]] bool enabled() const noexcept { return fEnabled; }
 
   void setLabel(std::string label) {
     if (label == fLabel) {
@@ -72,6 +88,8 @@ protected:
   }
 
 private:
+  bool fPrimary = false; // filled in the accent rather than the surface
+  bool fEnabled = true;
   std::string fLabel;
   std::function<void()> fAction;
 };

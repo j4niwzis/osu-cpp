@@ -482,7 +482,6 @@ private:
   // class.
   struct ExportJob;
   std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
-  int fHotDialogPiece = -1;     // which piece of the export dialog is under it
 
   // ---- Settings overlay -------------------------------------------------
   // SettingsPanel: a 170px sidebar plus a 400px content column sliding in
@@ -2198,6 +2197,11 @@ private:
         }
       }
     }
+    if (fExportDialog.open()) {
+      fExportDialog.update(fFont, fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
+                           fWin.fMouseY, wallMs());
+      this->damage(fExportDialog.takeDamage());
+    }
 
     // Overlays are drawn after the screen, over most of it, so appearance and
     // disappearance repaint the underlying screen once. Retained overlays
@@ -2212,21 +2216,6 @@ private:
       this->damageAll("overlay appeared or went away");
     } else if (fSettingsPanel.animating(wallMs())) {
       this->damageAll("overlay sliding");
-    } else if (fExportDialog.open()) {
-      // Neither the window nor even the whole box: what is behind the dim
-      // does not change while the dialog is up, and while a video is being
-      // written the only thing that moves is the per cent on the status line.
-      // The box itself is repainted for the pointer, whose buttons light up.
-      const skia::SkRect box =
-          client::ExportDialog::bounds(fWin.fScreenW, fWin.fScreenH);
-      const int hot = fExportDialog.hotElement(fWin.fMouseX, fWin.fMouseY);
-      if (hot != fHotDialogPiece || fExportDialog.takeEdited()) {
-        fHotDialogPiece = hot;
-        this->damage(box);
-      } else if (fExportDialog.takeStatusChanged()) {
-        this->damage(
-            client::ExportDialog::statusBounds(fWin.fScreenW, fWin.fScreenH));
-      }
     }
     fOverlayShown = overlay;
   }
@@ -4032,8 +4021,7 @@ private:
   }
 
   void drawExportDialog(skia::SkCanvas *canvas) {
-    fExportDialog.draw(canvas, fFont, fWin.fScreenW, fWin.fScreenH,
-                       fWin.fMouseX, fWin.fMouseY);
+    fExportDialog.render(canvas);
   }
 
   bool exportClick(float x, float y) {

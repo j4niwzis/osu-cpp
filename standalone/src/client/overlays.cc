@@ -6,6 +6,8 @@ import osu;
 import skiff.paint;
 import skiff.scene;
 import skiff.nodes;
+import skiff.widgets.button;
+import skiff.widgets.textbox;
 import client.palette;
 import client.mods;
 import client.video;
@@ -332,6 +334,113 @@ private:
 };
 
 // ---- Video export dialog --------------------------------------------------
+namespace export_dialog_style {
+struct Dim;
+struct Title;
+struct Resolution;
+struct Presets;
+struct Preset;
+struct Custom;
+struct Render;
+struct Status;
+} // namespace export_dialog_style
+
+namespace export_dialog_detail {
+
+class Root : public scene::TypedDrawable<Root> {
+protected:
+  bool acceptsInput() const override { return true; }
+  bool hoverChangesAppearance() const override { return false; }
+  bool onClick(float, float) override { return true; }
+};
+
+class Panel : public scene::TypedDrawable<Panel, nodes::Box> {
+public:
+  using Base = scene::TypedDrawable<Panel, nodes::Box>;
+  Panel() : Base(palette::kBackground5) {}
+
+protected:
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    nodes::Box::drawSelf(canvas, alpha);
+    skia::SkFont *font = paint::defaultFont();
+    if (font != nullptr) {
+      paint::Painter(canvas, *font)
+          .strokeRounded(fBounds, fCornerRadius, palette::kAccent, 2.0f,
+                         alpha);
+    }
+  }
+};
+
+} // namespace export_dialog_detail
+
+struct ExportDialogTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::select<export_dialog_detail::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Box, export_dialog_style::Dim>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .alpha = 200.0f / 255.0f,
+                 .backgroundColour = skia::colorSetARGB(255, 8, 6, 12)})
+          .rule(scene::select<export_dialog_detail::Panel>(),
+                {.anchor = scene::Anchor::kCentre,
+                 .origin = scene::Anchor::kCentre,
+                 .width = 0.6f,
+                 .height = 300.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .maxWidth = 520.0f,
+                 .padding = scene::Margin{0.0f, 40.0f, 0.0f, 40.0f},
+                 .cornerRadius = 14.0f,
+                 .backgroundColour = palette::kBackground5})
+          .rule(scene::select<nodes::Text, export_dialog_style::Title>(),
+                {.anchor = scene::Anchor::kTopCentre,
+                 .origin = scene::Anchor::kTopCentre,
+                 .y = 18.0f,
+                 .colour = skia::kWhite,
+                 .fontSize = 24.0f})
+          .rule(scene::select<nodes::Text,
+                              export_dialog_style::Resolution>(),
+                {.anchor = scene::Anchor::kTopCentre,
+                 .origin = scene::Anchor::kTopCentre,
+                 .y = 66.0f,
+                 .alpha = 0.6f,
+                 .colour = skia::kWhite,
+                 .fontSize = 14.0f})
+          .rule(scene::select<nodes::FillFlow,
+                              export_dialog_style::Presets>(),
+                {.y = 100.0f,
+                 .width = 1.0f,
+                 .height = 40.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::select<skiff::widgets::Button,
+                              export_dialog_style::Preset>(),
+                {.height = 40.0f, .grow = scene::Axes::kX})
+          .rule(scene::select<skiff::widgets::TextBox,
+                              export_dialog_style::Custom>(),
+                {.y = 152.0f,
+                 .width = 1.0f,
+                 .height = 32.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::select<skiff::widgets::Button,
+                              export_dialog_style::Render>(),
+                {.anchor = scene::Anchor::kBottomCentre,
+                 .origin = scene::Anchor::kBottomCentre,
+                 .y = -48.0f,
+                 .width = 220.0f,
+                 .height = 44.0f})
+          .rule(scene::select<nodes::Text, export_dialog_style::Status>(),
+                {.anchor = scene::Anchor::kBottomCentre,
+                 .origin = scene::Anchor::kBottomCentre,
+                 .y = -16.0f,
+                 .alpha = 0.75f,
+                 .colour = skia::kWhite,
+                 .fontSize = 13.0f});
+};
+
 class ExportDialog {
 public:
   [[nodiscard]] bool open() const noexcept { return fOpen; }
@@ -341,35 +450,7 @@ public:
   }
   void close() noexcept { fOpen = false; }
   void setStatus(std::string status) {
-    fStatusChanged = fStatusChanged || status != fStatus;
     fStatus = std::move(status);
-  }
-
-  // Whether the line of status under the buttons has changed since this was
-  // last asked. A dialog waiting for an answer is a still picture; one
-  // writing a video is not, and this is the difference.
-  // The box it draws, which is all of it: the rest of the screen behind the
-  // dim does not change while it is up.
-  [[nodiscard]] static skia::SkRect bounds(int screenW, int screenH) {
-    const float sw = static_cast<float>(screenW);
-    const float sh = static_cast<float>(screenH);
-    const float w = std::min(520.0f, sw * 0.6f);
-    const float h = 300.0f;
-    return skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
-  }
-
-  // The line under the buttons, which is the only thing that moves while a
-  // video is being written: a per cent that counts up.
-  [[nodiscard]] static skia::SkRect statusBounds(int screenW, int screenH) {
-    const skia::SkRect box = bounds(screenW, screenH);
-    return skia::SkRect::MakeLTRB(box.fLeft + 8.0f, box.fBottom - 42.0f,
-                                  box.fRight - 8.0f, box.fBottom - 8.0f);
-  }
-
-  [[nodiscard]] bool takeStatusChanged() noexcept {
-    const bool changed = fStatusChanged;
-    fStatusChanged = false;
-    return changed;
   }
   [[nodiscard]] int preset() const noexcept { return fPreset; }
 
@@ -408,7 +489,6 @@ public:
     if ((c >= '0' && c <= '9') || c == 'x' || c == 'X') {
       if (fCustom.size() < 12) {
         fCustom.push_back(c == 'X' ? 'x' : c);
-        fCustomEdited = true;
       }
     }
   }
@@ -416,92 +496,50 @@ public:
   void backspaceSize() {
     if (!fCustom.empty()) {
       fCustom.pop_back();
-      fCustomEdited = true;
     }
   }
 
-  // Which of its pieces the pointer is on, so a client repainting regions can
-  // repaint when that changes rather than while the pointer is anywhere near.
-  [[nodiscard]] int hotElement(float x, float y) const {
-    for (std::size_t i = 0; i < fHits.size(); ++i) {
-      if (fHits[i].contains(x, y)) {
-        return static_cast<int>(i);
-      }
-    }
-    return -1;
-  }
-
-  [[nodiscard]] bool takeEdited() noexcept {
-    const bool edited = fCustomEdited;
-    fCustomEdited = false;
-    return edited;
-  }
-
-  void draw(skia::SkCanvas *canvas, skia::SkFont &font, int screenW,
-            int screenH, float mouseX, float mouseY) {
-    fHits.clear();
+  void update(skia::SkFont &font, int screenW, int screenH, float mouseX,
+              float mouseY, double nowMs) {
     if (!fOpen) {
       return;
     }
-    const paint::Painter p(canvas, font);
-    const float sw = static_cast<float>(screenW);
-    const float sh = static_cast<float>(screenH);
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(200, 8, 6, 12));
-
-    const float w = std::min(520.0f, sw * 0.6f);
-    const float h = 300.0f;
-    const skia::SkRect box =
-        skia::SkRect::MakeXYWH((sw - w) * 0.5f, (sh - h) * 0.5f, w, h);
-    p.fillRounded(box, 14.0f, palette::kBackground5);
-    p.strokeRounded(box, 14.0f, palette::kAccent, 2.0f);
-    p.textCentered("export replay as video", box.centerX(), box.fTop + 46.0f,
-                   24.0f, skia::kWhite);
-    p.textCentered("resolution", box.centerX(), box.fTop + 82.0f, 14.0f,
-                   skia::kWhite, 0.6f);
-
-    const float bw = (w - 80.0f) / static_cast<float>(kVideoPresets.size());
-    for (std::size_t i = 0; i < kVideoPresets.size(); ++i) {
-      const skia::SkRect r = skia::SkRect::MakeXYWH(
-          box.fLeft + 40.0f + static_cast<float>(i) * bw, box.fTop + 100.0f,
-          bw - 8.0f, 40.0f);
-      fHits.push_back(r);
-      const bool active = static_cast<int>(i) == fPreset;
-      p.fillRounded(r, 8.0f, active ? palette::kAccent : palette::kCardBg);
-      p.textCentered(kVideoPresets[i].fLabel, r.centerX(), r.centerY() + 5.0f,
-                     14.0f,
-                     active ? skia::colorSetARGB(255, 24, 18, 30)
-                            : skia::kWhite);
+    nodes::Text::setFont(&font);
+    bool rebuilt = false;
+    if (!fScene) {
+      fScene = this->build();
+      rebuilt = true;
     }
-
-    // Or a size typed in. Empty, it says what it is for; filled, it is what
-    // gets rendered, and the presets above stop being the answer.
-    const skia::SkRect custom = skia::SkRect::MakeXYWH(
-        box.fLeft + 40.0f, box.fTop + 152.0f, w - 80.0f, 32.0f);
-    fHits.push_back(custom);
     const auto [customWidth, customHeight] = this->customSize();
     const bool usingCustom = customWidth > 0;
-    p.fillRounded(custom, 8.0f, usingCustom ? palette::kAccent : palette::kCardBg);
-    p.textCentered(fCustom.empty() ? "or type a size, like 2560x1440"
-                                   : fCustom,
-                   custom.centerX(), custom.centerY() + 5.0f, 14.0f,
-                   usingCustom ? skia::colorSetARGB(255, 24, 18, 30)
-                               : skia::kWhite,
-                   fCustom.empty() ? 0.5f : 1.0f);
+    for (std::size_t i = 0; i < fPresetButtons.size(); ++i) {
+      fPresetButtons[i]->setPrimary(
+          !usingCustom && static_cast<int>(i) == fPreset);
+    }
+    fCustomBox->setText(fCustom);
+    fCustomBox->setSelected(usingCustom);
+    fCustomBox->tickCaret(nowMs, !fCustom.empty());
+    fStatusText->setText(
+        fStatus.empty() ? "requires ffmpeg in PATH    Esc to cancel" : fStatus);
 
-    const skia::SkRect go = skia::SkRect::MakeXYWH(box.centerX() - 110.0f,
-                                                   box.fBottom - 92.0f, 220.0f,
-                                                   44.0f);
-    fHits.push_back(go);
-    p.fillRounded(go, 10.0f,
-                  go.contains(mouseX, mouseY) ? palette::kCardSel : palette::kCardBg);
-    p.strokeRounded(go, 10.0f, palette::kAccent2, 2.0f);
-    p.textCentered("render", go.centerX(), go.centerY() + 6.0f, 17.0f,
-                   skia::kWhite);
-    p.textCentered(fStatus.empty() ? "requires ffmpeg in PATH    Esc to cancel"
-                                   : fStatus,
-                   box.centerX(), box.fBottom - 24.0f, 13.0f, skia::kWhite,
-                   0.75f);
+    const skia::SkRect screen = skia::SkRect::MakeWH(
+        static_cast<float>(screenW), static_cast<float>(screenH));
+    fScene->updateTree(nowMs);
+    fScene->layoutIfNeeded(screen);
+    if (rebuilt) {
+      fScene->markDamaged();
+    }
+    fScene->setHover(mouseX, mouseY);
+  }
+
+  void render(skia::SkCanvas *canvas) {
+    if (fOpen && fScene && canvas != nullptr) {
+      fScene->draw(canvas);
+    }
+  }
+
+  [[nodiscard]] skia::SkRect takeDamage() {
+    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
   }
 
   // Returns true when "render" was pressed.
@@ -509,32 +547,103 @@ public:
     if (!fOpen) {
       return false;
     }
-    for (std::size_t i = 0; i < fHits.size(); ++i) {
-      if (!fHits[i].contains(x, y)) {
-        continue;
-      }
-      if (i < kVideoPresets.size()) {
-        fPreset = static_cast<int>(i);
-        fCustom.clear(); // picking one is the way to stop using a typed size
-        fCustomEdited = true;
-        return false;
-      }
-      if (i == kVideoPresets.size()) {
-        return false; // the size field: clicking it does nothing but focus
-      }
-      return true;
+    fRenderRequested = false;
+    if (fScene) {
+      fScene->click(x, y);
     }
-    return false;
+    return fRenderRequested;
   }
 
 private:
+  inline static const skiff::widgets::Theme kPresetTheme = {
+      .fSurface = palette::kCardBg,
+      .fSurfaceHover = palette::kCardSel,
+      .fSurfaceActive = palette::kCardSel,
+      .fText = skia::kWhite,
+      .fLabel = skia::kWhite,
+      .fTextDim = skia::kWhite,
+      .fTextFaint = skia::colorSetARGB(255, 150, 140, 160),
+      .fAccent = palette::kAccent,
+      .fOnAccent = skia::colorSetARGB(255, 24, 18, 30),
+      .fCorner = 8.0f,
+      .fFontSize = 14.0f,
+      .fRowHeight = 40.0f,
+      .fPaddingX = 12.0f,
+  };
+
+  inline static const skiff::widgets::Theme kCustomTheme = {
+      .fSurface = palette::kCardBg,
+      .fSurfaceHover = palette::kCardSel,
+      .fSurfaceActive = palette::kCardSel,
+      .fText = skia::kWhite,
+      .fLabel = skia::kWhite,
+      .fTextDim = skia::kWhite,
+      .fTextFaint = skia::colorSetARGB(255, 170, 160, 180),
+      .fAccent = palette::kAccent,
+      .fOnAccent = skia::colorSetARGB(255, 24, 18, 30),
+      .fCorner = 8.0f,
+      .fFontSize = 14.0f,
+      .fRowHeight = 32.0f,
+      .fPaddingX = 12.0f,
+  };
+
+  [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
+    auto root = scene::make<export_dialog_detail::Root>({});
+    root->add<nodes::Box>(
+        {.roles = {scene::role<export_dialog_style::Dim>}},
+        skia::colorSetARGB(255, 8, 6, 12));
+    auto *panel = root->add<export_dialog_detail::Panel>({});
+    panel->add<nodes::Text>(
+        {.roles = {scene::role<export_dialog_style::Title>}},
+        "export replay as video", 24.0f, skia::kWhite);
+    panel->add<nodes::Text>(
+        {.roles = {scene::role<export_dialog_style::Resolution>}},
+        "resolution", 14.0f, skia::kWhite);
+
+    auto *presets = panel->add<nodes::FillFlow>(
+        {.roles = {scene::role<export_dialog_style::Presets>}},
+        nodes::FillFlow::Direction::kHorizontal, 8.0f, 0.0f);
+    presets->fWrap = false;
+    for (std::size_t i = 0; i < kVideoPresets.size(); ++i) {
+      auto *button = presets->add<skiff::widgets::Button>(
+          {.roles = {scene::role<export_dialog_style::Preset>}},
+          kVideoPresets[i].fLabel, [this, i] { this->choosePreset(i); });
+      button->fTheme = kPresetTheme;
+      fPresetButtons.push_back(button);
+    }
+
+    fCustomBox = panel->add<skiff::widgets::TextBox>(
+        {.roles = {scene::role<export_dialog_style::Custom>}},
+        "or type a size, like 2560x1440");
+    fCustomBox->fTheme = kCustomTheme;
+
+    auto *render = panel->add<skiff::widgets::Button>(
+        {.roles = {scene::role<export_dialog_style::Render>}}, "render",
+        [this] { fRenderRequested = true; });
+    render->fTheme = kPresetTheme;
+    render->setPrimary(true);
+
+    fStatusText = panel->add<nodes::Text>(
+        {.roles = {scene::role<export_dialog_style::Status>}}, "", 13.0f,
+        skia::kWhite);
+    root->setStyleSheet<ExportDialogTheme>();
+    return root;
+  }
+
+  void choosePreset(std::size_t index) {
+    fPreset = static_cast<int>(index);
+    fCustom.clear();
+  }
+
   bool fOpen = false;
   int fPreset = 1; // 1080p
   std::string fCustom;
-  bool fCustomEdited = false;
   std::string fStatus;
-  bool fStatusChanged = true;
-  std::vector<skia::SkRect> fHits;
+  bool fRenderRequested = false;
+  std::unique_ptr<scene::Drawable> fScene;
+  std::vector<skiff::widgets::Button *> fPresetButtons;
+  skiff::widgets::TextBox *fCustomBox = nullptr;
+  nodes::Text *fStatusText = nullptr;
 };
 
 } // namespace client
