@@ -88,6 +88,11 @@ public:
     fApp.fAutoplay = fApp.fCliAutoplay;
     fApp.fReplayBrowser.close();
     fApp.fExportDialog.show();
+    // One overlay replaced another in the same event, so the application's
+    // boolean "an overlay is visible" state never changes. The replay page
+    // covered the whole window; repaint it now or every pixel outside the
+    // smaller export dialog remains from that closed page.
+    fApp.fFrame.damageAll("replay browser replaced by export dialog");
   }
 
   // The beatmap every panel in the strip belongs to: the one just played on
