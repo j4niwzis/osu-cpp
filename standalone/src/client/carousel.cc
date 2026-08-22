@@ -129,7 +129,11 @@ public:
   // The scroll and the pop are both eased, and neither announces itself as
   // damage until it has moved something.
   [[nodiscard]] bool animating() const {
-    return std::abs(fScrollAnim - fTarget) > 0.05f || fPop < 1.0f;
+    // approach() snaps exactly to its target, so equality is the point at
+    // which no future update can change the picture. Using a looser epsilon
+    // here stopped scheduling frames while approach() still had distance to
+    // cover; the safety frame or next mouse event then made it move again.
+    return fScrollAnim != fTarget || fPop < 1.0f;
   }
 
   [[nodiscard]] float scrollOffset() const noexcept { return fScrollAnim; }
