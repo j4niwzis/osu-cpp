@@ -18,7 +18,6 @@ import client.audio;
 import client.input;
 import client.timing;
 import client.http;
-import client.mapcache;
 import client.replaycache;
 import client.filter;
 import client.loader;
@@ -288,7 +287,6 @@ private:
   // shown, not about what is on disk.
   std::vector<std::uint8_t> fEntryStates;
   int fBackgroundForSet = -1;
-  static constexpr std::size_t kMaxLoadedSets = 4;
   client::Loader fLoader;
 
   // Filtering / sorting: the control itself lives in client.filtercontrol.
@@ -3287,79 +3285,7 @@ private:
       fLibrary.loadedOrder().push_back(0);
     }
 
-    // Collect the archive list first, then parse the cache misses on every
-    // core: unzipping and star-rating a set is pure computation, and doing it
-    // one at a time was leaving the machine idle.
-    std::vector<std::filesystem::path> archives;
-    std::error_code iterEc;
-    for (const auto &e :
-         std::filesystem::directory_iterator(fMapsDir, iterEc)) {
-      if (e.is_regular_file() && e.path().extension() == ".osz") {
-        archives.push_back(e.path());
-      }
-    }
-
-    std::vector<std::filesystem::path> misses;
-    for (const auto &path : archives) {
-      if (auto cached = fLibrary.cachedEntryFor(path)) {
-        fLibrary.sets().push_back(std::move(*cached));
-      } else {
-        misses.push_back(path);
-      }
-    }
-
-    if (!misses.empty()) {
-      const auto threads =
-          std::max(1u, std::min(std::thread::hardware_concurrency(),
-                                static_cast<unsigned>(misses.size())));
-      std::println(std::cerr, "[library] parsing {} new sets on {} threads",
-                   misses.size(), threads);
-      struct ParsedArchive {
-        client::library::Entry fEntry;
-        std::vector<client::CachedDifficulty> fDiffs;
-      };
-      std::vector<std::optional<ParsedArchive>> parsed(misses.size());
-      std::atomic<std::size_t> next{0};
-      std::vector<std::thread> pool;
-      pool.reserve(threads);
-      for (unsigned t = 0; t < threads; ++t) {
-        pool.emplace_back([&] {
-          for (;;) {
-            const std::size_t i = next.fetch_add(1);
-            if (i >= misses.size()) {
-              return;
-            }
-            try {
-              const auto set = loadBeatmapSet(misses[i]);
-              client::library::Entry entry;
-              entry.fPath = misses[i];
-              entry.fInfos = set.fBeatmaps;
-              parsed[i].emplace(
-                  std::move(entry),
-                  client::library::Library::cacheRecordFor(set));
-            } catch (const std::exception &e) {
-              std::println(std::cerr, "[library] skipping {}: {}",
-                           misses[i].filename().string(), e.what());
-            }
-          }
-        });
-      }
-      for (auto &th : pool) {
-        th.join();
-      }
-      // Library and MapCache belong to the UI thread. Workers only produce
-      // independent parse results; merge them after every worker has stopped.
-      for (std::size_t i = 0; i < parsed.size(); ++i) {
-        if (!parsed[i]) {
-          continue;
-        }
-        const auto stamp = client::library::Library::fileStamp(misses[i]);
-        fLibrary.sets().push_back(std::move(parsed[i]->fEntry));
-        fLibrary.cache().store(misses[i].filename().string(), stamp.first,
-                               stamp.second, std::move(parsed[i]->fDiffs));
-      }
-    }
-    fLibrary.cache().save();
+    fLibrary.scanArchives();
     this->syncMapsDir();
 
     this->resortLibrary();

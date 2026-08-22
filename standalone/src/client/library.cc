@@ -158,6 +158,79 @@ public:
     return diffs;
   }
 
+  // Load unchanged entries from the metadata cache and parse cache misses in
+  // parallel. Workers only produce independent values; Library and MapCache
+  // remain owned by the calling thread and are updated after every join.
+  void scanArchives() {
+    std::vector<std::filesystem::path> archives;
+    std::error_code iterEc;
+    for (const auto &e :
+         std::filesystem::directory_iterator(fMapsDir, iterEc)) {
+      if (e.is_regular_file() && e.path().extension() == ".osz") {
+        archives.push_back(e.path());
+      }
+    }
+
+    std::vector<std::filesystem::path> misses;
+    for (const auto &path : archives) {
+      if (auto cached = this->cachedEntryFor(path)) {
+        fSets.push_back(std::move(*cached));
+      } else {
+        misses.push_back(path);
+      }
+    }
+
+    struct ParsedArchive {
+      Entry fEntry;
+      std::vector<CachedDifficulty> fDiffs;
+    };
+    std::vector<std::optional<ParsedArchive>> parsed(misses.size());
+    if (!misses.empty()) {
+      const auto threads =
+          std::max(1u, std::min(std::thread::hardware_concurrency(),
+                                static_cast<unsigned>(misses.size())));
+      std::println(std::cerr, "[library] parsing {} new sets on {} threads",
+                   misses.size(), threads);
+      std::atomic<std::size_t> next{0};
+      std::vector<std::thread> pool;
+      pool.reserve(threads);
+      for (unsigned t = 0; t < threads; ++t) {
+        pool.emplace_back([&] {
+          for (;;) {
+            const std::size_t i = next.fetch_add(1);
+            if (i >= misses.size()) {
+              return;
+            }
+            try {
+              const auto set = loadBeatmapSet(misses[i]);
+              Entry entry;
+              entry.fPath = misses[i];
+              entry.fInfos = set.fBeatmaps;
+              parsed[i].emplace(std::move(entry), cacheRecordFor(set));
+            } catch (const std::exception &e) {
+              std::println(std::cerr, "[library] skipping {}: {}",
+                           misses[i].filename().string(), e.what());
+            }
+          }
+        });
+      }
+      for (auto &thread : pool) {
+        thread.join();
+      }
+    }
+
+    for (std::size_t i = 0; i < parsed.size(); ++i) {
+      if (!parsed[i]) {
+        continue;
+      }
+      const auto stamp = fileStamp(misses[i]);
+      fSets.push_back(std::move(parsed[i]->fEntry));
+      fCache.store(misses[i].filename().string(), stamp.first, stamp.second,
+                   std::move(parsed[i]->fDiffs));
+    }
+    fCache.save();
+  }
+
   // Metadata for one archive, from the cache when the file is unchanged.
   void scanArchive(const std::filesystem::path &path) {
     std::error_code ec;
