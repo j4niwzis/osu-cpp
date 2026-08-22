@@ -26,6 +26,7 @@ import client.palette;
 import client.settings;
 import client.settingspanel;
 import client.overlays;
+import client.deletedialog;
 import client.filtercontrol;
 import client.library;
 import client.listing;
@@ -39,7 +40,6 @@ import present;
 import client.setpage;
 import skiff.scene;
 import skiff.nodes;
-import skiff.widgets.button;
 import client.gameplayview;
 import client.mods;
 import client.video;
@@ -59,74 +59,6 @@ extern "C" EMSCRIPTEN_KEEPALIVE void osu_maps_synced() {
 #endif
 
 namespace client {
-
-namespace delete_dialog_style {
-struct Root;
-struct Panel;
-struct Column;
-struct Prompt;
-struct Title;
-struct Detail;
-struct Buttons;
-struct Button;
-} // namespace delete_dialog_style
-
-struct DeleteDialogTheme {
-  static constexpr auto styles =
-      skiff::scene::makeStyleSheet()
-          .rule(skiff::scene::select<skiff::nodes::Box,
-                                     delete_dialog_style::Root>(),
-                {.width = 1.0f,
-                 .height = 1.0f,
-                 .relativeSize = skiff::scene::Axes::kBoth,
-                 .backgroundColour = skia::colorSetARGB(200, 8, 6, 12)})
-          .rule(skiff::scene::select<skiff::nodes::Box,
-                                     delete_dialog_style::Panel>(),
-                {.anchor = skiff::scene::Anchor::kCentre,
-                 .origin = skiff::scene::Anchor::kCentre,
-                 .width = 560.0f,
-                 .height = 240.0f,
-                 .padding = skiff::scene::Margin::all(20.0f),
-                 .cornerRadius = 12.0f,
-                 .backgroundColour = client::palette::kBackground5})
-          .rule(skiff::scene::select<skiff::nodes::FillFlow,
-                                     delete_dialog_style::Column>(),
-                {.width = 1.0f,
-                 .relativeSize = skiff::scene::Axes::kX,
-                 .autoSize = skiff::scene::Axes::kY})
-          .rule(skiff::scene::select<skiff::nodes::Text,
-                                     delete_dialog_style::Prompt>(),
-                {.anchor = skiff::scene::Anchor::kTopCentre,
-                 .origin = skiff::scene::Anchor::kTopCentre,
-                 .maxWidth = 520.0f,
-                 .alpha = 0.75f,
-                 .colour = skia::kWhite,
-                 .fontSize = 16.0f})
-          .rule(skiff::scene::select<skiff::nodes::Text,
-                                     delete_dialog_style::Title>(),
-                {.anchor = skiff::scene::Anchor::kTopCentre,
-                 .origin = skiff::scene::Anchor::kTopCentre,
-                 .maxWidth = 520.0f,
-                 .colour = skia::kWhite,
-                 .fontSize = 20.0f,
-                 .fontBold = true})
-          .rule(skiff::scene::select<skiff::nodes::Text,
-                                     delete_dialog_style::Detail>(),
-                {.anchor = skiff::scene::Anchor::kTopCentre,
-                 .origin = skiff::scene::Anchor::kTopCentre,
-                 .maxWidth = 520.0f,
-                 .alpha = 0.6f,
-                 .colour = skia::kWhite,
-                 .fontSize = 13.0f})
-          .rule(skiff::scene::select<skiff::nodes::FillFlow,
-                                     delete_dialog_style::Buttons>(),
-                {.anchor = skiff::scene::Anchor::kBottomCentre,
-                 .origin = skiff::scene::Anchor::kBottomCentre,
-                 .autoSize = skiff::scene::Axes::kBoth})
-          .rule(skiff::scene::select<skiff::widgets::Button,
-                                     delete_dialog_style::Button>(),
-                {.width = 240.0f, .height = 46.0f});
-};
 
 using audio_client::alFormat;
 using audio_client::AudioContext;
@@ -376,10 +308,7 @@ private:
   std::mutex fDropMutex;             // guards fDropped
   std::vector<std::string> fDropped; // files dropped onto the window
   client::songselect::Footer fSelectFooter;
-  bool fConfirmDelete = false; // the deletion dialog is up
-  // Built as a scene tree rather than drawn by hand: the first screen on the
-  // retained renderer, and the pattern the rest follow.
-  std::unique_ptr<skiff::scene::Drawable> fConfirmScene;
+  client::DeleteDialog fDeleteDialog;
 
   // Download screen (mirror search + .osz fetch).
   client::listing::Listing fListing;
@@ -1212,9 +1141,8 @@ private:
       return;
     }
     if (action == glfw::kPress && key == glfw::kKeyEscape) {
-      if (fConfirmDelete) {
-        fConfirmDelete = false;
-        fConfirmScene.reset();
+      if (fDeleteDialog.open()) {
+        fDeleteDialog.close();
         return;
       }
       if (fExportDialog.open()) {
@@ -1522,8 +1450,8 @@ private:
       if (fExportDialog.open()) {
         add(fExportDialog.sceneRoot(), true);
       }
-      if (fConfirmDelete && fConfirmScene) {
-        add(fConfirmScene.get(), true);
+      if (fDeleteDialog.open()) {
+        add(fDeleteDialog.sceneRoot(), true);
       }
     }
     fInputRouter.setLayers(layers);
@@ -2306,13 +2234,10 @@ private:
                            fWin.fMouseY, wallMs());
       this->consumeFrame(fExportDialog.finishFrame());
     }
-    if (fConfirmDelete && fConfirmScene) {
-      const skia::SkRect screen = skia::SkRect::MakeWH(
-          static_cast<float>(fWin.fScreenW), static_cast<float>(fWin.fScreenH));
-      fConfirmScene->updateTree(wallMs());
-      fConfirmScene->layoutIfNeeded(screen);
-      fConfirmScene->setHover(fWin.fMouseX, fWin.fMouseY);
-      this->consumeFrame(fConfirmScene->finishFrame());
+    if (fDeleteDialog.open()) {
+      fDeleteDialog.update(fFont, fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
+                           fWin.fMouseY, wallMs());
+      this->consumeFrame(fDeleteDialog.finishFrame());
     }
 
     // Overlays are drawn after the screen, over most of it, so appearance and
@@ -2320,7 +2245,7 @@ private:
     // report their own damage between those two transitions.
     const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
                          fExportDialog.open() || fReplayListOpen ||
-                         fConfirmDelete || fSetPage.open();
+                         fDeleteDialog.open() || fSetPage.open();
     // Only while one is moving, or on the frame it appears or goes away: a
     // settled overlay is as static as the screen under it, and the screens do
     // mark what they change beneath it.
@@ -2761,7 +2686,7 @@ private:
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
     }
-    this->drawDeleteConfirmation(canvas);
+    fDeleteDialog.render(canvas);
     this->drawToast(canvas);
     this->showDamage(canvas);
     canvas->restoreToCount(fFrame.fFrameSave);
@@ -5104,103 +5029,22 @@ private:
     if (infos.empty()) {
       return;
     }
-    fConfirmDelete = true;
-    fConfirmScene = this->buildDeleteDialog(infos);
-  }
-
-  // The dialog as a tree: a dimmed backdrop, a panel anchored to the centre,
-  // a vertical flow of text, and two buttons in a horizontal one. No
-  // coordinates are computed here -- anchors and flows place everything, and
-  // the panel fades and rises into place with transforms.
-  [[nodiscard]] std::unique_ptr<skiff::scene::Drawable>
-  buildDeleteDialog(const std::vector<osu::BeatmapInfo> &infos) {
-    namespace scene = skiff::scene;
-    namespace nodes = skiff::nodes;
-
-    auto root = scene::make<nodes::Box>(
-        {.roles = {scene::role<delete_dialog_style::Root>}},
-        skia::colorSetARGB(200, 8, 6, 12));
-    root->setStyleSheet<DeleteDialogTheme>();
-
-    auto *panel = root->add<nodes::Box>(
-        {.y = 20.0f,
-         .alpha = 0.0f,
-         .roles = {scene::role<delete_dialog_style::Panel>}},
-        client::palette::kBackground5);
-    panel->fadeTo(1.0f, 200.0, scene::Easing::kOutQuint);
-    panel->moveToY(0.0f, 400.0, scene::Easing::kOutQuint);
-
-    auto *column = panel->add<nodes::FillFlow>(
-        {.roles = {scene::role<delete_dialog_style::Column>}},
-        nodes::FillFlow::Direction::kVertical);
-    column->setSpacing(0.0f, 8.0f);
-
     const auto &meta = infos.front().fMeta;
     const std::string title = std::format(
         "{} - {}",
         meta.fArtistUnicode.empty() ? meta.fArtist : meta.fArtistUnicode,
         meta.fTitleUnicode.empty() ? meta.fTitle : meta.fTitleUnicode);
-
-    column->add<nodes::Text>(
-        {.roles = {scene::role<delete_dialog_style::Prompt>}},
-        "Confirm deletion of", 16.0f, skia::kWhite, false);
-    column->add<nodes::Text>(
-        {.roles = {scene::role<delete_dialog_style::Title>}}, title, 20.0f,
-        skia::kWhite, true);
-    column->add<nodes::Text>(
-        {.roles = {scene::role<delete_dialog_style::Detail>}},
-        std::format("{} difficulties will be removed from disk", infos.size()),
-        13.0f, skia::kWhite, false);
-
-    auto *buttons = panel->add<nodes::FillFlow>(
-        {.roles = {scene::role<delete_dialog_style::Buttons>}},
-        nodes::FillFlow::Direction::kHorizontal);
-    buttons->setSpacing(20.0f, 0.0f);
-    buttons->setWrap(false);
-    buttons->add(this->dialogButton("Yes. Totally. Delete it.",
-                                    skia::colorSetARGB(255, 255, 110, 110),
-                                    [this] {
-                                      fConfirmDelete = false;
-                                      fConfirmScene.reset();
-                                      this->deleteSelectedBeatmap();
-                                    }));
-    buttons->add(
-        this->dialogButton("Cancel", client::palette::kAccent2, [this] {
-          fConfirmDelete = false;
-          fConfirmScene.reset();
-        }));
-    return root;
-  }
-
-  [[nodiscard]] std::unique_ptr<skiff::scene::Drawable>
-  dialogButton(std::string label, skia::SkColor accent,
-               std::function<void()> action) {
-    namespace scene = skiff::scene;
-    auto button = scene::make<skiff::widgets::Button>(
-        {.roles = {scene::role<delete_dialog_style::Button>}},
-        std::move(label), std::move(action));
-    auto buttonTheme = skiff::widgets::theme();
-    buttonTheme.fSurface = client::palette::kCardBg;
-    buttonTheme.fSurfaceHover = client::palette::kBackground4;
-    buttonTheme.fText = accent;
-    buttonTheme.fCorner = 10.0f;
-    buttonTheme.fFontSize = 15.0f;
-    button->setTheme(buttonTheme);
-    return button;
-  }
-
-  void drawDeleteConfirmation(skia::SkCanvas *canvas) {
-    if (!fConfirmDelete || !fConfirmScene) {
-      return;
-    }
-    fConfirmScene->draw(canvas);
+    fDeleteDialog.show(title, infos.size());
   }
 
   bool confirmDeleteClick(float x, float y) {
-    if (!fConfirmDelete || !fConfirmScene) {
+    if (!fDeleteDialog.open()) {
       return false;
     }
-    fConfirmScene->dispatchPointer(skiff::scene::PointerAction::kDown, x, y);
+    if (fDeleteDialog.click(x, y) ==
+        client::DeleteDialog::Choice::kDelete) {
+      this->deleteSelectedBeatmap();
+    }
     return true; // the dialog is modal either way
   }
 
