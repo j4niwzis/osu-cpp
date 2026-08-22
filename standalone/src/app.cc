@@ -44,6 +44,7 @@ import client.gameplayview;
 import client.mods;
 import client.video;
 import client.videoexport;
+import client.framestate;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -124,40 +125,7 @@ private:
   // Window / GL / Skia
   glfw::GLFWwindow *fWindow = nullptr;
   skia::Sp<skia::GrDirectContext> fContext;
-  // The frame's own bookkeeping: which surface it is drawing into, what it
-  // has been told changed, what it may clip to, what has to reach the window,
-  // and how many more frames are owed. Grouped so that the loop that uses all
-  // of it can be lifted out of this class, which is the only reason a
-  // function here cannot already live in a file of its own.
-  struct Frame {
-    skia::Sp<skia::SkSurface> fSurface;
-    skia::Sp<skia::SkSurface> fWindowSurface; // the swap chain
-    skia::Sp<skia::SkSurface> fRasterSurface; // Skia's own CPU target
-    bool fDrewOnRaster = false;               // this frame went to the CPU one
-    int fFrameSave = 0; // canvas save count taken while the damage clip is up
-    bool fDrawing = false; // inside a frame: damage reported now is not
-    std::vector<skia::SkIRect> fDamage;
-    bool fFullDamage = true;
-    const char *fFullDamageReason = "start";
-    bool fDamageDrives = false; // damage that is worth a frame of its own
-    bool fSceneWantsFrame = false; // retained trees own continuation requests
-    std::vector<skia::SkIRect> fComputedClip; // what the frame would have used
-    bool fComputedClipFull = true;
-    std::vector<skia::SkIRect> fFrameClip;
-    bool fFrameClipFull = true;
-    std::vector<skia::SkIRect> fBlitRegions; // what to carry over; empty = all
-    std::vector<std::vector<skia::SkIRect>> fBlitHistory;
-    int fBufferAge = -1; // frames since this buffer last held a frame
-    bool fBufferAgeAssumed = false; // ...or what we were told to believe
-    bool fAgeReported = false;
-    int fFramesOwed = 0;       // frames promised to something that just moved
-    int fFullRepaintsOwed = 0; // buffers still holding an older screen
-    double fWakeWall = 0.0;    // when a screen asked to be woken, or 0
-    double fRedrawUntilWall = 0.0; // frames are drawn until at least this time
-    double fLastDrawWall = 0.0;
-    const char *fFrameReason = ""; // what the last frame was drawn for
-  };
-  Frame fFrame;
+  client::FrameState fFrame;
   skiff::scene::InputRouter fInputRouter;
   // The window and where the pointer is in it. What a resize changes and
   // what every screen measures itself against.
@@ -216,31 +184,7 @@ private:
   //
   // A list rather than one rectangle: the logo and the FPS counter sit in
   // opposite corners, and their union is half the screen.
-  static constexpr std::size_t kMaxDamageRects = 3;
   bool fOverlayShown = false; // an overlay covered the screen last frame
-  double fDamageLogWall = 0.0;
-  // What the client says about itself when asked: the frame cost
-  // counters, the damage overlay and the traces. Nothing that draws
-  // reads any of it.
-  struct Diagnostics {
-    const char *fLoggedFullReason = nullptr;
-    std::chrono::steady_clock::time_point fFrameStart{};
-    std::chrono::steady_clock::time_point fBlitStart{};
-    std::int64_t fCostUpdateUs = 0, fCostDrawUs = 0, fCostBlitUs = 0,
-                 fCostSwapUs = 0;
-    std::int64_t fLastUpdateUs = 0;
-    std::uint64_t fCostVisited = 0, fCostDrawn = 0;
-    std::int64_t fCostClipArea = 0; // pixels the frames were allowed to touch
-    int fCostFrames = 0;
-    double fCostLogWall = 0.0;
-    const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-    const bool fTraceRepaint = std::getenv("OSU_TRACE_REPAINT") != nullptr ||
-                               std::getenv("OSU_TRACE_RESIZE") != nullptr;
-    bool fTracedClipping = false;
-    int fTracedAge = -2;
-    std::size_t fTracedHistory = 0;
-  };
-  Diagnostics fDiag;
   // What each of the last few frames repainted, since the buffer being drawn
   // into is missing exactly that.
   // The setting decides; the variable is there for a run before settings
@@ -409,7 +353,7 @@ private:
     }
     // Runs on the wall clock rather than on easing, so it asks for the frames
     // it needs itself, and stops asking when it is over.
-    this->oweFrames(2);
+    fFrame.oweFrames(2);
     skia::SkPaint p;
     p.setColor(skia::colorSetARGB(
         static_cast<std::uint8_t>((1.0f - fade) * 160.0f), 10, 8, 14));
@@ -949,7 +893,7 @@ private:
     // Enough to react and to paint the reaction. Anything that keeps moving
     // after that -- an eased hover, a scroll gliding to a stop -- owes itself
     // the frames it needs, and stops owing them when it settles.
-    this->oweFrames(3);
+    fFrame.oweFrames(3);
     switch (ev.fType) {
     case EventType::kResize:
       this->resize(ev.fA, ev.fB);
@@ -1301,7 +1245,7 @@ private:
         // The page covered the listing; what it uncovers has to be repainted,
         // and the listing has no way of knowing it was ever covered.
         fSetPage.close(); // back to the listing, as the overlay stacks
-        this->damageAll("beatmap page closed");
+        fFrame.damageAll("beatmap page closed");
         return;
       }
       fMirrors.stopPreview();
@@ -1680,7 +1624,7 @@ private:
   void switchState(State st) {
     // The transition fades over 240 ms and asks for its own frames after
     // that; what a new screen loads arrives as damage from a callback.
-    this->oweFrames(4);
+    fFrame.oweFrames(4);
     // A dialog belongs to the screen it was opened on; carried to another one
     // it would go on taking the keys typed at that screen's search box.
     fExportDialog.close();
@@ -1693,7 +1637,7 @@ private:
       fMenuMusicForSet = -1;
       fMenuTrackWall = wallMs();
     }
-    this->damageAll("screen change"); // the new screen owns every pixel
+    fFrame.damageAll("screen change"); // the new screen owns every pixel
     std::println(std::cerr, "[ui] {} -> {}", stateName(fState), stateName(st));
     fState = st;
     fStateEnterWall = wallMs();
@@ -1760,154 +1704,11 @@ private:
 #endif
   }
 
-  // A frame is only drawn when there is a reason to: an event arrived,
-  // something is animating, a transfer is running, or the safety interval
-  // elapsed. A menu nobody is touching costs a poll and a sleep, which is
-  // how a compositor treats a window that has not damaged itself.
-  void requestRedraw(double durationMs = 0.0) {
-    fFrame.fRedrawUntilWall =
-        std::max(fFrame.fRedrawUntilWall, wallMs() + durationMs);
-  }
-
   // A text caret is shown for 600 ms of every 1000; this is when it next
   // changes, which is when a frame is next worth drawing for it.
   [[nodiscard]] static double nextCaretFlip(double nowMs) {
     const double phase = std::fmod(nowMs, 1000.0);
     return nowMs + (phase < 600.0 ? 600.0 - phase : 1000.0 - phase);
-  }
-
-  // Promises a number of frames. Two is the useful minimum: the first lets
-  // whatever moved react and mark what it touched, the second paints that.
-  // This is what an event or an eased value owes -- rather than a blanket
-  // "keep drawing for the next 400 ms", which is how a listing nobody was
-  // touching ended up repainting at the refresh rate.
-  void oweFrames(int frames) {
-    fFrame.fFramesOwed = std::max(fFrame.fFramesOwed, frames);
-  }
-
-  // A screen that knows when it next changes by itself -- a caret blinking on
-  // its own clock -- says so, and sleeps until then instead of keeping frames
-  // coming in the hope of catching the moment.
-  void wakeAt(double wall) {
-    fFrame.fWakeWall =
-        fFrame.fWakeWall <= 0.0 ? wall : std::min(fFrame.fWakeWall, wall);
-  }
-
-  // Damage marked while a frame is being drawn says what to repaint; it does
-  // not ask for another frame. That distinction is what lets a screen repaint
-  // itself whole every time it draws -- most of them still do -- without that
-  // becoming a reason to draw again, for ever. Damage marked outside drawing,
-  // by an event or by work finishing in the background, does ask.
-
-  // The whole screen has to be repainted: a screen changed, the window
-  // resized, or something that does not report its bounds moved.
-  // `buffersGone` says the window's buffers were thrown away and remade, not
-  // merely repainted. Buffer age describes the contents of a buffer that
-  // survived a frame; after a reallocation there are no such buffers, and the
-  // history that would have covered them has just been cleared, so the ages
-  // that come back describe buffers this client has never drawn into. Trusting
-  // them there is what left everything but the live region black during a
-  // window drag.
-  void damageAll(const char *reason = "unspecified", bool buffersGone = false) {
-    fFrame.fFullDamage = true;
-    // The window is cycling through several buffers, and a repaint lands in
-    // exactly one of them: the others still hold what was on screen before.
-    // So "everything changed" is a statement about all of them, and is owed
-    // one full repaint each. Getting this from a screen change used to be an
-    // accident of asking for 1500 ms of frames afterwards -- a hundred full
-    // repaints to be sure of three -- and it stopped being an accident when
-    // that went away, which is how coming back to the menu started leaving
-    // the screen it was called from underneath.
-    // With a real buffer age each frame works out for itself how far back it
-    // has to repaint, so the margin is only for the case where nobody says.
-    //
-    // An assumed age is not a real one, and this is where treating it as one
-    // hurts: the assumption cannot be zero, so a buffer whose contents are
-    // undefined can never say so, and a chain deeper than the assumption
-    // hands out buffers this client has never drawn a whole frame into.
-    // Asserting an age of one on a driver that does not copy on swap then
-    // shows the screen black everywhere but the region that moved -- not
-    // after a resize, not after anything in particular, just whenever one of
-    // those buffers comes round. Owing a full repaint per buffer costs six
-    // frames at a screen change and takes the failure away.
-    const bool reportedAge =
-        fFrame.fBufferAge >= 0 && !fFrame.fBufferAgeAssumed;
-    fFrame.fFullRepaintsOwed =
-        (!buffersGone && reportedAge) ? 0 : kFullRepaintsAfterChange;
-    if (!fFrame.fDrawing) {
-      fFrame.fDamageDrives = true;
-      this->oweFrames(kFullRepaintsAfterChange + 1);
-    }
-    fFrame.fFullDamageReason = reason;
-    fFrame.fDamage.clear();
-  }
-
-  // A region did. Rounded outwards, because a rectangle that is a pixel too
-  // small leaves a seam behind.
-  void damage(const skia::SkRect &rect) {
-    if (fFrame.fFullDamage || rect.isEmpty()) {
-      return;
-    }
-    if (!fFrame.fDrawing) {
-      fFrame.fDamageDrives = true;
-    }
-    skia::SkIRect area = rect.roundOut();
-    area.outset(2, 2);
-
-    // Merge into a rectangle it already touches, so a widget that reports
-    // itself every frame does not add a new entry every frame.
-    for (auto &existing : fFrame.fDamage) {
-      skia::SkIRect probe = existing;
-      probe.outset(2, 2);
-      if (skia::SkIRect::Intersects(probe, area)) {
-        existing.join(area);
-        return;
-      }
-    }
-    // Merging early keeps the clip a couple of rectangles rather than a
-    // region with many: every draw call is tested against it, and that is
-    // paid per call, not per pixel.
-    for (auto &existing : fFrame.fDamage) {
-      skia::SkIRect merged = existing;
-      merged.join(area);
-      const auto mergedArea =
-          static_cast<std::int64_t>(merged.width()) * merged.height();
-      const auto separate =
-          static_cast<std::int64_t>(existing.width()) * existing.height() +
-          static_cast<std::int64_t>(area.width()) * area.height();
-      if (mergedArea <= separate * 5 / 4) {
-        existing = merged;
-        return;
-      }
-    }
-    if (fFrame.fDamage.size() < kMaxDamageRects) {
-      fFrame.fDamage.push_back(area);
-      return;
-    }
-
-    // Full: fold it into whichever rectangle grows least by taking it, which
-    // keeps the list short without swallowing the screen.
-    std::size_t best = 0;
-    std::int64_t bestCost = std::numeric_limits<std::int64_t>::max();
-    for (std::size_t i = 0; i < fFrame.fDamage.size(); ++i) {
-      skia::SkIRect merged = fFrame.fDamage[i];
-      merged.join(area);
-      const auto cost =
-          static_cast<std::int64_t>(merged.width()) * merged.height() -
-          static_cast<std::int64_t>(fFrame.fDamage[i].width()) *
-              fFrame.fDamage[i].height();
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = i;
-      }
-    }
-    fFrame.fDamage[best].join(area);
-  }
-
-  void consumeFrame(skiff::scene::FrameResult result) {
-    this->damage(result.fDamage);
-    fFrame.fSceneWantsFrame =
-        fFrame.fSceneWantsFrame || result.fWantsAnotherFrame;
   }
 
   // Clips the frame to what changed. Everything draws exactly as it would
@@ -2012,39 +1813,39 @@ private:
     // whichever one is next. Repainting whole sidesteps that entirely -- the
     // tool costs frames while it is on, and in exchange it never lies or
     // leaves anything behind.
-    if (this->showingDamage()) {
+    if (fFrame.showingDamage(fSettings.flag("damageoverlay"))) {
       fFrame.fFrameClipFull = true;
       fFrame.fFrameClip.clear();
     }
-    this->rememberBlitRegion();
+    fFrame.rememberBlitRegion();
 
     // Every number the clip decision is made from, at the point it is made:
     // after the blit history has been updated for this frame, so the line
     // cannot disagree with what the frame then does. Printed when the answer
     // or the buffer age changes, and for the second after a size event.
-    if (fDiag.fTraceRepaint) {
+    if (fFrame.fDiag.fTraceRepaint) {
       const bool willClip = !fFrame.fComputedClipFull &&
                             this->partialRedraw() &&
-                            !this->historyShorterThan(this->drawReach());
+                            !fFrame.historyShorterThan(fFrame.drawReach());
       const bool resizing = wallMs() - fLastResizeWall < 1000.0;
-      if (willClip != fDiag.fTracedClipping ||
-          fFrame.fBufferAge != fDiag.fTracedAge ||
-          (fFrame.fBlitHistory.size() < fDiag.fTracedHistory) || resizing) {
+      if (willClip != fFrame.fDiag.fTracedClipping ||
+          fFrame.fBufferAge != fFrame.fDiag.fTracedAge ||
+          (fFrame.fBlitHistory.size() < fFrame.fDiag.fTracedHistory) || resizing) {
         std::println(std::cerr,
                      "[repaint] {:8.0f} ms  age {}{}  reach {}  history {}  "
                      "{}  -> {}{}",
                      wallMs(), fFrame.fBufferAge,
                      fFrame.fBufferAgeAssumed ? " (assumed)" : "",
-                     this->drawReach(), fFrame.fBlitHistory.size(),
+                     fFrame.drawReach(), fFrame.fBlitHistory.size(),
                      fFrame.fComputedClipFull ? "whole screen" : "a region",
                      willClip ? "CLIPS" : "repaints whole",
                      fFrame.fComputedClipFull
                          ? std::string(" -- ") + fFrame.fFullDamageReason
                          : std::string());
       }
-      fDiag.fTracedClipping = willClip;
-      fDiag.fTracedAge = fFrame.fBufferAge;
-      fDiag.fTracedHistory = fFrame.fBlitHistory.size();
+      fFrame.fDiag.fTracedClipping = willClip;
+      fFrame.fDiag.fTracedAge = fFrame.fBufferAge;
+      fFrame.fDiag.fTracedHistory = fFrame.fBlitHistory.size();
     }
 
     if (!fFrame.fSurface) {
@@ -2080,10 +1881,10 @@ private:
     // Clipped to one rectangle rather than to a region of several: a region
     // takes Skia off its analytic clip path and onto clip masks, which are
     // paid per draw call and cost more than the pixels they save.
-    if (!this->partialRedraw() || this->historyShorterThan(this->drawReach())) {
+    if (!this->partialRedraw() || fFrame.historyShorterThan(fFrame.drawReach())) {
       return;
     }
-    const skia::SkIRect bounds = this->damageOver(this->drawReach());
+    const skia::SkIRect bounds = fFrame.damageOver(fFrame.drawReach());
     if (bounds.isEmpty()) {
       return;
     }
@@ -2109,8 +1910,8 @@ private:
     // leaves the rest as it found it. Blitting whole costs one window-sized
     // copy on a renderer that has the whole frame in memory anyway, and the
     // drawing above is still clipped, which is where the work actually is.
-    if (fFrame.fAgeReported && !this->historyShorterThan(this->windowReach())) {
-      const skia::SkIRect carry = this->damageOver(this->windowReach());
+    if (fFrame.fAgeReported && !fFrame.historyShorterThan(fFrame.windowReach())) {
+      const skia::SkIRect carry = fFrame.damageOver(fFrame.windowReach());
       if (!carry.isEmpty()) {
         fFrame.fBlitRegions.push_back(carry);
       }
@@ -2134,7 +1935,7 @@ private:
     // pointer, the column while it scrolls -- and says nothing at all while
     // it is open and untouched, which is most of the time.
     if (fSettingsPanel.visible()) {
-      this->consumeFrame(
+      fFrame.consume(
           fSettingsPanel.update(fFont, fSettings,
                                 {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
                                  fWin.fMouseY, wallMs(), fUiDt}));
@@ -2154,7 +1955,7 @@ private:
     // repaint whole: clipped to a region, everything outside it would stay
     // undimmed.
     if (this->screenFade() < 1.0f) {
-      this->damageAll("screen fade");
+      fFrame.damageAll("screen fade");
     }
 
     // The overlays that cover the screen say what they repaint here, before
@@ -2174,29 +1975,29 @@ private:
           fFrame.fSceneWantsFrame || modFrame.fWantsAnotherFrame;
       const skia::SkRect region = modFrame.fDamage;
       if (region.width() >= static_cast<float>(fWin.fScreenW)) {
-        this->damageAll("mod select fading");
+        fFrame.damageAll("mod select fading");
       } else {
-        this->damage(region);
+        fFrame.damage(region);
       }
     }
     if (fReplayBrowser.open()) {
       const auto motion =
           fReplayBrowser.updateMotion(fWin.fMouseX, fWin.fMouseY);
       if (motion.fFullDamage) {
-        this->damageAll("replay browser moving");
+        fFrame.damageAll("replay browser moving");
       } else if (motion.fDamage) {
-        this->damage(*motion.fDamage);
+        fFrame.damage(*motion.fDamage);
       }
     }
     if (fExportDialog.open()) {
       fExportDialog.update(fFont, fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
                            fWin.fMouseY, wallMs());
-      this->consumeFrame(fExportDialog.finishFrame());
+      fFrame.consume(fExportDialog.finishFrame());
     }
     if (fDeleteDialog.open()) {
       fDeleteDialog.update(fFont, fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
                            fWin.fMouseY, wallMs());
-      this->consumeFrame(fDeleteDialog.finishFrame());
+      fFrame.consume(fDeleteDialog.finishFrame());
     }
 
     // Overlays are drawn after the screen, over most of it, so appearance and
@@ -2209,7 +2010,7 @@ private:
     // settled overlay is as static as the screen under it, and the screens do
     // mark what they change beneath it.
     if (overlay != fOverlayShown) {
-      this->damageAll("overlay appeared or went away");
+      fFrame.damageAll("overlay appeared or went away");
     }
     fOverlayShown = overlay;
   }
@@ -2267,30 +2068,18 @@ private:
     return fWin.fMouseX != fDrawnMouseX || fWin.fMouseY != fDrawnMouseY;
   }
 
-  // Why a frame is happening. needsFrame answers yes from sixteen places and
-  // said which of them only to itself, so "it draws when it should not" and
-  // "it does not draw when it should" were both unanswerable from outside.
-  [[nodiscard]] bool frameBecause(const char *reason) {
-    if (fDiag.fTraceRepaint && reason != fFrame.fFrameReason) {
-      std::println(std::cerr, "[frame] {:8.0f} ms  drawn because {}", wallMs(),
-                   reason);
-    }
-    fFrame.fFrameReason = reason;
-    return true;
-  }
-
   [[nodiscard]] bool needsFrame() {
     // Gameplay is a moving picture by definition, and so is anything with a
     // clock on screen.
     if (fState == State::kPlaying) {
-      return this->frameBecause("gameplay"); // a moving picture by definition
+      return fFrame.because(wallMs(), "gameplay"); // a moving picture by definition
     }
     // The results screen counts up, slides its panels and fades in, all of
     // which end. After that it is a still picture like any other.
     if (fState == State::kResults &&
         (wallMs() - fStateEnterWall < 2500.0 ||
          fReplayBrowser.scrolling())) {
-      return this->frameBecause("results settling");
+      return fFrame.because(wallMs(), "results settling");
     }
     // The logo tracks the music and the triangles drift, and either is a
     // reason to keep drawing. Neither is a reason to stop: everything below
@@ -2299,20 +2088,22 @@ private:
     // whole menu out of the conversation.
     if (fState == State::kMainMenu &&
         (fSettings.flag("visualiser") || fSettings.flag("menutriangles"))) {
-      return this->frameBecause("menu visualiser or triangles");
+      return fFrame.because(wallMs(), "menu visualiser or triangles");
     }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
-      return this->frameBecause(
-          "pause triangles"); // triangles drift inside the buttons, as lazer's
+      return fFrame.because(
+          wallMs(), "pause triangles"); // triangles drift inside the buttons, as lazer's
                               // do
     }
     if (fMirrors.searching() || fMirrors.previewPending() ||
         fMirrors.transferring()) {
-      return this->frameBecause(
+      return fFrame.because(
+          wallMs(),
           "a search, preview or transfer"); // progress that is being watched
     }
     if (fMirrors.previewId() >= 0 || fExportDialog.open()) {
-      return this->frameBecause(
+      return fFrame.because(
+          wallMs(),
           "a preview or the export dialog"); // a transfer or a dialog with live
                                              // status in it
     }
@@ -2320,22 +2111,22 @@ private:
     // drawn as an overlay rather than as a screen, so it has nobody else to
     // ask for the frames that carry it there.
     if (fReplayBrowser.open() && fReplayBrowser.scrolling()) {
-      return this->frameBecause("replay strip gliding");
+      return fFrame.because(wallMs(), "replay strip gliding");
     }
     // Every retained tree reports damage and continuation as one atomic
     // result during updateScreens(). The application does not inspect scene
     // internals or duplicate each widget's settling condition here.
     if (fFrame.fSceneWantsFrame) {
-      return this->frameBecause("a retained scene requested continuation");
+      return fFrame.because(wallMs(), "a retained scene requested continuation");
     }
     const double now = wallMs();
     if (fFrame.fFramesOwed > 0) {
       --fFrame.fFramesOwed;
-      return this->frameBecause("frames owed");
+      return fFrame.because(wallMs(), "frames owed");
     }
     if (fFrame.fWakeWall > 0.0 && now >= fFrame.fWakeWall) {
       fFrame.fWakeWall = 0.0;
-      return this->frameBecause("a screen asked to be woken");
+      return fFrame.because(wallMs(), "a screen asked to be woken");
     }
     // Something marked itself outside a frame: an event handler, or work
     // that finished in the background. Damage marked while drawing only says
@@ -2343,20 +2134,20 @@ private:
     // itself whole every time it draws would otherwise be asking for the next
     // frame, every frame, for ever.
     if (fFrame.fDamageDrives) {
-      return this->frameBecause("something marked itself outside a frame");
+      return fFrame.because(wallMs(), "something marked itself outside a frame");
     }
     if (now <= fFrame.fRedrawUntilWall) {
-      return this->frameBecause("redraw window");
+      return fFrame.because(wallMs(), "redraw window");
     }
     // Safety net: whatever the screens forgot to announce shows up within
     // this long rather than never.
-    if (fDiag.fTraceRepaint && fState == State::kMainMenu &&
+    if (fFrame.fDiag.fTraceRepaint && fState == State::kMainMenu &&
         now - fFrame.fLastDrawWall > 500.0) {
       std::println(std::cerr, "[menu] idle: animating {} dt {:.0f} ms",
                    fFrame.fSceneWantsFrame, fUiDt);
     }
     return now - fFrame.fLastDrawWall > 500.0
-               ? this->frameBecause("the half-second safety net")
+               ? fFrame.because(wallMs(), "the half-second safety net")
                : false;
   }
 
@@ -2421,16 +2212,16 @@ private:
       const skia::SkIRect onScreen = this->visiblePortion();
       if (onScreen.isEmpty() || (onScreen.width() >= fWin.fScreenW &&
                                  onScreen.height() >= fWin.fScreenH)) {
-        this->damageAll("the window system asked for a repaint");
+        fFrame.damageAll("the window system asked for a repaint");
       } else {
-        this->damage(skia::SkRect::Make(onScreen));
+        fFrame.damage(skia::SkRect::Make(onScreen));
       }
     }
     this->applySwapInterval();
     // Work finishing in the background changes what is on screen, so it is
     // as good a reason to draw as an event.
     if (client::http::poll() > 0 || fLoader.poll() > 0) {
-      this->requestRedraw(600.0);
+      fFrame.requestRedraw(wallMs(), 600.0);
     }
     this->drainDroppedFiles();
     this->drainInput();
@@ -2480,7 +2271,7 @@ private:
     // was asked for has anything to put on screen.
     const auto updateStart = std::chrono::steady_clock::now();
     this->updateScreens();
-    fDiag.fLastUpdateUs = std::chrono::duration_cast<std::chrono::microseconds>(
+    fFrame.fDiag.fLastUpdateUs = std::chrono::duration_cast<std::chrono::microseconds>(
                               std::chrono::steady_clock::now() - updateStart)
                               .count();
     if (this->nothingToPaint()) {
@@ -2493,7 +2284,7 @@ private:
       return;
     }
     fFrame.fLastDrawWall = wallMs();
-    fDiag.fFrameStart = std::chrono::steady_clock::now();
+    fFrame.fDiag.fFrameStart = std::chrono::steady_clock::now();
 
     // The renderer is chosen per frame, because only the UI screens may use
     // the CPU one: gameplay draws precomputed GPU textures.
@@ -2505,7 +2296,7 @@ private:
     if (software != fFrame.fDrewOnRaster) {
       // Same reasoning: the frame moves to a different surface, and whatever
       // that one holds has nothing to do with the ages being reported.
-      this->damageAll("renderer changed", /*buffersGone=*/true);
+      fFrame.damageAll("renderer changed", /*buffersGone=*/true);
     }
     fFrame.fDrewOnRaster = software;
     fFrame.fSurface = software ? fFrame.fRasterSurface : fFrame.fWindowSurface;
@@ -2522,10 +2313,10 @@ private:
     case State::kPaused:
       break; // these mark what they change: the listing does it per node
     case State::kPlaying:
-      this->damageAll("gameplay"); // a moving picture by definition
+      fFrame.damageAll("gameplay"); // a moving picture by definition
       break;
     default:
-      this->damageAll("screen does not report damage");
+      fFrame.damageAll("screen does not report damage");
       break;
     }
     this->beginFrame();
@@ -2557,7 +2348,7 @@ private:
   // stays behind --profile.
   void notify(std::string text,
               skia::SkColor color = client::palette::kAccent2) {
-    this->requestRedraw(4500.0); // the toast has to fade out on its own
+    fFrame.requestRedraw(wallMs(), 4500.0); // the toast has to fade out on its own
     fToast = std::move(text);
     fToastColor = color;
     fToastWall = wallMs();
@@ -2581,7 +2372,7 @@ private:
                fToastColor, alpha);
     p.textCentered(fToast, box.centerX() + 2.0f, box.centerY() + 5.0f, 14.0f,
                    skia::kWhite, alpha);
-    this->damage(box);
+    fFrame.damage(box);
   }
 
   void drawFpsCounter(skia::SkCanvas *canvas) {
@@ -2611,25 +2402,11 @@ private:
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
                    box.fBottom - 8.0f, 12.0f, skia::kWhite, 0.7f);
-    this->includeInBlit(box);
-  }
-
-  // Something drawn outside the frame's clip still has to be carried into the
-  // window when the CPU renderer only carries over what it repainted.
-  void includeInBlit(const skia::SkRect &rect) {
-    if (fFrame.fBlitRegions.empty()) {
-      return; // the whole surface is going over anyway
-    }
-    skia::SkIRect area = rect.roundOut();
-    area.outset(2, 2);
-    if (!area.intersect(skia::SkIRect::MakeWH(fWin.fScreenW, fWin.fScreenH))) {
-      return;
-    }
-    fFrame.fBlitRegions.push_back(area);
+    fFrame.includeInBlit(box, fWin.fScreenW, fWin.fScreenH);
   }
 
   void present() {
-    const auto frameStart = fDiag.fFrameStart;
+    const auto frameStart = fFrame.fDiag.fFrameStart;
     // Overlays float above whatever screen is drawn.
     auto *canvas = fFrame.fSurface->getCanvas();
     if (fModSelect.visible()) {
@@ -2648,7 +2425,8 @@ private:
     }
     fDeleteDialog.render(canvas);
     this->drawToast(canvas);
-    this->showDamage(canvas);
+    fFrame.showDamage(canvas, fWin.fScreenW, fWin.fScreenH, wallMs(),
+                      fSettings.flag("damageoverlay"));
     canvas->restoreToCount(fFrame.fFrameSave);
     // Drawn after the clip is lifted: a small thing in the far corner that
     // changes every frame, so clipping to it would drag the repainted region
@@ -2657,7 +2435,7 @@ private:
     // otherwise the counter is drawn into a surface whose corner is never
     // carried over, and the number stops.
     this->drawFpsCounter(canvas);
-    fDiag.fBlitStart = std::chrono::steady_clock::now();
+    fFrame.fDiag.fBlitStart = std::chrono::steady_clock::now();
 
     // Everything about this frame, for the four hundred milliseconds after a
     // size event: what the client thinks the screen is, what the two surfaces
@@ -2665,7 +2443,7 @@ private:
     // Four fixes have been aimed at this from four theories and none of them
     // was measured; this is all of the state at once so the next one is not a
     // fifth theory.
-    if (fDiag.fTraceRepaint && wallMs() - fLastResizeWall < 400.0) {
+    if (fFrame.fDiag.fTraceRepaint && wallMs() - fLastResizeWall < 400.0) {
       const auto dims = [](const skia::Sp<skia::SkSurface> &surface) {
         return surface
                    ? std::format("{}x{}", surface->width(), surface->height())
@@ -2758,75 +2536,9 @@ private:
     fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - beforeSwap)
                       .count();
-    this->reportFrameCost(frameStart, beforeSwap);
+    fFrame.reportCost(frameStart, beforeSwap, fWin.fScreenW, fWin.fScreenH,
+                      this->partialRedraw());
     fFrame.fDrawing = false;
-  }
-
-  // Where a frame goes, once a second, under OSU_SHOW_DAMAGE: drawing into
-  // the surface, copying it to the window, and waiting for the swap. Guessing
-  // at which of the three got slower has not worked so far.
-  void reportFrameCost(std::chrono::steady_clock::time_point start,
-                       std::chrono::steady_clock::time_point beforeSwap) {
-    if (!fDiag.fForceShowDamage) {
-      return;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    const auto us = [](auto from, auto to) {
-      return std::chrono::duration_cast<std::chrono::microseconds>(to - from)
-          .count();
-    };
-    fDiag.fCostUpdateUs += fDiag.fLastUpdateUs;
-    fDiag.fCostDrawUs += us(start, fDiag.fBlitStart) - fDiag.fLastUpdateUs;
-    fDiag.fCostBlitUs += us(fDiag.fBlitStart, beforeSwap);
-    fDiag.fCostSwapUs += us(beforeSwap, now);
-    fDiag.fCostVisited += skiff::scene::visitedCount();
-    fDiag.fCostDrawn += skiff::scene::drawnCount();
-    skiff::scene::visitedCount() = 0;
-    skiff::scene::drawnCount() = 0;
-    if (fFrame.fComputedClipFull) {
-      fDiag.fCostClipArea +=
-          static_cast<std::int64_t>(fWin.fScreenW) * fWin.fScreenH;
-    } else if (!fFrame.fComputedClip.empty()) {
-      for (const auto &rect : fFrame.fComputedClip) {
-        fDiag.fCostClipArea +=
-            static_cast<std::int64_t>(rect.width()) * rect.height();
-      }
-    }
-    ++fDiag.fCostFrames;
-    if (wallMs() - fDiag.fCostLogWall < 1000.0 || fDiag.fCostFrames == 0) {
-      return;
-    }
-    // Named for what they are: settling the screen, drawing it (which on the
-    // CPU renderer is where rasterisation happens too), handing the result to
-    // the window, and waiting for the swap.
-    std::println(
-        std::cerr,
-        "[frame] update {:.2f} ms, draw {:.2f} ms, blit {:.2f} ms, "
-        "swap {:.2f} ms over {} frames, {} of {} drawables, "
-        "{:.0f}% of the screen repainted{}",
-        static_cast<double>(fDiag.fCostUpdateUs) / fDiag.fCostFrames / 1000.0,
-        static_cast<double>(fDiag.fCostDrawUs) / fDiag.fCostFrames / 1000.0,
-        static_cast<double>(fDiag.fCostBlitUs) / fDiag.fCostFrames / 1000.0,
-        static_cast<double>(fDiag.fCostSwapUs) / fDiag.fCostFrames / 1000.0,
-        fDiag.fCostFrames,
-        fDiag.fCostDrawn / std::max<std::uint64_t>(1, fDiag.fCostFrames),
-        fDiag.fCostVisited / std::max<std::uint64_t>(1, fDiag.fCostFrames),
-        100.0 * static_cast<double>(fDiag.fCostClipArea) /
-            std::max<double>(1.0, static_cast<double>(fDiag.fCostFrames) *
-                                      fWin.fScreenW * fWin.fScreenH),
-        std::string(fFrame.fDrewOnRaster ? " [cpu]" : " [gpu]") +
-            (this->partialRedraw()
-                 ? std::format(" (partial redraw, buffer age {} via {})",
-                               fFrame.fBufferAge,
-                               fFrame.fBufferAgeAssumed ? "assumption"
-                                                        : present::backend())
-                 : ""));
-    fDiag.fCostLogWall = wallMs();
-    fDiag.fCostUpdateUs = fDiag.fCostDrawUs = fDiag.fCostBlitUs =
-        fDiag.fCostSwapUs = 0;
-    fDiag.fCostVisited = fDiag.fCostDrawn = 0;
-    fDiag.fCostClipArea = 0;
-    fDiag.fCostFrames = 0;
   }
 
   // How many back buffers the window may be cycling through; each of them
@@ -2837,139 +2549,16 @@ private:
   // a compositor can hold one of its own on top of whatever the driver does.
   // Three was a guess, and the guess is what a screen change was landing on
   // -- one buffer short means one buffer still holding the screen that was
-  // left. A screen change is worth more margin than it costs, so the frames
-  // that repaint whole after one are counted with some to spare.
-  static constexpr std::size_t kSwapChainDepth = 4;
   [[nodiscard]] static std::uint64_t packSize(int width, int height) {
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(width))
             << 32) |
            static_cast<std::uint32_t>(height);
   }
 
-  static constexpr int kFullRepaintsAfterChange = 6;
   // How long after the last size event a window is still assumed to be
   // throwing its buffers away. The same quarter second the slider bodies wait
   // for, and for the same reason: that is how long a drag keeps arriving.
   static constexpr double kResizeSettleMs = 250.0;
-  // Kept longer than the guess, so that a window system reporting an age of
-  // six has six frames of history to be told about.
-  static constexpr std::size_t kBlitHistoryDepth = 8;
-
-  // How far back a repaint has to reach, and how far back the window does.
-  // Two questions that look like one until the CPU renderer is on: there the
-  // surface being drawn into is ours and persists, holding the last complete
-  // frame whatever the driver does with its own buffers, so drawing reaches
-  // back exactly one frame. The window is however many buffers deep the
-  // driver keeps, which is what buffer age answers -- and what the assumption
-  // guesses at when it will not.
-  [[nodiscard]] std::size_t windowReach() const {
-    return fFrame.fBufferAge > 0 ? static_cast<std::size_t>(fFrame.fBufferAge)
-                                 : kSwapChainDepth;
-  }
-
-  // It reaches as far as the window does, on either renderer. The raster
-  // surface holding the last complete frame means one frame is *enough* --
-  // but only if every screen reports everything it changes, and a gap in that
-  // reporting stops being a flicker and becomes a piece of the screen that
-  // never updates again, because nothing else will ever repaint it. Reaching
-  // further papers over those gaps; it also hides them, which is the trade
-  // being made here knowingly rather than by accident.
-  [[nodiscard]] std::size_t drawReach() const { return this->windowReach(); }
-
-  // Whether the history says enough about that many frames back.
-  [[nodiscard]] bool historyShorterThan(std::size_t reach) const {
-    if (fFrame.fBufferAge == 0) {
-      return true; // the window system says the contents are undefined
-    }
-    if (fFrame.fBlitHistory.size() < reach) {
-      return true;
-    }
-    std::size_t seen = 0;
-    for (auto frame = fFrame.fBlitHistory.rbegin();
-         frame != fFrame.fBlitHistory.rend() && seen < reach; ++frame, ++seen) {
-      if (frame->empty()) {
-        return true; // that frame repainted everything
-      }
-    }
-    return false;
-  }
-
-  [[nodiscard]] skia::SkIRect damageOver(std::size_t reach) const {
-    skia::SkIRect bounds = skia::SkIRect::MakeEmpty();
-    std::size_t seen = 0;
-    for (auto frame = fFrame.fBlitHistory.rbegin();
-         frame != fFrame.fBlitHistory.rend() && seen < reach; ++frame, ++seen) {
-      for (const auto &area : *frame) {
-        if (bounds.isEmpty()) {
-          bounds = area;
-        } else {
-          bounds.join(area);
-        }
-      }
-    }
-    return bounds;
-  }
-
-  void rememberBlitRegion() {
-    // An empty entry means "that frame was full", which forces a full copy
-    // until it ages out.
-    fFrame.fBlitHistory.push_back(fFrame.fFrameClipFull
-                                      ? std::vector<skia::SkIRect>{}
-                                      : fFrame.fFrameClip);
-    while (fFrame.fBlitHistory.size() > kBlitHistoryDepth) {
-      fFrame.fBlitHistory.erase(fFrame.fBlitHistory.begin());
-    }
-  }
-
-  // OSU_SHOW_DAMAGE=1 outlines what was repainted, which is the only way to
-  // see whether a screen is reporting its damage honestly.
-  [[nodiscard]] bool showingDamage() const {
-    return fDiag.fForceShowDamage || fSettings.flag("damageoverlay");
-  }
-
-  void showDamage(skia::SkCanvas *canvas) {
-    if (!this->showingDamage()) {
-      return;
-    }
-    // Magenta around each region the frame would have been clipped to; a red
-    // border when it would have repainted everything, with the reason,
-    // because "why is it full again" is the question that keeps coming up.
-    if (fFrame.fComputedClipFull) {
-      skia::SkPaint paint;
-      paint.setStyle(skia::kStrokeStyle);
-      paint.setStrokeWidth(6.0f);
-      paint.setColor(skia::colorSetARGB(255, 255, 40, 40));
-      skia::SkRect border = skia::SkRect::MakeWH(
-          static_cast<float>(fWin.fScreenW), static_cast<float>(fWin.fScreenH));
-      border.inset(3.0f, 3.0f);
-      canvas->drawRect(border, paint);
-      // Deduplicated by reason rather than by the clock: a one-off -- a
-      // screen change, a resize -- would otherwise be swallowed by whatever
-      // repeating reason spoke first in that second.
-      const bool sameReason = fDiag.fLoggedFullReason != nullptr &&
-                              std::string_view(fDiag.fLoggedFullReason) ==
-                                  std::string_view(fFrame.fFullDamageReason);
-      if (!sameReason || wallMs() - fDamageLogWall > 1000.0) {
-        fDamageLogWall = wallMs();
-        fDiag.fLoggedFullReason = fFrame.fFullDamageReason;
-        std::println(std::cerr, "[damage] would repaint everything: {}",
-                     fFrame.fFullDamageReason);
-      }
-      return;
-    }
-    skia::SkPaint paint;
-    paint.setStyle(skia::kStrokeStyle);
-    paint.setStrokeWidth(2.0f);
-    paint.setColor(skia::colorSetARGB(255, 255, 0, 255));
-    for (const auto &rect : fFrame.fComputedClip) {
-      skia::SkRect outline = skia::SkRect::Make(rect);
-      outline.inset(1.0f, 1.0f);
-      if (!outline.isEmpty()) {
-        canvas->drawRect(outline, paint);
-      }
-    }
-  }
-
   void framePlaying() {
     using clock = std::chrono::steady_clock;
     // Zero until the first frame has been through, so that nothing before it
@@ -3047,7 +2636,7 @@ private:
     }
     fSliderBodyScale = fScale;
     fSliderBodiesStale = false;
-    this->damageAll("slider bodies rebuilt");
+    fFrame.damageAll("slider bodies rebuilt");
   }
 
   // The renderer holds no back-reference to the app; each frame it is handed
@@ -3424,7 +3013,7 @@ private:
   // Picks another map to listen to. Random, and never the one just heard as
   // long as there is anything else in the library.
   void nextMenuTrack() {
-    this->requestRedraw(1500.0);
+    fFrame.requestRedraw(wallMs(), 1500.0);
     if (fLibrary.visible().size() > 1) {
       // One draw, uniform over everything except the one just heard. Drawing
       // again until the draw differs is unbiased but can fail, and failing
@@ -3653,7 +3242,7 @@ private:
     }
     if (bytes.empty()) {
       fView.setBackground(nullptr);
-      this->damageAll("artwork cleared");
+      fFrame.damageAll("artwork cleared");
       return;
     }
     auto image = std::make_shared<skia::Sp<skia::SkImage>>();
@@ -3666,13 +3255,13 @@ private:
           }
           fView.setBackground(*image);
           fView.preScaleBackground(this->gameplayCtx(nullptr));
-          this->damageAll("artwork arrived");
-          this->requestRedraw(400.0);
+          fFrame.damageAll("artwork arrived");
+          fFrame.requestRedraw(wallMs(), 400.0);
         });
   }
 
   void loadSelectBackground(const osu::BeatmapSet &set) {
-    this->damageAll("select background"); // the backdrop changes either way
+    fFrame.damageAll("select background"); // the backdrop changes either way
     for (const auto &info : set.fBeatmaps) {
       if (!info.fMeta.fBackground.empty()) {
         const auto bytes = set.findFile(info.fMeta.fBackground);
@@ -3865,9 +3454,9 @@ private:
     fMainMenu.update(ctx);
 
     if (const char *reason = fMainMenu.takeFullDamage()) {
-      this->damageAll(reason);
+      fFrame.damageAll(reason);
     }
-    this->consumeFrame(fMainMenu.finishFrame());
+    fFrame.consume(fMainMenu.finishFrame());
   }
 
   void frameMainMenu() {
@@ -3967,7 +3556,7 @@ private:
     }
     fSwapIntervalRequest.store(fSettings.flag("vsync") ? 1 : 0,
                                std::memory_order_release);
-    this->damageAll("settings applied");
+    fFrame.damageAll("settings applied");
     // Sensitivity other than 1 needs relative motion, which needs the pointer
     // grabbed; so does raw input.
     this->applyPointerMode();
@@ -4302,7 +3891,7 @@ private:
       if (detail::gMapsSynced.load(std::memory_order_acquire)) {
         this->initLibrary();
       } else {
-        this->damageAll("waiting on local storage");
+        fFrame.damageAll("waiting on local storage");
         return;
       }
     }
@@ -4317,7 +3906,7 @@ private:
 
     if (fLibrary.visible().empty() != fDrawnEmpty) {
       fDrawnEmpty = fLibrary.visible().empty();
-      this->damageAll("song select has nothing to list");
+      fFrame.damageAll("song select has nothing to list");
     }
 
     // The carousel retains this projection and rebuilds it only when the
@@ -4344,7 +3933,7 @@ private:
     ctx.fSelectedSet = fLibrary.selSet();
     ctx.fSelectedDiff = fLibrary.selDiff();
     fCarousel.update(ctx);
-    this->consumeFrame(fCarousel.finishFrame());
+    fFrame.consume(fCarousel.finishFrame());
 
     client::FilterControl::Ctx filterCtx;
     filterCtx.fFont = &fFont;
@@ -4355,9 +3944,9 @@ private:
     filterCtx.fVisibleCount = fLibrary.visible().size();
     filterCtx.fNowMs = wallMs();
     fFilter.update(filterCtx);
-    this->consumeFrame(fFilter.finishFrame());
+    fFrame.consume(fFilter.finishFrame());
     if (!fFilter.text().empty()) {
-      this->wakeAt(nextCaretFlip(wallMs()));
+      fFrame.wakeAt(nextCaretFlip(wallMs()));
     }
 
     fSelectFooter.update({.fFont = &fFont,
@@ -4366,7 +3955,7 @@ private:
                           .fMouseX = fWin.fMouseX,
                           .fMouseY = fWin.fMouseY,
                           .fNowMs = wallMs()});
-    this->consumeFrame(fSelectFooter.finishFrame());
+    fFrame.consume(fSelectFooter.finishFrame());
 
     if (!fLibrary.visible().empty()) {
       const auto &infos = fLibrary.infosFor(fLibrary.selSet());
@@ -4379,7 +3968,7 @@ private:
              .fDifficulty = fLibrary.selDiff(),
              .fRankedStars = fLibrary.ranked(),
              .fInfos = std::span<const osu::BeatmapInfo>(infos)});
-        this->consumeFrame(fInfoWedge.finishFrame());
+        fFrame.consume(fInfoWedge.finishFrame());
       }
     }
   }
@@ -4764,12 +4353,12 @@ private:
     fMirrors.pollPreview();
     fListing.setPreview(fMirrors.previewId(), fMirrors.previewProgress());
     fListing.update(ctx);
-    this->consumeFrame(fListing.finishFrame());
+    fFrame.consume(fListing.finishFrame());
     if (fSetPage.open()) {
       const std::size_t idx = fMirrors.indexOfSet(fSetPage.setId());
       if (idx >= fMirrors.results().size()) {
         fSetPage.close(); // the set fell out of the results
-        this->damageAll("beatmap page closed");
+        fFrame.damageAll("beatmap page closed");
       }
       client::setpage::SetPage::Ctx page;
       page.fEntry =
@@ -4783,7 +4372,7 @@ private:
       page.fPreviewPlaying = fMirrors.previewId() == fSetPage.setId();
       page.fPreviewProgress = fMirrors.previewProgress();
       fSetPage.update(page);
-      this->consumeFrame(fSetPage.finishFrame());
+      fFrame.consume(fSetPage.finishFrame());
     }
     // Covers are only fetched for what is on screen, which the listing knows
     // and the client did not: this used to walk every result that passed the
@@ -4803,7 +4392,7 @@ private:
     if (!fSetPage.open()) {
       const double wake = fListing.nextChangeWall(wallMs());
       if (wake > 0.0) {
-        this->wakeAt(wake);
+        fFrame.wakeAt(wake);
       }
     }
   }
@@ -4837,7 +4426,7 @@ private:
                         ? static_cast<float>(fPlay.fEngine->score().accuracy())
                         : 1.0f;
     fPauseMenu.update(ctx);
-    this->consumeFrame(fPauseMenu.finishFrame());
+    fFrame.consume(fPauseMenu.finishFrame());
   }
 
   // How far into the playable part of the map the pause happened, which is
@@ -4877,13 +4466,13 @@ private:
          .fMouseX = fWin.fMouseX,
          .fMouseY = fWin.fMouseY,
          .fNowMs = wallMs()});
-    this->consumeFrame(fReplayBrowser.finishResultFrame());
+    fFrame.consume(fReplayBrowser.finishResultFrame());
     const auto motion =
         fReplayBrowser.updateMotion(fWin.fMouseX, fWin.fMouseY);
     if (motion.fFullDamage) {
-      this->damageAll("results strip moving");
+      fFrame.damageAll("results strip moving");
     } else if (motion.fDamage) {
-      this->damage(*motion.fDamage);
+      fFrame.damage(*motion.fDamage);
     }
   }
 
@@ -5168,7 +4757,7 @@ private:
         std::abs(fScale - fSliderBodyScale) > fSliderBodyScale * 0.01f) {
       fSliderBodiesStale = true;
     }
-    this->damageAll("resize", /*buffersGone=*/true);
+    fFrame.damageAll("resize", /*buffersGone=*/true);
     fView.invalidate();
     fView.preScaleBackground(this->gameplayCtx(nullptr));
   }
