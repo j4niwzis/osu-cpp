@@ -515,7 +515,7 @@ public:
       fApp.switchState(State::kMainMenu);
       return true;
     case Action::kMods:
-      fApp.toggleMods();
+      fApp.fOverlays.toggleMods();
       return true;
     case Action::kRandom:
       fApp.selectRandom();
@@ -533,7 +533,7 @@ public:
       this->askDeleteBeatmap();
       return true;
     case Action::kSettings:
-      fApp.toggleSettings();
+      fApp.fOverlays.toggleSettings();
       return true;
     case Action::kTaken:
       return true;

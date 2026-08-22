@@ -1,0 +1,300 @@
+export module client.appoverlays;
+
+import std;
+import osu;
+import glfw;
+import skia;
+import skin;
+import client.audio;
+import client.mods;
+import client.settingspanel;
+import client.util;
+import client.video;
+import client.videoexport;
+
+export namespace client {
+
+template <class Host> class AppOverlays {
+public:
+  explicit AppOverlays(Host &app) : fApp(app) {}
+
+  // ---- Settings overlay ---------------------------------------------------
+  //
+  // The panel itself lives in client.settingspanel; this only bridges it to
+  // the app's input and to applying the values.
+
+  void toggleSettings() {
+    fApp.fSettingsPanel.toggle(fApp.wallMs());
+    if (!fApp.fSettingsPanel.open()) {
+      fApp.fSettings.save();
+      this->applySettings();
+    }
+  }
+
+  void closeSettings() {
+    if (fApp.fSettingsPanel.open()) {
+      fApp.fSettingsPanel.close(fApp.wallMs());
+      fApp.fSettings.save();
+      this->applySettings();
+    }
+  }
+
+  void drawSettings(skia::SkCanvas *canvas) {
+    fApp.fSettingsPanel.render(canvas);
+  }
+
+  bool settingsClick(float x, float y, bool pressed) {
+    // Whatever it hit, the panel draws it next frame.
+    fApp.fSettingsPanel.touched();
+    const auto hit = fApp.fSettingsPanel.click(x, y, pressed, fApp.fSettings);
+    if (hit == client::SettingsPanel::Hit::kChanged) {
+      this->applySettings();
+      if (!pressed || !fApp.fSettingsPanel.dragging()) {
+        fApp.fSettings.save();
+      }
+    }
+    return hit != client::SettingsPanel::Hit::kNone;
+  }
+
+  void dragSetting(float x) {
+    fApp.fSettingsPanel.touched();
+    if (fApp.fSettingsPanel.drag(x, fApp.fSettings)) {
+      this->applyAudioSettings(); // cheap part only while dragging
+    }
+  }
+
+  void scrollSettings(float delta) {
+    fApp.fSettingsPanel.scroll(delta, static_cast<float>(fApp.fWin.fScreenH));
+  }
+
+  void applyAudioSettings() {
+    fApp.fAudio.setVolume(this->musicGain());
+    fApp.fMirrors.setVolume(this->musicGain());
+    fApp.fJudgements.setGain(this->effectGain());
+  }
+
+  [[nodiscard]] float musicGain() const {
+    return fApp.fSettings.value("master") * fApp.fSettings.value("music") *
+           audio_client::kMusicHeadroom;
+  }
+  [[nodiscard]] float effectGain() const {
+    return fApp.fSettings.value("master") * fApp.fSettings.value("effect") *
+           audio_client::kEffectHeadroom;
+  }
+
+  // Difficulties are ordered by the rating being shown, which means the
+  // order changes when that setting does. Safe now that the loaded set is
+  // matched to the cached list by name rather than by re-sorting it, but the
+  // selection is a position in that list, so it is carried across by name.
+  void applyStarOrder() {
+    const int chosen = fApp.fSettings.choice("stars");
+    if (chosen == fApp.fAppliedStarChoice) {
+      return;
+    }
+    fApp.fAppliedStarChoice = chosen;
+    fApp.fLibrary.setRanked(chosen == 1);
+    fApp.fLibrary.sortLibraryByStars();
+  }
+
+
+  void applySettings() {
+    this->applyStarOrder();
+    this->applyAudioSettings();
+    const float dim = fApp.fSettings.value("dim");
+    if (std::abs(dim - fApp.fAppliedDim) > 1e-4f) {
+      fApp.fAppliedDim = dim;
+      fApp.fView.preScaleBackground(fApp.gameplayCtx(nullptr));
+    }
+    fApp.fSwapIntervalRequest.store(fApp.fSettings.flag("vsync") ? 1 : 0,
+                               std::memory_order_release);
+    fApp.fFrame.damageAll("settings applied");
+    // Sensitivity other than 1 needs relative motion, which needs the pointer
+    // grabbed; so does raw input.
+    fApp.applyPointerMode();
+  }
+
+  // ---- Mod select and export dialog ---------------------------------------
+  //
+  // Both views live in client.overlays; this is the bridge to app state.
+
+  [[nodiscard]] std::vector<client::ModEntry> modEntries() const {
+    return {
+        {"EZ", "Easy", "Larger circles, more forgiving HP drain.",
+         osu::mod::kEasy, 0, glfw::kKeyQ, 0.5},
+        {"HT", "Half Time", "Less zoom... more time to react.",
+         osu::mod::kHalfTime, 0, glfw::kKeyW, 0.3},
+        {"HR", "Hard Rock", "Everything just got a bit harder...",
+         osu::mod::kHardRock, 1, glfw::kKeyA, 1.06},
+        {"DT", "Double Time", "Zoooooooooom...", osu::mod::kDoubleTime, 1,
+         glfw::kKeyD, 1.12},
+    };
+  }
+
+  void toggleMods() { fApp.fModSelect.toggle(); }
+
+  void drawModSelect(skia::SkCanvas *canvas) {
+    fApp.fModSelect.render(canvas);
+  }
+
+  bool modClick(float x, float y) {
+    return fApp.fModSelect.click(x, y, fApp.fMods);
+  }
+
+  void drawExportDialog(skia::SkCanvas *canvas) {
+    fApp.fExportDialog.render(canvas);
+  }
+
+  bool exportClick(float x, float y) {
+    if (!fApp.fExportDialog.open()) {
+      return false;
+    }
+    if (fApp.fExportDialog.click(x, y)) {
+      this->exportReplayVideo();
+    }
+    return true;
+  }
+
+  // Said in both places: the dialog is where it belongs, and the log is where
+  // it survives being missed -- which, while the export was blocking the
+  // client, it always was.
+  void exportFailed(std::string reason) {
+    std::println(std::cerr, "[export] failed: {}", reason);
+    fApp.fExportDialog.setStatus(std::move(reason));
+  }
+
+  void exportReplayVideo() {
+    if (fApp.fVideoExporter.active()) {
+      return; // one at a time
+    }
+    if (!fApp.fPlay.fMap || fApp.fPlay.fRecordedEvents.empty()) {
+      this->exportFailed("nothing to export: no play recorded for this map");
+      return;
+    }
+    const auto preset = client::kVideoPresets[static_cast<std::size_t>(
+        fApp.fExportDialog.preset())];
+    // A size typed into the dialog wins over the one picked from the row.
+    const auto [typedWidth, typedHeight] = fApp.fExportDialog.customSize();
+    client::ReplayVideoExporter::Request request;
+    request.fOptions.fWidth = typedWidth > 0 ? typedWidth : preset.fWidth;
+    request.fOptions.fHeight = typedHeight > 0 ? typedHeight : preset.fHeight;
+    request.fOptions.fFps = 60;
+
+    // Into the working directory, named for what it is: the replay it came
+    // from when there is one, the difficulty otherwise, and the size it was
+    // rendered at. Two exports of the same play at different sizes are two
+    // files rather than one overwriting the other.
+    const std::string stem =
+        !fApp.fReplayPath.empty()
+            ? fApp.fReplayPath.stem().string()
+            : std::filesystem::path(fApp.fBeatmapFilename).stem().string();
+    std::string safe;
+    for (const char c : stem) {
+      const bool awkward = static_cast<unsigned char>(c) < 0x20 || c == '/' ||
+                           c == '\\' || c == ':';
+      safe.push_back(awkward ? '_' : c);
+    }
+    std::error_code cwdError;
+    const auto here = std::filesystem::current_path(cwdError);
+    request.fOptions.fOutput =
+        (cwdError ? fApp.fMapsDir.parent_path() : here) /
+        std::format("{}-{}x{}.mp4", safe, request.fOptions.fWidth,
+                    request.fOptions.fHeight);
+
+    // Written out before the encoder is started: it is told about its inputs
+    // once, when it is launched, and an audio path handed over afterwards
+    // reached nobody -- which is why the videos had no sound.
+    if (!fApp.fPlay.fMap->fMeta.fAudioFilename.empty()) {
+      const auto bytes = fApp.fSet.findFile(fApp.fPlay.fMap->fMeta.fAudioFilename);
+      if (!bytes.empty()) {
+        std::error_code ec;
+        const auto audioPath = std::filesystem::temp_directory_path(ec) /
+                               fApp.fPlay.fMap->fMeta.fAudioFilename;
+        std::ofstream out(audioPath, std::ios::binary);
+        out.write(reinterpret_cast<const char *>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        out.close();
+        request.fOptions.fAudio = audioPath;
+      }
+    }
+    std::println(std::cerr, "[export] writing {}",
+                 request.fOptions.fOutput.string());
+
+    // The slider bodies are built on the GPU, at one scale, and live there.
+    // They were built for the window, so a 4K export drew them soft; they are
+    // rebuilt for the size being rendered and then moved into memory, since a
+    // thread without a context cannot read them off the GPU. The next play
+    // precomputes them for the window again.
+    const float exportScale =
+        0.8f * std::min(static_cast<float>(request.fOptions.fWidth) /
+                            static_cast<float>(osu::kPlayfieldWidth),
+                        static_cast<float>(request.fOptions.fHeight) /
+                            static_cast<float>(osu::kPlayfieldHeight));
+    fApp.fSkin.precomputeSliderBodies(*fApp.fPlay.fMap, fApp.fComboInfo,
+                                     exportScale, fApp.fContext.get());
+    fApp.fSkin.flattenBodiesToRaster(fApp.fContext.get());
+
+    request.fMap = *fApp.fPlay.fMap;
+    request.fCombo = fApp.fComboInfo;
+    request.fEvents = fApp.fPlay.fRecordedEvents;
+    request.fMods = fApp.fMods;
+    request.fSkin = &fApp.fSkin;
+    request.fFont = fApp.fFont;
+    request.fDisplayFont = fApp.fDisplayFont;
+    // The cursor is drawn at a size in screen pixels, which is right for a
+    // window and wrong for a render: at 4K it came out a quarter of the size
+    // it has on screen. Scaled by how much bigger the playfield is, it keeps
+    // the size it has relative to the play.
+    request.fCursorSize = fApp.fSettings.value("cursorsize") *
+                          (fApp.fScale > 0.0f ? exportScale / fApp.fScale : 1.0f);
+    request.fDim = fApp.fSettings.value("dim");
+    request.fNoGlow = fApp.fNoGlow;
+    request.fHitLighting = fApp.fSettings.flag("hitlighting");
+    request.fAttributes = fApp.fPlay.fPlayAttributes;
+    for (const auto &info : fApp.fSet.fBeatmaps) {
+      if (info.fMeta.fBackground.empty()) {
+        continue;
+      }
+      const auto bytes = fApp.fSet.findFile(info.fMeta.fBackground);
+      if (!bytes.empty()) {
+        request.fBackground = loadImage(bytes);
+        break;
+      }
+    }
+
+    const std::string error = fApp.fVideoExporter.start(std::move(request));
+    if (!error.empty()) {
+      this->exportFailed(error);
+      return;
+    }
+    fApp.fExportDialog.setStatus("rendering 0%");
+  }
+
+  // Nothing to step any more: the render is on its own thread. This is the
+  // client noticing how far it has got and what it had to say when it stopped.
+  void pollExportVideo() {
+    if (!fApp.fVideoExporter.active()) {
+      return;
+    }
+    const auto status = fApp.fVideoExporter.status();
+    if (!status.fFinished) {
+      fApp.fExportDialog.setStatus(std::format(
+          "rendering {}%   {}x{}", status.fPercent, status.fWidth,
+          status.fHeight));
+      return;
+    }
+    if (status.fOk) {
+      fApp.fExportDialog.setStatus(std::format(
+          "saved {}",
+          std::filesystem::path(status.fMessage).filename().string()));
+      std::println(std::cerr, "[export] saved {}", status.fMessage);
+    } else {
+      this->exportFailed(status.fMessage);
+    }
+    fApp.fVideoExporter.clearFinished();
+  }
+
+private:
+  Host &fApp;
+};
+
+} // namespace client

@@ -98,7 +98,7 @@ public:
       fApp.fWin.fMouseY = ev.fY;
       this->routePointer(skiff::scene::PointerAction::kMove, ev.fX, ev.fY);
       if (fApp.fSettingsPanel.dragging()) {
-        fApp.dragSetting(ev.fX);
+        fApp.fOverlays.dragSetting(ev.fX);
       }
       if (fApp.fFilter.dragging()) {
         fApp.fScreens.dragFilterRange(ev.fX);
@@ -119,7 +119,7 @@ public:
       break;
     case EventType::kScroll:
       if (fApp.fSettingsPanel.open()) {
-        fApp.scrollSettings(ev.fX);
+        fApp.fOverlays.scrollSettings(ev.fX);
         break;
       }
       if (fApp.fScreens.panelListActive()) {
@@ -222,7 +222,7 @@ public:
       return;
     }
     if (action == glfw::kPress && key == glfw::kKeyO && ctrl) {
-      fApp.toggleSettings();
+      fApp.fOverlays.toggleSettings();
       return;
     }
     if (action == glfw::kPress && key == glfw::kKeyTab &&
@@ -263,7 +263,7 @@ public:
         return;
       }
       if (fApp.fSettingsPanel.open()) {
-        fApp.closeSettings();
+        fApp.fOverlays.closeSettings();
         return;
       }
       if (fApp.fModSelect.open()) {
@@ -367,7 +367,7 @@ public:
     // printable key belongs to the query, never to a shortcut. Actions live
     // on function keys and the footer buttons.
     if (key == glfw::kKeyF1) {
-      fApp.toggleMods(); // lazer: F1 is mod select
+      fApp.fOverlays.toggleMods(); // lazer: F1 is mod select
       return;
     }
     if (key == glfw::kKeyF4) {
@@ -494,7 +494,8 @@ public:
         } else {
           this->routePointer(skiff::scene::PointerAction::kUp,
                              fApp.fWin.fMouseX, fApp.fWin.fMouseY);
-          fApp.settingsClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY, false);
+          fApp.fOverlays.settingsClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
+                                       false);
           fApp.fScreens.filterClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
                                     false);
         }
@@ -607,7 +608,7 @@ public:
     if (fApp.fScreens.confirmDeleteClick(x, y)) {
       return;
     }
-    if (fApp.exportClick(x, y)) {
+    if (fApp.fOverlays.exportClick(x, y)) {
       return;
     }
     if (fApp.fReplayBrowser.open()) {
@@ -617,10 +618,10 @@ public:
       }
       return;
     }
-    if (fApp.settingsClick(x, y, true)) {
+    if (fApp.fOverlays.settingsClick(x, y, true)) {
       return;
     }
-    if (fApp.fModSelect.open() && fApp.modClick(x, y)) {
+    if (fApp.fModSelect.open() && fApp.fOverlays.modClick(x, y)) {
       return;
     }
     switch (fApp.fState) {

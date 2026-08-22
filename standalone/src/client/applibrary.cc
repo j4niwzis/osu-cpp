@@ -73,7 +73,7 @@ public:
                              fApp.fListing.resetSortForSearch();
                              fApp.fListing.scrollToStart();
                            },
-                           [this] { return fApp.musicGain(); },
+                           [this] { return fApp.fOverlays.musicGain(); },
                            [this] { return fApp.fAudio.playing(); },
                            [this] { fApp.fAudio.pause(); },
                            [this] { fApp.fAudio.resume(); },
@@ -190,7 +190,7 @@ public:
           fApp.fAudio.adopt(std::move(*pcm));
           fApp.fAudio.setLooping(false); // the next track is chosen when it ends
           fApp.fMenuTrackWall = fApp.wallMs();
-          fApp.fAudio.setVolume(fApp.musicGain());
+          fApp.fAudio.setVolume(fApp.fOverlays.musicGain());
           fApp.fAudio.play();
           fApp.fMainMenu.trackChanged(fApp.wallMs());
         });

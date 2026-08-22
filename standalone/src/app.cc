@@ -52,6 +52,7 @@ import client.playresult;
 import client.appinput;
 import client.applibrary;
 import client.appscreens;
+import client.appoverlays;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -103,6 +104,7 @@ private:
   friend class client::AppInput<App>;
   friend class client::AppLibrary<App>;
   friend class client::AppScreens<App>;
+  friend class client::AppOverlays<App>;
 
   osu::BeatmapSet fSet;
   osu::ModSet fMods = osu::mod::kNone;
@@ -226,6 +228,7 @@ private:
   client::AppInput<App> fInput{*this};
   client::AppLibrary<App> fLibraryRuntime{*this};
   client::AppScreens<App> fScreens{*this};
+  client::AppOverlays<App> fOverlays{*this};
   State fState = State::kMainMenu;
   bool fHasInitialSet = false;
 
@@ -487,7 +490,7 @@ private:
     // rest of the load, the pacing sleep, and the first frame itself, which
     // repaints the whole window and warms every cache it touches. Audio waits
     // with it, since it does not begin the instant it is asked to either.
-    fAudio.setVolume(this->musicGain());
+    fAudio.setVolume(fOverlays.musicGain());
     fPlay.fAwaitingFirstFrame = true;
   }
 
@@ -797,7 +800,7 @@ private:
     // that was picked marked itself for a frame that was never drawn, and so
     // never advanced, and so kept marking itself.
     if (fModSelect.visible()) {
-      const auto entries = this->modEntries();
+      const auto entries = fOverlays.modEntries();
       fModSelect.update(
           fFont, entries, fMods,
           {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX, fWin.fMouseY,
@@ -1063,7 +1066,7 @@ private:
     // A video being rendered runs on its own thread; this is the client
     // asking how far it has got.
     if (fVideoExporter.active()) {
-      this->pollExportVideo();
+      fOverlays.pollExportVideo();
     }
     // Screens built as a scene tree settle before anything is drawn: the
     // pointer lands where it lands, values ease, the layout is redone, and
@@ -1210,18 +1213,18 @@ private:
     // Overlays float above whatever screen is drawn.
     auto *canvas = fFrame.fSurface->getCanvas();
     if (fModSelect.visible()) {
-      this->drawModSelect(canvas);
+      fOverlays.drawModSelect(canvas);
     }
     if (fSettingsPanel.visible()) {
       // What it repaints was worked out before the frame began, by the panel
       // itself; here it is only drawn.
-      this->drawSettings(canvas);
+      fOverlays.drawSettings(canvas);
     }
     if (fReplayBrowser.open()) {
       fScreens.drawReplayList(canvas);
     }
     if (fExportDialog.open()) {
-      this->drawExportDialog(canvas);
+      fOverlays.drawExportDialog(canvas);
     }
     fDeleteDialog.render(canvas);
     this->drawToast(canvas);
@@ -1493,7 +1496,7 @@ private:
     fAudio.setLooping(false);
     this->resetGameplayState();
     // Overlays must not survive into gameplay.
-    this->closeSettings();
+    fOverlays.closeSettings();
     fModSelect.close();
     fExportDialog.close();
     this->startGameplay(fSet.fBeatmaps[static_cast<std::size_t>(diffIdx)]);
@@ -1844,7 +1847,7 @@ private:
       this->playRandom();
       break;
     case MenuAction::kSettings:
-      this->toggleSettings();
+      fOverlays.toggleSettings();
       break;
     case MenuAction::kOpenPlay:
     case MenuAction::kBack:
@@ -1889,280 +1892,6 @@ private:
     fMainMenu.render(canvas);
     this->drawScreenFadeIn(canvas);
     this->present();
-  }
-
-  // ---- Song select ------------------------------------------------------
-
-  // ---- Settings overlay ---------------------------------------------------
-  //
-  // The panel itself lives in client.settingspanel; this only bridges it to
-  // the app's input and to applying the values.
-
-  void toggleSettings() {
-    fSettingsPanel.toggle(wallMs());
-    if (!fSettingsPanel.open()) {
-      fSettings.save();
-      this->applySettings();
-    }
-  }
-
-  void closeSettings() {
-    if (fSettingsPanel.open()) {
-      fSettingsPanel.close(wallMs());
-      fSettings.save();
-      this->applySettings();
-    }
-  }
-
-  void drawSettings(skia::SkCanvas *canvas) { fSettingsPanel.render(canvas); }
-
-  bool settingsClick(float x, float y, bool pressed) {
-    fSettingsPanel.touched(); // whatever it hit, the panel draws it next frame
-    const auto hit = fSettingsPanel.click(x, y, pressed, fSettings);
-    if (hit == client::SettingsPanel::Hit::kChanged) {
-      this->applySettings();
-      if (!pressed || !fSettingsPanel.dragging()) {
-        fSettings.save();
-      }
-    }
-    return hit != client::SettingsPanel::Hit::kNone;
-  }
-
-  void dragSetting(float x) {
-    fSettingsPanel.touched();
-    if (fSettingsPanel.drag(x, fSettings)) {
-      this->applyAudioSettings(); // cheap part only while dragging
-    }
-  }
-
-  void scrollSettings(float delta) {
-    fSettingsPanel.scroll(delta, static_cast<float>(fWin.fScreenH));
-  }
-
-  void applyAudioSettings() {
-    fAudio.setVolume(this->musicGain());
-    fMirrors.setVolume(this->musicGain());
-    fJudgements.setGain(this->effectGain());
-  }
-
-  [[nodiscard]] float musicGain() const {
-    return fSettings.value("master") * fSettings.value("music") *
-           audio_client::kMusicHeadroom;
-  }
-  [[nodiscard]] float effectGain() const {
-    return fSettings.value("master") * fSettings.value("effect") *
-           audio_client::kEffectHeadroom;
-  }
-
-  // Difficulties are ordered by the rating being shown, which means the
-  // order changes when that setting does. Safe now that the loaded set is
-  // matched to the cached list by name rather than by re-sorting it, but the
-  // selection is a position in that list, so it is carried across by name.
-  void applyStarOrder() {
-    const int chosen = fSettings.choice("stars");
-    if (chosen == fAppliedStarChoice) {
-      return;
-    }
-    fAppliedStarChoice = chosen;
-    fLibrary.setRanked(chosen == 1);
-    fLibrary.sortLibraryByStars();
-  }
-
-
-  void applySettings() {
-    this->applyStarOrder();
-    this->applyAudioSettings();
-    const float dim = fSettings.value("dim");
-    if (std::abs(dim - fAppliedDim) > 1e-4f) {
-      fAppliedDim = dim;
-      fView.preScaleBackground(this->gameplayCtx(nullptr));
-    }
-    fSwapIntervalRequest.store(fSettings.flag("vsync") ? 1 : 0,
-                               std::memory_order_release);
-    fFrame.damageAll("settings applied");
-    // Sensitivity other than 1 needs relative motion, which needs the pointer
-    // grabbed; so does raw input.
-    this->applyPointerMode();
-  }
-
-  // ---- Mod select and export dialog ---------------------------------------
-  //
-  // Both views live in client.overlays; this is the bridge to app state.
-
-  [[nodiscard]] std::vector<client::ModEntry> modEntries() const {
-    return {
-        {"EZ", "Easy", "Larger circles, more forgiving HP drain.",
-         osu::mod::kEasy, 0, glfw::kKeyQ, 0.5},
-        {"HT", "Half Time", "Less zoom... more time to react.",
-         osu::mod::kHalfTime, 0, glfw::kKeyW, 0.3},
-        {"HR", "Hard Rock", "Everything just got a bit harder...",
-         osu::mod::kHardRock, 1, glfw::kKeyA, 1.06},
-        {"DT", "Double Time", "Zoooooooooom...", osu::mod::kDoubleTime, 1,
-         glfw::kKeyD, 1.12},
-    };
-  }
-
-  void toggleMods() { fModSelect.toggle(); }
-
-  void drawModSelect(skia::SkCanvas *canvas) {
-    fModSelect.render(canvas);
-  }
-
-  bool modClick(float x, float y) {
-    return fModSelect.click(x, y, fMods);
-  }
-
-  void drawExportDialog(skia::SkCanvas *canvas) {
-    fExportDialog.render(canvas);
-  }
-
-  bool exportClick(float x, float y) {
-    if (!fExportDialog.open()) {
-      return false;
-    }
-    if (fExportDialog.click(x, y)) {
-      this->exportReplayVideo();
-    }
-    return true;
-  }
-
-  // Said in both places: the dialog is where it belongs, and the log is where
-  // it survives being missed -- which, while the export was blocking the
-  // client, it always was.
-  void exportFailed(std::string reason) {
-    std::println(std::cerr, "[export] failed: {}", reason);
-    fExportDialog.setStatus(std::move(reason));
-  }
-
-  void exportReplayVideo() {
-    if (fVideoExporter.active()) {
-      return; // one at a time
-    }
-    if (!fPlay.fMap || fPlay.fRecordedEvents.empty()) {
-      this->exportFailed("nothing to export: no play recorded for this map");
-      return;
-    }
-    const auto preset =
-        client::kVideoPresets[static_cast<std::size_t>(fExportDialog.preset())];
-    // A size typed into the dialog wins over the one picked from the row.
-    const auto [typedWidth, typedHeight] = fExportDialog.customSize();
-    client::ReplayVideoExporter::Request request;
-    request.fOptions.fWidth = typedWidth > 0 ? typedWidth : preset.fWidth;
-    request.fOptions.fHeight = typedHeight > 0 ? typedHeight : preset.fHeight;
-    request.fOptions.fFps = 60;
-
-    // Into the working directory, named for what it is: the replay it came
-    // from when there is one, the difficulty otherwise, and the size it was
-    // rendered at. Two exports of the same play at different sizes are two
-    // files rather than one overwriting the other.
-    const std::string stem =
-        !fReplayPath.empty()
-            ? fReplayPath.stem().string()
-            : std::filesystem::path(fBeatmapFilename).stem().string();
-    std::string safe;
-    for (const char c : stem) {
-      const bool awkward = static_cast<unsigned char>(c) < 0x20 || c == '/' ||
-                           c == '\\' || c == ':';
-      safe.push_back(awkward ? '_' : c);
-    }
-    std::error_code cwdError;
-    const auto here = std::filesystem::current_path(cwdError);
-    request.fOptions.fOutput =
-        (cwdError ? fMapsDir.parent_path() : here) /
-        std::format("{}-{}x{}.mp4", safe, request.fOptions.fWidth,
-                    request.fOptions.fHeight);
-
-    // Written out before the encoder is started: it is told about its inputs
-    // once, when it is launched, and an audio path handed over afterwards
-    // reached nobody -- which is why the videos had no sound.
-    if (!fPlay.fMap->fMeta.fAudioFilename.empty()) {
-      const auto bytes = fSet.findFile(fPlay.fMap->fMeta.fAudioFilename);
-      if (!bytes.empty()) {
-        std::error_code ec;
-        const auto audioPath = std::filesystem::temp_directory_path(ec) /
-                               fPlay.fMap->fMeta.fAudioFilename;
-        std::ofstream out(audioPath, std::ios::binary);
-        out.write(reinterpret_cast<const char *>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-        out.close();
-        request.fOptions.fAudio = audioPath;
-      }
-    }
-    std::println(std::cerr, "[export] writing {}",
-                 request.fOptions.fOutput.string());
-
-    // The slider bodies are built on the GPU, at one scale, and live there.
-    // They were built for the window, so a 4K export drew them soft; they are
-    // rebuilt for the size being rendered and then moved into memory, since a
-    // thread without a context cannot read them off the GPU. The next play
-    // precomputes them for the window again.
-    const float exportScale =
-        0.8f * std::min(static_cast<float>(request.fOptions.fWidth) /
-                            static_cast<float>(osu::kPlayfieldWidth),
-                        static_cast<float>(request.fOptions.fHeight) /
-                            static_cast<float>(osu::kPlayfieldHeight));
-    fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, exportScale,
-                                 fContext.get());
-    fSkin.flattenBodiesToRaster(fContext.get());
-
-    request.fMap = *fPlay.fMap;
-    request.fCombo = fComboInfo;
-    request.fEvents = fPlay.fRecordedEvents;
-    request.fMods = fMods;
-    request.fSkin = &fSkin;
-    request.fFont = fFont;
-    request.fDisplayFont = fDisplayFont;
-    // The cursor is drawn at a size in screen pixels, which is right for a
-    // window and wrong for a render: at 4K it came out a quarter of the size
-    // it has on screen. Scaled by how much bigger the playfield is, it keeps
-    // the size it has relative to the play.
-    request.fCursorSize = fSettings.value("cursorsize") *
-                          (fScale > 0.0f ? exportScale / fScale : 1.0f);
-    request.fDim = fSettings.value("dim");
-    request.fNoGlow = fNoGlow;
-    request.fHitLighting = fSettings.flag("hitlighting");
-    request.fAttributes = fPlay.fPlayAttributes;
-    for (const auto &info : fSet.fBeatmaps) {
-      if (info.fMeta.fBackground.empty()) {
-        continue;
-      }
-      const auto bytes = fSet.findFile(info.fMeta.fBackground);
-      if (!bytes.empty()) {
-        request.fBackground = loadImage(bytes);
-        break;
-      }
-    }
-
-    const std::string error = fVideoExporter.start(std::move(request));
-    if (!error.empty()) {
-      this->exportFailed(error);
-      return;
-    }
-    fExportDialog.setStatus("rendering 0%");
-  }
-
-  // Nothing to step any more: the render is on its own thread. This is the
-  // client noticing how far it has got and what it had to say when it stopped.
-  void pollExportVideo() {
-    if (!fVideoExporter.active()) {
-      return;
-    }
-    const auto status = fVideoExporter.status();
-    if (!status.fFinished) {
-      fExportDialog.setStatus(std::format(
-          "rendering {}%   {}x{}", status.fPercent, status.fWidth,
-          status.fHeight));
-      return;
-    }
-    if (status.fOk) {
-      fExportDialog.setStatus(std::format(
-          "saved {}",
-          std::filesystem::path(status.fMessage).filename().string()));
-      std::println(std::cerr, "[export] saved {}", status.fMessage);
-    } else {
-      this->exportFailed(status.fMessage);
-    }
-    fVideoExporter.clearFinished();
   }
 
   bool initSkia() {
