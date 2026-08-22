@@ -410,7 +410,7 @@ public:
     fPending = Action::kNone;
     const bool wasOpen = this->optionsOpen();
     if (fScene) {
-      (void)fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
+      (void)fScene->dispatchPointer(skiff::scene::PointerAction::kDown, x, y);
     }
     // A row sets an action and closes itself. Any other click while the
     // popover was open dismisses it, including its small padding gaps.
