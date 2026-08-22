@@ -85,15 +85,15 @@ protected:
     const skia::SkRect box = this->contentBox();
     if (fDirection == Direction::kVertical) {
       this->grow(box, false);
-      // Everything is laid out once to learn its height, so the room the
-      // column does not use is known before anything is placed in it.
+      // Ask dirty children for their current size. Clean children keep their
+      // cached result; position does not affect the measured width or height,
+      // so there is no need to move every child to zero and dirty it first.
       float used = 0.0f;
       int count = 0;
       for (auto &child : fChildren) {
         if (!child->visible()) {
           continue;
         }
-        this->positionChild(*child, 0.0f, 0.0f);
         child->layout(box);
         used += child->bounds().height() + child->margin().totalY();
         ++count;
@@ -106,19 +106,11 @@ protected:
         if (!child->visible()) {
           continue;
         }
-        this->arrangeChild(*child, 0.0f, y);
+        const float x = this->crossOffset(
+            *child, box.width(),
+            child->bounds().width() + child->margin().totalX());
+        this->arrangeChild(*child, x, y);
         child->layout(box);
-        if (this->alignOf(*child) != Align::kStart) {
-          // Its width is only known once it has been laid out, so the offset
-          // that centres it is applied on a second pass over the same child.
-          this->positionChild(*child,
-                              this->crossOffset(
-                                  *child, box.width(),
-                                  child->bounds().width() +
-                                      child->margin().totalX()),
-                              y);
-          child->layout(box);
-        }
         y += child->bounds().height() + child->margin().totalY() + fSpacingY +
              spread.fBetween;
       }
@@ -168,8 +160,7 @@ protected:
       if (!child->visible()) {
         continue;
       }
-      // Lay it out once against the box to learn its size.
-      this->positionChild(*child, 0.0f, 0.0f);
+      // A clean child already knows its size; a dirty one measures here.
       child->layout(box);
       const float width = child->bounds().width() + child->margin().totalX();
       // Half a pixel of slack: four children at a quarter of the width each
@@ -264,7 +255,6 @@ protected:
       if (grows(*child)) {
         continue;
       }
-      this->positionChild(*child, 0.0f, 0.0f);
       child->layout(box);
       taken += horizontal ? child->bounds().width() + child->margin().totalX()
                           : child->bounds().height() + child->margin().totalY();

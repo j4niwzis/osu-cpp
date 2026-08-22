@@ -975,8 +975,11 @@ public:
                    "[scene] growing and sized another way on the same axis");
       fGrowAxes = Axes::kNone;
     }
-    if (this->commonStyleValues() != before) {
+    const auto after = this->commonStyleValues();
+    if (!sameLayout(before, after)) {
       this->invalidateLayout();
+    } else if (!sameCommon(before, after)) {
+      this->markDamaged();
     }
   }
 
@@ -986,7 +989,7 @@ public:
     Drawable *added = fChildren.back().get();
     added->restyleSubtree(this->activeStyleResolver(),
                           fStyleApplied ? &fResolvedStyle : nullptr, false);
-    this->markDamaged();
+    this->invalidateLayout();
   }
 
   // Builds a child in place, applies the spec and hands it back typed. This
@@ -1055,10 +1058,6 @@ public:
 
   // Advances every transform in the tree and drops the finished ones.
   void updateTree(double nowMs) {
-    if (!fTransforms.empty()) {
-      fLayoutValid = false; // a moving drawable needs placing again
-      this->markDamaged();
-    }
     this->updateTransforms(nowMs);
     this->update(nowMs);
     for (auto &child : fChildren) {
@@ -1067,10 +1066,10 @@ public:
   }
 
   // Re-lays the tree only when it can have changed: the box it sits in
-  // differs from last time, something is animating, or a screen said so.
+  // differs from last time, or a node invalidated its path to this root.
   // A menu that is standing still costs nothing but a draw.
   bool layoutIfNeeded(const skia::SkRect &parent) {
-    if (fLayoutValid && parent == fLastParent && !this->animatingTree()) {
+    if (fLayoutValid && parent == fLastParent) {
       return false;
     }
     const bool hadViewport = !fLastParent.isEmpty();
@@ -1124,7 +1123,9 @@ public:
   }
 
   // Places this drawable inside `parent` (already absolute) and its children
-  // inside itself.
+  // inside itself. Every node caches the constraint it was laid out against:
+  // an invalid descendant dirties its ancestor path, but clean sibling
+  // subtrees return here instead of being measured and arranged again.
   void layout(const skia::SkRect &parentBox) {
     // Placed against something other than the parent, when asked. A dropdown
     // list belongs to the control that opened it and has to be drawn over
@@ -1138,6 +1139,10 @@ public:
     const skia::SkRect parent =
         (fFollow != nullptr && !fFollow->fBounds.isEmpty()) ? fFollow->fBounds
                                                             : parentBox;
+    if (fLayoutValid && parent == fLastConstraint) {
+      return;
+    }
+    fLastConstraint = parent;
 
     // A drawable that knows its own size -- text, mainly -- says so before
     // anything is computed from it. It is told the box it is going into,
@@ -1570,17 +1575,31 @@ protected:
   static void arrangeChild(Drawable &child, float x, float y,
                            Anchor anchor = Anchor::kTopLeft,
                            Anchor origin = Anchor::kTopLeft) {
+    if (child.fX == x && child.fY == y && child.fAnchor == anchor &&
+        child.fOrigin == origin) {
+      return;
+    }
     child.fX = x;
     child.fY = y;
     child.fAnchor = anchor;
     child.fOrigin = origin;
+    child.fLayoutValid = false;
   }
   static void positionChild(Drawable &child, float x, float y) {
+    if (child.fX == x && child.fY == y) {
+      return;
+    }
     child.fX = x;
     child.fY = y;
+    child.fLayoutValid = false;
   }
   static void setChildAxisSize(Drawable &child, bool horizontal, float size) {
-    (horizontal ? child.fWidth : child.fHeight) = size;
+    float &axis = horizontal ? child.fWidth : child.fHeight;
+    if (axis == size) {
+      return;
+    }
+    axis = size;
+    child.fLayoutValid = false;
   }
   void noteDrawn() { fDrawnBounds = fBounds; }
 
@@ -1901,6 +1920,19 @@ private:
            a.fVisible == b.fVisible;
   }
 
+  [[nodiscard]] static bool sameLayout(const CommonStyleValues &a,
+                                       const CommonStyleValues &b) noexcept {
+    return a.fAnchor == b.fAnchor && a.fOrigin == b.fOrigin && a.fX == b.fX &&
+           a.fY == b.fY && a.fWidth == b.fWidth && a.fHeight == b.fHeight &&
+           a.fRelativeSize == b.fRelativeSize &&
+           a.fAutoSize == b.fAutoSize && a.fGrow == b.fGrow &&
+           a.fMinWidth == b.fMinWidth && a.fMaxWidth == b.fMaxWidth &&
+           a.fMinHeight == b.fMinHeight && a.fMaxHeight == b.fMaxHeight &&
+           a.fAlignSelf == b.fAlignSelf && sameMargin(a.fMargin, b.fMargin) &&
+           sameMargin(a.fPadding, b.fPadding) && a.fScale == b.fScale &&
+           a.fVisible == b.fVisible;
+  }
+
   void setStyledProperty(Property property, float target,
                          float previousTarget, double durationMs, Easing easing,
                          bool animate) {
@@ -2017,6 +2049,7 @@ private:
 #undef SKIFF_STYLE_TARGET
 
     const bool changed = !sameCommon(target, current);
+    const bool layoutChanged = !sameLayout(target, current);
     const double duration = style.transitionMs.value_or(0.0);
     const Easing easing = style.transitionEasing.value_or(Easing::kOutQuint);
 
@@ -2059,8 +2092,10 @@ private:
 #undef SKIFF_STYLE_ANIMATED
 
     fStyledTarget = target;
-    if (changed) {
+    if (layoutChanged) {
       this->invalidateLayout();
+    } else if (changed) {
+      this->markDamaged();
     }
   }
 
@@ -2169,32 +2204,48 @@ private:
   }
 
   void applyProperty(Property property, float value) {
+    float *current = nullptr;
     switch (property) {
     case Property::kAlpha:
-      fAlpha = value;
+      current = &fAlpha;
       break;
     case Property::kX:
-      fX = value;
+      current = &fX;
       break;
     case Property::kY:
-      fY = value;
+      current = &fY;
       break;
     case Property::kWidth:
-      fWidth = value;
+      current = &fWidth;
       break;
     case Property::kHeight:
-      fHeight = value;
+      current = &fHeight;
       break;
     case Property::kScale:
-      fScale = value;
+      current = &fScale;
       break;
     }
+    if (*current == value) {
+      return;
+    }
+    if (property == Property::kAlpha) {
+      this->markDamaged();
+      *current = value;
+      this->markDamaged();
+      return;
+    }
+    *current = value;
+    this->invalidateLayout();
   }
 
   std::vector<Transform> fTransforms;
   double fPendingStartMs = 0.0;
   double fDelayMs = 0.0;
   bool fLayoutValid = false;
+  // The last effective parent box is this node's layout constraint. Keeping
+  // it per node, rather than only at the scene root, is what lets a clean
+  // subtree reuse its measured and arranged result.
+  skia::SkRect fLastConstraint = skia::SkRect::MakeEmpty();
   skia::SkRect fLastParent = skia::SkRect::MakeEmpty();
   StyleResolver fStyleResolver = nullptr;
   StyleStateResolver fStyleStateResolver = nullptr;

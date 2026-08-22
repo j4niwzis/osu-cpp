@@ -22,15 +22,23 @@ public:
   ScrollContainer() { fMasking = true; }
 
   void scrollToStart() {
+    if (fTarget == 0.0f && fCurrent == 0.0f) {
+      return;
+    }
     fTarget = 0.0f;
     fCurrent = 0.0f;
+    this->invalidateLayout();
   }
 
   // Carried across a rebuild: a list that grew a page should stay where the
   // reader left it, not jump back to the top.
   void setCurrent(float offset) {
+    if (fCurrent == offset && fTarget == offset) {
+      return;
+    }
     fCurrent = offset;
     fTarget = offset;
+    this->invalidateLayout();
   }
   // Eased: the view glides to the offset rather than jumping to it, which is
   // what a jump to a section in a settings list should look like.

@@ -9,6 +9,8 @@ import skiff.scene;
 namespace {
 
 using skiff::nodes::Box;
+using skiff::nodes::FillFlow;
+using skiff::nodes::ScrollContainer;
 using skiff::nodes::Text;
 using namespace skiff::scene;
 
@@ -68,6 +70,17 @@ protected:
 
 private:
   int fApplications = 0;
+};
+
+class LayoutProbe : public TypedDrawable<LayoutProbe> {
+public:
+  [[nodiscard]] int layouts() const noexcept { return fLayouts; }
+
+protected:
+  void measure(const skia::SkRect &) override { ++fLayouts; }
+
+private:
+  int fLayouts = 0;
 };
 
 class InputProbe : public TypedDrawable<InputProbe> {
@@ -526,6 +539,102 @@ TEST(Frame, RuntimePropertiesInvalidateAndReportContinuationTogether) {
   child->moveToX(60.0f, 100.0);
   const FrameResult animated = root->finishFrame();
   EXPECT_TRUE(animated.fWantsAnotherFrame);
+}
+
+TEST(Layout, SkipsCleanSiblingSubtrees) {
+  auto root = make<Drawable>({.fill = true});
+  auto *dirtyBranch =
+      root->add<Drawable>({.width = 50.0f, .height = 60.0f});
+  auto *dirty =
+      dirtyBranch->add<LayoutProbe>({.width = 20.0f, .height = 10.0f});
+  auto *cleanBranch = root->add<Drawable>(
+      {.x = 50.0f, .width = 50.0f, .height = 60.0f});
+  auto *clean =
+      cleanBranch->add<LayoutProbe>({.width = 20.0f, .height = 10.0f});
+  const auto viewport = skia::SkRect::MakeWH(100.0f, 60.0f);
+
+  EXPECT_TRUE(root->layoutIfNeeded(viewport));
+  EXPECT_EQ(dirty->layouts(), 1);
+  EXPECT_EQ(clean->layouts(), 1);
+
+  dirty->setSize(25.0f, 10.0f);
+  EXPECT_TRUE(root->layoutIfNeeded(viewport));
+  EXPECT_EQ(dirty->layouts(), 2);
+  EXPECT_EQ(clean->layouts(), 1);
+
+  EXPECT_FALSE(root->layoutIfNeeded(viewport));
+  EXPECT_EQ(dirty->layouts(), 2);
+  EXPECT_EQ(clean->layouts(), 1);
+}
+
+TEST(Layout, PaintOnlyAnimationDoesNotDirtyLayout) {
+  auto root = make<Drawable>({.fill = true});
+  auto *child =
+      root->add<LayoutProbe>({.width = 20.0f, .height = 10.0f});
+  const auto viewport = skia::SkRect::MakeWH(100.0f, 60.0f);
+  root->layoutIfNeeded(viewport);
+  ASSERT_EQ(child->layouts(), 1);
+
+  child->apply({.alpha = 0.8f});
+  EXPECT_FALSE(root->layoutIfNeeded(viewport));
+  EXPECT_EQ(child->layouts(), 1);
+
+  child->fadeTo(0.5f, 100.0);
+  root->updateTree(10.0);
+  EXPECT_FALSE(root->layoutIfNeeded(viewport));
+  EXPECT_EQ(child->layouts(), 1);
+  EXPECT_TRUE(root->finishFrame().fWantsAnotherFrame);
+
+  child->moveToX(30.0f, 100.0);
+  root->updateTree(20.0);
+  EXPECT_TRUE(root->layoutIfNeeded(viewport));
+  EXPECT_EQ(child->layouts(), 2);
+}
+
+TEST(Layout, FlowRearrangesOnlyChildrenWhosePositionChanged) {
+  auto root = make<FillFlow>({.fill = true}, FillFlow::Direction::kVertical);
+  auto *first =
+      root->add<LayoutProbe>({.width = 20.0f, .height = 10.0f});
+  auto *second =
+      root->add<LayoutProbe>({.width = 20.0f, .height = 10.0f});
+  auto *third =
+      root->add<LayoutProbe>({.width = 20.0f, .height = 10.0f});
+  const auto viewport = skia::SkRect::MakeWH(100.0f, 60.0f);
+  root->layoutIfNeeded(viewport);
+  ASSERT_FLOAT_EQ(second->bounds().fTop, 10.0f);
+  ASSERT_FLOAT_EQ(third->bounds().fTop, 20.0f);
+  const int firstLayouts = first->layouts();
+  const int secondLayouts = second->layouts();
+  const int thirdLayouts = third->layouts();
+
+  first->setSize(20.0f, 20.0f);
+  root->layoutIfNeeded(viewport);
+  EXPECT_FLOAT_EQ(second->bounds().fTop, 20.0f);
+  EXPECT_FLOAT_EQ(third->bounds().fTop, 30.0f);
+  EXPECT_EQ(first->layouts(), firstLayouts + 1);
+  EXPECT_EQ(second->layouts(), secondLayouts + 1);
+  EXPECT_EQ(third->layouts(), thirdLayouts + 1);
+
+  const int movedSecondLayouts = second->layouts();
+  const int movedThirdLayouts = third->layouts();
+  first->setSize(25.0f, 20.0f);
+  root->layoutIfNeeded(viewport);
+  EXPECT_EQ(first->layouts(), firstLayouts + 2);
+  EXPECT_EQ(second->layouts(), movedSecondLayouts);
+  EXPECT_EQ(third->layouts(), movedThirdLayouts);
+}
+
+TEST(Layout, ProgrammaticScrollInvalidatesItsSubtree) {
+  auto root = make<ScrollContainer>({.fill = true});
+  auto *content =
+      root->add<LayoutProbe>({.width = 100.0f, .height = 200.0f});
+  const auto viewport = skia::SkRect::MakeWH(100.0f, 60.0f);
+  root->layoutIfNeeded(viewport);
+  ASSERT_FLOAT_EQ(content->bounds().fTop, 0.0f);
+
+  root->setCurrent(20.0f);
+  EXPECT_TRUE(root->layoutIfNeeded(viewport));
+  EXPECT_FLOAT_EQ(content->bounds().fTop, -20.0f);
 }
 
 } // namespace
