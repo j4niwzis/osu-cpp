@@ -6,6 +6,7 @@ import glfw;
 import skia;
 import skin;
 import client.audio;
+import client.hitsoundmix;
 import client.mods;
 import client.settingspanel;
 import client.util;
@@ -166,7 +167,8 @@ public:
     if (fApp.fVideoExporter.active()) {
       return; // one at a time
     }
-    if (!fApp.fPlay.fMap || fApp.fPlay.fRecordedEvents.empty()) {
+    if (!fApp.fPlay.fMap || !fApp.fPlay.fEngine ||
+        fApp.fPlay.fRecordedEvents.empty()) {
       this->exportFailed("nothing to export: no play recorded for this map");
       return;
     }
@@ -204,16 +206,30 @@ public:
     // once, when it is launched, and an audio path handed over afterwards
     // reached nobody -- which is why the videos had no sound.
     if (!fApp.fPlay.fMap->fMeta.fAudioFilename.empty()) {
-      const auto bytes = fApp.fSet.findFile(fApp.fPlay.fMap->fMeta.fAudioFilename);
+      const auto bytes =
+          fApp.fSet.findFile(fApp.fPlay.fMap->fMeta.fAudioFilename);
       if (!bytes.empty()) {
         std::error_code ec;
-        const auto audioPath = std::filesystem::temp_directory_path(ec) /
-                               fApp.fPlay.fMap->fMeta.fAudioFilename;
+        const auto temporary = std::filesystem::temp_directory_path(ec);
+        const auto audioPath = temporary /
+                               std::filesystem::path(
+                                   fApp.fPlay.fMap->fMeta.fAudioFilename)
+                                   .filename();
         std::ofstream out(audioPath, std::ios::binary);
         out.write(reinterpret_cast<const char *>(bytes.data()),
                   static_cast<std::streamsize>(bytes.size()));
         out.close();
         request.fOptions.fAudio = audioPath;
+        const auto mixedPath = temporary / (safe + "-mixed.wav");
+        if (const auto mixed = client::mixReplayAudio(
+                bytes,
+                detail::fileExtension(
+                    fApp.fPlay.fMap->fMeta.fAudioFilename),
+                *fApp.fPlay.fMap, fApp.fPlay.fRecordedEvents, fApp.fMods,
+                fApp.fPlay.fEngine->rules(), fApp.fSet, fApp.fSkin,
+                this->musicGain(), this->effectGain(), mixedPath)) {
+          request.fOptions.fAudio = *mixed;
+        }
       }
     }
     std::println(std::cerr, "[export] writing {}",
@@ -237,6 +253,7 @@ public:
     request.fCombo = fApp.fComboInfo;
     request.fEvents = fApp.fPlay.fRecordedEvents;
     request.fMods = fApp.fMods;
+    request.fRules = fApp.fPlay.fEngine->rules();
     request.fSkin = &fApp.fSkin;
     request.fFont = fApp.fFont;
     request.fDisplayFont = fApp.fDisplayFont;

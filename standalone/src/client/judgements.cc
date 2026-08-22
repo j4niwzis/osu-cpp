@@ -6,6 +6,7 @@ import archive;
 import skin;
 import client.audio;
 import client.gameplayview;
+import client.hitsoundmix;
 
 export namespace client {
 
@@ -73,32 +74,6 @@ public:
   }
 
 private:
-  [[nodiscard]] static const char *
-  sampleSetName(const osu::SampleSet &set) noexcept {
-    return std::visit(
-        osu::Overloaded{
-            [](osu::sampleSet::None) -> const char * { return nullptr; },
-            [](osu::sampleSet::Normal) -> const char * { return "normal"; },
-            [](osu::sampleSet::Soft) -> const char * { return "soft"; },
-            [](osu::sampleSet::Drum) -> const char * { return "drum"; },
-        },
-        set);
-  }
-
-  [[nodiscard]] static const char *
-  sampleSetNameOrDefault(const osu::SampleSet &set, double time,
-                         const osu::Beatmap &map) {
-    if (const char *name = sampleSetName(set)) {
-      return name;
-    }
-    if (const auto *timing = map.activeTiming(time)) {
-      if (const char *name = sampleSetName(timing->fSet)) {
-        return name;
-      }
-    }
-    return "normal";
-  }
-
   void playSample(const std::string &name, const osu::BeatmapSet &set,
                   const Skin &skin) {
     if (name.empty()) {
@@ -135,19 +110,9 @@ private:
   void playHit(double time, osu::HitSound sound,
                const osu::HitSample &sample, const osu::Beatmap &map,
                const osu::BeatmapSet &set, const Skin &skin) {
-    const std::string normal =
-        sampleSetNameOrDefault(sample.fNormalSet, time, map);
-    const std::string addition =
-        sampleSetNameOrDefault(sample.fAdditionSet, time, map);
-    this->playSample(normal + "-hitnormal", set, skin);
-    if ((sound & osu::HitSound::kWhistle) != osu::HitSound::kNone) {
-      this->playSample(addition + "-hitwhistle", set, skin);
-    }
-    if ((sound & osu::HitSound::kFinish) != osu::HitSound::kNone) {
-      this->playSample(addition + "-hitfinish", set, skin);
-    }
-    if ((sound & osu::HitSound::kClap) != osu::HitSound::kNone) {
-      this->playSample(addition + "-hitclap", set, skin);
+    for (const auto &name :
+         hitsound_detail::sampleNames(time, sound, sample, map)) {
+      this->playSample(name, set, skin);
     }
   }
 

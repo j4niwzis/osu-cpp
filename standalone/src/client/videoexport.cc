@@ -19,6 +19,7 @@ public:
     osu::ComboInfo fCombo;
     std::vector<osu::InputEvent> fEvents;
     osu::ModSet fMods = osu::mod::kNone;
+    osu::RuleSet fRules = osu::RuleSet::kLazer;
     Skin *fSkin = nullptr;
     skia::SkFont fFont;
     skia::SkFont fDisplayFont;
@@ -168,7 +169,7 @@ void ReplayVideoExporter::run(Job &job) {
   ctx.fHitLighting = request.fHitLighting;
   job.fView.preScaleBackground(ctx);
 
-  osu::Engine engine(request.fMap, request.fMods);
+  osu::Engine engine(request.fMap, request.fMods, request.fRules);
   const double end = request.fMap.lastObjectEndTime() + 1500.0;
   const double step = 1000.0 / static_cast<double>(opts.fFps);
   const skia::SkImageInfo info = skia::SkImageInfo::Make(
