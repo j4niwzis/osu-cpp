@@ -4,6 +4,8 @@ import std;
 import skia;
 import osu;
 import skiff.paint;
+import skiff.scene;
+import skiff.nodes;
 import client.palette;
 import client.mods;
 import client.video;
@@ -14,170 +16,305 @@ namespace paint = skiff::paint;
 
 export namespace client {
 
+namespace scene = skiff::scene;
+namespace nodes = skiff::nodes;
+
 // ---- Mod select ----------------------------------------------------------
 //
 // ModSelectOverlay lays mods out in columns by category; each is a rounded
 // panel carrying the acronym, name, description and score multiplier, and
 // toggling one keeps the mutually exclusive pairs consistent.
+namespace mod_select_style {
+struct Main;
+struct Spacer;
+struct Columns;
+struct Column;
+struct Header;
+struct Card;
+struct Footer;
+} // namespace mod_select_style
+
+namespace mod_select_detail {
+
+class Root : public scene::TypedDrawable<Root> {
+protected:
+  bool acceptsInput() const override { return true; }
+  bool hoverChangesAppearance() const override { return false; }
+  bool onClick(float, float) override { return true; }
+};
+
+// One mod remains a custom-painted surface because the acronym/name/detail
+// typography is its visual identity. Its box, selection, hover, click and
+// damage are ordinary scene behavior.
+class Card : public scene::TypedDrawable<Card, nodes::Box> {
+public:
+  using Base = scene::TypedDrawable<Card, nodes::Box>;
+
+  Card(const ModEntry &entry, const osu::ModSet *active,
+       std::function<void(osu::ModSet)> toggle)
+      : Base(palette::kCardBg), fAcronym(entry.fAcronym), fName(entry.fName),
+        fDescription(entry.fDescription), fFlag(entry.fFlag),
+        fMultiplier(entry.fMultiplier), fActive(active),
+        fToggle(std::move(toggle)) {}
+
+protected:
+  void update(double) override {
+    this->setSelected((*fActive & fFlag) != osu::mod::kNone);
+  }
+
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    nodes::Box::drawSelf(canvas, alpha);
+    skia::SkFont *font = paint::defaultFont();
+    if (font == nullptr) {
+      return;
+    }
+    const paint::Painter p(canvas, *font);
+    const skia::SkColor ink =
+        this->selected() ? skia::colorSetARGB(255, 24, 18, 30)
+                         : skia::kWhite;
+    p.textClipped(fAcronym, fBounds.fLeft + 18.0f, fBounds.fTop + 34.0f,
+                  70.0f, 24.0f, ink, alpha);
+    p.textClipped(fName, fBounds.fLeft + 84.0f, fBounds.fTop + 32.0f,
+                  fBounds.width() - 100.0f, 16.0f, ink, alpha);
+    p.textClipped(fDescription, fBounds.fLeft + 84.0f, fBounds.fTop + 56.0f,
+                  fBounds.width() - 100.0f, 12.0f, ink, alpha * 0.7f);
+    p.textClipped(std::format("{:.2f}x", fMultiplier), fBounds.fLeft + 84.0f,
+                  fBounds.fBottom - 12.0f, 80.0f, 11.0f,
+                  this->selected() ? ink : palette::kAccent2, alpha * 0.9f);
+  }
+
+  bool acceptsInput() const override { return true; }
+
+  bool onClick(float, float) override {
+    fToggle(fFlag);
+    return true;
+  }
+
+private:
+  std::string fAcronym;
+  std::string fName;
+  std::string fDescription;
+  osu::ModSet fFlag;
+  double fMultiplier;
+  const osu::ModSet *fActive;
+  std::function<void(osu::ModSet)> fToggle;
+};
+
+} // namespace mod_select_detail
+
+struct ModSelectTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::select<mod_select_detail::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Box>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .alpha = 190.0f / 255.0f,
+                 .backgroundColour = skia::colorSetARGB(255, 8, 6, 12)})
+          .rule(scene::selectAny<mod_select_style::Main>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::selectAny<mod_select_style::Spacer>(),
+                {.height = 0.28f, .relativeSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Grid, mod_select_style::Columns>(),
+                {.width = 0.72f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .maxWidth = 720.0f,
+                 .alignSelf = scene::Align::kMiddle})
+          .rule(scene::select<nodes::FillFlow, mod_select_style::Column>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Text, mod_select_style::Header>(),
+                {.alignSelf = scene::Align::kMiddle,
+                 .colour = palette::kAccent2,
+                 .fontSize = 16.0f})
+          .rule(scene::select<mod_select_detail::Card,
+                              mod_select_style::Card>(),
+                {.width = 1.0f,
+                 .height = 96.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .cornerRadius = 12.0f,
+                 .backgroundColour = palette::kCardBg})
+          .rule(scene::select<mod_select_detail::Card,
+                              mod_select_style::Card>()
+                    .when(scene::StyleState::kHover),
+                {.backgroundColour = palette::kCardSel})
+          .rule(scene::select<mod_select_detail::Card,
+                              mod_select_style::Card>()
+                    .when(scene::StyleState::kSelected),
+                {.backgroundColour = palette::kAccent})
+          .rule(scene::select<nodes::Text, mod_select_style::Footer>(),
+                {.anchor = scene::Anchor::kBottomCentre,
+                 .origin = scene::Anchor::kBottomCentre,
+                 .y = -32.0f,
+                 .alpha = 0.7f,
+                 .colour = skia::kWhite,
+                 .fontSize = 14.0f});
+};
+
 class ModSelect {
 public:
   struct Frame {
     int fScreenW = 0, fScreenH = 0;
     float fMouseX = 0.0f, fMouseY = 0.0f;
-    double fDtMs = 16.0;
+    double fNowMs = 0.0;
   };
 
   [[nodiscard]] bool open() const noexcept { return fOpen; }
   [[nodiscard]] bool animating() const noexcept {
-    return fOpen ? fSlide < 0.999f : fSlide > 0.001f;
+    return fScene && fScene->animatingTree();
   }
-
   [[nodiscard]] bool visible() const noexcept {
-    return fOpen || fSlide > 0.002f;
+    return fOpen || (fScene && fScene->fAlpha > 0.002f);
   }
   void toggle() noexcept { fOpen = !fOpen; }
   void close() noexcept { fOpen = false; }
 
-  // What has to be repainted for this overlay, worked out from where its
-  // chips ended up on the last frame. Empty means it is open, still, and
-  // showing exactly what it showed before.
-  //
-  // While it slides the answer is the whole screen: the dim behind it fades
-  // with it. Settled, the only thing that moves is the chip under the
-  // pointer, so the answer is that chip and the one being left.
-  [[nodiscard]] skia::SkRect damageFor(const Frame &frame) {
-    const float sw = static_cast<float>(frame.fScreenW);
-    const float sh = static_cast<float>(frame.fScreenH);
-    if (this->animating() || fTouched) {
-      fTouched = false;
-      fHot = -1;
-      return skia::SkRect::MakeWH(sw, sh);
+  void update(skia::SkFont &font, std::span<const ModEntry> entries,
+              osu::ModSet active, const Frame &frame) {
+    nodes::Text::setFont(&font);
+    fActive = active;
+    const std::size_t shape = this->shapeOf(entries);
+    bool rebuilt = false;
+    if (!fScene || shape != fShape) {
+      fShape = shape;
+      fScene = this->build(entries);
+      fScene->fAlpha = 0.0f;
+      fTargetOpen = !fOpen;
+      rebuilt = true;
     }
-    int hot = -1;
-    for (std::size_t i = 0; i < fHits.size(); ++i) {
-      if (fHits[i].fRect.contains(frame.fMouseX, frame.fMouseY)) {
-        hot = static_cast<int>(i);
-        break;
-      }
+    if (fTargetOpen != fOpen) {
+      fTargetOpen = fOpen;
+      fScene->fadeTo(fOpen ? 1.0f : 0.0f, 120.0,
+                     scene::Easing::kOutQuint);
     }
-    if (hot == fHot) {
-      return skia::SkRect::MakeEmpty();
+    fScene->updateTree(frame.fNowMs);
+    fScene->layoutIfNeeded(skia::SkRect::MakeWH(
+        static_cast<float>(frame.fScreenW),
+        static_cast<float>(frame.fScreenH)));
+    if (rebuilt) {
+      fScene->markDamaged();
     }
-    skia::SkRect out = skia::SkRect::MakeEmpty();
-    const auto join = [&out, this](int index) {
-      if (index < 0 || index >= static_cast<int>(fHits.size())) {
-        return;
-      }
-      skia::SkRect rect = fHits[static_cast<std::size_t>(index)].fRect;
-      rect.outset(6.0f, 6.0f);
-      if (out.isEmpty()) {
-        out = rect;
-      } else {
-        out.join(rect);
-      }
-    };
-    join(fHot);
-    join(hot);
-    fHot = hot;
-    return out;
+    fScene->setHover(frame.fMouseX, frame.fMouseY);
   }
 
-  // A click changed which mods are on, and the chips draw that.
-  void touched() noexcept { fTouched = true; }
-
-  void draw(skia::SkCanvas *canvas, skia::SkFont &font,
-            std::span<const ModEntry> entries, osu::ModSet active,
-            const Frame &frame) {
-    fSlide = paint::approach(fSlide, fOpen ? 1.0f : 0.0f, 120.0f, frame.fDtMs);
-    fHits.clear();
-    if (fSlide < 0.002f) {
-      return;
+  void render(skia::SkCanvas *canvas) {
+    if (fScene && canvas != nullptr && this->visible()) {
+      fScene->draw(canvas);
     }
-    const paint::Painter p(canvas, font);
-    const float sw = static_cast<float>(frame.fScreenW);
-    const float sh = static_cast<float>(frame.fScreenH);
-    const float slide = paint::outQuint(fSlide);
-
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(static_cast<std::uint8_t>(slide * 190.0f), 8,
-                                  6, 12));
-
-    const float colW = std::min(340.0f, sw * 0.34f);
-    const float panelH = 96.0f;
-    const float gap = 12.0f;
-    const float top = sh * 0.28f + (1.0f - slide) * 60.0f;
-
-    for (int col = 0; col < static_cast<int>(kModColumns.size()); ++col) {
-      const float cx =
-          sw * 0.5f + (static_cast<float>(col) - 0.5f) * (colW + 40.0f);
-      const float x = cx - colW * 0.5f;
-      p.textCentered(kModColumns[static_cast<std::size_t>(col)], cx,
-                     top - 18.0f, 16.0f, palette::kAccent2, slide);
-      float y = top;
-      for (const auto &m : entries) {
-        if (m.fColumn != col) {
-          continue;
-        }
-        const skia::SkRect r = skia::SkRect::MakeXYWH(x, y, colW, panelH);
-        fHits.push_back({r, m.fFlag});
-        const bool on = (active & m.fFlag) != osu::mod::kNone;
-        const bool hover = r.contains(frame.fMouseX, frame.fMouseY);
-        p.fillRounded(r, 12.0f,
-                      on       ? palette::kAccent
-                      : hover  ? palette::kCardSel
-                               : palette::kCardBg);
-        const skia::SkColor ink =
-            on ? skia::colorSetARGB(255, 24, 18, 30) : skia::kWhite;
-        p.textClipped(m.fAcronym, r.fLeft + 18.0f, r.fTop + 34.0f, 70.0f, 24.0f,
-                      ink, slide);
-        p.textClipped(m.fName, r.fLeft + 84.0f, r.fTop + 32.0f, colW - 100.0f,
-                      16.0f, ink, slide);
-        p.textClipped(m.fDescription, r.fLeft + 84.0f, r.fTop + 56.0f,
-                      colW - 100.0f, 12.0f, ink, slide * 0.7f);
-        p.textClipped(std::format("{:.2f}x", m.fMultiplier), r.fLeft + 84.0f,
-                      r.fBottom - 12.0f, 80.0f, 11.0f,
-                      on ? ink : palette::kAccent2, slide * 0.9f);
-        y += panelH + gap;
-      }
-    }
-    p.textCentered("click a mod to toggle    Esc to close", sw * 0.5f,
-                   sh - 40.0f, 14.0f, skia::kWhite, slide * 0.7f);
   }
 
-  // Applies the click to the mod set; returns true if the overlay ate it.
-  [[nodiscard]] bool click(float x, float y, osu::ModSet &mods) const {
-    if (fSlide < 0.5f) {
+  [[nodiscard]] skia::SkRect takeDamage() {
+    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  }
+
+  // Applies the click to the mod set; the root swallows misses while open.
+  [[nodiscard]] bool click(float x, float y, osu::ModSet &mods) {
+    if (!fOpen) {
       return false;
     }
-    for (const auto &hit : fHits) {
-      if (!hit.fRect.contains(x, y)) {
-        continue;
-      }
-      mods = (mods & hit.fFlag) != osu::mod::kNone ? without(mods, hit.fFlag)
-                                                   : (mods | hit.fFlag);
-      // Speed mods and difficulty mods are mutually exclusive, as in lazer.
-      if (hasMod(mods, osu::mod::kDoubleTime) &&
-          hit.fFlag == osu::mod::kDoubleTime) {
-        mods = without(mods, osu::mod::kHalfTime);
-      }
-      if (hasMod(mods, osu::mod::kHalfTime) &&
-          hit.fFlag == osu::mod::kHalfTime) {
-        mods = without(mods, osu::mod::kDoubleTime);
-      }
-      if (hasMod(mods, osu::mod::kHardRock) &&
-          hit.fFlag == osu::mod::kHardRock) {
-        mods = without(mods, osu::mod::kEasy);
-      }
-      if (hasMod(mods, osu::mod::kEasy) && hit.fFlag == osu::mod::kEasy) {
-        mods = without(mods, osu::mod::kHardRock);
-      }
-      return true;
+    fChanged = false;
+    if (fScene) {
+      fScene->click(x, y);
     }
-    return true; // the overlay swallows stray clicks while open
+    if (fChanged) {
+      mods = fActive;
+    }
+    return true;
   }
 
-  // ModSet has | and & but no ~; removal goes through its integer conversion.
-  [[nodiscard]] static osu::ModSet without(osu::ModSet set, osu::ModSet flag) {
+private:
+  [[nodiscard]] std::unique_ptr<scene::Drawable>
+  build(std::span<const ModEntry> entries) {
+    auto root = scene::make<mod_select_detail::Root>({});
+    root->add<nodes::Box>({}, skia::colorSetARGB(255, 8, 6, 12));
+
+    auto *main = root->add<nodes::FillFlow>(
+        {.roles = {scene::role<mod_select_style::Main>}},
+        nodes::FillFlow::Direction::kVertical);
+    main->fWrap = false;
+    main->fCrossAlign = scene::Align::kMiddle;
+    main->add<scene::Drawable>(
+        {.roles = {scene::role<mod_select_style::Spacer>}});
+
+    auto *columns = main->add<nodes::Grid>(
+        {.roles = {scene::role<mod_select_style::Columns>}});
+    columns->setColumns({nodes::Grid::Track::fraction(),
+                         nodes::Grid::Track::fraction()});
+    columns->fColumnGap = 40.0f;
+    for (int column = 0; column < static_cast<int>(kModColumns.size());
+         ++column) {
+      auto *flow = columns->add<nodes::FillFlow>(
+          {.roles = {scene::role<mod_select_style::Column>}},
+          nodes::FillFlow::Direction::kVertical, 0.0f, 12.0f);
+      flow->fWrap = false;
+      flow->add<nodes::Text>(
+          {.roles = {scene::role<mod_select_style::Header>}},
+          kModColumns[static_cast<std::size_t>(column)], 16.0f,
+          palette::kAccent2);
+      for (const ModEntry &entry : entries) {
+        if (entry.fColumn != column) {
+          continue;
+        }
+        flow->add<mod_select_detail::Card>(
+            {.roles = {scene::role<mod_select_style::Card>}}, entry, &fActive,
+            [this](osu::ModSet flag) { this->toggleFlag(flag); });
+      }
+    }
+    root->add<nodes::Text>(
+        {.roles = {scene::role<mod_select_style::Footer>}},
+        "click a mod to toggle    Esc to close", 14.0f, skia::kWhite);
+    root->setStyleSheet<ModSelectTheme>();
+    return root;
+  }
+
+  [[nodiscard]] static std::size_t
+  shapeOf(std::span<const ModEntry> entries) {
+    std::size_t shape = entries.size();
+    for (const ModEntry &entry : entries) {
+      const auto mix = [&shape](std::size_t value) {
+        shape ^= value + 0x9e3779b9U + (shape << 6U) + (shape >> 2U);
+      };
+      mix(static_cast<std::uint32_t>(entry.fFlag));
+      mix(static_cast<std::size_t>(entry.fColumn));
+      mix(std::hash<std::string_view>{}(entry.fAcronym));
+      mix(std::hash<std::string_view>{}(entry.fName));
+      mix(std::hash<std::string_view>{}(entry.fDescription));
+      mix(static_cast<std::size_t>(std::bit_cast<std::uint64_t>(
+          entry.fMultiplier)));
+    }
+    return shape;
+  }
+
+  void toggleFlag(osu::ModSet flag) {
+    fActive = (fActive & flag) != osu::mod::kNone ? without(fActive, flag)
+                                                  : (fActive | flag);
+    // Speed and difficulty mods are mutually exclusive, as in lazer.
+    if (hasMod(fActive, osu::mod::kDoubleTime) &&
+        flag == osu::mod::kDoubleTime) {
+      fActive = without(fActive, osu::mod::kHalfTime);
+    }
+    if (hasMod(fActive, osu::mod::kHalfTime) && flag == osu::mod::kHalfTime) {
+      fActive = without(fActive, osu::mod::kDoubleTime);
+    }
+    if (hasMod(fActive, osu::mod::kHardRock) && flag == osu::mod::kHardRock) {
+      fActive = without(fActive, osu::mod::kEasy);
+    }
+    if (hasMod(fActive, osu::mod::kEasy) && flag == osu::mod::kEasy) {
+      fActive = without(fActive, osu::mod::kHardRock);
+    }
+    fChanged = true;
+  }
+
+  [[nodiscard]] static osu::ModSet without(osu::ModSet set,
+                                           osu::ModSet flag) {
     return osu::ModSet(static_cast<std::uint32_t>(set) &
                        ~static_cast<std::uint32_t>(flag));
   }
@@ -186,16 +323,12 @@ public:
     return (set & flag) != osu::mod::kNone;
   }
 
-private:
-  struct Hit {
-    skia::SkRect fRect;
-    osu::ModSet fFlag;
-  };
   bool fOpen = false;
-  float fSlide = 0.0f;
-  bool fTouched = true;
-  int fHot = -1;
-  std::vector<Hit> fHits;
+  bool fTargetOpen = false;
+  bool fChanged = false;
+  std::size_t fShape = 0;
+  osu::ModSet fActive = osu::mod::kNone;
+  std::unique_ptr<scene::Drawable> fScene;
 };
 
 // ---- Video export dialog --------------------------------------------------

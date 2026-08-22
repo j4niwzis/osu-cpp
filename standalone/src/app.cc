@@ -2171,10 +2171,14 @@ private:
     // that was picked marked itself for a frame that was never drawn, and so
     // never advanced, and so kept marking itself.
     if (fModSelect.visible()) {
-      const skia::SkRect region = fModSelect.damageFor(
-          {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX, fWin.fMouseY, fUiDt});
+      const auto entries = this->modEntries();
+      fModSelect.update(
+          fFont, entries, fMods,
+          {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX, fWin.fMouseY,
+           wallMs()});
+      const skia::SkRect region = fModSelect.takeDamage();
       if (region.width() >= static_cast<float>(fWin.fScreenW)) {
-        this->damageAll("mod select sliding");
+        this->damageAll("mod select fading");
       } else {
         this->damage(region);
       }
@@ -2195,9 +2199,9 @@ private:
       }
     }
 
-    // Overlays are drawn after the screen, over most of it, and none of them
-    // declares a region -- so while one is up, and on the frame it goes away,
-    // the screen underneath cannot be trusted to have marked enough.
+    // Overlays are drawn after the screen, over most of it, so appearance and
+    // disappearance repaint the underlying screen once. Retained overlays
+    // report their own damage between those two transitions.
     const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
                          fExportDialog.open() || fReplayListOpen ||
                          fConfirmDelete || fSetPage.open();
@@ -2206,7 +2210,7 @@ private:
     // mark what they change beneath it.
     if (overlay != fOverlayShown) {
       this->damageAll("overlay appeared or went away");
-    } else if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
+    } else if (fSettingsPanel.animating(wallMs())) {
       this->damageAll("overlay sliding");
     } else if (fExportDialog.open()) {
       // Neither the window nor even the whole box: what is behind the dim
@@ -2340,10 +2344,10 @@ private:
     if (fReplayListOpen && fPanels.scrolling()) {
       return this->frameBecause("replay strip gliding");
     }
-    // Overlays are drawn while they slide in and out, and after that only
+    // Overlays are drawn while they transition in and out, and after that only
     // when something touches them -- which arrives as an event.
     if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
-      return this->frameBecause("an overlay sliding");
+      return this->frameBecause("an overlay transitioning");
     }
     if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
       return this->frameBecause("the confirm dialog");
@@ -4020,14 +4024,10 @@ private:
   void toggleMods() { fModSelect.toggle(); }
 
   void drawModSelect(skia::SkCanvas *canvas) {
-    const auto entries = this->modEntries();
-    fModSelect.draw(
-        canvas, fFont, entries, fMods,
-        {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX, fWin.fMouseY, fUiDt});
+    fModSelect.render(canvas);
   }
 
   bool modClick(float x, float y) {
-    fModSelect.touched(); // whatever it hit, the chips draw the answer
     return fModSelect.click(x, y, fMods);
   }
 
