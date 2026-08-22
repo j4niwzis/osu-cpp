@@ -126,13 +126,19 @@ TEST(Rules, WindowsAndMods) {
 TEST(Engine, AutoplayPerfect) {
   auto bm = parseBeatmap(kTestBeatmap);
   const auto result = runAutoplay(bm);
-  // Three objects, four judgements: a slider is its head and its tail now,
-  // and this one is short enough to have no ticks between them.
-  ASSERT_EQ(result.fEvents.size(), 4u);
-  const auto basic = std::ranges::count_if(
-      result.fEvents,
-      [](const HitEvent &e) { return e.fKind == HitKind::kBasic; });
-  ASSERT_EQ(basic, 3);
+  const auto eventsOf = [&result](HitKind kind) {
+    return std::ranges::count_if(
+        result.fEvents,
+        [kind](const HitEvent &event) { return event.fKind == kind; });
+  };
+  // Three object judgements, one slider tail, and the spinner's four normal
+  // spin bonuses plus one large bonus. Bonus events affect neither accuracy
+  // nor combo, but they are still real results and belong in the stream.
+  ASSERT_EQ(result.fEvents.size(), 9u);
+  ASSERT_EQ(eventsOf(HitKind::kBasic), 3);
+  ASSERT_EQ(eventsOf(HitKind::kSliderTail), 1);
+  ASSERT_EQ(eventsOf(HitKind::kSmallBonus), 4);
+  ASSERT_EQ(eventsOf(HitKind::kLargeBonus), 1);
   ASSERT_EQ(result.fScore.fGreat, 3);
   ASSERT_EQ(result.fScore.fTailHit, 1);
   ASSERT_EQ(result.fScore.fMiss, 0);
@@ -157,7 +163,16 @@ TEST(Engine, NoInputAllMiss) {
 TEST(Replay, RunAutoplay) {
   auto bm = parseBeatmap(kTestBeatmap);
   const auto result = runAutoplay(bm, mod::kDoubleTime);
-  ASSERT_EQ(result.fEvents.size(), 4u);
+  // DT raises effective OD, allowing one more large spinner bonus.
+  ASSERT_EQ(result.fEvents.size(), 10u);
+  ASSERT_EQ(std::ranges::count_if(result.fEvents, [](const HitEvent &event) {
+              return event.fKind == HitKind::kSmallBonus;
+            }),
+            4);
+  ASSERT_EQ(std::ranges::count_if(result.fEvents, [](const HitEvent &event) {
+              return event.fKind == HitKind::kLargeBonus;
+            }),
+            2);
   ASSERT_EQ(result.fScore.fGreat, 3);
   ASSERT_EQ(result.fScore.fTailHit, 1);
 }
@@ -399,15 +414,18 @@ TEST(Rules, LegacyRounding) {
   ASSERT_DOUBLE_EQ(preemptTime(10.0), 450.0);
 }
 
-// Checked against lazer's own ScoreProcessor and OsuHealthProcessor, driven
-// with the same sequence of judgements over a real beatmap: on a play of
-// nothing but greats the standardised score is exactly the million, and the
-// health bar ends full.
-TEST(Engine, PerfectPlayScoresTheMillion) {
+// Checked against lazer's own ScoreProcessor and OsuHealthProcessor. The two
+// standardised portions make one million on a perfect play; spinner bonuses
+// are deliberately added on top, and the health bar ends above zero.
+TEST(Engine, PerfectPlayScoresTheMillionBeforeBonus) {
   auto bm = parseBeatmap(kTestBeatmap);
   const auto result = runAutoplay(bm);
   ASSERT_DOUBLE_EQ(result.fScore.accuracy(), 1.0);
-  ASSERT_EQ(result.fScore.fScore, 1000000u);
+  const auto bonus = static_cast<std::uint64_t>(
+      result.fScore.fSmallBonus * kSmallBonusScore +
+      result.fScore.fLargeBonus * kLargeBonusScore);
+  ASSERT_EQ(result.fScore.fScore, 1000000u + bonus);
+  ASSERT_EQ(bonus, 90u);
   ASSERT_GT(result.fScore.fHealth, 0.0);
 }
 
