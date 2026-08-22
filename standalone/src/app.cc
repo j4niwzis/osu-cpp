@@ -43,6 +43,7 @@ import skiff.nodes;
 import client.gameplayview;
 import client.mods;
 import client.video;
+import client.videoexport;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -398,11 +399,7 @@ private:
   // with the mods applied, kept so the play can be priced when it ends.
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
   int fHotReplayPanel = -1;
-  // Defined further down, next to the code that steps it; a unique_ptr only
-  // needs the type complete where it is destroyed, which is the end of this
-  // class.
-  struct ExportJob;
-  std::unique_ptr<ExportJob> fExportJob; // a video being rendered, in slices
+  client::ReplayVideoExporter fVideoExporter;
 
   // ---- Settings overlay -------------------------------------------------
   // SettingsPanel: a 170px sidebar plus a 400px content column sliding in
@@ -2511,7 +2508,7 @@ private:
     }
     // A video being rendered runs on its own thread; this is the client
     // asking how far it has got.
-    if (fExportJob) {
+    if (fVideoExporter.active()) {
       this->pollExportVideo();
     }
     // Screens built as a scene tree settle before anything is drawn: the
@@ -4054,45 +4051,6 @@ private:
     return true;
   }
 
-  // Re-renders the replay offscreen at the chosen resolution by driving a
-  // fresh engine from the recorded events, then hands the frames to ffmpeg.
-  // Rendering a replay to video is minutes of work at sixty frames a second
-  // of map time. It used to be a loop: the client stopped answering for the
-  // length of it, the dialog showing "rendering..." was the last thing drawn
-  // before the window went unresponsive, and there was no way to tell a slow
-  // export from a hung one. It is a job with a step now, and the step is
-  // bounded by a slice of wall clock, so the client keeps drawing and the
-  // dialog keeps counting.
-  struct ExportJob {
-    // Everything the render needs, copied rather than referred to: the client
-    // goes on playing, changing tracks and starting plays while this runs, and
-    // a video that follows it around is what the last three of these were.
-    std::shared_ptr<client::VideoExporter> fExporter =
-        std::make_shared<client::VideoExporter>();
-    client::VideoOptions fOpts;
-    skia::Sp<skia::SkSurface> fSurface; // raster: no GL on this thread
-    osu::Beatmap fMap;
-    osu::ComboInfo fCombo;
-    std::vector<osu::InputEvent> fEvents;
-    osu::ModSet fMods = osu::mod::kNone;
-    client::Skin *fSkin = nullptr; // shared, and read only from here
-    skia::SkFont fFont;
-    skia::SkFont fDisplayFont;
-    client::GameplayView fView;
-    float fCursorSize = 1.0f;
-    float fDim = 0.7f;
-    bool fNoGlow = false;
-    bool fHitLighting = true;
-    // Copied rather than read from the app: the export runs on its own thread
-    // and must not reach back for something the app may be changing.
-    osu::StarRating fAttributes;
-    std::thread fThread;
-    std::atomic<int> fPercent{0};
-    std::atomic<bool> fFinished{false};
-    bool fOk = false;
-    std::string fMessage;
-  };
-
   // Said in both places: the dialog is where it belongs, and the log is where
   // it survives being missed -- which, while the export was blocking the
   // client, it always was.
@@ -4102,7 +4060,7 @@ private:
   }
 
   void exportReplayVideo() {
-    if (fExportJob) {
+    if (fVideoExporter.active()) {
       return; // one at a time
     }
     if (!fPlay.fMap || fPlay.fRecordedEvents.empty()) {
@@ -4113,10 +4071,10 @@ private:
         client::kVideoPresets[static_cast<std::size_t>(fExportDialog.preset())];
     // A size typed into the dialog wins over the one picked from the row.
     const auto [typedWidth, typedHeight] = fExportDialog.customSize();
-    auto job = std::make_unique<ExportJob>();
-    job->fOpts.fWidth = typedWidth > 0 ? typedWidth : preset.fWidth;
-    job->fOpts.fHeight = typedHeight > 0 ? typedHeight : preset.fHeight;
-    job->fOpts.fFps = 60;
+    client::ReplayVideoExporter::Request request;
+    request.fOptions.fWidth = typedWidth > 0 ? typedWidth : preset.fWidth;
+    request.fOptions.fHeight = typedHeight > 0 ? typedHeight : preset.fHeight;
+    request.fOptions.fFps = 60;
 
     // Into the working directory, named for what it is: the replay it came
     // from when there is one, the difficulty otherwise, and the size it was
@@ -4134,9 +4092,10 @@ private:
     }
     std::error_code cwdError;
     const auto here = std::filesystem::current_path(cwdError);
-    job->fOpts.fOutput = (cwdError ? fMapsDir.parent_path() : here) /
-                         std::format("{}-{}x{}.mp4", safe, job->fOpts.fWidth,
-                                     job->fOpts.fHeight);
+    request.fOptions.fOutput =
+        (cwdError ? fMapsDir.parent_path() : here) /
+        std::format("{}-{}x{}.mp4", safe, request.fOptions.fWidth,
+                    request.fOptions.fHeight);
 
     // Written out before the encoder is started: it is told about its inputs
     // once, when it is launched, and an audio path handed over afterwards
@@ -4151,26 +4110,11 @@ private:
         out.write(reinterpret_cast<const char *>(bytes.data()),
                   static_cast<std::streamsize>(bytes.size()));
         out.close();
-        job->fOpts.fAudio = audioPath;
+        request.fOptions.fAudio = audioPath;
       }
     }
-    std::println(std::cerr, "[export] writing {}", job->fOpts.fOutput.string());
-
-    if (!job->fExporter->begin(job->fOpts)) {
-      this->exportFailed(job->fExporter->error());
-      return;
-    }
-
-    // Raster, because the thread that will draw into it has no GL context and
-    // is not getting one: a second context does not share Skia's resources,
-    // so it would mean a second copy of the skin and the slider bodies.
-    job->fSurface = skia::Raster(skia::SkImageInfo::Make(
-        job->fOpts.fWidth, job->fOpts.fHeight, skia::kRGBA_8888_SkColorType,
-        skia::kPremul_SkAlphaType));
-    if (!job->fSurface) {
-      this->exportFailed("cannot create the offscreen surface");
-      return;
-    }
+    std::println(std::cerr, "[export] writing {}",
+                 request.fOptions.fOutput.string());
 
     // The slider bodies are built on the GPU, at one scale, and live there.
     // They were built for the window, so a 4K export drew them soft; they are
@@ -4178,194 +4122,72 @@ private:
     // thread without a context cannot read them off the GPU. The next play
     // precomputes them for the window again.
     const float exportScale =
-        0.8f * std::min(static_cast<float>(job->fOpts.fWidth) /
+        0.8f * std::min(static_cast<float>(request.fOptions.fWidth) /
                             static_cast<float>(osu::kPlayfieldWidth),
-                        static_cast<float>(job->fOpts.fHeight) /
+                        static_cast<float>(request.fOptions.fHeight) /
                             static_cast<float>(osu::kPlayfieldHeight));
     fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, exportScale,
                                  fContext.get());
     fSkin.flattenBodiesToRaster(fContext.get());
 
-    job->fMap = *fPlay.fMap;
-    job->fCombo = fComboInfo;
-    job->fEvents = fPlay.fRecordedEvents;
-    job->fMods = fMods;
-    job->fSkin = &fSkin;
-    job->fFont = fFont;
-    job->fDisplayFont = fDisplayFont;
+    request.fMap = *fPlay.fMap;
+    request.fCombo = fComboInfo;
+    request.fEvents = fPlay.fRecordedEvents;
+    request.fMods = fMods;
+    request.fSkin = &fSkin;
+    request.fFont = fFont;
+    request.fDisplayFont = fDisplayFont;
     // The cursor is drawn at a size in screen pixels, which is right for a
     // window and wrong for a render: at 4K it came out a quarter of the size
     // it has on screen. Scaled by how much bigger the playfield is, it keeps
     // the size it has relative to the play.
-    job->fCursorSize = fSettings.value("cursorsize") *
-                       (fScale > 0.0f ? exportScale / fScale : 1.0f);
-    job->fDim = fSettings.value("dim");
-    job->fNoGlow = fNoGlow;
-    job->fHitLighting = fSettings.flag("hitlighting");
-    job->fAttributes = fPlay.fPlayAttributes;
+    request.fCursorSize = fSettings.value("cursorsize") *
+                          (fScale > 0.0f ? exportScale / fScale : 1.0f);
+    request.fDim = fSettings.value("dim");
+    request.fNoGlow = fNoGlow;
+    request.fHitLighting = fSettings.flag("hitlighting");
+    request.fAttributes = fPlay.fPlayAttributes;
     for (const auto &info : fSet.fBeatmaps) {
       if (info.fMeta.fBackground.empty()) {
         continue;
       }
       const auto bytes = fSet.findFile(info.fMeta.fBackground);
       if (!bytes.empty()) {
-        job->fView.setBackground(loadImage(bytes));
+        request.fBackground = loadImage(bytes);
         break;
       }
     }
 
-    fExportDialog.setStatus("rendering 0%");
-    ExportJob *raw = job.get();
-    job->fThread = std::thread([raw] { runExport(*raw); });
-    fExportJob = std::move(job);
-  }
-
-  // The whole render, on a thread of its own. Nothing here touches the client:
-  // every input is the job's own copy, the surface is raster, and the only way
-  // back is a per cent and a verdict.
-  static void runExport(ExportJob &job) {
-    const int width = job.fOpts.fWidth;
-    const int height = job.fOpts.fHeight;
-    // The same layout the client uses: the playfield takes 80% of the
-    // limiting dimension, worked out for the size being rendered.
-    const float scale =
-        0.8f * std::min(static_cast<float>(width) /
-                            static_cast<float>(osu::kPlayfieldWidth),
-                        static_cast<float>(height) /
-                            static_cast<float>(osu::kPlayfieldHeight));
-    const float offsetX = (static_cast<float>(width) -
-                           static_cast<float>(osu::kPlayfieldWidth) * scale) *
-                          0.5f;
-    const float offsetY = (static_cast<float>(height) -
-                           static_cast<float>(osu::kPlayfieldHeight) * scale) *
-                          0.5f;
-
-    client::GameplayView::Ctx ctx;
-    ctx.fMap = &job.fMap;
-    ctx.fSkin = job.fSkin;
-    ctx.fCombo = &job.fCombo;
-    ctx.fFont = &job.fFont;
-    ctx.fDisplayFont = &job.fDisplayFont;
-    ctx.fScale = scale;
-    ctx.fOffsetX = offsetX;
-    ctx.fOffsetY = offsetY;
-    ctx.fScreenW = width;
-    ctx.fScreenH = height;
-    ctx.fCursorSize = job.fCursorSize;
-    ctx.fUiScale = std::clamp(static_cast<float>(height) / 1080.0f, 0.7f, 3.0f);
-    ctx.fDim = job.fDim;
-    ctx.fNoGlow = job.fNoGlow;
-    ctx.fHitLighting = job.fHitLighting;
-    job.fView.preScaleBackground(ctx);
-
-    osu::Engine engine(job.fMap, job.fMods);
-    const double end = job.fMap.lastObjectEndTime() + 1500.0;
-    const double step = 1000.0 / static_cast<double>(job.fOpts.fFps);
-    const skia::SkImageInfo info = skia::SkImageInfo::Make(
-        width, height, skia::kRGBA_8888_SkColorType, skia::kPremul_SkAlphaType);
-    const std::size_t rowBytes = static_cast<std::size_t>(width) * 4u;
-    std::vector<std::uint8_t> pixels(rowBytes *
-                                     static_cast<std::size_t>(height));
-
-    std::size_t event = 0;
-    std::size_t judged = 0;
-    int combo = 0;
-    osu::Vec2 cursor = osu::kPlayfieldCenter;
-
-    for (double now = 0.0; now <= end; now += step) {
-      while (event < job.fEvents.size() && job.fEvents[event].fTime <= now) {
-        engine.submit(job.fEvents[event]);
-        if (job.fEvents[event].fAction == osu::InputAction::kMove) {
-          cursor = job.fEvents[event].fPos;
-          job.fView.addTrailPoint(cursor, job.fEvents[event].fTime);
-        }
-        ++event;
-      }
-      engine.advance(now);
-
-      // The popups and the combo are handed to the view by whoever is
-      // playing; nobody is, here, so the export does it out of the same
-      // events the client would have used.
-      const auto &events = engine.events();
-      while (judged < events.size()) {
-        const auto &result = events[judged++];
-        combo = engine.score().fCombo;
-        job.fView.setCombo(combo);
-        if (result.fKind != osu::HitKind::kBasic) {
-          continue;
-        }
-        const osu::Vec2 pos =
-            result.fIndex < job.fMap.fObjects.size()
-                ? osu::objectPosition(job.fMap.fObjects[result.fIndex])
-                : osu::kPlayfieldCenter;
-        const bool counts =
-            !std::holds_alternative<osu::judgement::Miss>(result.fResult) &&
-            result.fIndex < job.fCombo.fIndices.size();
-        job.fView.addJudgement(result.fResult, result.fIndex, pos, now,
-                               counts ? job.fCombo.fIndices[result.fIndex] : 0,
-                               counts);
-      }
-
-      ctx.fCanvas = job.fSurface->getCanvas();
-      ctx.fEngine = &engine;
-      ctx.fCursor = cursor;
-      // The HUD draws whatever it is handed, so a field the exporter forgets
-      // is a field the video shows as zero.
-      {
-        const auto &sc = engine.score();
-        osu::ScoreInput input;
-        input.fGreat = sc.fGreat;
-        input.fOk = sc.fGood;
-        input.fMeh = sc.fMeh;
-        input.fMiss = sc.fMiss;
-        input.fMaxCombo = sc.fMaxCombo;
-        input.fSliderTailHits = sc.fTailHit;
-        input.fLargeTickHits = sc.fLargeTickHit;
-        ctx.fPp = osu::performanceRanked(job.fAttributes, input).fTotal;
-      }
-      job.fView.render(ctx, now);
-      if (job.fSurface->readPixels(info, pixels.data(), rowBytes, 0, 0)) {
-        job.fExporter->addFrame(pixels);
-      }
-      // Whole per cent. The dialog repaints when this changes, so at 4K that
-      // is a frame every few seconds -- which is what a client that draws
-      // only what changed looks like, and is meant to.
-      job.fPercent.store(
-          static_cast<int>(std::clamp(now / std::max(1.0, end), 0.0, 1.0) *
-                           100.0),
-          std::memory_order_relaxed);
+    const std::string error = fVideoExporter.start(std::move(request));
+    if (!error.empty()) {
+      this->exportFailed(error);
+      return;
     }
-
-    job.fOk = job.fExporter->finish();
-    job.fMessage =
-        job.fOk ? job.fOpts.fOutput.string() : job.fExporter->error();
-    job.fFinished.store(true, std::memory_order_release);
+    fExportDialog.setStatus("rendering 0%");
   }
 
   // Nothing to step any more: the render is on its own thread. This is the
   // client noticing how far it has got and what it had to say when it stopped.
   void pollExportVideo() {
-    if (!fExportJob) {
+    if (!fVideoExporter.active()) {
       return;
     }
-    ExportJob &job = *fExportJob;
-    if (!job.fFinished.load(std::memory_order_acquire)) {
+    const auto status = fVideoExporter.status();
+    if (!status.fFinished) {
       fExportDialog.setStatus(std::format(
-          "rendering {}%   {}x{}", job.fPercent.load(std::memory_order_relaxed),
-          job.fOpts.fWidth, job.fOpts.fHeight));
+          "rendering {}%   {}x{}", status.fPercent, status.fWidth,
+          status.fHeight));
       return;
     }
-    if (job.fThread.joinable()) {
-      job.fThread.join();
-    }
-    if (job.fOk) {
+    if (status.fOk) {
       fExportDialog.setStatus(std::format(
-          "saved {}", std::filesystem::path(job.fMessage).filename().string()));
-      std::println(std::cerr, "[export] saved {}", job.fMessage);
+          "saved {}",
+          std::filesystem::path(status.fMessage).filename().string()));
+      std::println(std::cerr, "[export] saved {}", status.fMessage);
     } else {
-      this->exportFailed(job.fMessage);
+      this->exportFailed(status.fMessage);
     }
-    fExportJob.reset();
+    fVideoExporter.clearFinished();
   }
 
   // ---- Replay browser ------------------------------------------------------
