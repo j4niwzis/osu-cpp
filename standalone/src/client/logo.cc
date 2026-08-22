@@ -85,14 +85,13 @@ public:
   // Anything here still on its way somewhere, which is what decides whether
   // the frame after this one has to happen.
   [[nodiscard]] bool moving(const Ctx &ctx) const {
-    constexpr float kSettled = 0.002f;
-    return std::abs(fX - ctx.fTargetX) > kSettled ||
-           std::abs(fY - ctx.fTargetY) > kSettled ||
-           std::abs(fScale - ctx.fTargetScale) > kSettled ||
-           fPunch > kSettled ||
-           std::abs(fHover -
-                    (this->contains(ctx.fMouseX, ctx.fMouseY) ? 1.0f : 0.0f)) >
-               kSettled;
+    return !paint::settled(fX, ctx.fTargetX) ||
+           !paint::settled(fY, ctx.fTargetY) ||
+           !paint::settled(fScale, ctx.fTargetScale) ||
+           !paint::settled(fPunch, 0.0f) ||
+           !paint::settled(
+               fHover,
+               this->contains(ctx.fMouseX, ctx.fMouseY) ? 1.0f : 0.0f);
   }
 
   // OsuLogo: a circular container filled with a vertical pink gradient

@@ -367,7 +367,7 @@ protected:
   float fTauMs = 60.0f;
 
   bool settling() const override {
-    return std::abs(fKnob - (fOn ? 1.0f : 0.0f)) > skiff::scene::kSettled;
+    return !skiff::paint::settled(fKnob, fOn ? 1.0f : 0.0f);
   }
 
   void update(double nowMs) override {

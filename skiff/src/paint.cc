@@ -44,6 +44,14 @@ export namespace skiff::paint {
   return std::abs(target - next) < 0.001f ? target : next;
 }
 
+// `approach()` has a finite, exact end: once it is visually close enough it
+// returns the target itself. Frame scheduling must use that same contract,
+// rather than a second tolerance which can declare the animation finished a
+// frame before approach() has actually arrived.
+[[nodiscard]] inline bool settled(float current, float target) noexcept {
+  return current == target;
+}
+
 // ---- Text with fallback ---------------------------------------------------
 //
 // Skia draws a string with exactly one typeface: a codepoint the typeface

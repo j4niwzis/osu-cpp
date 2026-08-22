@@ -2,6 +2,7 @@ import std;
 import gtest;
 import skia;
 import skiff.nodes;
+import skiff.paint;
 import skiff.scene;
 
 #include "gtest/gtest-macros.h"
@@ -13,6 +14,19 @@ using skiff::nodes::FillFlow;
 using skiff::nodes::ScrollContainer;
 using skiff::nodes::Text;
 using namespace skiff::scene;
+
+TEST(Animation, DoesNotSettleBeforeApproachReachesItsTarget) {
+  float value = 0.0015f;
+  EXPECT_FALSE(skiff::paint::settled(value, 0.0f));
+
+  int frames = 0;
+  while (!skiff::paint::settled(value, 0.0f)) {
+    value = skiff::paint::approach(value, 0.0f, 110.0f, 16.0);
+    ASSERT_LT(++frames, 20);
+  }
+
+  EXPECT_FLOAT_EQ(value, 0.0f);
+}
 
 struct Card;
 struct Panel;

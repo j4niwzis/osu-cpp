@@ -251,7 +251,7 @@ public:
   }
   [[nodiscard]] const skia::SkRect &band() const { return fBand; }
   [[nodiscard]] bool scrolling() const {
-    return std::abs(fScroll - fScrollTarget) > 0.05f;
+    return !paint::settled(fScroll, fScrollTarget);
   }
   // Where the strip was when it was last drawn. A drag sets the position
   // outright, so the target says nothing about whether it moved.

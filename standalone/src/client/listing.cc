@@ -715,8 +715,8 @@ private:
     // are compared against where they were told to go, which is held from the
     // last update since working it out again needs the pointer and the entry.
     bool settling() const override {
-      return std::abs(fExpand - fExpandTarget) > scene::kSettled ||
-             std::abs(fExpanded - fExpandedTarget) > scene::kSettled;
+      return !paint::settled(fExpand, fExpandTarget) ||
+             !paint::settled(fExpanded, fExpandedTarget);
     }
 
     void update(double nowMs) override {

@@ -323,7 +323,7 @@ private:
     // will differ too.
     bool settling() const override {
       for (int i = 0; i < 3; ++i) {
-        if (std::abs(fValue[i] - fTarget[i]) > scene::kSettled) {
+        if (!paint::settled(fValue[i], fTarget[i])) {
           return true;
         }
       }
@@ -499,13 +499,17 @@ public:
 
     fMenu.ensure(fBtns.size(), skia::SkRect::MakeWH(sw, sh));
 
-    // The eased values live on the button's node: how far out it is, whether
-    // the pointer is on it, and the click flash. Driven here because the
-    // order matters -- how far out decides how wide, how wide decides whether
-    // the pointer is on it, and that decides where the hover is going.
+    // Hit-test the geometry that was actually drawn, then ease, then derive
+    // this frame's geometry from the new values. Updating hover after width
+    // left the final rectangle one frame behind the animation: the scene had
+    // reached its target and stopped scheduling, but one more mouse or safety
+    // frame was still needed to apply that target to the button.
     for (std::size_t i = 0; i < fBtns.size(); ++i) {
       auto &b = fBtns[i];
       const bool visible = b.fVisible == fState;
+      const bool hovered =
+          visible && b.fRect.contains(ctx.fMouseX, ctx.fMouseY);
+      fMenu.easeHover(i, hovered ? 1.0f : 0.0f, ctx.fDtMs);
       const float expand =
           fMenu.easeExpand(i, visible ? 1.0f : 0.0f, ctx.fDtMs);
       fMenu.decayFlash(i, ctx.fDtMs);
@@ -529,16 +533,12 @@ public:
         xRight += w + btnGap;
       }
       b.fRect = rect;
-
-      const bool hovered = visible && rect.contains(ctx.fMouseX, ctx.fMouseY);
-      fMenu.easeHover(i, hovered ? 1.0f : 0.0f, ctx.fDtMs);
     }
 
     // The dim and the logo are the client's, not a node's: one covers the
     // screen and the other is drawn by the piece it sits in.
-    constexpr float kMoving = 0.002f;
     fLogo.settle(this->logoCtx(ctx));
-    fMoving = std::abs(fDim - dimTarget) > kMoving ||
+    fMoving = !paint::settled(fDim, dimTarget) ||
               fLogo.moving(this->logoCtx(ctx));
 
     fMenu.setPointer(ctx.fMouseX, ctx.fMouseY);

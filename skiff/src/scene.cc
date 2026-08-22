@@ -89,11 +89,6 @@ enum class Anchor : std::uint8_t {
 // Where something sits across the axis it is being laid out along.
 enum class Align : std::uint8_t { kStart, kMiddle, kEnd };
 
-// How close to its target an eased value has to be to count as arrived.
-// Exponential easing approaches without reaching, so without a tolerance a
-// node that has visibly stopped goes on asking for frames for ever.
-inline constexpr float kSettled = 0.002f;
-
 struct Margin {
   float fTop = 0.0f, fRight = 0.0f, fBottom = 0.0f, fLeft = 0.0f;
 

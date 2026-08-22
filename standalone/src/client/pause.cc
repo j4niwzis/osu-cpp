@@ -209,9 +209,8 @@ private:
 
   protected:
     bool settling() const override {
-      return std::abs(fGrow - (fOwner->fSelected == static_cast<int>(fIndex)
-                                   ? 1.0f
-                                   : 0.0f)) > scene::kSettled;
+      return !skiff::paint::settled(
+          fGrow, fOwner->fSelected == static_cast<int>(fIndex) ? 1.0f : 0.0f);
     }
 
     void update(double nowMs) override {
