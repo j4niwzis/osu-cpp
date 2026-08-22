@@ -4895,7 +4895,7 @@ private:
   void resortLibrary() {
     fLibrary.setSort(this->sortChoice());
     fLibrary.setRange(fFilter.rangeMin(), fFilter.rangeMax());
-    this->resortLibrary();
+    fLibrary.sortLibrary();
   }
 
   void onFilterChanged() {
