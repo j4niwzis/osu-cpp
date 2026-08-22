@@ -3,6 +3,9 @@ export module client.results;
 import std;
 import skia;
 import skiff.paint;
+import skiff.scene;
+import skiff.nodes;
+import skiff.widgets.button;
 import client.palette;
 
 // lazer's ScorePanelList: a horizontal strip of score panels with one of them
@@ -52,6 +55,173 @@ struct Ctx {
   double fPp = 0.0;
   double fMean = 0.0;
   double fUr = 0.0;
+};
+
+// The actions below the score strip. They are a separate retained tree: the
+// panels still contain score-specific drawing, while this row is ordinary UI
+// whose flow, hover, hit routing and damage belong to widgets.
+enum class Action : std::uint8_t {
+  kNone,
+  kRetry,
+  kBack,
+  kExport,
+  kToggleRules,
+};
+
+struct ActionCtx {
+  skia::SkFont *fFont = nullptr;
+  float fWidth = 0.0f;
+  float fHeight = 0.0f;
+  float fMouseX = 0.0f;
+  float fMouseY = 0.0f;
+  double fNowMs = 0.0;
+  bool fRulesAvailable = false;
+  std::string fRulesLabel;
+  bool fRulesEnabled = false;
+};
+
+namespace action_style {
+struct Root;
+struct Row;
+struct Three;
+struct Four;
+struct Button;
+} // namespace action_style
+
+struct ActionTheme {
+  static constexpr auto styles =
+      skiff::scene::makeStyleSheet()
+          .rule(skiff::scene::select<skiff::scene::Drawable,
+                                     action_style::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kBoth})
+          .rule(skiff::scene::select<skiff::nodes::FillFlow,
+                                     action_style::Row>(),
+                {.anchor = skiff::scene::Anchor::kBottomCentre,
+                 .origin = skiff::scene::Anchor::kBottomCentre,
+                 .y = -46.0f,
+                 .height = 46.0f})
+          .rule(skiff::scene::select<skiff::nodes::FillFlow,
+                                     action_style::Three>(),
+                {.width = 0.688f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .maxWidth = 808.0f})
+          .rule(skiff::scene::select<skiff::nodes::FillFlow,
+                                     action_style::Four>(),
+                {.width = 0.922f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .maxWidth = 1082.0f})
+          .rule(skiff::scene::select<skiff::widgets::Button,
+                                     action_style::Button>(),
+                {.height = 46.0f, .grow = skiff::scene::Axes::kX});
+};
+
+class Actions {
+public:
+  void update(const ActionCtx &ctx) {
+    if (ctx.fFont == nullptr) {
+      return;
+    }
+    skiff::nodes::Text::setFont(ctx.fFont);
+    bool rebuilt = false;
+    if (!fScene || ctx.fRulesAvailable != fRulesAvailable) {
+      fRulesAvailable = ctx.fRulesAvailable;
+      fScene = this->build();
+      rebuilt = true;
+    }
+    if (fRulesButton != nullptr) {
+      fRulesButton->setLabel(ctx.fRulesLabel);
+      fRulesButton->setAccent(
+          ctx.fRulesEnabled ? palette::kAccent2
+                            : skia::colorSetARGB(255, 120, 120, 130));
+    }
+
+    fScene->updateTree(ctx.fNowMs);
+    fScene->layoutIfNeeded(
+        skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight));
+    if (rebuilt) {
+      fScene->markDamaged();
+    }
+    fScene->setHover(ctx.fMouseX, ctx.fMouseY);
+  }
+
+  void render(skia::SkCanvas *canvas) {
+    if (fScene && canvas != nullptr) {
+      fScene->draw(canvas);
+    }
+  }
+
+  [[nodiscard]] skia::SkRect takeDamage() {
+    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  }
+
+  [[nodiscard]] Action click(float x, float y) {
+    fPressed = Action::kNone;
+    if (fScene) {
+      fScene->click(x, y);
+    }
+    return fPressed;
+  }
+
+private:
+  inline static const skiff::widgets::Theme kButtonTheme = {
+      .fSurface = palette::kCardBg,
+      .fSurfaceHover = palette::kCardSel,
+      .fSurfaceActive = palette::kCardSel,
+      .fText = skia::kWhite,
+      .fLabel = skia::kWhite,
+      .fTextDim = skia::kWhite,
+      .fTextFaint = skia::kWhite,
+      .fAccent = palette::kAccent2,
+      .fOnAccent = skia::kWhite,
+      .fCorner = 12.0f,
+      .fFontSize = 20.0f,
+      .fRowHeight = 46.0f,
+      .fPaddingX = 12.0f,
+  };
+
+  skiff::widgets::Button *addButton(skiff::nodes::FillFlow &row,
+                                    std::string label, skia::SkColor accent,
+                                    Action action) {
+    auto *button = row.add<skiff::widgets::Button>(
+        {.roles = {skiff::scene::role<action_style::Button>}},
+        std::move(label), [this, action] { fPressed = action; });
+    button->fTheme = kButtonTheme;
+    button->setAccent(accent);
+    button->setOutlined(true);
+    return button;
+  }
+
+  [[nodiscard]] std::unique_ptr<skiff::scene::Drawable> build() {
+    fRulesButton = nullptr;
+    auto root = skiff::scene::make<skiff::scene::Drawable>(
+        {.roles = {skiff::scene::role<action_style::Root>}});
+    auto *row = root->add<skiff::nodes::FillFlow>(
+        {.roles = {skiff::scene::role<action_style::Row>,
+                   fRulesAvailable
+                       ? skiff::scene::role<action_style::Four>
+                       : skiff::scene::role<action_style::Three>}},
+        skiff::nodes::FillFlow::Direction::kHorizontal, 14.0f, 0.0f);
+    row->fWrap = false;
+    this->addButton(*row, "retry", skia::colorSetARGB(255, 255, 204, 102),
+                    Action::kRetry);
+    this->addButton(*row, "back to song select", palette::kAccent2,
+                    Action::kBack);
+    this->addButton(*row, "export video",
+                    skia::colorSetARGB(255, 170, 102, 255), Action::kExport);
+    if (fRulesAvailable) {
+      fRulesButton = this->addButton(*row, "", palette::kAccent2,
+                                     Action::kToggleRules);
+    }
+    root->setStyleSheet<ActionTheme>();
+    return root;
+  }
+
+  bool fRulesAvailable = false;
+  Action fPressed = Action::kNone;
+  std::unique_ptr<skiff::scene::Drawable> fScene;
+  skiff::widgets::Button *fRulesButton = nullptr;
 };
 
 class Panels {

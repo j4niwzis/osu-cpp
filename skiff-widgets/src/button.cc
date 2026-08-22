@@ -38,6 +38,23 @@ public:
   }
   [[nodiscard]] bool primary() const noexcept { return fPrimary; }
 
+  void setOutlined(bool outlined) {
+    if (outlined == fOutlined) {
+      return;
+    }
+    fOutlined = outlined;
+    this->markDamaged();
+  }
+  [[nodiscard]] bool outlined() const noexcept { return fOutlined; }
+
+  void setAccent(skia::SkColor accent) {
+    if (accent == fTheme.fAccent) {
+      return;
+    }
+    fTheme.fAccent = accent;
+    this->markDamaged();
+  }
+
   void setEnabled(bool enabled) {
     if (enabled == fEnabled) {
       return;
@@ -82,13 +99,23 @@ protected:
     }
     p.fillRounded(fBounds, fTheme.fCorner, fill,
                   alpha * (fEnabled ? 1.0f : 0.5f));
+    if (fOutlined && !fPrimary) {
+      p.strokeRounded(fBounds, fTheme.fCorner, fTheme.fAccent,
+                      fHovered && fEnabled ? 3.0f : 2.0f,
+                      alpha * (fEnabled ? 1.0f : 0.5f));
+    }
+    const skia::SkColor text =
+        fPrimary ? fTheme.fOnAccent
+                 : (fOutlined && fHovered && fEnabled ? fTheme.fAccent
+                                                       : fTheme.fText);
     p.textCentredIn(fBounds, fLabel, fTheme.fFontSize,
-                    fPrimary ? fTheme.fOnAccent : fTheme.fText,
+                    text,
                     alpha * (fEnabled ? 1.0f : 0.5f), true);
   }
 
 private:
   bool fPrimary = false; // filled in the accent rather than the surface
+  bool fOutlined = false;
   bool fEnabled = true;
   std::string fLabel;
   std::function<void()> fAction;

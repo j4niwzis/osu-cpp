@@ -415,6 +415,7 @@ private:
   std::string fReplayFilter; // md5 the list was built for
   client::ReplayIndex fReplayIndex;
   client::results::Panels fPanels;
+  client::results::Actions fResultActions;
   // Which replay each panel stands for; -1 is the score in hand, which has
   // no file. The strip knows nothing about replays, only about scores.
   std::vector<int> fPanelEntries;
@@ -425,7 +426,7 @@ private:
     std::string fLabel;
     skia::SkColor fAccent;
   };
-  std::vector<MenuButton> fMenuButtons; // rebuilt every pause/results frame
+  std::vector<MenuButton> fReplayButtons; // rebuilt with the replay overlay
   double fPolledCursorX = -1.0, fPolledCursorY = -1.0; // wasm cursor polling
   std::atomic<bool> fRefreshRequested{false}; // set by the event thread
   std::atomic<int> fWindowX{0}, fWindowY{0};  // where the window sits
@@ -474,7 +475,6 @@ private:
   // Set when a map is loaded and cleared by the frame that first shows it.
   // The difficulty of the map being played, under the ranked calculator and
   // with the mods applied, kept so the play can be priced when it ends.
-  int fHotResultButton = -1; // which action the pointer is on
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
   int fHotReplayPanel = -1;
   // Defined further down, next to the code that steps it; a unique_ptr only
@@ -1459,8 +1459,8 @@ private:
     if (fReplayListOpen) {
       // The strip handled anything over it; the actions below it are ours,
       // and they are the rules toggle then export, in that order.
-      for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
-        if (!fMenuButtons[i].fRect.contains(x, y)) {
+      for (std::size_t i = 0; i < fReplayButtons.size(); ++i) {
+        if (!fReplayButtons[i].fRect.contains(x, y)) {
           continue;
         }
         if (i == 0) {
@@ -1544,12 +1544,7 @@ private:
       this->applyPauseAction(fPauseMenu.click(x, y));
       break;
     case State::kResults:
-      for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
-        if (fMenuButtons[i].fRect.contains(x, y)) {
-          this->menuButtonPressed(i);
-          return;
-        }
-      }
+      this->applyResultAction(fResultActions.click(x, y));
       break;
     default:
       break;
@@ -1573,20 +1568,24 @@ private:
     }
   }
 
-  // The results screen is the last one still drawing its own buttons; the
-  // pause overlay reports what was pressed instead.
-  void menuButtonPressed(std::size_t idx) {
-    if (fState == State::kResults) {
-      if (idx == 0) {
-        this->retry();
-      } else if (idx == 1) {
-        this->quitToSelect();
-      } else if (idx == 2) {
-        fExportDialog.show();
-        fReplayListOpen = false; // one overlay at a time
-      } else {
-        this->toggleReplayRules();
-      }
+  void applyResultAction(client::results::Action action) {
+    using Action = client::results::Action;
+    switch (action) {
+    case Action::kRetry:
+      this->retry();
+      break;
+    case Action::kBack:
+      this->quitToSelect();
+      break;
+    case Action::kExport:
+      fExportDialog.show();
+      fReplayListOpen = false; // one overlay at a time
+      break;
+    case Action::kToggleRules:
+      this->toggleReplayRules();
+      break;
+    case Action::kNone:
+      break;
     }
   }
 
@@ -4439,22 +4438,23 @@ private:
     this->renderPanels(canvas, /*ownScore=*/false);
 
     // The same action the results screen offers, for a replay off the disk.
-    fMenuButtons.clear();
+    fReplayButtons.clear();
     if (this->selectedReplay() != nullptr) {
       const float bw = std::min(260.0f, sw * 0.22f);
       const float gap = 14.0f;
       float bx = (sw - (bw * 2.0f + gap)) * 0.5f;
-      fMenuButtons.push_back({skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f),
-                              this->rulesToggleLabel(),
-                              this->rulesToggleEnabled()
-                                  ? client::palette::kAccent2
-                                  : skia::colorSetARGB(255, 120, 120, 130)});
-      this->drawMenuButton(canvas, fMenuButtons.back());
+      fReplayButtons.push_back(
+          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f),
+           this->rulesToggleLabel(),
+           this->rulesToggleEnabled()
+               ? client::palette::kAccent2
+               : skia::colorSetARGB(255, 120, 120, 130)});
+      this->drawMenuButton(canvas, fReplayButtons.back());
       bx += bw + gap;
-      fMenuButtons.push_back({skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f),
-                              "export video",
-                              skia::colorSetARGB(255, 170, 102, 255)});
-      this->drawMenuButton(canvas, fMenuButtons.back());
+      fReplayButtons.push_back(
+          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f), "export video",
+           skia::colorSetARGB(255, 170, 102, 255)});
+      this->drawMenuButton(canvas, fReplayButtons.back());
     }
   }
 
@@ -5479,65 +5479,22 @@ private:
 
   // ---- Results ----------------------------------------------------------
 
-  // ResultsScreen is a ScorePanelList: the played score expanded in the
-  // middle, every other score for the beatmap contracted beside it.
-  // ScorePanel gives the sizes -- EXPANDED_WIDTH 360, CONTRACTED_WIDTH 130,
-  // CONTRACTED_HEIGHT 385 -- with 5px between panels and 15px extra either
-  // side of the expanded one.
-  static constexpr float kPanelExpandedW = 360.0f;
-  static constexpr float kPanelContractedW = 130.0f;
-  static constexpr float kPanelContractedH = 385.0f;
-  static constexpr float kPanelSpacing = 5.0f;
-  static constexpr float kExpandedSpacing = 15.0f;
-
-  // The actions under the panel strip. Laid out before anything is drawn, so
-  // that what the pointer is on -- and therefore what has to be repainted --
-  // is known without drawing them first.
   void updateResults() {
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-    fMenuButtons.clear();
     // The rules toggle only exists when there is a saved replay to watch
     // under them; the score in hand was played under whatever it was played
     // under and cannot be replayed from here.
     const bool rulesToggle = this->selectedReplay() != nullptr;
-    const int count = rulesToggle ? 4 : 3;
-    const float bw = std::min(260.0f, sw * 0.22f);
-    const float bh = 46.0f;
-    const float gap = 14.0f;
-    float bx = (sw - (bw * static_cast<float>(count) +
-                      gap * static_cast<float>(count - 1))) *
-               0.5f;
-    std::vector<std::string> labels{"retry", "back to song select",
-                                    "export video"};
-    std::vector<skia::SkColor> accents{skia::colorSetARGB(255, 255, 204, 102),
-                                       client::palette::kAccent2,
-                                       skia::colorSetARGB(255, 170, 102, 255)};
-    if (rulesToggle) {
-      labels.push_back(this->rulesToggleLabel());
-      accents.push_back(this->rulesToggleEnabled()
-                            ? client::palette::kAccent2
-                            : skia::colorSetARGB(255, 120, 120, 130));
-    }
-    for (int i = 0; i < count; ++i) {
-      fMenuButtons.push_back({skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, bh),
-                              labels[static_cast<std::size_t>(i)],
-                              accents[static_cast<std::size_t>(i)]});
-      bx += bw + gap;
-    }
-
-    // The row lights the button under the pointer and nothing else.
-    int hot = -1;
-    for (std::size_t i = 0; i < fMenuButtons.size(); ++i) {
-      if (fMenuButtons[i].fRect.contains(fWin.fMouseX, fWin.fMouseY)) {
-        hot = static_cast<int>(i);
-        break;
-      }
-    }
-    if (hot != fHotResultButton) {
-      fHotResultButton = hot;
-      this->damage(skia::SkRect::MakeXYWH(0.0f, sh - 100.0f, sw, 100.0f));
-    }
+    fResultActions.update({.fFont = &fFont,
+                           .fWidth = static_cast<float>(fWin.fScreenW),
+                           .fHeight = static_cast<float>(fWin.fScreenH),
+                           .fMouseX = fWin.fMouseX,
+                           .fMouseY = fWin.fMouseY,
+                           .fNowMs = wallMs(),
+                           .fRulesAvailable = rulesToggle,
+                           .fRulesLabel = rulesToggle ? this->rulesToggleLabel()
+                                                     : std::string{},
+                           .fRulesEnabled = this->rulesToggleEnabled()});
+    this->damage(fResultActions.takeDamage());
     // The strip of panels moves when another score is chosen and while it is
     // dragged; a drag sets the position outright, so the target says nothing
     // about it.
@@ -5559,9 +5516,7 @@ private:
                skia::colorSetARGB(160, 10, 8, 14));
 
     this->renderPanels(canvas, /*ownScore=*/fReplayPath.empty());
-    for (const auto &b : fMenuButtons) {
-      this->drawMenuButton(canvas, b);
-    }
+    fResultActions.render(canvas);
 
     this->drawScreenFadeIn(canvas);
     this->present();

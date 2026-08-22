@@ -77,6 +77,11 @@ TEST(Button, PrimaryAndEnabledStateOwnDamageAndInput) {
   button->setPrimary(true);
   EXPECT_TRUE(button->primary());
   EXPECT_FALSE(root->takeDamage().isEmpty());
+  button->setOutlined(true);
+  EXPECT_TRUE(button->outlined());
+  EXPECT_FALSE(root->takeDamage().isEmpty());
+  button->setAccent(0xff123456);
+  EXPECT_FALSE(root->takeDamage().isEmpty());
   EXPECT_TRUE(root->click(20.0f, 15.0f));
   EXPECT_EQ(clicks, 1);
 
