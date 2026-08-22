@@ -3314,7 +3314,11 @@ private:
                                 static_cast<unsigned>(misses.size())));
       std::println(std::cerr, "[library] parsing {} new sets on {} threads",
                    misses.size(), threads);
-      std::mutex resultMutex;
+      struct ParsedArchive {
+        client::library::Entry fEntry;
+        std::vector<client::CachedDifficulty> fDiffs;
+      };
+      std::vector<std::optional<ParsedArchive>> parsed(misses.size());
       std::atomic<std::size_t> next{0};
       std::vector<std::thread> pool;
       pool.reserve(threads);
@@ -3330,13 +3334,9 @@ private:
               client::library::Entry entry;
               entry.fPath = misses[i];
               entry.fInfos = set.fBeatmaps;
-              auto diffs = fLibrary.cacheRecordFor(set);
-              const auto stamp =
-                  client::library::Library::fileStamp(misses[i]);
-              const std::scoped_lock lock(resultMutex);
-              fLibrary.sets().push_back(std::move(entry));
-              fLibrary.cache().store(misses[i].filename().string(), stamp.first,
-                                     stamp.second, std::move(diffs));
+              parsed[i].emplace(
+                  std::move(entry),
+                  client::library::Library::cacheRecordFor(set));
             } catch (const std::exception &e) {
               std::println(std::cerr, "[library] skipping {}: {}",
                            misses[i].filename().string(), e.what());
@@ -3346,6 +3346,17 @@ private:
       }
       for (auto &th : pool) {
         th.join();
+      }
+      // Library and MapCache belong to the UI thread. Workers only produce
+      // independent parse results; merge them after every worker has stopped.
+      for (std::size_t i = 0; i < parsed.size(); ++i) {
+        if (!parsed[i]) {
+          continue;
+        }
+        const auto stamp = client::library::Library::fileStamp(misses[i]);
+        fLibrary.sets().push_back(std::move(parsed[i]->fEntry));
+        fLibrary.cache().store(misses[i].filename().string(), stamp.first,
+                               stamp.second, std::move(parsed[i]->fDiffs));
       }
     }
     fLibrary.cache().save();
