@@ -364,6 +364,7 @@ private:
   bool fLibraryLoaded = false;
   int fAppliedStarChoice = -1; // forces the first ordering pass
   client::carousel::Carousel fCarousel;
+  client::songselect::InfoWedge fInfoWedge;
   std::vector<client::carousel::Row> fRows; // what the carousel lays out
   int fMenuMusicForSet = -1;   // set whose audio is playing under the menus
   double fMenuTrackWall = 0.0; // when it started, so its end can be told
@@ -445,10 +446,7 @@ private:
   double fStateEnterWall = 0.0;
   double fUiPrevWall = 0.0;
   double fUiDt = 16.0; // ms since the last frame, as measured
-  // What the song-select info wedge last drew, so it can say when it changes
-  // rather than repainting on every frame.
   bool fDrawnEmpty = false;
-  std::int64_t fWedgeKey = -1;
 
   // ---- Main menu --------------------------------------------------------
   //
@@ -4598,9 +4596,8 @@ private:
 
   // ---- Song select ------------------------------------------------------
   //
-  // The carousel, filter and footer are scene trees: they decide where their
-  // nodes are, route their input and report what has to be repainted. The info
-  // wedge remains immediate-mode for now.
+  // Song select is a collection of scene trees: they decide where their nodes
+  // are, route their input and report what has to be repainted.
 
   void updateSongSelect() {
 #ifdef __EMSCRIPTEN__
@@ -4681,16 +4678,19 @@ private:
                           .fNowMs = wallMs()});
     this->damage(fSelectFooter.takeDamage());
 
-    // The wedge is the selection written out: it changes when the selection
-    // does, or when a mod changes what the numbers on it say.
-    const std::int64_t wedgeKey =
-        (static_cast<std::int64_t>(fLibrary.selSet()) << 24) ^
-        (static_cast<std::int64_t>(fLibrary.selDiff()) << 8) ^
-        static_cast<std::int64_t>(static_cast<std::uint32_t>(fMods));
-    if (wedgeKey != fWedgeKey) {
-      fWedgeKey = wedgeKey;
-      this->damage(skia::SkRect::MakeXYWH(
-          0.0f, 32.0f, std::min(560.0f, sw * 0.44f) + 22.0f, 168.0f));
+    if (!fLibrary.visible().empty()) {
+      const auto &infos = fLibrary.infosFor(fLibrary.selSet());
+      if (!infos.empty()) {
+        fInfoWedge.update(
+            {.fFont = &fFont,
+             .fWidth = sw,
+             .fHeight = sh,
+             .fSet = fLibrary.selSet(),
+             .fDifficulty = fLibrary.selDiff(),
+             .fRankedStars = fLibrary.ranked(),
+             .fInfos = std::span<const osu::BeatmapInfo>(infos)});
+        this->damage(fInfoWedge.takeDamage());
+      }
     }
   }
 
@@ -4730,13 +4730,7 @@ private:
     }
 
     // ---- Left: the info wedge (lazer's BeatmapTitleWedge area).
-    const auto &selInfos = fLibrary.infosFor(fLibrary.selSet());
-    if (!selInfos.empty()) {
-      this->drawInfoWedge(
-          canvas, selInfos,
-          selInfos[static_cast<std::size_t>(std::clamp(
-              fLibrary.selDiff(), 0, static_cast<int>(selInfos.size()) - 1))]);
-    }
+    fInfoWedge.render(canvas);
 
     // ---- Right: the carousel, which masks itself to its own viewport.
     fCarousel.render(canvas);
@@ -4946,80 +4940,6 @@ private:
                           rect.centerY() + 5.0f,
                           rect.width() - badge.width() - pad * 3, 15.0f,
                           skia::kWhite, 0.95f);
-  }
-
-  // The left-hand wedge showing the selected beatmap, à la BeatmapTitleWedge.
-  void drawInfoWedge(skia::SkCanvas *canvas,
-                     const std::vector<osu::BeatmapInfo> &infos,
-                     const osu::BeatmapInfo &info) {
-    const float sh = static_cast<float>(fWin.fScreenH);
-    const float w = std::min(560.0f, static_cast<float>(fWin.fScreenW) * 0.44f);
-    const float top = 32.0f;
-    const float h = 168.0f;
-    const float shear = 22.0f; // lazer's wedges are sheared parallelograms
-
-    skia::SkPathBuilder wedge;
-    wedge.moveTo(0.0f, top);
-    wedge.lineTo(w + shear, top);
-    wedge.lineTo(w, top + h);
-    wedge.lineTo(0.0f, top + h);
-    wedge.close();
-    skia::SkPaint bg;
-    bg.setAntiAlias(true);
-    bg.setColor(kPanelBg);
-    canvas->drawPath(wedge.detach(), bg);
-
-    const float pad = 28.0f;
-    const auto &meta = infos.empty() ? info.fMeta : infos.front().fMeta;
-    this->drawTextClipped(
-        canvas, meta.fTitleUnicode.empty() ? meta.fTitle : meta.fTitleUnicode,
-        pad, top + 46.0f, w - pad * 2, 32.0f, skia::kWhite);
-    this->drawTextClipped(
-        canvas,
-        meta.fArtistUnicode.empty() ? meta.fArtist : meta.fArtistUnicode, pad,
-        top + 76.0f, w - pad * 2, 18.0f, skia::kWhite, 0.8f);
-    this->drawTextClipped(canvas,
-                          std::format("mapped by {}", info.fMeta.fCreator), pad,
-                          top + 100.0f, w - pad * 2, 15.0f, kAccent2, 0.9f);
-    this->drawTextClipped(
-        canvas,
-        std::format("{}   {:.2f}*   CS {:.1f}  AR {:.1f}  OD {:.1f}  HP {:.1f}",
-                    info.fMeta.fVersion, fLibrary.shownStars(info),
-                    info.fDiff.fCs, info.fDiff.fAr, info.fDiff.fOd,
-                    info.fDiff.fHp),
-        pad, top + 128.0f, w - pad * 2, 15.0f,
-        starColor(fLibrary.shownStars(info)));
-    this->drawTextClipped(
-        canvas,
-        std::format("{} objects   {:.0f}:{:02.0f}", info.fObjectCount,
-                    info.fLengthMs / 60000.0,
-                    std::fmod(info.fLengthMs / 1000.0, 60.0)),
-        pad, top + 152.0f, w - pad * 2, 14.0f, skia::kWhite, 0.7f);
-
-    // Difficulty spread: one star-coloured circle per difficulty, the
-    // selected one ringed (BeatmapTitleWedge's difficulty display).
-    float dotX = pad + 6.0f;
-    const float dotY = top + h + 22.0f;
-    for (std::size_t i = 0; i < infos.size(); ++i) {
-      const auto &d = infos[i];
-      const bool isSelected = static_cast<int>(i) == fLibrary.selDiff();
-      skia::SkPaint dot;
-      dot.setAntiAlias(true);
-      dot.setColor(starColor(fLibrary.shownStars(d)));
-      canvas->drawCircle(dotX, dotY, isSelected ? 9.0f : 6.0f, dot);
-      if (isSelected) {
-        skia::SkPaint ring;
-        ring.setAntiAlias(true);
-        ring.setStyle(skia::kStrokeStyle);
-        ring.setStrokeWidth(2.0f);
-        ring.setColor(skia::kWhite);
-        canvas->drawCircle(dotX, dotY, 12.0f, ring);
-      }
-      dotX += isSelected ? 30.0f : 22.0f;
-      if (dotX > w - pad) {
-        break;
-      }
-    }
   }
 
   bool selectFooterClick(float x, float y) {

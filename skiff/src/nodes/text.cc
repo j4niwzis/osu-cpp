@@ -142,9 +142,9 @@ protected:
       return;
     }
     const float measured = p.measure(fText, fSize, fBold);
-    // A growing text is sized by its flow, and clips to whatever it was
-    // given rather than asking for what it wants.
-    if (!hasX(fGrowAxes)) {
+    // A text sized by its flow or parent clips to the width it was given
+    // rather than replacing that width with the measured glyphs.
+    if (!hasX(fGrowAxes) && !hasX(fRelativeSizeAxes)) {
       fWidth = fMaxWidth > 0.0f ? std::min(fMaxWidth, measured) : measured;
     }
     fHeight = fSize * 1.25f;
@@ -179,7 +179,7 @@ protected:
       canvas->restoreToCount(saved);
       return;
     }
-    if (fMaxWidth > 0.0f || hasX(fGrowAxes)) {
+    if (fMaxWidth > 0.0f || hasX(fGrowAxes) || hasX(fRelativeSizeAxes)) {
       canvas->clipRect(fBounds, true);
     }
     // The baseline sits at the top plus the ascent share of the line box.

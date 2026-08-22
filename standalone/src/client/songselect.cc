@@ -1,7 +1,9 @@
 export module client.songselect;
 
 import std;
+import osu;
 import skia;
+import skiff.paint;
 import skiff.scene;
 import skiff.nodes;
 import skiff.widgets.button;
@@ -39,7 +41,292 @@ struct Back;
 struct Actions;
 struct ActionButton;
 struct Options;
+struct WedgeRoot;
+struct WedgePlate;
+struct Title;
+struct Artist;
+struct Mapper;
+struct Stats;
+struct Length;
+struct Difficulties;
+struct Difficulty;
 } // namespace style
+
+namespace detail {
+
+inline constexpr float kWedgeTop = 32.0f;
+inline constexpr float kWedgePlateHeight = 168.0f;
+inline constexpr float kWedgeShear = 22.0f;
+inline constexpr float kWedgeContentHeight = 202.0f;
+
+class WedgePlate : public skiff::scene::TypedDrawable<WedgePlate> {
+protected:
+  void measure(const skia::SkRect &parent) override {
+    fWidth = std::min(560.0f, parent.width() * 0.44f) + kWedgeShear;
+  }
+
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    const float bottom = fBounds.fTop + kWedgePlateHeight;
+    skia::SkPathBuilder path;
+    path.moveTo(fBounds.fLeft, fBounds.fTop);
+    path.lineTo(fBounds.fRight, fBounds.fTop);
+    path.lineTo(fBounds.fRight - kWedgeShear, bottom);
+    path.lineTo(fBounds.fLeft, bottom);
+    path.close();
+    skia::SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setColor(palette::kPanelBg);
+    paint.setAlphaf(skiff::paint::combinedAlpha(palette::kPanelBg, alpha));
+    canvas->drawPath(path.detach(), paint);
+  }
+};
+
+class DifficultyDot : public skiff::scene::TypedDrawable<DifficultyDot> {
+public:
+  explicit DifficultyDot(skia::SkColor colour) : fColour(colour) {}
+
+  void setColour(skia::SkColor colour) {
+    if (colour == fColour) {
+      return;
+    }
+    fColour = colour;
+    this->markDamaged();
+  }
+
+protected:
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    const float radius = this->selected() ? 9.0f : 6.0f;
+    const float centreX = fBounds.fLeft + 12.0f;
+    skia::SkPaint dot;
+    dot.setAntiAlias(true);
+    dot.setColor(fColour);
+    dot.setAlphaf(skiff::paint::combinedAlpha(fColour, alpha));
+    canvas->drawCircle(centreX, fBounds.centerY(), radius, dot);
+    if (!this->selected()) {
+      return;
+    }
+    skia::SkPaint ring;
+    ring.setAntiAlias(true);
+    ring.setStyle(skia::kStrokeStyle);
+    ring.setStrokeWidth(2.0f);
+    ring.setColor(skia::kWhite);
+    ring.setAlphaf(skiff::paint::combinedAlpha(skia::kWhite, alpha));
+    canvas->drawCircle(centreX, fBounds.centerY(), 12.0f, ring);
+  }
+
+private:
+  skia::SkColor fColour;
+};
+
+} // namespace detail
+
+struct InfoWedgeTheme {
+  static constexpr auto styles =
+      skiff::scene::makeStyleSheet()
+          .rule(skiff::scene::select<skiff::scene::Drawable,
+                                     style::WedgeRoot>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kBoth})
+          .rule(skiff::scene::select<detail::WedgePlate,
+                                     style::WedgePlate>(),
+                {.y = detail::kWedgeTop,
+                 .height = detail::kWedgeContentHeight,
+                 .padding = skiff::scene::Margin{
+                     0.0f, 28.0f + detail::kWedgeShear, 0.0f, 28.0f}})
+          .rule(skiff::scene::select<skiff::nodes::Text, style::Title>(),
+                {.y = 14.0f,
+                 .width = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .colour = skia::kWhite,
+                 .fontSize = 32.0f})
+          .rule(skiff::scene::select<skiff::nodes::Text, style::Artist>(),
+                {.y = 58.0f,
+                 .width = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .alpha = 0.8f,
+                 .colour = skia::kWhite,
+                 .fontSize = 18.0f})
+          .rule(skiff::scene::select<skiff::nodes::Text, style::Mapper>(),
+                {.y = 85.0f,
+                 .width = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .alpha = 0.9f,
+                 .colour = palette::kAccent2,
+                 .fontSize = 15.0f})
+          .rule(skiff::scene::select<skiff::nodes::Text, style::Stats>(),
+                {.y = 113.0f,
+                 .width = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .fontSize = 15.0f})
+          .rule(skiff::scene::select<skiff::nodes::Text, style::Length>(),
+                {.y = 138.0f,
+                 .width = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .alpha = 0.7f,
+                 .colour = skia::kWhite,
+                 .fontSize = 14.0f})
+          .rule(skiff::scene::select<skiff::nodes::FillFlow,
+                                     style::Difficulties>(),
+                {.x = -6.0f,
+                 .y = 178.0f,
+                 .width = 1.0f,
+                 .height = 24.0f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .margin = skiff::scene::Margin{0.0f, -18.0f, 0.0f, 0.0f},
+                 .masking = true})
+          .rule(skiff::scene::select<detail::DifficultyDot,
+                                     style::Difficulty>(),
+                {.width = 22.0f, .height = 24.0f})
+          .rule(skiff::scene::select<detail::DifficultyDot,
+                                     style::Difficulty>()
+                    .when(skiff::scene::StyleState::kSelected),
+                {.width = 30.0f});
+};
+
+class InfoWedge {
+public:
+  struct Ctx {
+    skia::SkFont *fFont = nullptr;
+    float fWidth = 0.0f;
+    float fHeight = 0.0f;
+    int fSet = -1;
+    int fDifficulty = -1;
+    bool fRankedStars = false;
+    std::span<const osu::BeatmapInfo> fInfos;
+  };
+
+  void update(const Ctx &ctx) {
+    if (ctx.fFont == nullptr || ctx.fInfos.empty()) {
+      return;
+    }
+    skiff::nodes::Text::setFont(ctx.fFont);
+    bool rebuilt = false;
+    if (!fScene) {
+      fScene = this->build();
+      rebuilt = true;
+    }
+
+    const int selected = std::clamp(
+        ctx.fDifficulty, 0, static_cast<int>(ctx.fInfos.size()) - 1);
+    const DataKey key{ctx.fSet, selected, ctx.fRankedStars, ctx.fInfos.data(),
+                      ctx.fInfos.size()};
+    if (key != fDataKey) {
+      this->setData(ctx.fInfos, selected, ctx.fRankedStars);
+      fDataKey = key;
+    }
+
+    fScene->layoutIfNeeded(skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight));
+    // A viewport restyle reapplies the static text declarations. The rating
+    // colour is data, so restore it after that cascade has run.
+    fStats->setColour(fStatsColour);
+    if (rebuilt) {
+      fScene->markDamaged();
+    }
+  }
+
+  void render(skia::SkCanvas *canvas) {
+    if (fScene && canvas != nullptr) {
+      fScene->draw(canvas);
+    }
+  }
+
+  [[nodiscard]] skia::SkRect takeDamage() {
+    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  }
+
+private:
+  struct DataKey {
+    int fSet = -1;
+    int fDifficulty = -1;
+    bool fRankedStars = false;
+    const osu::BeatmapInfo *fInfos = nullptr;
+    std::size_t fCount = 0;
+    [[nodiscard]] bool operator==(const DataKey &) const = default;
+  };
+
+  [[nodiscard]] static double shownStars(const osu::BeatmapInfo &info,
+                                         bool ranked) {
+    return ranked ? info.fStarsRanked : info.fStars;
+  }
+
+  void setData(std::span<const osu::BeatmapInfo> infos, int selected,
+               bool ranked) {
+    const auto &info = infos[static_cast<std::size_t>(selected)];
+    const auto &meta = infos.front().fMeta;
+    const double stars = shownStars(info, ranked);
+    fTitle->setText(meta.fTitleUnicode.empty() ? meta.fTitle
+                                               : meta.fTitleUnicode);
+    fArtist->setText(meta.fArtistUnicode.empty() ? meta.fArtist
+                                                 : meta.fArtistUnicode);
+    fMapper->setText(std::format("mapped by {}", info.fMeta.fCreator));
+    fStats->setText(std::format(
+        "{}   {:.2f}*   CS {:.1f}  AR {:.1f}  OD {:.1f}  HP {:.1f}",
+        info.fMeta.fVersion, stars, info.fDiff.fCs, info.fDiff.fAr,
+        info.fDiff.fOd, info.fDiff.fHp));
+    fStatsColour = palette::starColor(stars);
+    fStats->setColour(fStatsColour);
+    const auto seconds = static_cast<std::int64_t>(
+        std::max(0.0, info.fLengthMs) / 1000.0);
+    fLength->setText(std::format("{} objects   {}:{:02}", info.fObjectCount,
+                                 seconds / 60, seconds % 60));
+
+    if (fDots.size() != infos.size()) {
+      fDifficulties->clear();
+      fDots.clear();
+      fDots.reserve(infos.size());
+      for (const auto &difficulty : infos) {
+        fDots.push_back(fDifficulties->add<detail::DifficultyDot>(
+            {.roles = {skiff::scene::role<style::Difficulty>}},
+            palette::starColor(shownStars(difficulty, ranked))));
+      }
+      fDifficulties->invalidateLayout();
+    }
+    for (std::size_t i = 0; i < infos.size(); ++i) {
+      fDots[i]->setColour(palette::starColor(shownStars(infos[i], ranked)));
+      fDots[i]->setSelected(static_cast<int>(i) == selected);
+    }
+  }
+
+  [[nodiscard]] std::unique_ptr<skiff::scene::Drawable> build() {
+    auto root = skiff::scene::make<skiff::scene::Drawable>(
+        {.roles = {skiff::scene::role<style::WedgeRoot>}});
+    auto *plate = root->add<detail::WedgePlate>(
+        {.roles = {skiff::scene::role<style::WedgePlate>}});
+    fTitle = plate->add<skiff::nodes::Text>(
+        {.roles = {skiff::scene::role<style::Title>}}, "", 32.0f,
+        skia::kWhite);
+    fArtist = plate->add<skiff::nodes::Text>(
+        {.roles = {skiff::scene::role<style::Artist>}}, "", 18.0f,
+        skia::kWhite);
+    fMapper = plate->add<skiff::nodes::Text>(
+        {.roles = {skiff::scene::role<style::Mapper>}}, "", 15.0f,
+        palette::kAccent2);
+    fStats = plate->add<skiff::nodes::Text>(
+        {.roles = {skiff::scene::role<style::Stats>}}, "", 15.0f,
+        skia::kWhite);
+    fLength = plate->add<skiff::nodes::Text>(
+        {.roles = {skiff::scene::role<style::Length>}}, "", 14.0f,
+        skia::kWhite);
+    fDifficulties = plate->add<skiff::nodes::FillFlow>(
+        {.roles = {skiff::scene::role<style::Difficulties>}},
+        skiff::nodes::FillFlow::Direction::kHorizontal, 0.0f, 0.0f);
+    fDifficulties->fWrap = false;
+    root->setStyleSheet<InfoWedgeTheme>();
+    return root;
+  }
+
+  DataKey fDataKey;
+  std::unique_ptr<skiff::scene::Drawable> fScene;
+  skiff::nodes::Text *fTitle = nullptr;
+  skiff::nodes::Text *fArtist = nullptr;
+  skiff::nodes::Text *fMapper = nullptr;
+  skiff::nodes::Text *fStats = nullptr;
+  skiff::nodes::Text *fLength = nullptr;
+  skia::SkColor fStatsColour = skia::kWhite;
+  skiff::nodes::FillFlow *fDifficulties = nullptr;
+  std::vector<detail::DifficultyDot *> fDots;
+};
 
 struct FooterTheme {
   static constexpr auto styles =

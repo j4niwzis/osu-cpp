@@ -177,4 +177,17 @@ TEST(State, DamagesDrawablesWithoutStateStyleRules) {
   EXPECT_FALSE(root->takeDamage().isEmpty());
 }
 
+TEST(TextLayout, RelativeWidthIsOwnedByLayout) {
+  skia::SkFont font;
+  Text::setFont(&font);
+  auto root = make<Drawable>({.fill = true});
+  auto *text = root->add<Text>(
+      {.width = 0.5f, .relativeSize = Axes::kX}, "short", 14.0f,
+      skia::kWhite);
+
+  root->layoutIfNeeded(skia::SkRect::MakeWH(240.0f, 80.0f));
+
+  EXPECT_FLOAT_EQ(text->fBounds.width(), 120.0f);
+}
+
 } // namespace
