@@ -302,6 +302,7 @@ enum class StyleState : std::uint8_t {
   kHover = 1 << 0,
   kSelected = 1 << 1,
   kDisabled = 1 << 2,
+  kFocus = 1 << 3,
 };
 
 [[nodiscard]] constexpr StyleState operator|(StyleState a,
@@ -544,7 +545,25 @@ enum class SemanticRole : std::uint8_t {
   kListItem
 };
 
+enum class SemanticAction : std::uint8_t {
+  kFocus,
+  kActivate,
+  kIncrement,
+  kDecrement,
+  kSetValue
+};
+
+struct SemanticActionEvent {
+  SemanticAction fAction = SemanticAction::kActivate;
+  float fValue = 0.0f;
+  std::string_view fText;
+  bool fHandled = false;
+
+  void handle() noexcept { fHandled = true; }
+};
+
 struct Semantics {
+  std::uint64_t fId = 0;
   SemanticRole fRole = SemanticRole::kNone;
   std::string fLabel;
   std::string fValue;
@@ -554,6 +573,7 @@ struct Semantics {
   bool fSelected = false;
   skia::SkRect fBounds = skia::SkRect::MakeEmpty();
   int fParent = -1;
+  std::vector<SemanticAction> fActions;
 };
 
 // ---- the node ------------------------------------------------------------
@@ -562,7 +582,7 @@ class Drawable {
 public:
   using SkiffNodeType = Drawable;
 
-  Drawable() = default;
+  Drawable() : fSemanticId(nextSemanticId()) {}
   Drawable(const Drawable &) = delete;
   Drawable &operator=(const Drawable &) = delete;
   virtual ~Drawable() = default;
@@ -1274,11 +1294,24 @@ public:
     return event.fHandled;
   }
 
+  bool dispatchPointer(PointerAction action, float x, float y,
+                       float scrollX = 0.0f, float scrollY = 0.0f,
+                       int button = 0) {
+    PointerEvent event;
+    event.fAction = action;
+    event.fX = x;
+    event.fY = y;
+    event.fScrollX = scrollX;
+    event.fScrollY = scrollY;
+    event.fButton = button;
+    return this->dispatchPointer(event);
+  }
+
   bool dispatchKey(KeyEvent event) {
     Drawable *root = this->inputRoot();
     if (event.fPressed && event.fKey == Key::kTab) {
       root->focusNext(event.fShift);
-      return true;
+      return root->fFocused != nullptr;
     }
     Drawable *target = root->fFocused;
     if (target == nullptr) {
@@ -1351,6 +1384,15 @@ public:
     std::vector<Semantics> out;
     this->collectSemantics(out, -1);
     return out;
+  }
+
+  bool dispatchSemantic(std::uint64_t id, SemanticActionEvent event) {
+    Drawable *target = this->inputRoot()->findSemanticNode(id);
+    if (target == nullptr || !target->fVisible || target->fDisabled) {
+      return false;
+    }
+    target->onSemanticAction(event);
+    return event.fHandled;
   }
 
   // Delivers a click to the front-most drawable that wants it, then up the
@@ -1558,6 +1600,15 @@ protected:
     }
   }
   virtual void onTextInput(TextInputEvent &) {}
+  virtual void onSemanticAction(SemanticActionEvent &event) {
+    if (event.fAction == SemanticAction::kFocus && this->focusable()) {
+      this->inputRoot()->setFocusedNode(this);
+      event.handle();
+    } else if (event.fAction == SemanticAction::kActivate &&
+               this->onClick(fBounds.centerX(), fBounds.centerY())) {
+      event.handle();
+    }
+  }
   [[nodiscard]] virtual Semantics semantics() const { return {}; }
 
   // Node-specific declarations. Box and Text use this for colour, and Text
@@ -1607,6 +1658,25 @@ protected:
   bool fHoverSeen = false;
 
 private:
+  friend class InputRouter;
+
+  [[nodiscard]] static std::uint64_t nextSemanticId() {
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] Drawable *findSemanticNode(std::uint64_t id) {
+    if (fSemanticId == id) {
+      return this;
+    }
+    for (auto &child : fChildren) {
+      if (Drawable *found = child->findSemanticNode(id)) {
+        return found;
+      }
+    }
+    return nullptr;
+  }
+
   [[nodiscard]] bool containsNode(const Drawable *node) const {
     for (; node != nullptr; node = node->fParent) {
       if (node == this) {
@@ -1654,12 +1724,21 @@ private:
     root->fFocused = node;
     if (previous != nullptr) {
       previous->onFocusChanged(false);
+      const StyleStateResolver resolver =
+          previous->activeStyleStateResolver();
+      if (resolver != nullptr && resolver(*previous, StyleState::kFocus)) {
+        previous->restyleFromHere(true);
+      }
       if (previous->focusChangesAppearance()) {
         previous->markDamaged();
       }
     }
     if (node != nullptr) {
       node->onFocusChanged(true);
+      const StyleStateResolver resolver = node->activeStyleStateResolver();
+      if (resolver != nullptr && resolver(*node, StyleState::kFocus)) {
+        node->restyleFromHere(true);
+      }
       if (node->focusChangesAppearance()) {
         node->markDamaged();
       }
@@ -1709,6 +1788,7 @@ private:
       own.fSelected = own.fSelected || fSelected;
       own.fBounds = fBounds;
       own.fParent = parent;
+      own.fId = fSemanticId;
       childParent = static_cast<int>(out.size());
       out.push_back(std::move(own));
     }
@@ -2086,6 +2166,7 @@ private:
   // root without a second allocation or a wrapper object.
   Drawable *fPointerCapture = nullptr;
   Drawable *fFocused = nullptr;
+  const std::uint64_t fSemanticId;
   std::vector<StyleRole> fStyleRoles;
   bool fSelected = false;
   bool fDisabled = false;
@@ -2147,6 +2228,8 @@ bool StyleRule<Node, Roles...>::matches(const Drawable &node) const {
   return this->matchesSubject(node) &&
          (!hasState(fSelector.fStates, StyleState::kHover) ||
           node.hovered()) &&
+         (!hasState(fSelector.fStates, StyleState::kFocus) ||
+          node.focused()) &&
          (!hasState(fSelector.fStates, StyleState::kSelected) ||
           node.selected()) &&
          (!hasState(fSelector.fStates, StyleState::kDisabled) ||
@@ -2197,13 +2280,51 @@ public:
   };
 
   void setLayers(std::span<const Layer> layers) {
-    fLayers.assign(layers.begin(), layers.end());
-    if (fCapturedRoot != nullptr &&
-        std::ranges::none_of(fLayers, [this](const Layer &layer) {
-          return layer.fRoot == fCapturedRoot;
-        })) {
-      fCapturedRoot = nullptr;
+    // A screen may have routed the initial press through its scene directly
+    // so it could immediately inspect a widget callback. Adopt that capture
+    // before changing the stack; subsequent move/up events still belong to
+    // the same root.
+    Drawable *capturedRoot = fCapturedRoot;
+    if (capturedRoot == nullptr) {
+      const auto captured = std::ranges::find_if(
+          fLayers, [](const Layer &layer) {
+            return layer.fRoot != nullptr &&
+                   layer.fRoot->capturedNode() != nullptr;
+          });
+      if (captured != fLayers.end()) {
+        capturedRoot = captured->fRoot;
+      }
     }
+    if (capturedRoot == nullptr) {
+      const auto captured = std::ranges::find_if(
+          layers, [](const Layer &layer) {
+            return layer.fRoot != nullptr &&
+                   layer.fRoot->capturedNode() != nullptr;
+          });
+      if (captured != layers.end()) {
+        capturedRoot = captured->fRoot;
+      }
+    }
+
+    if (capturedRoot != nullptr) {
+      const auto captured = std::ranges::find_if(
+          layers, [capturedRoot](const Layer &layer) {
+            return layer.fRoot == capturedRoot;
+          });
+      const bool covered =
+          captured != layers.end() &&
+          std::ranges::any_of(
+              std::ranges::subrange(captured + 1, layers.end()),
+              [](const Layer &layer) { return layer.fModal; });
+      if (captured == layers.end() || covered) {
+        PointerEvent cancel;
+        cancel.fAction = PointerAction::kCancel;
+        capturedRoot->dispatchPointer(cancel);
+        capturedRoot = nullptr;
+      }
+    }
+    fCapturedRoot = capturedRoot;
+    fLayers.assign(layers.begin(), layers.end());
   }
 
   bool pointer(PointerEvent event) {
@@ -2221,9 +2342,15 @@ public:
       const bool handled = it->fRoot->dispatchPointer(event);
       if (it->fRoot->capturedNode() != nullptr) {
         fCapturedRoot = it->fRoot;
+        if (event.fAction == PointerAction::kDown) {
+          this->ownFocus(it->fRoot);
+        }
         return true;
       }
       if (handled) {
+        if (event.fAction == PointerAction::kDown) {
+          this->ownFocus(it->fRoot);
+        }
         return true;
       }
       if (it->fModal) {
@@ -2234,6 +2361,9 @@ public:
   }
 
   bool key(KeyEvent event) {
+    if (event.fPressed && event.fKey == Key::kTab) {
+      return this->focusNext(event.fShift);
+    }
     for (auto it = fLayers.rbegin(); it != fLayers.rend(); ++it) {
       if (it->fRoot == nullptr) {
         continue;
@@ -2255,6 +2385,24 @@ public:
       }
       if (it->fRoot->focusedNode() != nullptr &&
           it->fRoot->dispatchText(event)) {
+        return true;
+      }
+      if (it->fModal) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool semantic(std::uint64_t id, SemanticActionEvent event) {
+    for (auto it = fLayers.rbegin(); it != fLayers.rend(); ++it) {
+      if (it->fRoot == nullptr) {
+        continue;
+      }
+      if (it->fRoot->dispatchSemantic(id, event)) {
+        if (event.fAction == SemanticAction::kFocus) {
+          this->ownFocus(it->fRoot);
+        }
         return true;
       }
       if (it->fModal) {
@@ -2291,6 +2439,67 @@ public:
   }
 
 private:
+  void ownFocus(Drawable *owner) {
+    if (owner->focusedNode() == nullptr) {
+      return;
+    }
+    // Focus is unique inside the active scope. A covered scope deliberately
+    // keeps its focus so closing a modal restores the user's prior position.
+    for (std::size_t i = this->firstActiveLayer(); i < fLayers.size(); ++i) {
+      Layer &layer = fLayers[i];
+      if (layer.fRoot != nullptr && layer.fRoot != owner) {
+        layer.fRoot->setFocusedNode(nullptr);
+      }
+    }
+  }
+
+  [[nodiscard]] std::size_t firstActiveLayer() const {
+    for (std::size_t i = fLayers.size(); i > 0; --i) {
+      if (fLayers[i - 1].fModal) {
+        return i - 1;
+      }
+    }
+    return 0;
+  }
+
+  bool focusNext(bool backwards) {
+    std::vector<std::pair<Drawable *, Drawable *>> nodes;
+    for (std::size_t i = this->firstActiveLayer(); i < fLayers.size(); ++i) {
+      Drawable *root = fLayers[i].fRoot;
+      if (root == nullptr) {
+        continue;
+      }
+      std::vector<Drawable *> rootNodes;
+      root->collectFocusable(rootNodes);
+      for (Drawable *node : rootNodes) {
+        nodes.emplace_back(root, node);
+      }
+    }
+    if (nodes.empty()) {
+      return false;
+    }
+
+    const auto focused = std::ranges::find_if(
+        nodes, [](const auto &entry) {
+          return entry.first->focusedNode() == entry.second;
+        });
+    std::size_t index =
+        focused == nodes.end()
+            ? (backwards ? nodes.size() - 1 : 0)
+            : static_cast<std::size_t>(focused - nodes.begin());
+    if (focused != nodes.end()) {
+      index = backwards ? (index + nodes.size() - 1) % nodes.size()
+                        : (index + 1) % nodes.size();
+    }
+    for (std::size_t i = this->firstActiveLayer(); i < fLayers.size(); ++i) {
+      if (fLayers[i].fRoot != nullptr && fLayers[i].fRoot != nodes[index].first) {
+        fLayers[i].fRoot->setFocusedNode(nullptr);
+      }
+    }
+    nodes[index].first->setFocusedNode(nodes[index].second);
+    return true;
+  }
+
   std::vector<Layer> fLayers;
   Drawable *fCapturedRoot = nullptr;
 };

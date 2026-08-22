@@ -82,11 +82,18 @@ protected:
                   fTrackRadius, fTheme.fAccent, alpha);
     p.circle(fBounds.fLeft + fBounds.width() * fFraction, fBounds.centerY(),
              fKnobRadius, fTheme.fText, alpha);
+    if (this->focused()) {
+      p.strokeRounded(this->reach(), fKnobRadius, fTheme.fAccent, 1.5f,
+                      alpha);
+    }
   }
 
   // Without a setter it is a picture of a value and clicks fall through to
   // whatever is behind it.
   bool acceptsInput() const override { return static_cast<bool>(fOnSet); }
+  bool focusChangesAppearance() const override {
+    return static_cast<bool>(fOnSet);
+  }
 
   void onPointerEvent(skiff::scene::PointerEvent &event) override {
     if (event.fPhase != skiff::scene::EventPhase::kTarget || !fOnSet) {
@@ -116,7 +123,28 @@ protected:
     skiff::scene::Semantics out;
     out.fRole = skiff::scene::SemanticRole::kSlider;
     out.fValue = std::format("{:.3f}", fFraction);
+    out.fActions = {skiff::scene::SemanticAction::kFocus,
+                    skiff::scene::SemanticAction::kIncrement,
+                    skiff::scene::SemanticAction::kDecrement,
+                    skiff::scene::SemanticAction::kSetValue};
     return out;
+  }
+
+  void onSemanticAction(skiff::scene::SemanticActionEvent &event) override {
+    if (event.fAction == skiff::scene::SemanticAction::kIncrement && fOnSet) {
+      fOnSet(std::min(1.0f, fFraction + 0.05f));
+      event.handle();
+    } else if (event.fAction == skiff::scene::SemanticAction::kDecrement &&
+               fOnSet) {
+      fOnSet(std::max(0.0f, fFraction - 0.05f));
+      event.handle();
+    } else if (event.fAction == skiff::scene::SemanticAction::kSetValue &&
+               fOnSet) {
+      fOnSet(std::clamp(event.fValue, 0.0f, 1.0f));
+      event.handle();
+    } else {
+      Drawable::onSemanticAction(event);
+    }
   }
 
   bool onClick(float x, float y) override {
@@ -236,9 +264,15 @@ protected:
              fKnobRadius, fTheme.fText, alpha);
     p.circle(track.fLeft + track.width() * fHigh, track.centerY(),
              fKnobRadius, fTheme.fText, alpha);
+    if (this->focused()) {
+      p.strokeRounded(fBounds, fKnobRadius, fTheme.fAccent, 1.5f, alpha);
+    }
   }
 
   bool acceptsInput() const override { return static_cast<bool>(fOnSet); }
+  bool focusChangesAppearance() const override {
+    return static_cast<bool>(fOnSet);
+  }
 
   void onPointerEvent(skiff::scene::PointerEvent &event) override {
     if (event.fPhase != skiff::scene::EventPhase::kTarget || !fOnSet) {
@@ -267,6 +301,7 @@ protected:
     skiff::scene::Semantics out;
     out.fRole = skiff::scene::SemanticRole::kSlider;
     out.fValue = std::format("{:.3f}–{:.3f}", fLow, fHigh);
+    out.fActions = {skiff::scene::SemanticAction::kFocus};
     return out;
   }
 
@@ -356,14 +391,23 @@ protected:
     p.circle(fBounds.fLeft + fKnobInset +
                  (fBounds.width() - fKnobInset * 2.0f) * fKnob,
              fBounds.centerY(), fKnobRadius, fTheme.fText, alpha);
+    if (this->focused()) {
+      p.strokeRounded(fBounds, fBounds.height() * 0.5f, fTheme.fAccent, 1.5f,
+                      alpha);
+    }
   }
 
   bool acceptsInput() const override { return static_cast<bool>(fOnToggle); }
+  bool focusChangesAppearance() const override {
+    return static_cast<bool>(fOnToggle);
+  }
 
   [[nodiscard]] skiff::scene::Semantics semantics() const override {
     skiff::scene::Semantics out;
     out.fRole = skiff::scene::SemanticRole::kToggle;
     out.fValue = fOn ? "on" : "off";
+    out.fActions = {skiff::scene::SemanticAction::kFocus,
+                    skiff::scene::SemanticAction::kActivate};
     return out;
   }
 

@@ -155,11 +155,14 @@ public:
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
+  [[nodiscard]] skiff::scene::Drawable *sceneRoot() noexcept {
+    return fScene.get();
+  }
 
   [[nodiscard]] Action click(float x, float y) {
     fPressed = Action::kNone;
     if (fScene) {
-      fScene->click(x, y);
+      fScene->dispatchPointer(skiff::scene::PointerAction::kDown, x, y);
     }
     return fPressed;
   }

@@ -110,7 +110,7 @@ public:
   [[nodiscard]] Hit click(float x, float y) {
     fPending = {};
     if (fScene) {
-      fScene->click(x, y);
+      fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
     return fPending;
   }
@@ -128,6 +128,7 @@ public:
         result.fWantsAnotherFrame || fScrollAnim != fTarget || fPop < 1.0f;
     return result;
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
   [[nodiscard]] float scrollOffset() const noexcept { return fScrollAnim; }
 

@@ -213,6 +213,7 @@ public:
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
   // Applies the click to the mod set; the root swallows misses while open.
   [[nodiscard]] bool click(float x, float y, osu::ModSet &mods) {
@@ -221,7 +222,7 @@ public:
     }
     fChanged = false;
     if (fScene) {
-      fScene->click(x, y);
+      fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
     if (fChanged) {
       mods = fActive;
@@ -538,6 +539,7 @@ public:
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
   // Returns true when "render" was pressed.
   [[nodiscard]] bool click(float x, float y) {
@@ -546,7 +548,7 @@ public:
     }
     fRenderRequested = false;
     if (fScene) {
-      fScene->click(x, y);
+      fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
     return fRenderRequested;
   }

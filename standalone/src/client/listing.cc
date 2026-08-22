@@ -494,7 +494,7 @@ public:
   [[nodiscard]] Result click(float x, float y) {
     fPending = {};
     if (fScene) {
-      fScene->click(x, y);
+      fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
     return fPending;
   }
@@ -504,6 +504,7 @@ public:
     result.fWantsAnotherFrame = result.fWantsAnotherFrame || fTicking;
     return result;
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
   [[nodiscard]] bool textBoxHit(float x, float y) const {
     return fTextBoxBounds.contains(x, y);

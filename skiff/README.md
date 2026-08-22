@@ -75,9 +75,11 @@ root->setStyleSheet<LazerTheme>();
 ```
 
 Later matching rules override earlier ones. Foreground colour, font size and
-font weight inherit through containers; backgrounds do not. State is
-updated with `setSelected()` and `setDisabled()`, while hover is maintained by
-`setHover()`. Width constraints on selectors are lightweight media queries.
+font weight inherit through containers; backgrounds do not. State is updated
+with `setSelected()` and `setDisabled()`, while hover is maintained by
+`setHover()` and focus by the input router. Rules can select `kHover`,
+`kFocus`, `kSelected` and `kDisabled`. Width constraints on selectors are
+lightweight media queries.
 Position, size, scale and alpha use the rule's transition when a selector
 starts or stops matching. Removing the sheet restores each node's original
 values.
@@ -100,14 +102,17 @@ child-arrangement hooks while they are already inside a layout pass.
 
 `dispatchPointer()`, `dispatchKey()` and `dispatchText()` route capture,
 target and bubble phases through one path. Pointer capture and keyboard focus
-are owned by the scene root; Tab traverses focusable nodes, and text events
-keep provisional IME composition separate from committed UTF-8. `InputRouter`
-stacks scene roots and makes modal ownership explicit, including hiding the
+are owned by the scene root; `InputRouter` keeps one focus owner while Tab
+traverses across scene roots. Text events keep provisional IME composition
+separate from committed UTF-8. Modal layers cancel covered pointer capture,
+scope keyboard traversal, retain the previous focus for restoration, and hide
 covered layers from `semantics()`.
 
-Widgets expose a platform-neutral semantics tree with roles, labels, values,
-selection, disabled and focus state. A window-system accessibility adapter can
-consume that tree without teaching scene nodes about a specific OS API.
+Widgets expose a platform-neutral semantics tree with stable node IDs, roles,
+labels, values, selection, disabled and focus state. The same IDs accept
+focus, activation, increment, decrement and value-setting actions. A
+window-system accessibility adapter can therefore both inspect and operate
+the UI without teaching scene nodes about a specific OS API.
 
 ## Building and testing
 

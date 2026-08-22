@@ -322,6 +322,8 @@ public:
     }
   }
 
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
+
   // Returns kChanged when a value was touched (so the caller can apply and
   // persist), kSwallowed when the overlay consumed the click regardless.
   [[nodiscard]] Hit click(float x, float y, bool pressed, Settings &settings) {
@@ -334,7 +336,7 @@ public:
       return wasDragging ? Hit::kChanged : Hit::kSwallowed;
     }
     fAction = {};
-    fScene->click(x, y);
+    fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     switch (fAction.fKind) {
     case Action::kNone:
       // A click anywhere else in the panel closes an open list, and is

@@ -513,13 +513,14 @@ public:
     result.fWantsAnotherFrame = fOpen && result.fWantsAnotherFrame;
     return result;
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
   [[nodiscard]] Result click(float x, float y) {
     if (!fOpen || !fScene) {
       return {};
     }
     fPending = {};
-    fScene->click(x, y);
+    fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     return fPending;
   }
 

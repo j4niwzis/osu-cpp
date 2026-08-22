@@ -177,9 +177,13 @@ protected:
         this->drawDecoration(canvas, box, alpha);
       }
     }
+    if (this->focused()) {
+      p.strokeRounded(fBounds, 3.0f, fTheme.fAccent, 1.0f, alpha);
+    }
   }
 
   bool acceptsInput() const override { return true; }
+  bool focusChangesAppearance() const override { return true; }
 
   void onKeyEvent(skiff::scene::KeyEvent &event) override {
     if (event.fPhase != skiff::scene::EventPhase::kTarget ||
@@ -220,7 +224,26 @@ protected:
     if (selected != fTabs.end()) {
       out.fValue = selected->fLabel;
     }
+    out.fActions = {skiff::scene::SemanticAction::kFocus,
+                    skiff::scene::SemanticAction::kIncrement,
+                    skiff::scene::SemanticAction::kDecrement};
     return out;
+  }
+
+  void onSemanticAction(skiff::scene::SemanticActionEvent &event) override {
+    if (event.fAction == skiff::scene::SemanticAction::kIncrement ||
+        event.fAction == skiff::scene::SemanticAction::kDecrement) {
+      skiff::scene::KeyEvent key;
+      key.fKey = event.fAction == skiff::scene::SemanticAction::kIncrement
+                     ? skiff::scene::Key::kRight
+                     : skiff::scene::Key::kLeft;
+      this->onKeyEvent(key);
+      if (key.fHandled) {
+        event.handle();
+      }
+    } else {
+      Drawable::onSemanticAction(event);
+    }
   }
 
   bool onClick(float x, float y) override {

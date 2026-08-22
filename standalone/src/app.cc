@@ -225,6 +225,7 @@ private:
     const char *fFrameReason = ""; // what the last frame was drawn for
   };
   Frame fFrame;
+  skiff::scene::InputRouter fInputRouter;
   // The window and where the pointer is in it. What a resize changes and
   // what every screen measures itself against.
   struct WindowState {
@@ -1058,6 +1059,7 @@ private:
     case EventType::kCursorMove:
       fWin.fMouseX = ev.fX;
       fWin.fMouseY = ev.fY;
+      this->routePointer(skiff::scene::PointerAction::kMove, ev.fX, ev.fY);
       if (fSettingsPanel.dragging()) {
         this->dragSetting(ev.fX);
       }
@@ -1164,6 +1166,7 @@ private:
     // and release of the control keys separately loses sync whenever focus
     // changes while held.
     const bool ctrl = (static_cast<int>(ev.fX) & glfw::kModControl) != 0;
+    const bool shift = (static_cast<int>(ev.fX) & glfw::kModShift) != 0;
     if (key == glfw::kKeyLeftControl || key == glfw::kKeyRightControl) {
       return;
     }
@@ -1175,6 +1178,10 @@ private:
     }
     if (action == glfw::kPress && key == glfw::kKeyO && ctrl) {
       this->toggleSettings();
+      return;
+    }
+    if (action == glfw::kPress && key == glfw::kKeyTab &&
+        this->routeKey(skiff::scene::Key::kTab, shift)) {
       return;
     }
     if (action == glfw::kPress && key == glfw::kKeyEscape) {
@@ -1419,6 +1426,8 @@ private:
         if (pressed) {
           this->clickAt(fWin.fMouseX, fWin.fMouseY);
         } else {
+          this->routePointer(skiff::scene::PointerAction::kUp,
+                             fWin.fMouseX, fWin.fMouseY);
           this->settingsClick(fWin.fMouseX, fWin.fMouseY, false);
           this->filterClick(fWin.fMouseX, fWin.fMouseY, false);
         }
@@ -1438,6 +1447,82 @@ private:
       return;
     }
     this->applyButton(bit, action == glfw::kPress, ev.fWallMs);
+  }
+
+  void refreshInputLayers() {
+    using Layer = skiff::scene::InputRouter::Layer;
+    std::vector<Layer> layers;
+    const auto add = [&layers](skiff::scene::Drawable *root,
+                               bool modal = false) {
+      if (root != nullptr) {
+        layers.push_back({root, modal});
+      }
+    };
+
+    // The replay strip is still immediate-mode and modal while open. An
+    // empty stack also cancels capture in a retained scene it covers.
+    if (!fReplayListOpen) {
+      switch (fState) {
+      case State::kMainMenu:
+        add(fMainMenu.sceneRoot());
+        break;
+      case State::kSongSelect:
+        add(fCarousel.sceneRoot());
+        add(fFilter.sceneRoot());
+        add(fSelectFooter.sceneRoot());
+        break;
+      case State::kDownload:
+        add(fListing.sceneRoot());
+        if (fSetPage.open()) {
+          add(fSetPage.sceneRoot(), true);
+        }
+        break;
+      case State::kPaused:
+        add(fPauseMenu.sceneRoot());
+        break;
+      case State::kResults:
+        add(fResultActions.sceneRoot());
+        break;
+      default:
+        break;
+      }
+      if (fModSelect.open()) {
+        add(fModSelect.sceneRoot(), true);
+      }
+      if (fSettingsPanel.visible()) {
+        add(fSettingsPanel.sceneRoot());
+      }
+      if (fExportDialog.open()) {
+        add(fExportDialog.sceneRoot(), true);
+      }
+      if (fConfirmDelete && fConfirmScene) {
+        add(fConfirmScene.get(), true);
+      }
+    }
+    fInputRouter.setLayers(layers);
+  }
+
+  bool routePointer(skiff::scene::PointerAction action, float x, float y) {
+    if (fState == State::kPlaying) {
+      return false;
+    }
+    this->refreshInputLayers();
+    skiff::scene::PointerEvent event;
+    event.fAction = action;
+    event.fX = x;
+    event.fY = y;
+    return fInputRouter.pointer(event);
+  }
+
+  bool routeKey(skiff::scene::Key key, bool shift = false) {
+    if (fState == State::kPlaying) {
+      return false;
+    }
+    this->refreshInputLayers();
+    skiff::scene::KeyEvent event;
+    event.fKey = key;
+    event.fShift = shift;
+    return fInputRouter.key(event);
   }
 
   void clickAt(float x, float y) {
@@ -5077,7 +5162,7 @@ private:
     if (!fConfirmDelete || !fConfirmScene) {
       return false;
     }
-    fConfirmScene->click(x, y);
+    fConfirmScene->dispatchPointer(skiff::scene::PointerAction::kDown, x, y);
     return true; // the dialog is modal either way
   }
 

@@ -28,6 +28,8 @@ protected:
     skiff::scene::Semantics out;
     out.fRole = skiff::scene::SemanticRole::kButton;
     out.fLabel = fLabel;
+    out.fActions = {skiff::scene::SemanticAction::kFocus,
+                    skiff::scene::SemanticAction::kActivate};
     return out;
   }
   bool onClick(float, float) override {

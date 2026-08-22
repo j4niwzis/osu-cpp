@@ -146,7 +146,7 @@ public:
   [[nodiscard]] Action click(float x, float y) {
     fPending = Action::kNone;
     if (fScene) {
-      fScene->click(x, y);
+      fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
     return fPending;
   }
@@ -164,6 +164,7 @@ public:
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
 private:
   static constexpr std::array<Action, 3> kActions = {

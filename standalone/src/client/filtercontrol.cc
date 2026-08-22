@@ -259,6 +259,7 @@ public:
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
   // Returns true when the control consumed the click.
   bool click(float x, float y, bool pressed) {
@@ -266,7 +267,8 @@ public:
       this->endDrag();
       return false;
     }
-    return fScene && fScene->click(x, y);
+    return fScene &&
+           fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
   }
 
   void dragRange(float x) {

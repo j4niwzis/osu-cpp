@@ -126,6 +126,8 @@ protected:
     out.fLabel = fLabel;
     out.fValue = fValue;
     out.fHint = fOpen ? "expanded" : "collapsed";
+    out.fActions = {skiff::scene::SemanticAction::kFocus,
+                    skiff::scene::SemanticAction::kActivate};
     return out;
   }
 
@@ -290,7 +292,7 @@ private:
       const Theme &theme = fList->fTheme;
       const skiff::paint::Painter p(canvas, *font);
       const bool chosen = static_cast<int>(fIndex) == fList->fCurrent;
-      if (chosen || fHovered) {
+      if (chosen || fHovered || this->focused()) {
         p.fillRounded(fBounds, fList->fRowRadius,
                       chosen ? theme.fAccent : theme.fSurfaceHover, alpha);
       }
@@ -304,6 +306,7 @@ private:
     bool hoverChangesAppearance() const override {
       return static_cast<int>(fIndex) != fList->fCurrent;
     }
+    bool focusChangesAppearance() const override { return true; }
 
     [[nodiscard]] skiff::scene::Semantics semantics() const override {
       skiff::scene::Semantics out;
@@ -312,6 +315,8 @@ private:
         out.fLabel = fList->fLabels[fIndex];
       }
       out.fSelected = static_cast<int>(fIndex) == fList->fCurrent;
+      out.fActions = {skiff::scene::SemanticAction::kFocus,
+                      skiff::scene::SemanticAction::kActivate};
       return out;
     }
 

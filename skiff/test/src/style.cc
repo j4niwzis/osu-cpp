@@ -109,6 +109,7 @@ protected:
     Semantics out;
     out.fRole = SemanticRole::kButton;
     out.fLabel = fName;
+    out.fActions = {SemanticAction::kFocus, SemanticAction::kActivate};
     return out;
   }
 
@@ -116,6 +117,12 @@ private:
   std::vector<std::string> *fEvents;
   std::string fName;
   bool fCapture;
+};
+
+struct FocusTheme {
+  static constexpr auto styles =
+      makeStyleSheet().rule(select<InputProbe>().when(StyleState::kFocus),
+                            {.alpha = 0.65f});
 };
 
 struct WidgetTheme {
@@ -340,6 +347,115 @@ TEST(Input, ModalLayerBlocksPointerAndAccessibilityBehindIt) {
   EXPECT_TRUE(router.pointer(down));
   EXPECT_EQ(behind->fPointerEvents, 0);
   EXPECT_TRUE(router.semantics().empty());
+
+  const auto behindTree = behind->semanticsTree();
+  ASSERT_EQ(behindTree.size(), 1u);
+  SemanticActionEvent activate;
+  EXPECT_TRUE(router.semantic(behindTree[0].fId, activate));
+  EXPECT_EQ(behind->fPointerEvents, 0);
+}
+
+TEST(Input, ModalScopeCancelsCoveredCaptureAndRestoresPriorFocus) {
+  std::vector<std::string> events;
+  auto behind = make<InputProbe>({.fill = true}, &events, "behind", true);
+  auto modal = make<Drawable>({.fill = true});
+  behind->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  modal->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  InputRouter router;
+  const std::array<InputRouter::Layer, 1> base = {
+      InputRouter::Layer{behind.get(), false}};
+
+  PointerEvent down;
+  down.fAction = PointerAction::kDown;
+  down.fX = 10.0f;
+  down.fY = 10.0f;
+  // Some client wrappers dispatch the press directly so they can read their
+  // callback immediately. The router adopts that capture on its next layer
+  // refresh and still cancels it when a modal covers the scene.
+  EXPECT_TRUE(behind->dispatchPointer(down));
+  EXPECT_EQ(behind->capturedNode(), behind.get());
+  EXPECT_EQ(behind->focusedNode(), behind.get());
+
+  const std::array<InputRouter::Layer, 2> covered = {
+      InputRouter::Layer{behind.get(), false},
+      InputRouter::Layer{modal.get(), true}};
+  router.setLayers(covered);
+  EXPECT_EQ(behind->capturedNode(), nullptr);
+
+  router.setLayers(base);
+  EXPECT_EQ(behind->focusedNode(), behind.get());
+}
+
+TEST(Input, TabTraversesAcrossSceneRoots) {
+  std::vector<std::string> events;
+  auto first = make<InputProbe>({.fill = true}, &events, "first");
+  auto second = make<InputProbe>({.fill = true}, &events, "second");
+  first->setStyleSheet<FocusTheme>();
+  second->setStyleSheet<FocusTheme>();
+  first->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  second->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  const std::array<InputRouter::Layer, 2> layers = {
+      InputRouter::Layer{first.get(), false},
+      InputRouter::Layer{second.get(), false}};
+  InputRouter router;
+  router.setLayers(layers);
+
+  KeyEvent tab;
+  tab.fKey = Key::kTab;
+  EXPECT_TRUE(router.key(tab));
+  EXPECT_EQ(first->focusedNode(), first.get());
+  EXPECT_EQ(second->focusedNode(), nullptr);
+  EXPECT_FLOAT_EQ(first->alpha(), 0.65f);
+
+  EXPECT_TRUE(router.key(tab));
+  EXPECT_EQ(first->focusedNode(), nullptr);
+  EXPECT_EQ(second->focusedNode(), second.get());
+  EXPECT_FLOAT_EQ(first->alpha(), 1.0f);
+  EXPECT_FLOAT_EQ(second->alpha(), 0.65f);
+
+  tab.fShift = true;
+  EXPECT_TRUE(router.key(tab));
+  EXPECT_EQ(first->focusedNode(), first.get());
+}
+
+TEST(Input, PointerFocusHasOneOwnerAcrossSceneRoots) {
+  std::vector<std::string> events;
+  auto firstRoot = make<Drawable>({.fill = true});
+  auto *first = firstRoot->add<InputProbe>(
+      {.width = 40.0f, .height = 40.0f}, &events, "first", true);
+  auto secondRoot = make<Drawable>({.fill = true});
+  auto *second = secondRoot->add<InputProbe>(
+      {.x = 60.0f, .width = 40.0f, .height = 40.0f}, &events, "second", true);
+  firstRoot->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  secondRoot->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  const std::array<InputRouter::Layer, 2> layers = {
+      InputRouter::Layer{firstRoot.get(), false},
+      InputRouter::Layer{secondRoot.get(), false}};
+  InputRouter router;
+  router.setLayers(layers);
+
+  PointerEvent down;
+  down.fAction = PointerAction::kDown;
+  down.fX = 10.0f;
+  down.fY = 10.0f;
+  EXPECT_TRUE(router.pointer(down));
+  EXPECT_EQ(firstRoot->focusedNode(), first);
+  PointerEvent up = down;
+  up.fAction = PointerAction::kUp;
+  EXPECT_FALSE(router.pointer(up));
+
+  down.fX = 70.0f;
+  EXPECT_TRUE(router.pointer(down));
+  EXPECT_EQ(firstRoot->focusedNode(), nullptr);
+  EXPECT_EQ(secondRoot->focusedNode(), second);
+
+  const auto firstSemantics = firstRoot->semanticsTree();
+  ASSERT_EQ(firstSemantics.size(), 1u);
+  SemanticActionEvent focus;
+  focus.fAction = SemanticAction::kFocus;
+  EXPECT_TRUE(router.semantic(firstSemantics[0].fId, focus));
+  EXPECT_EQ(firstRoot->focusedNode(), first);
+  EXPECT_EQ(secondRoot->focusedNode(), nullptr);
 }
 
 TEST(Frame, RuntimePropertiesInvalidateAndReportContinuationTogether) {

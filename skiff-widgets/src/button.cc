@@ -86,6 +86,8 @@ protected:
     out.fRole = skiff::scene::SemanticRole::kButton;
     out.fLabel = fLabel;
     out.fDisabled = !fEnabled;
+    out.fActions = {skiff::scene::SemanticAction::kFocus,
+                    skiff::scene::SemanticAction::kActivate};
     return out;
   }
 

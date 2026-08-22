@@ -228,4 +228,37 @@ TEST(TextBox, RoutedUtf8AndCompositionUseFocus) {
   EXPECT_TRUE(semantics[0].fFocused);
 }
 
+TEST(Accessibility, SemanticActionsOperateWidgets) {
+  auto root = scene::make<scene::Drawable>({.fill = true});
+  int clicks = 0;
+  root->add<widgets::Button>({.width = 100.0f, .height = 30.0f}, "Apply",
+                             [&clicks] { ++clicks; });
+  float sliderValue = 0.0f;
+  auto *slider = root->add<widgets::SliderBar>(
+      {.y = 35.0f, .width = 100.0f, .height = 14.0f});
+  slider->fOnSet = [&sliderValue](float value) { sliderValue = value; };
+  auto *box = root->add<widgets::TextBox>(
+      {.y = 55.0f, .width = 100.0f, .height = 30.0f}, "Search");
+  root->layoutIfNeeded(skia::SkRect::MakeWH(120.0f, 100.0f));
+
+  const auto tree = root->semanticsTree();
+  ASSERT_EQ(tree.size(), 3u);
+  scene::SemanticActionEvent activate;
+  activate.fAction = scene::SemanticAction::kActivate;
+  EXPECT_TRUE(root->dispatchSemantic(tree[0].fId, activate));
+  EXPECT_EQ(clicks, 1);
+
+  scene::SemanticActionEvent setSlider;
+  setSlider.fAction = scene::SemanticAction::kSetValue;
+  setSlider.fValue = 0.75f;
+  EXPECT_TRUE(root->dispatchSemantic(tree[1].fId, setSlider));
+  EXPECT_FLOAT_EQ(sliderValue, 0.75f);
+
+  scene::SemanticActionEvent setText;
+  setText.fAction = scene::SemanticAction::kSetValue;
+  setText.fText = "artist";
+  EXPECT_TRUE(root->dispatchSemantic(tree[2].fId, setText));
+  EXPECT_EQ(box->text(), "artist");
+}
+
 } // namespace

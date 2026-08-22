@@ -234,6 +234,9 @@ public:
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
+  [[nodiscard]] skiff::scene::Drawable *sceneRoot() noexcept {
+    return fScene.get();
+  }
 
 private:
   struct DataKey {
@@ -399,11 +402,15 @@ public:
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
+  [[nodiscard]] skiff::scene::Drawable *sceneRoot() noexcept {
+    return fScene.get();
+  }
+
   [[nodiscard]] Action click(float x, float y) {
     fPending = Action::kNone;
     const bool wasOpen = this->optionsOpen();
     if (fScene) {
-      (void)fScene->click(x, y);
+      (void)fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
     // A row sets an action and closes itself. Any other click while the
     // popover was open dismisses it, including its small padding gaps.

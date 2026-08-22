@@ -163,7 +163,23 @@ protected:
     out.fRole = skiff::scene::SemanticRole::kTextBox;
     out.fLabel = fPlaceholder;
     out.fValue = fText;
+    out.fActions = {skiff::scene::SemanticAction::kFocus,
+                    skiff::scene::SemanticAction::kSetValue};
     return out;
+  }
+
+  void onSemanticAction(skiff::scene::SemanticActionEvent &event) override {
+    if (event.fAction == skiff::scene::SemanticAction::kSetValue) {
+      if (event.fText != fText) {
+        this->setText(std::string(event.fText));
+        if (fOnChanged) {
+          fOnChanged(fText);
+        }
+      }
+      event.handle();
+    } else {
+      Drawable::onSemanticAction(event);
+    }
   }
 
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {

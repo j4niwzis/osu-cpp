@@ -226,13 +226,14 @@ public:
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
   // Hit testing walks the tree from the front, so the logo answers before the
   // buttons it overlaps.
   [[nodiscard]] int hit(float x, float y) {
     fPending = kNothing;
     if (fScene) {
-      fScene->click(x, y);
+      fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
     return fPending;
   }
@@ -562,6 +563,9 @@ public:
     auto result = fMenu.finishFrame();
     result.fWantsAnotherFrame = result.fWantsAnotherFrame || fMoving;
     return result;
+  }
+  [[nodiscard]] scene::Drawable *sceneRoot() noexcept {
+    return fMenu.sceneRoot();
   }
   [[nodiscard]] const char *takeFullDamage() {
     return std::exchange(fFullDamage, nullptr);
