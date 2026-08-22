@@ -578,6 +578,30 @@ struct Semantics {
 
 // ---- the node ------------------------------------------------------------
 
+// A non-owning scene-root reference that becomes null when the tree is
+// destroyed. Routers and platform adapters can keep one across screen
+// changes without extending the tree's lifetime or risking a dangling raw
+// pointer.
+class SceneRootHandle {
+public:
+  SceneRootHandle() = default;
+
+  [[nodiscard]] Drawable *get() const noexcept {
+    const std::shared_ptr<Drawable *> root = fRoot.lock();
+    return root ? *root : nullptr;
+  }
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return this->get() != nullptr;
+  }
+
+private:
+  explicit SceneRootHandle(std::weak_ptr<Drawable *> root)
+      : fRoot(std::move(root)) {}
+
+  std::weak_ptr<Drawable *> fRoot;
+  friend class Drawable;
+};
+
 class Drawable {
 public:
   using SkiffNodeType = Drawable;
@@ -585,7 +609,19 @@ public:
   Drawable() : fSemanticId(nextSemanticId()) {}
   Drawable(const Drawable &) = delete;
   Drawable &operator=(const Drawable &) = delete;
-  virtual ~Drawable() = default;
+  virtual ~Drawable() {
+    if (fRootLifetime) {
+      *fRootLifetime = nullptr;
+    }
+  }
+
+  [[nodiscard]] SceneRootHandle rootHandle() {
+    Drawable *root = this->inputRoot();
+    if (!root->fRootLifetime) {
+      root->fRootLifetime = std::make_shared<Drawable *>(root);
+    }
+    return SceneRootHandle(root->fRootLifetime);
+  }
 
 protected:
   // -- layout inputs, set by whoever builds the tree
@@ -2166,6 +2202,7 @@ private:
   // root without a second allocation or a wrapper object.
   Drawable *fPointerCapture = nullptr;
   Drawable *fFocused = nullptr;
+  std::shared_ptr<Drawable *> fRootLifetime;
   const std::uint64_t fSemanticId;
   std::vector<StyleRole> fStyleRoles;
   bool fSelected = false;
@@ -2274,9 +2311,18 @@ bool StaticStyleSheet<Rules...>::usesState(const Drawable &node,
 // their hover while covered instead of repainting state hidden by the modal.
 class InputRouter {
 public:
-  struct Layer {
-    Drawable *fRoot = nullptr;
+  class Layer {
+  public:
+    Layer() = default;
+    Layer(Drawable *root, bool modal = false)
+        : fModal(modal),
+          fRoot(root != nullptr ? root->rootHandle() : SceneRootHandle{}) {}
+
+    [[nodiscard]] Drawable *root() const noexcept { return fRoot.get(); }
     bool fModal = false;
+
+  private:
+    SceneRootHandle fRoot;
   };
 
   void setLayers(std::span<const Layer> layers) {
@@ -2284,38 +2330,40 @@ public:
     // so it could immediately inspect a widget callback. Adopt that capture
     // before changing the stack; subsequent move/up events still belong to
     // the same root.
-    Drawable *capturedRoot = fCapturedRoot;
+    Drawable *capturedRoot = fCapturedRoot.get();
     if (capturedRoot == nullptr) {
       const auto captured = std::ranges::find_if(
           fLayers, [](const Layer &layer) {
-            return layer.fRoot != nullptr &&
-                   layer.fRoot->capturedNode() != nullptr;
+            Drawable *root = layer.root();
+            return root != nullptr && root->capturedNode() != nullptr;
           });
       if (captured != fLayers.end()) {
-        capturedRoot = captured->fRoot;
+        capturedRoot = captured->root();
       }
     }
     if (capturedRoot == nullptr) {
       const auto captured = std::ranges::find_if(
           layers, [](const Layer &layer) {
-            return layer.fRoot != nullptr &&
-                   layer.fRoot->capturedNode() != nullptr;
+            Drawable *root = layer.root();
+            return root != nullptr && root->capturedNode() != nullptr;
           });
       if (captured != layers.end()) {
-        capturedRoot = captured->fRoot;
+        capturedRoot = captured->root();
       }
     }
 
     if (capturedRoot != nullptr) {
       const auto captured = std::ranges::find_if(
           layers, [capturedRoot](const Layer &layer) {
-            return layer.fRoot == capturedRoot;
+            return layer.root() == capturedRoot;
           });
       const bool covered =
           captured != layers.end() &&
           std::ranges::any_of(
               std::ranges::subrange(captured + 1, layers.end()),
-              [](const Layer &layer) { return layer.fModal; });
+              [](const Layer &layer) {
+                return layer.fModal && layer.root() != nullptr;
+              });
       if (captured == layers.end() || covered) {
         PointerEvent cancel;
         cancel.fAction = PointerAction::kCancel;
@@ -2323,33 +2371,36 @@ public:
         capturedRoot = nullptr;
       }
     }
-    fCapturedRoot = capturedRoot;
+    fCapturedRoot = capturedRoot != nullptr ? capturedRoot->rootHandle()
+                                            : SceneRootHandle{};
     fLayers.assign(layers.begin(), layers.end());
   }
 
   bool pointer(PointerEvent event) {
-    if (fCapturedRoot != nullptr) {
-      const bool handled = fCapturedRoot->dispatchPointer(event);
-      if (fCapturedRoot->capturedNode() == nullptr) {
-        fCapturedRoot = nullptr;
+    if (Drawable *capturedRoot = fCapturedRoot.get()) {
+      const bool handled = capturedRoot->dispatchPointer(event);
+      if (capturedRoot->capturedNode() == nullptr) {
+        fCapturedRoot = {};
       }
       return handled;
     }
+    fCapturedRoot = {};
     for (auto it = fLayers.rbegin(); it != fLayers.rend(); ++it) {
-      if (it->fRoot == nullptr) {
+      Drawable *root = it->root();
+      if (root == nullptr) {
         continue;
       }
-      const bool handled = it->fRoot->dispatchPointer(event);
-      if (it->fRoot->capturedNode() != nullptr) {
-        fCapturedRoot = it->fRoot;
+      const bool handled = root->dispatchPointer(event);
+      if (root->capturedNode() != nullptr) {
+        fCapturedRoot = root->rootHandle();
         if (event.fAction == PointerAction::kDown) {
-          this->ownFocus(it->fRoot);
+          this->ownFocus(root);
         }
         return true;
       }
       if (handled) {
         if (event.fAction == PointerAction::kDown) {
-          this->ownFocus(it->fRoot);
+          this->ownFocus(root);
         }
         return true;
       }
@@ -2365,10 +2416,11 @@ public:
       return this->focusNext(event.fShift);
     }
     for (auto it = fLayers.rbegin(); it != fLayers.rend(); ++it) {
-      if (it->fRoot == nullptr) {
+      Drawable *root = it->root();
+      if (root == nullptr) {
         continue;
       }
-      if (it->fRoot->dispatchKey(event)) {
+      if (root->dispatchKey(event)) {
         return true;
       }
       if (it->fModal) {
@@ -2380,11 +2432,11 @@ public:
 
   bool text(TextInputEvent event) {
     for (auto it = fLayers.rbegin(); it != fLayers.rend(); ++it) {
-      if (it->fRoot == nullptr) {
+      Drawable *root = it->root();
+      if (root == nullptr) {
         continue;
       }
-      if (it->fRoot->focusedNode() != nullptr &&
-          it->fRoot->dispatchText(event)) {
+      if (root->focusedNode() != nullptr && root->dispatchText(event)) {
         return true;
       }
       if (it->fModal) {
@@ -2396,12 +2448,13 @@ public:
 
   bool semantic(std::uint64_t id, SemanticActionEvent event) {
     for (auto it = fLayers.rbegin(); it != fLayers.rend(); ++it) {
-      if (it->fRoot == nullptr) {
+      Drawable *root = it->root();
+      if (root == nullptr) {
         continue;
       }
-      if (it->fRoot->dispatchSemantic(id, event)) {
+      if (root->dispatchSemantic(id, event)) {
         if (event.fAction == SemanticAction::kFocus) {
-          this->ownFocus(it->fRoot);
+          this->ownFocus(root);
         }
         return true;
       }
@@ -2414,19 +2467,14 @@ public:
 
   [[nodiscard]] std::vector<Semantics> semantics() const {
     std::vector<Semantics> out;
-    std::size_t first = 0;
-    for (std::size_t i = fLayers.size(); i > 0; --i) {
-      if (fLayers[i - 1].fModal) {
-        first = i - 1;
-        break;
-      }
-    }
+    const std::size_t first = this->firstActiveLayer();
     for (std::size_t i = first; i < fLayers.size(); ++i) {
       const Layer &layer = fLayers[i];
-      if (layer.fRoot == nullptr) {
+      Drawable *root = layer.root();
+      if (root == nullptr) {
         continue;
       }
-      auto tree = layer.fRoot->semanticsTree();
+      auto tree = root->semanticsTree();
       const int base = static_cast<int>(out.size());
       for (Semantics &node : tree) {
         if (node.fParent >= 0) {
@@ -2447,15 +2495,16 @@ private:
     // keeps its focus so closing a modal restores the user's prior position.
     for (std::size_t i = this->firstActiveLayer(); i < fLayers.size(); ++i) {
       Layer &layer = fLayers[i];
-      if (layer.fRoot != nullptr && layer.fRoot != owner) {
-        layer.fRoot->setFocusedNode(nullptr);
+      Drawable *root = layer.root();
+      if (root != nullptr && root != owner) {
+        root->setFocusedNode(nullptr);
       }
     }
   }
 
   [[nodiscard]] std::size_t firstActiveLayer() const {
     for (std::size_t i = fLayers.size(); i > 0; --i) {
-      if (fLayers[i - 1].fModal) {
+      if (fLayers[i - 1].fModal && fLayers[i - 1].root() != nullptr) {
         return i - 1;
       }
     }
@@ -2465,7 +2514,7 @@ private:
   bool focusNext(bool backwards) {
     std::vector<std::pair<Drawable *, Drawable *>> nodes;
     for (std::size_t i = this->firstActiveLayer(); i < fLayers.size(); ++i) {
-      Drawable *root = fLayers[i].fRoot;
+      Drawable *root = fLayers[i].root();
       if (root == nullptr) {
         continue;
       }
@@ -2492,8 +2541,9 @@ private:
                         : (index + 1) % nodes.size();
     }
     for (std::size_t i = this->firstActiveLayer(); i < fLayers.size(); ++i) {
-      if (fLayers[i].fRoot != nullptr && fLayers[i].fRoot != nodes[index].first) {
-        fLayers[i].fRoot->setFocusedNode(nullptr);
+      Drawable *root = fLayers[i].root();
+      if (root != nullptr && root != nodes[index].first) {
+        root->setFocusedNode(nullptr);
       }
     }
     nodes[index].first->setFocusedNode(nodes[index].second);
@@ -2501,7 +2551,7 @@ private:
   }
 
   std::vector<Layer> fLayers;
-  Drawable *fCapturedRoot = nullptr;
+  SceneRootHandle fCapturedRoot;
 };
 
 // Builds a detached node -- a screen's root, or anything handed to somebody

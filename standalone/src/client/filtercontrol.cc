@@ -336,6 +336,10 @@ private:
         {.fill = true}, "type to search");
     fSearchBox->setTheme(kControlTheme);
     fSearchBox->setTrailingInset(92.0f);
+    fSearchBox->fOnChanged = [this](std::string_view text) {
+      fFilterText = text;
+      fDirty = true;
+    };
     fCount = search->add<nodes::Text>(
         {.roles = {scene::role<filter_style::Count>}}, "0 sets", 13.0f,
         skia::kWhite);

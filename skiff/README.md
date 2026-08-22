@@ -108,6 +108,11 @@ separate from committed UTF-8. Modal layers cancel covered pointer capture,
 scope keyboard traversal, retain the previous focus for restoration, and hide
 covered layers from `semantics()`.
 
+Router layers hold `SceneRootHandle`s rather than owning or retaining raw
+pointers. Destroying or replacing a registered scene therefore makes its
+layer and any capture inert; callers do not have to race to unregister a tree
+before releasing it.
+
 Widgets expose a platform-neutral semantics tree with stable node IDs, roles,
 labels, values, selection, disabled and focus state. The same IDs accept
 focus, activation, increment, decrement and value-setting actions. A

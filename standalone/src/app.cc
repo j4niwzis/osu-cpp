@@ -1118,6 +1118,10 @@ private:
         }
         std::string utf8;
         this->appendUtf8(utf8, static_cast<std::uint32_t>(ev.fA));
+        if (this->routeText(utf8)) {
+          fLibrary.markDirty();
+          break;
+        }
         fFilter.appendText(utf8);
         fLibrary.markDirty();
         break;
@@ -1127,8 +1131,12 @@ private:
           fSwallowChar = false;
           break;
         }
-        this->appendUtf8(fListing.filters().fQuery,
-                         static_cast<std::uint32_t>(ev.fA));
+        std::string utf8;
+        this->appendUtf8(utf8, static_cast<std::uint32_t>(ev.fA));
+        if (this->routeText(utf8)) {
+          break;
+        }
+        fListing.filters().fQuery += utf8;
         fListing.queryEdited();
         fListing.scrollToStart(); // onTypingStarted
       }
@@ -1182,6 +1190,25 @@ private:
     }
     if (action == glfw::kPress && key == glfw::kKeyTab &&
         this->routeKey(skiff::scene::Key::kTab, shift)) {
+      return;
+    }
+    std::optional<skiff::scene::Key> editingKey;
+    if (key == glfw::kKeyBackspace) {
+      editingKey = skiff::scene::Key::kBackspace;
+    } else if (key == glfw::kKeyDelete) {
+      editingKey = skiff::scene::Key::kDelete;
+    } else if (key == glfw::kKeyLeft) {
+      editingKey = skiff::scene::Key::kLeft;
+    } else if (key == glfw::kKeyRight) {
+      editingKey = skiff::scene::Key::kRight;
+    }
+    if (action == glfw::kPress && editingKey &&
+        this->routeKey(*editingKey, shift)) {
+      if (fState == State::kSongSelect &&
+          (*editingKey == skiff::scene::Key::kBackspace ||
+           *editingKey == skiff::scene::Key::kDelete)) {
+        fLibrary.markDirty();
+      }
       return;
     }
     if (action == glfw::kPress && key == glfw::kKeyEscape) {
@@ -1523,6 +1550,17 @@ private:
     event.fKey = key;
     event.fShift = shift;
     return fInputRouter.key(event);
+  }
+
+  bool routeText(std::string_view text) {
+    if (fState == State::kPlaying || text.empty()) {
+      return false;
+    }
+    this->refreshInputLayers();
+    skiff::scene::TextInputEvent event;
+    event.fText = text;
+    event.fCommit = true;
+    return fInputRouter.text(event);
   }
 
   void clickAt(float x, float y) {

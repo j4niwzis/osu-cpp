@@ -1226,6 +1226,10 @@ private:
         {.roles = {scene::role<style::SearchBox>}}, "type in keywords...");
     fSearchBox->setSearchIcon(true);
     fSearchBox->setTheme(kTextBoxTheme);
+    fSearchBox->fOnChanged = [this](std::string_view text) {
+      fFilters.fQuery = text;
+      fScrollToStart = true;
+    };
 
     // The filter rows, indented 10 and spaced 5, in lazer's order.
     auto rows = scene::make<nodes::FillFlow>(

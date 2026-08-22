@@ -458,6 +458,56 @@ TEST(Input, PointerFocusHasOneOwnerAcrossSceneRoots) {
   EXPECT_EQ(secondRoot->focusedNode(), nullptr);
 }
 
+TEST(Input, DestroyedSceneRootMakesRetainedLayerInert) {
+  std::vector<std::string> events;
+  InputRouter router;
+  {
+    auto root = make<InputProbe>({.fill = true}, &events, "temporary", true);
+    root->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+    const std::array<InputRouter::Layer, 1> layers = {
+        InputRouter::Layer{root.get(), false}};
+    router.setLayers(layers);
+
+    PointerEvent down;
+    down.fAction = PointerAction::kDown;
+    down.fX = 10.0f;
+    down.fY = 10.0f;
+    EXPECT_TRUE(router.pointer(down));
+    EXPECT_EQ(root->capturedNode(), root.get());
+  }
+
+  PointerEvent move;
+  move.fAction = PointerAction::kMove;
+  move.fX = 20.0f;
+  move.fY = 20.0f;
+  EXPECT_FALSE(router.pointer(move));
+  EXPECT_TRUE(router.semantics().empty());
+
+  KeyEvent tab;
+  tab.fKey = Key::kTab;
+  EXPECT_FALSE(router.key(tab));
+  router.setLayers({});
+
+  auto behind = make<InputProbe>({.fill = true}, &events, "behind", true);
+  behind->layoutIfNeeded(skia::SkRect::MakeWH(100.0f, 60.0f));
+  {
+    auto modal = make<Drawable>({.fill = true});
+    const std::array<InputRouter::Layer, 2> layers = {
+        InputRouter::Layer{behind.get(), false},
+        InputRouter::Layer{modal.get(), true}};
+    router.setLayers(layers);
+  }
+
+  // An expired modal is not an invisible input shield over live layers.
+  EXPECT_EQ(router.semantics().size(), 1u);
+  PointerEvent down;
+  down.fAction = PointerAction::kDown;
+  down.fX = 10.0f;
+  down.fY = 10.0f;
+  EXPECT_TRUE(router.pointer(down));
+  EXPECT_EQ(behind->capturedNode(), behind.get());
+}
+
 TEST(Frame, RuntimePropertiesInvalidateAndReportContinuationTogether) {
   auto root = make<Drawable>({.fill = true});
   auto *child = root->add<Drawable>({.width = 20.0f, .height = 10.0f});
