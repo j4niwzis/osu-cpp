@@ -1211,37 +1211,6 @@ private:
            a.fVisible == b.fVisible;
   }
 
-  [[nodiscard]] static CommonStyleValues
-  styledValues(CommonStyleValues values, const Style &style) {
-#define SKIFF_STYLE_VALUE(declaration, member)                                 \
-  if (style.declaration)                                                       \
-  values.member = *style.declaration
-    SKIFF_STYLE_VALUE(anchor, fAnchor);
-    SKIFF_STYLE_VALUE(origin, fOrigin);
-    SKIFF_STYLE_VALUE(x, fX);
-    SKIFF_STYLE_VALUE(y, fY);
-    SKIFF_STYLE_VALUE(width, fWidth);
-    SKIFF_STYLE_VALUE(height, fHeight);
-    SKIFF_STYLE_VALUE(relativeSize, fRelativeSize);
-    SKIFF_STYLE_VALUE(autoSize, fAutoSize);
-    SKIFF_STYLE_VALUE(grow, fGrow);
-    SKIFF_STYLE_VALUE(minWidth, fMinWidth);
-    SKIFF_STYLE_VALUE(maxWidth, fMaxWidth);
-    SKIFF_STYLE_VALUE(minHeight, fMinHeight);
-    SKIFF_STYLE_VALUE(maxHeight, fMaxHeight);
-    SKIFF_STYLE_VALUE(alignSelf, fAlignSelf);
-    SKIFF_STYLE_VALUE(depth, fDepth);
-    SKIFF_STYLE_VALUE(margin, fMargin);
-    SKIFF_STYLE_VALUE(padding, fPadding);
-    SKIFF_STYLE_VALUE(cornerRadius, fCornerRadius);
-    SKIFF_STYLE_VALUE(masking, fMasking);
-    SKIFF_STYLE_VALUE(scale, fScale);
-    SKIFF_STYLE_VALUE(alpha, fAlpha);
-    SKIFF_STYLE_VALUE(visible, fVisible);
-#undef SKIFF_STYLE_VALUE
-    return values;
-  }
-
   void setStyledProperty(Property property, float target,
                          float previousTarget, double durationMs, Easing easing,
                          bool animate) {
@@ -1285,42 +1254,119 @@ private:
       fStyledTarget = fStyleBase;
     }
 
-    const CommonStyleValues target =
-        active ? styledValues(fStyleBase, style) : fStyleBase;
-    const CommonStyleValues previousTarget = fStyledTarget;
-    const bool changed = !sameCommon(target, previousTarget);
+    // A sheet owns only the properties it declares. Starting from the base
+    // here used to reset unrelated run-time state whenever hover caused a
+    // restyle: a dialog whose stylesheet says nothing about y would jump
+    // back to its pre-animation y, and a measured popup could become visible
+    // again. A declaration which stops matching is restored to its base; a
+    // property which was never declared is left exactly where its owner put
+    // it.
+    const CommonStyleValues current = this->commonStyleValues();
+
+    // Keep the restoration value current while the application owns a
+    // property. If a newly-added role starts styling a position after the
+    // application moved it, removing that role must reveal the new position,
+    // not the value from when the sheet was first installed.
+#define SKIFF_REFRESH_BASE(declaration, member)                               \
+  if (!fResolvedStyle.declaration) {                                         \
+    fStyleBase.member = current.member;                                      \
+  }
+    SKIFF_REFRESH_BASE(anchor, fAnchor);
+    SKIFF_REFRESH_BASE(origin, fOrigin);
+    SKIFF_REFRESH_BASE(x, fX);
+    SKIFF_REFRESH_BASE(y, fY);
+    SKIFF_REFRESH_BASE(width, fWidth);
+    SKIFF_REFRESH_BASE(height, fHeight);
+    SKIFF_REFRESH_BASE(relativeSize, fRelativeSize);
+    SKIFF_REFRESH_BASE(autoSize, fAutoSize);
+    SKIFF_REFRESH_BASE(grow, fGrow);
+    SKIFF_REFRESH_BASE(minWidth, fMinWidth);
+    SKIFF_REFRESH_BASE(maxWidth, fMaxWidth);
+    SKIFF_REFRESH_BASE(minHeight, fMinHeight);
+    SKIFF_REFRESH_BASE(maxHeight, fMaxHeight);
+    SKIFF_REFRESH_BASE(alignSelf, fAlignSelf);
+    SKIFF_REFRESH_BASE(depth, fDepth);
+    SKIFF_REFRESH_BASE(margin, fMargin);
+    SKIFF_REFRESH_BASE(padding, fPadding);
+    SKIFF_REFRESH_BASE(cornerRadius, fCornerRadius);
+    SKIFF_REFRESH_BASE(masking, fMasking);
+    SKIFF_REFRESH_BASE(scale, fScale);
+    SKIFF_REFRESH_BASE(alpha, fAlpha);
+    SKIFF_REFRESH_BASE(visible, fVisible);
+#undef SKIFF_REFRESH_BASE
+
+    CommonStyleValues target = current;
+#define SKIFF_STYLE_TARGET(declaration, member)                               \
+  if (style.declaration) {                                                    \
+    target.member = *style.declaration;                                      \
+  } else if (fResolvedStyle.declaration) {                                   \
+    target.member = fStyleBase.member;                                       \
+  }
+    SKIFF_STYLE_TARGET(anchor, fAnchor);
+    SKIFF_STYLE_TARGET(origin, fOrigin);
+    SKIFF_STYLE_TARGET(x, fX);
+    SKIFF_STYLE_TARGET(y, fY);
+    SKIFF_STYLE_TARGET(width, fWidth);
+    SKIFF_STYLE_TARGET(height, fHeight);
+    SKIFF_STYLE_TARGET(relativeSize, fRelativeSize);
+    SKIFF_STYLE_TARGET(autoSize, fAutoSize);
+    SKIFF_STYLE_TARGET(grow, fGrow);
+    SKIFF_STYLE_TARGET(minWidth, fMinWidth);
+    SKIFF_STYLE_TARGET(maxWidth, fMaxWidth);
+    SKIFF_STYLE_TARGET(minHeight, fMinHeight);
+    SKIFF_STYLE_TARGET(maxHeight, fMaxHeight);
+    SKIFF_STYLE_TARGET(alignSelf, fAlignSelf);
+    SKIFF_STYLE_TARGET(depth, fDepth);
+    SKIFF_STYLE_TARGET(margin, fMargin);
+    SKIFF_STYLE_TARGET(padding, fPadding);
+    SKIFF_STYLE_TARGET(cornerRadius, fCornerRadius);
+    SKIFF_STYLE_TARGET(masking, fMasking);
+    SKIFF_STYLE_TARGET(scale, fScale);
+    SKIFF_STYLE_TARGET(alpha, fAlpha);
+    SKIFF_STYLE_TARGET(visible, fVisible);
+#undef SKIFF_STYLE_TARGET
+
+    const bool changed = !sameCommon(target, current);
     const double duration = style.transitionMs.value_or(0.0);
     const Easing easing = style.transitionEasing.value_or(Easing::kOutQuint);
 
-    fAnchor = target.fAnchor;
-    fOrigin = target.fOrigin;
-    fRelativeSizeAxes = target.fRelativeSize;
-    fAutoSizeAxes = target.fAutoSize;
-    fGrowAxes = target.fGrow;
-    fMinWidth = target.fMinWidth;
-    fMaxWidth = target.fMaxWidth;
-    fMinHeight = target.fMinHeight;
-    fMaxHeight = target.fMaxHeight;
-    fAlignSelf = target.fAlignSelf;
-    fDepth = target.fDepth;
-    fMargin = target.fMargin;
-    fPadding = target.fPadding;
-    fCornerRadius = target.fCornerRadius;
-    fMasking = target.fMasking;
-    fVisible = target.fVisible;
+#define SKIFF_STYLE_DIRECT(declaration, targetMember, liveMember)             \
+  if (style.declaration || fResolvedStyle.declaration) {                      \
+    liveMember = target.targetMember;                                         \
+  }
+    SKIFF_STYLE_DIRECT(anchor, fAnchor, fAnchor);
+    SKIFF_STYLE_DIRECT(origin, fOrigin, fOrigin);
+    SKIFF_STYLE_DIRECT(relativeSize, fRelativeSize, fRelativeSizeAxes);
+    SKIFF_STYLE_DIRECT(autoSize, fAutoSize, fAutoSizeAxes);
+    SKIFF_STYLE_DIRECT(grow, fGrow, fGrowAxes);
+    SKIFF_STYLE_DIRECT(minWidth, fMinWidth, fMinWidth);
+    SKIFF_STYLE_DIRECT(maxWidth, fMaxWidth, fMaxWidth);
+    SKIFF_STYLE_DIRECT(minHeight, fMinHeight, fMinHeight);
+    SKIFF_STYLE_DIRECT(maxHeight, fMaxHeight, fMaxHeight);
+    SKIFF_STYLE_DIRECT(alignSelf, fAlignSelf, fAlignSelf);
+    SKIFF_STYLE_DIRECT(depth, fDepth, fDepth);
+    SKIFF_STYLE_DIRECT(margin, fMargin, fMargin);
+    SKIFF_STYLE_DIRECT(padding, fPadding, fPadding);
+    SKIFF_STYLE_DIRECT(cornerRadius, fCornerRadius, fCornerRadius);
+    SKIFF_STYLE_DIRECT(masking, fMasking, fMasking);
+    SKIFF_STYLE_DIRECT(visible, fVisible, fVisible);
+#undef SKIFF_STYLE_DIRECT
 
-    this->setStyledProperty(Property::kX, target.fX, previousTarget.fX,
-                            duration, easing, animate);
-    this->setStyledProperty(Property::kY, target.fY, previousTarget.fY,
-                            duration, easing, animate);
-    this->setStyledProperty(Property::kWidth, target.fWidth,
-                            previousTarget.fWidth, duration, easing, animate);
-    this->setStyledProperty(Property::kHeight, target.fHeight,
-                            previousTarget.fHeight, duration, easing, animate);
-    this->setStyledProperty(Property::kScale, target.fScale,
-                            previousTarget.fScale, duration, easing, animate);
-    this->setStyledProperty(Property::kAlpha, target.fAlpha,
-                            previousTarget.fAlpha, duration, easing, animate);
+#define SKIFF_STYLE_ANIMATED(declaration, member, property)                   \
+  if (style.declaration || fResolvedStyle.declaration) {                      \
+    const float previous = fResolvedStyle.declaration                        \
+                               ? fStyledTarget.member                         \
+                               : current.member;                              \
+    this->setStyledProperty(property, target.member, previous, duration,      \
+                            easing, animate);                                 \
+  }
+    SKIFF_STYLE_ANIMATED(x, fX, Property::kX);
+    SKIFF_STYLE_ANIMATED(y, fY, Property::kY);
+    SKIFF_STYLE_ANIMATED(width, fWidth, Property::kWidth);
+    SKIFF_STYLE_ANIMATED(height, fHeight, Property::kHeight);
+    SKIFF_STYLE_ANIMATED(scale, fScale, Property::kScale);
+    SKIFF_STYLE_ANIMATED(alpha, fAlpha, Property::kAlpha);
+#undef SKIFF_STYLE_ANIMATED
 
     fStyledTarget = target;
     if (changed) {
@@ -1463,9 +1509,14 @@ public:
 
 // Supplies a concrete node key without RTTI. The scene still owns drawables
 // through Drawable, so an explicit-object member cannot recover Derived at
-// selector-matching time; this one-method CRTP bridge retains it.
-template <class Derived> class TypedDrawable : public Drawable {
+// selector-matching time; this one-method CRTP bridge retains it. Base is
+// configurable so an opinionated widget can remain a FillFlow (or any other
+// existing drawable) while receiving its own selector identity.
+template <class Derived, class Base = Drawable>
+  requires std::derived_from<Base, Drawable>
+class TypedDrawable : public Base {
 public:
+  using Base::Base;
   using SkiffNodeType = Derived;
 
   [[nodiscard]] const detail::StyleKey *
@@ -1481,7 +1532,7 @@ bool StyleRule<Node, Roles...>::matches(const Drawable &node) const {
                   "a style selector must name a Drawable type");
     static_assert(
         std::same_as<typename Node::SkiffNodeType, Node>,
-        "a selectable custom node must derive from TypedDrawable<T>");
+        "a selectable custom node must derive from TypedDrawable<T, Base>");
     if (node.styleTypeKey() != &detail::styleNodeKey<Node>) {
       return false;
     }

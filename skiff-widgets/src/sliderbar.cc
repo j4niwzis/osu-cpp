@@ -23,7 +23,7 @@ export namespace skiff::widgets {
 // the pointer goes, which is the screen's business. fractionAt turns a
 // pointer position into a value using the bar's own bounds, which is the part
 // the screen would otherwise work out from a rectangle it kept a copy of.
-class SliderBar : public Drawable {
+class SliderBar : public skiff::scene::TypedDrawable<SliderBar> {
 public:
   SliderBar() {
     fRelativeSizeAxes = Axes::kX;
@@ -98,7 +98,7 @@ private:
 
 // A pill that slides its knob from one end to the other. The state is set
 // from outside; what is animated here is only the knob catching up with it.
-class Toggle : public Drawable {
+class Toggle : public skiff::scene::TypedDrawable<Toggle> {
 public:
   Toggle() {
     fWidth = 40.0f;

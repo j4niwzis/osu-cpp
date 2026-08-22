@@ -23,7 +23,7 @@ export namespace skiff::widgets {
 // how to say that one of them was clicked. What a tab means is the caller's
 // business, and so is anything drawn beside the selected one, which is what
 // drawDecoration is for.
-class TabBar : public Drawable {
+class TabBar : public skiff::scene::TypedDrawable<TabBar> {
 public:
   struct Tab {
     std::string fLabel;

@@ -30,6 +30,276 @@ inline constexpr float kTileSize = 40.0f;
 inline constexpr float kTileSpacing = 2.0f;
 inline constexpr float kHeaderHeight = 250.0f;
 
+// The page describes what each node means; its theme describes how that role
+// is presented. Keeping the role names as types makes a misspelling a compile
+// error and lets the compiler specialise the whole cascade.
+namespace style {
+struct Root;
+struct Scroll;
+struct Column;
+struct Header;
+struct Cover;
+struct HeaderLeft;
+struct Title;
+struct Badges;
+struct Badge;
+struct BadgeText;
+struct Artist;
+struct Mapper;
+struct MapperLabel;
+struct MapperName;
+struct Status;
+struct StatusText;
+struct Buttons;
+struct PlayButton;
+struct ButtonBackground;
+struct Preview;
+struct DownloadButton;
+struct DownloadBackground;
+struct DownloadDone;
+struct DownloadText;
+struct Picker;
+struct PickerSummary;
+struct Tiles;
+struct Tile;
+struct TileBackground;
+struct Star;
+struct TileText;
+struct DifficultyName;
+struct Info;
+struct InfoColumns;
+struct InfoLeft;
+struct Heading;
+struct StarBadge;
+struct StarBadgeText;
+struct DifficultyHeading;
+struct Stats;
+struct Stat;
+struct StatLabel;
+struct StatValue;
+struct StatTrack;
+struct StatFill;
+struct MetadataRow;
+struct MetadataLabel;
+struct MetadataValue;
+struct RatingsColumn;
+struct RatingsTitle;
+struct RatingsGraph;
+} // namespace style
+
+struct SetPageTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::select<nodes::Box, style::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .backgroundColour = listing::kBackground6})
+          .rule(scene::select<nodes::ScrollContainer, style::Scroll>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::FillFlow, style::Column>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Box, style::Header>(),
+                {.width = 1.0f,
+                 .height = kHeaderHeight,
+                 .relativeSize = scene::Axes::kX,
+                 .masking = true,
+                 .backgroundColour = listing::kBackground5})
+          .rule(scene::selectAny<style::Cover>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::FillFlow, style::HeaderLeft>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .padding = scene::Margin{kYPadding,
+                                          kRightWidth + kHorizontalPadding +
+                                              10.0f,
+                                          kYPadding, kHorizontalPadding}})
+          .rule(scene::select<nodes::Text, style::Title>(),
+                {.colour = listing::kContent1,
+                 .fontSize = 30.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::FillFlow, style::Badges>(),
+                {.autoSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Box, style::Badge>(),
+                {.autoSize = scene::Axes::kBoth,
+                 .padding = scene::Margin{2.0f, 6.0f, 2.0f, 6.0f},
+                 .cornerRadius = 3.0f})
+          .rule(scene::select<nodes::Text, style::BadgeText>(),
+                {.colour = listing::kBackground6,
+                 .fontSize = 10.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::Text, style::Artist>(),
+                {.colour = listing::kContent1, .fontSize = 20.0f})
+          .rule(scene::select<nodes::FillFlow, style::Mapper>(),
+                {.autoSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Text, style::MapperLabel>(),
+                {.colour = listing::kContent2, .fontSize = 14.0f})
+          .rule(scene::select<nodes::Text, style::MapperName>(),
+                {.colour = listing::kContent1,
+                 .fontSize = 14.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::Box, style::Status>(),
+                {.autoSize = scene::Axes::kBoth,
+                 .margin = scene::Margin{6.0f, 0.0f, 0.0f, 0.0f},
+                 .padding = scene::Margin{2.0f, 10.0f, 2.0f, 10.0f},
+                 .cornerRadius = 9.0f,
+                 .backgroundColour = listing::kColour3})
+          .rule(scene::select<nodes::Text, style::StatusText>(),
+                {.colour = listing::kBackground6,
+                 .fontSize = 11.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::FillFlow, style::Buttons>(),
+                {.autoSize = scene::Axes::kBoth,
+                 .margin = scene::Margin{10.0f, 0.0f, 0.0f, 0.0f}})
+          .rule(scene::select<nodes::Clickable, style::PlayButton>(),
+                {.width = kButtonsHeight, .height = kButtonsHeight})
+          .rule(scene::select<nodes::Clickable, style::DownloadButton>(),
+                {.width = 240.0f, .height = kButtonsHeight})
+          .rule(scene::select<nodes::Box, style::ButtonBackground>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .cornerRadius = 6.0f})
+          .rule(scene::selectAny<style::Preview>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Box, style::DownloadBackground>(),
+                {.backgroundColour = listing::kColour3})
+          .rule(scene::select<nodes::Box, style::DownloadBackground,
+                              style::DownloadDone>(),
+                {.backgroundColour = listing::kBackground3})
+          .rule(scene::select<nodes::Text, style::DownloadText>(),
+                {.anchor = scene::Anchor::kCentre,
+                 .origin = scene::Anchor::kCentre,
+                 .colour = listing::kBackground6,
+                 .fontSize = 16.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::Text, style::DownloadText,
+                              style::DownloadDone>(),
+                {.colour = listing::kContent2})
+          .rule(scene::select<nodes::FillFlow, style::Picker>(),
+                {.anchor = scene::Anchor::kTopRight,
+                 .origin = scene::Anchor::kTopRight,
+                 .width = kRightWidth,
+                 .autoSize = scene::Axes::kY,
+                 .margin = scene::Margin{kYPadding, kHorizontalPadding, 0.0f,
+                                         0.0f}})
+          .rule(scene::select<nodes::Text, style::PickerSummary>(),
+                {.colour = listing::kContent2, .fontSize = 12.0f})
+          .rule(scene::select<nodes::FillFlow, style::Tiles>(),
+                {.width = kRightWidth, .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Clickable, style::Tile>(),
+                {.width = kTileSize, .height = kTileSize})
+          .rule(scene::select<nodes::Box, style::TileBackground>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .cornerRadius = 4.0f,
+                 .backgroundColour = listing::kBackground5})
+          .rule(scene::select<nodes::Box, style::TileBackground>().when(
+                    scene::StyleState::kSelected),
+                {.backgroundColour = listing::kBackground3})
+          .rule(scene::select<nodes::Box, style::Star>(),
+                {.anchor = scene::Anchor::kTopCentre,
+                 .origin = scene::Anchor::kTopCentre,
+                 .y = 6.0f,
+                 .width = 16.0f,
+                 .height = 16.0f,
+                 .cornerRadius = 8.0f})
+          .rule(scene::select<nodes::Text, style::TileText>(),
+                {.anchor = scene::Anchor::kBottomCentre,
+                 .origin = scene::Anchor::kBottomCentre,
+                 .y = -3.0f,
+                 .colour = listing::kContent2,
+                 .fontSize = 10.0f})
+          .rule(scene::select<nodes::Text, style::TileText>().when(
+                    scene::StyleState::kSelected),
+                {.colour = listing::kContent1, .fontBold = true})
+          .rule(scene::select<nodes::Text, style::DifficultyName>(),
+                {.colour = listing::kContent1,
+                 .fontSize = 16.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::Box, style::Info>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .padding = scene::Margin{kYPadding, kHorizontalPadding,
+                                          kYPadding, kHorizontalPadding},
+                 .backgroundColour = listing::kBackground5})
+          .rule(scene::select<nodes::FillFlow, style::InfoColumns>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::FillFlow, style::InfoLeft>(),
+                {.autoSize = scene::Axes::kY, .grow = scene::Axes::kX})
+          .rule(scene::select<nodes::FillFlow, style::Heading>(),
+                {.autoSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Box, style::StarBadge>(),
+                {.autoSize = scene::Axes::kBoth,
+                 .padding = scene::Margin{1.0f, 8.0f, 1.0f, 8.0f},
+                 .cornerRadius = 9.0f})
+          .rule(scene::select<nodes::Text, style::StarBadgeText>(),
+                {.colour = listing::kBackground6,
+                 .fontSize = 12.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::Text, style::DifficultyHeading>(),
+                {.colour = listing::kContent1,
+                 .fontSize = 16.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::FillFlow, style::Stats>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::FillFlow, style::Stat>(),
+                {.width = 0.25f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Text, style::StatLabel>(),
+                {.colour = listing::kContent2, .fontSize = 11.0f})
+          .rule(scene::select<nodes::Text, style::StatValue>(),
+                {.colour = listing::kContent1,
+                 .fontSize = 17.0f,
+                 .fontBold = true})
+          .rule(scene::select<nodes::Box, style::StatTrack>(),
+                {.width = 1.0f,
+                 .height = 4.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .margin = scene::Margin{0.0f, 16.0f, 0.0f, 0.0f},
+                 .cornerRadius = 2.0f,
+                 .backgroundColour = listing::kBackground6})
+          .rule(scene::select<nodes::Box, style::StatFill>(),
+                {.height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .cornerRadius = 2.0f,
+                 .backgroundColour = listing::kColour1})
+          .rule(scene::select<nodes::FillFlow, style::MetadataRow>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Text, style::MetadataLabel>(),
+                {.width = 110.0f,
+                 .colour = listing::kContent2,
+                 .fontSize = 11.0f})
+          .rule(scene::select<nodes::Text, style::MetadataValue>(),
+                {.grow = scene::Axes::kX,
+                 .colour = listing::kContent1,
+                 .fontSize = 13.0f})
+          .rule(scene::select<nodes::FillFlow, style::RatingsColumn>(),
+                {.width = kRightWidth, .autoSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Text, style::RatingsTitle>(),
+                {.colour = listing::kContent2, .fontSize = 12.0f})
+          .rule(scene::selectAny<style::RatingsGraph>(),
+                {.width = kRightWidth, .height = 110.0f});
+};
+
 // The cover's darkening, which the header text sits on: black at the left,
 // clear at the right.
 class CoverGradient : public scene::Drawable {
@@ -274,28 +544,32 @@ private:
   [[nodiscard]] std::unique_ptr<scene::Drawable> build(const Entry &e) {
     fPreviewGlyph = nullptr;
 
-    auto root = scene::make<nodes::Box>({.fill = true}, listing::kBackground6);
-    auto *scroll = root->add<nodes::ScrollContainer>({.fill = true});
+    auto root = scene::make<nodes::Box>(
+        {.roles = {scene::role<style::Root>}}, listing::kBackground6);
+    auto *scroll = root->add<nodes::ScrollContainer>(
+        {.roles = {scene::role<style::Scroll>}});
     auto *column = scroll->add<nodes::FillFlow>(
-        {.fillX = true, .autoSize = scene::Axes::kY},
+        {.roles = {scene::role<style::Column>}},
         nodes::FillFlow::Direction::kVertical);
 
     column->add(this->buildHeader(e));
     column->add(this->buildInfo(e));
+    root->setStyleSheet<SetPageTheme>();
     return root;
   }
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildHeader(const Entry &e) {
     auto header = scene::make<nodes::Box>(
-        {.fillX = true, .height = kHeaderHeight, .masking = true},
-        listing::kBackground5);
+        {.roles = {scene::role<style::Header>}}, listing::kBackground5);
 
     if (e.fPageCoverSt == Entry::Cover::kReady && e.fPageCover) {
-      header->add<nodes::Sprite>({.fill = true}, e.fPageCover);
+      header->add<nodes::Sprite>({.roles = {scene::role<style::Cover>}},
+                                 e.fPageCover);
     } else if (e.fThumbSt == Entry::Thumb::kReady && e.fThumb) {
-      header->add<nodes::Sprite>({.fill = true}, e.fThumb);
+      header->add<nodes::Sprite>({.roles = {scene::role<style::Cover>}},
+                                 e.fThumb);
     }
-    header->add<CoverGradient>({.fill = true});
+    header->add<CoverGradient>({.roles = {scene::role<style::Cover>}});
 
     header->add(this->buildHeaderLeft(e));
     header->add(this->buildPicker(e));
@@ -305,27 +579,24 @@ private:
   [[nodiscard]] std::unique_ptr<scene::Drawable>
   buildHeaderLeft(const Entry &e) {
     auto left = scene::make<nodes::FillFlow>(
-        {.fillX = true,
-         .autoSize = scene::Axes::kY,
-         .padding = {kYPadding, kRightWidth + kHorizontalPadding + 10.0f,
-                     kYPadding, kHorizontalPadding}},
+        {.roles = {scene::role<style::HeaderLeft>}},
         nodes::FillFlow::Direction::kVertical, 0.0f, 4.0f);
 
     left->add<nodes::Text>(
-        {}, e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, 30.0f,
+        {.roles = {scene::role<style::Title>}},
+        e.fTitleUnicode.empty() ? e.fTitle : e.fTitleUnicode, 30.0f,
         listing::kContent1, true);
 
     auto *badges = left->add<nodes::FillFlow>(
-        {.autoSize = scene::Axes::kBoth},
+        {.roles = {scene::role<style::Badges>}},
         nodes::FillFlow::Direction::kHorizontal, 4.0f, 0.0f);
     badges->fWrap = false;
     const auto badge = [&](const char *label, skia::SkColor colour) {
       badges
-          ->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
-                             .padding = {2.0f, 6.0f, 2.0f, 6.0f},
-                             .cornerRadius = 3.0f},
+          ->add<nodes::Box>({.roles = {scene::role<style::Badge>}},
                             colour)
-          ->add<nodes::Text>({}, label, 10.0f, listing::kBackground6, true);
+          ->add<nodes::Text>({.roles = {scene::role<style::BadgeText>}}, label,
+                             10.0f, listing::kBackground6, true);
     };
     if (e.fVideo) {
       badge("VIDEO", listing::kContent2);
@@ -344,24 +615,24 @@ private:
     }
 
     left->add<nodes::Text>(
-        {}, e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, 20.0f,
+        {.roles = {scene::role<style::Artist>}},
+        e.fArtistUnicode.empty() ? e.fArtist : e.fArtistUnicode, 20.0f,
         listing::kContent1, false);
 
-    auto *mapper =
-        left->add<nodes::FillFlow>({.autoSize = scene::Axes::kBoth},
-                                   nodes::FillFlow::Direction::kHorizontal);
+    auto *mapper = left->add<nodes::FillFlow>(
+        {.roles = {scene::role<style::Mapper>}},
+        nodes::FillFlow::Direction::kHorizontal);
     mapper->fWrap = false;
     mapper->fCrossAlign = scene::Align::kMiddle;
-    mapper->add<nodes::Text>({}, "mapped by ", 14.0f, listing::kContent2,
-                             false);
-    mapper->add<nodes::Text>({}, e.fCreator, 14.0f, listing::kContent1, true);
+    mapper->add<nodes::Text>({.roles = {scene::role<style::MapperLabel>}},
+                             "mapped by ", 14.0f, listing::kContent2, false);
+    mapper->add<nodes::Text>({.roles = {scene::role<style::MapperName>}},
+                             e.fCreator, 14.0f, listing::kContent1, true);
 
-    left->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
-                           .margin = {6.0f, 0.0f, 0.0f, 0.0f},
-                           .padding = {2.0f, 10.0f, 2.0f, 10.0f},
-                           .cornerRadius = 9.0f},
+    left->add<nodes::Box>({.roles = {scene::role<style::Status>}},
                           listing::kColour3)
-        ->add<nodes::Text>({}, e.fStatus.empty() ? "unknown" : e.fStatus, 11.0f,
+        ->add<nodes::Text>({.roles = {scene::role<style::StatusText>}},
+                           e.fStatus.empty() ? "unknown" : e.fStatus, 11.0f,
                            listing::kBackground6, true);
 
     left->add(this->buildButtons(e));
@@ -370,16 +641,18 @@ private:
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildButtons(const Entry &e) {
     auto row = scene::make<nodes::FillFlow>(
-        {.autoSize = scene::Axes::kBoth, .margin = {10.0f, 0.0f, 0.0f, 0.0f}},
+        {.roles = {scene::role<style::Buttons>}},
         nodes::FillFlow::Direction::kHorizontal, kButtonsSpacing, 0.0f);
     row->fWrap = false;
 
     auto *play = row->add<nodes::Clickable>(
-        {.width = kButtonsHeight, .height = kButtonsHeight},
+        {.roles = {scene::role<style::PlayButton>}},
         [this] { fPending = {Action::kPreview, 0}; });
-    play->add<nodes::Box>({.fill = true, .cornerRadius = 6.0f},
-                          listing::kBackground3);
-    fPreviewGlyph = play->add<PreviewGlyph>({.fill = true});
+    play->add<nodes::Box>(
+        {.roles = {scene::role<style::ButtonBackground>}},
+        listing::kBackground3);
+    fPreviewGlyph = play->add<PreviewGlyph>(
+        {.roles = {scene::role<style::Preview>}});
 
     const bool done = e.fSt == Entry::St::kDone;
     std::string label = "Download";
@@ -393,12 +666,22 @@ private:
     }
 
     auto *download = row->add<nodes::Clickable>(
-        {.width = 240.0f, .height = kButtonsHeight},
+        {.roles = {scene::role<style::DownloadButton>}},
         [this] { fPending = {Action::kDownload, 0}; });
-    download->add<nodes::Box>({.fill = true, .cornerRadius = 6.0f},
+    const auto doneRoles = done
+                               ? std::vector{scene::role<style::ButtonBackground>,
+                                             scene::role<style::DownloadBackground>,
+                                             scene::role<style::DownloadDone>}
+                               : std::vector{scene::role<style::ButtonBackground>,
+                                             scene::role<style::DownloadBackground>};
+    download->add<nodes::Box>({.roles = doneRoles},
                               done ? listing::kBackground3 : listing::kColour3);
+    const auto textRoles =
+        done ? std::vector{scene::role<style::DownloadText>,
+                           scene::role<style::DownloadDone>}
+             : std::vector{scene::role<style::DownloadText>};
     download->add<nodes::Text>(
-        {.place = scene::Anchor::kCentre}, label, 16.0f,
+        {.roles = textRoles}, label, 16.0f,
         done ? listing::kContent2 : listing::kBackground6, true);
     return row;
   }
@@ -406,20 +689,17 @@ private:
   // BeatmapPicker: a tile per difficulty over the set's counts.
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildPicker(const Entry &e) {
     auto right = scene::make<nodes::FillFlow>(
-        {.place = scene::Anchor::kTopRight,
-         .width = kRightWidth,
-         .autoSize = scene::Axes::kY,
-         .margin = {kYPadding, kHorizontalPadding, 0.0f, 0.0f}},
+        {.roles = {scene::role<style::Picker>}},
         nodes::FillFlow::Direction::kVertical, 0.0f, 6.0f);
 
     right->add<nodes::Text>(
-        {},
+        {.roles = {scene::role<style::PickerSummary>}},
         std::format("{} plays    {} favourites", e.fPlayCount,
                     e.fFavouriteCount),
         12.0f, listing::kContent2, false);
 
     auto *tiles = right->add<nodes::FillFlow>(
-        {.width = kRightWidth, .autoSize = scene::Axes::kY},
+        {.roles = {scene::role<style::Tiles>}},
         nodes::FillFlow::Direction::kHorizontal, kTileSpacing, kTileSpacing);
     for (std::size_t i = 0; i < e.fDiffs.size(); ++i) {
       const auto &diff = e.fDiffs[i];
@@ -427,28 +707,26 @@ private:
       const int index = static_cast<int>(i);
 
       auto *tile = tiles->add<nodes::Clickable>(
-          {.width = kTileSize, .height = kTileSize}, [this, index] {
+          {.roles = {scene::role<style::Tile>}}, [this, index] {
             fSelected = index;
             fPending = {Action::kSelectDiff, index};
           });
       tile->add<nodes::Box>(
-          {.fill = true, .cornerRadius = 4.0f},
+          {.roles = {scene::role<style::TileBackground>},
+           .selected = selected},
           selected ? listing::kBackground3 : listing::kBackground5);
-      tile->add<nodes::Box>({.place = scene::Anchor::kTopCentre,
-                             .y = 6.0f,
-                             .width = 16.0f,
-                             .height = 16.0f,
-                             .cornerRadius = 8.0f},
+      tile->add<nodes::Box>({.roles = {scene::role<style::Star>}},
                             client::palette::starColor(diff.fStars));
       tile->add<nodes::Text>(
-          {.place = scene::Anchor::kBottomCentre, .y = -3.0f},
+          {.roles = {scene::role<style::TileText>}, .selected = selected},
           std::format("{:.1f}", diff.fStars), 10.0f,
           selected ? listing::kContent1 : listing::kContent2, selected);
     }
 
     if (!e.fDiffs.empty()) {
       right->add<nodes::Text>(
-          {}, e.fDiffs[static_cast<std::size_t>(fSelected)].fVersion, 16.0f,
+          {.roles = {scene::role<style::DifficultyName>}},
+          e.fDiffs[static_cast<std::size_t>(fSelected)].fVersion, 16.0f,
           listing::kContent1, true);
     }
     return right;
@@ -457,62 +735,54 @@ private:
   // Info: the selected difficulty's numbers, the metadata, the ratings.
   [[nodiscard]] std::unique_ptr<scene::Drawable> buildInfo(const Entry &e) {
     auto section = scene::make<nodes::Box>(
-        {.fillX = true,
-         .autoSize = scene::Axes::kY,
-         .padding = {kYPadding, kHorizontalPadding, kYPadding,
-                     kHorizontalPadding}},
+        {.roles = {scene::role<style::Info>}},
         listing::kBackground5);
 
     // Two columns, 30 apart: the ratings at a fixed width and the rest
     // taking what is left.
     auto *columns = section->add<nodes::FillFlow>(
-        {.fillX = true, .autoSize = scene::Axes::kY},
+        {.roles = {scene::role<style::InfoColumns>}},
         nodes::FillFlow::Direction::kHorizontal, 30.0f, 0.0f);
     columns->fWrap = false;
     auto *left = columns->add<nodes::FillFlow>(
-        {.autoSize = scene::Axes::kY, .grow = scene::Axes::kX},
+        {.roles = {scene::role<style::InfoLeft>}},
         nodes::FillFlow::Direction::kVertical, 0.0f, 8.0f);
 
     if (!e.fDiffs.empty()) {
       const auto &diff = e.fDiffs[static_cast<std::size_t>(fSelected)];
 
       auto *heading = left->add<nodes::FillFlow>(
-          {.autoSize = scene::Axes::kBoth},
+          {.roles = {scene::role<style::Heading>}},
           nodes::FillFlow::Direction::kHorizontal, 8.0f, 0.0f);
       heading->fWrap = false;
       heading->fCrossAlign = scene::Align::kMiddle;
       heading
-          ->add<nodes::Box>({.autoSize = scene::Axes::kBoth,
-                             .padding = {1.0f, 8.0f, 1.0f, 8.0f},
-                             .cornerRadius = 9.0f},
+          ->add<nodes::Box>({.roles = {scene::role<style::StarBadge>}},
                             client::palette::starColor(diff.fStars))
-          ->add<nodes::Text>({}, std::format("{:.2f}", diff.fStars), 12.0f,
+          ->add<nodes::Text>({.roles = {scene::role<style::StarBadgeText>}},
+                             std::format("{:.2f}", diff.fStars), 12.0f,
                              listing::kBackground6, true);
-      heading->add<nodes::Text>({}, diff.fVersion, 16.0f, listing::kContent1,
-                                true);
+      heading->add<nodes::Text>(
+          {.roles = {scene::role<style::DifficultyHeading>}}, diff.fVersion,
+          16.0f, listing::kContent1, true);
 
       auto *stats = left->add<nodes::FillFlow>(
-          {.fillX = true, .autoSize = scene::Axes::kY},
+          {.roles = {scene::role<style::Stats>}},
           nodes::FillFlow::Direction::kHorizontal, 0.0f, 10.0f);
       const auto stat = [&](const char *label, std::string value, float bar) {
         auto *cell = stats->add<nodes::FillFlow>(
-            {.width = 0.25f,
-             .relativeSize = scene::Axes::kX,
-             .autoSize = scene::Axes::kY},
+            {.roles = {scene::role<style::Stat>}},
             nodes::FillFlow::Direction::kVertical, 0.0f, 2.0f);
-        cell->add<nodes::Text>({}, label, 11.0f, listing::kContent2, false);
-        cell->add<nodes::Text>({}, std::move(value), 17.0f, listing::kContent1,
+        cell->add<nodes::Text>({.roles = {scene::role<style::StatLabel>}},
+                               label, 11.0f, listing::kContent2, false);
+        cell->add<nodes::Text>({.roles = {scene::role<style::StatValue>}},
+                               std::move(value), 17.0f, listing::kContent1,
                                true);
         if (bar > 0.0f) {
-          cell->add<nodes::Box>({.fillX = true,
-                                 .height = 4.0f,
-                                 .margin = {0.0f, 16.0f, 0.0f, 0.0f},
-                                 .cornerRadius = 2.0f},
+          cell->add<nodes::Box>({.roles = {scene::role<style::StatTrack>}},
                                 listing::kBackground6)
               ->add<nodes::Box>({.width = std::clamp(bar, 0.0f, 1.0f),
-                                 .height = 1.0f,
-                                 .relativeSize = scene::Axes::kBoth,
-                                 .cornerRadius = 2.0f},
+                                 .roles = {scene::role<style::StatFill>}},
                                 listing::kColour1);
         }
       };
@@ -533,14 +803,15 @@ private:
 
     const auto metaRow = [&](const char *label, std::string value) {
       auto *row = left->add<nodes::FillFlow>(
-          {.fillX = true, .autoSize = scene::Axes::kY},
+          {.roles = {scene::role<style::MetadataRow>}},
           nodes::FillFlow::Direction::kHorizontal);
       row->fWrap = false;
-      row->add<nodes::Text>({.width = 110.0f}, label, 11.0f,
-                            listing::kContent2, false)
+      row->add<nodes::Text>({.roles = {scene::role<style::MetadataLabel>}},
+                            label, 11.0f, listing::kContent2, false)
           ->setMaxWidth(110.0f);
-      row->add<nodes::Text>({.grow = scene::Axes::kX}, std::move(value), 13.0f,
-                            listing::kContent1, false);
+      row->add<nodes::Text>({.roles = {scene::role<style::MetadataValue>}},
+                            std::move(value), 13.0f, listing::kContent1,
+                            false);
     };
     metaRow("Source", e.fSource.empty() ? "-" : e.fSource);
     metaRow("Genre", listing::kGenreLabels[genreIndex(e.fGenre)]);
@@ -549,16 +820,16 @@ private:
     metaRow("Last updated", e.fUpdated);
 
     auto *right = columns->add<nodes::FillFlow>(
-        {.width = kRightWidth, .autoSize = scene::Axes::kY},
+        {.roles = {scene::role<style::RatingsColumn>}},
         nodes::FillFlow::Direction::kVertical, 0.0f, 6.0f);
-    right->add<nodes::Text>({}, "User Rating", 12.0f, listing::kContent2,
-                            false);
+    right->add<nodes::Text>({.roles = {scene::role<style::RatingsTitle>}},
+                            "User Rating", 12.0f, listing::kContent2, false);
     // osu! returns eleven buckets, the first unused.
     std::vector<int> counts(10, 0);
     for (std::size_t i = 1; i < e.fRatings.size() && i <= 10; ++i) {
       counts[i - 1] = e.fRatings[i];
     }
-    right->add<Ratings>({.width = kRightWidth, .height = 110.0f},
+    right->add<Ratings>({.roles = {scene::role<style::RatingsGraph>}},
                         std::move(counts));
     return section;
   }

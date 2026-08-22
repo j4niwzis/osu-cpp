@@ -37,6 +37,124 @@ inline const widgets::Theme kListTheme = {
     .fText = skia::kWhite,
 };
 
+namespace settings_style {
+struct Root;
+struct Dim;
+struct Shell;
+struct Sidebar;
+struct Sections;
+struct Section;
+struct Panel;
+struct Title;
+struct Subtitle;
+struct Scroll;
+struct Column;
+struct SectionHeader;
+struct Row;
+struct ChoiceControl;
+struct Slider;
+struct Toggle;
+struct ChoiceList;
+struct Hint;
+} // namespace settings_style
+
+struct SettingsTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::selectAny<settings_style::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Box, settings_style::Dim>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .backgroundColour = skia::colorSetARGB(255, 0, 0, 0)})
+          .rule(scene::selectAny<settings_style::Shell>(),
+                {.width = 570.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kY})
+          .rule(scene::select<nodes::Box, settings_style::Sidebar>(),
+                {.width = 170.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kY,
+                 .alpha = 252.0f / 255.0f,
+                 .backgroundColour = skia::colorSetARGB(255, 23, 19, 30)})
+          .rule(scene::select<nodes::FillFlow, settings_style::Sections>(),
+                {.y = 70.0f,
+                 .width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::selectAny<settings_style::Section>(),
+                {.width = 1.0f,
+                 .height = 46.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::select<nodes::Box, settings_style::Panel>(),
+                {.x = 170.0f,
+                 .width = 400.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kY,
+                 .alpha = 250.0f / 255.0f,
+                 .backgroundColour = skia::colorSetARGB(255, 31, 25, 40)})
+          .rule(scene::select<nodes::Text, settings_style::Title>(),
+                {.x = 20.0f,
+                 .y = 26.0f,
+                 .colour = skia::kWhite,
+                 .fontSize = 30.0f})
+          .rule(scene::select<nodes::Text, settings_style::Subtitle>(),
+                {.x = 20.0f,
+                 .y = 65.0f,
+                 .alpha = 0.6f,
+                 .colour = skia::kWhite,
+                 .fontSize = 13.0f})
+          .rule(scene::select<nodes::ScrollContainer,
+                              settings_style::Scroll>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .margin = scene::Margin{110.0f, 0.0f, 0.0f, 0.0f}})
+          .rule(scene::select<nodes::FillFlow, settings_style::Column>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .margin = scene::Margin{8.0f, 0.0f, 0.0f, 0.0f}})
+          .rule(scene::select<nodes::Text, settings_style::SectionHeader>(),
+                {.x = 20.0f,
+                 .colour = client::palette::kAccent,
+                 .fontSize = 18.0f})
+          .rule(scene::selectAny<settings_style::Row>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .padding = scene::Margin::horizontal(20.0f)})
+          .rule(scene::selectAny<settings_style::ChoiceControl>(),
+                {.anchor = scene::Anchor::kTopRight,
+                 .origin = scene::Anchor::kTopRight,
+                 .y = 3.0f,
+                 .height = 24.0f})
+          .rule(scene::select<widgets::SliderBar, settings_style::Slider>(),
+                {.y = 30.0f, .height = 6.0f})
+          .rule(scene::select<widgets::Toggle, settings_style::Toggle>(),
+                {.anchor = scene::Anchor::kTopRight,
+                 .origin = scene::Anchor::kTopRight,
+                 .x = -6.0f,
+                 .y = 4.0f})
+          .rule(scene::select<widgets::DropdownList,
+                              settings_style::ChoiceList>(),
+                {.anchor = scene::Anchor::kBottomLeft,
+                 .origin = scene::Anchor::kTopLeft,
+                 .y = 4.0f,
+                 .width = 1.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::select<nodes::Text, settings_style::Hint>(),
+                {.anchor = scene::Anchor::kBottomLeft,
+                 .origin = scene::Anchor::kBottomLeft,
+                 .x = 20.0f,
+                 .y = -21.0f,
+                 .alpha = 0.5f,
+                 .colour = skia::kWhite,
+                 .fontSize = 12.0f});
+};
+
 export namespace client {
 
 // The view half of osu!lazer's SettingsPanel: a 170px sidebar and a 400px
@@ -302,12 +420,7 @@ private:
   class ChoiceControlNode : public scene::Drawable {
   public:
     ChoiceControlNode(SettingsPanel *owner, std::size_t index)
-        : fOwner(owner), fIndex(index) {
-      fAnchor = scene::Anchor::kTopRight;
-      fOrigin = scene::Anchor::kTopRight;
-      fY = 3.0f;
-      fHeight = 24.0f;
-    }
+        : fOwner(owner), fIndex(index) {}
 
   protected:
     void measure(const skia::SkRect &) override {
@@ -366,23 +479,20 @@ private:
   public:
     RowNode(SettingsPanel *owner, std::size_t index)
         : fOwner(owner), fIndex(index) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fPadding = {0.0f, kContentMargins, 0.0f, kContentMargins};
       switch (owner->fSettings->defs()[index].fKind) {
       case SettingKind::kChoice:
-        fControl = this->add<ChoiceControlNode>({}, owner, index);
+        fControl = this->add<ChoiceControlNode>(
+            {.roles = {scene::role<settings_style::ChoiceControl>}}, owner,
+            index);
         break;
       case SettingKind::kSlider:
-        fSlider = this->add<widgets::SliderBar>({.y = 30.0f, .height = 6.0f});
+        fSlider = this->add<widgets::SliderBar>(
+            {.roles = {scene::role<settings_style::Slider>}});
         fSlider->fTheme = kControlTheme;
         break;
       case SettingKind::kToggle:
-        fToggle =
-            this->add<widgets::Toggle>({.anchor = scene::Anchor::kTopRight,
-                                        .origin = scene::Anchor::kTopRight,
-                                        .x = -6.0f,
-                                        .y = 4.0f});
+        fToggle = this->add<widgets::Toggle>(
+            {.roles = {scene::role<settings_style::Toggle>}});
         fToggle->fTheme = kControlTheme;
         fToggle->fOnToggle = [owner, index] {
           owner->fAction = {Action::kToggle, index, 0};
@@ -497,11 +607,7 @@ private:
   class SectionNode : public scene::Drawable {
   public:
     SectionNode(SettingsPanel *owner, std::size_t index)
-        : fOwner(owner), fIndex(index) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fHeight = kSidebarItemHeight;
-    }
+        : fOwner(owner), fIndex(index) {}
 
   protected:
     bool settling() const override {
@@ -572,11 +678,6 @@ private:
       fTheme = kListTheme;
       // Hung off the control that opens it: fFollow makes the anchor and the
       // relative width come from that node instead of from the parent.
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fAnchor = scene::Anchor::kBottomLeft;
-      fOrigin = scene::Anchor::kTopLeft;
-      fY = 4.0f;
       fVisible = false;
       fOnChoose = [owner](int option) {
         owner->fAction = {Action::kChoiceSet,
@@ -627,82 +728,55 @@ private:
     fRowNodes.assign(fSettings->defs().size(), nullptr);
     fSectionHeaders.fill(nullptr);
 
-    auto root = std::make_unique<scene::Drawable>();
-    root->fRelativeSizeAxes = scene::Axes::kBoth;
-    root->fWidth = 1.0f;
-    root->fHeight = 1.0f;
+    auto root = scene::make<scene::Drawable>(
+        {.roles = {scene::role<settings_style::Root>}});
 
     // The dim is its own drawable rather than the root, so that the panel
     // over it does not inherit its transparency.
-    auto dim = std::make_unique<nodes::Box>(skia::colorSetARGB(255, 0, 0, 0));
-    dim->fRelativeSizeAxes = scene::Axes::kBoth;
-    dim->fWidth = 1.0f;
-    dim->fHeight = 1.0f;
-    fDim = dim.get();
-    root->add(std::move(dim));
+    fDim = root->add<nodes::Box>(
+        {.roles = {scene::role<settings_style::Dim>}},
+        skia::colorSetARGB(255, 0, 0, 0));
 
-    auto shell = std::make_unique<scene::Drawable>();
-    shell->fRelativeSizeAxes = scene::Axes::kY;
-    shell->fWidth = kSidebarWidth + kPanelWidth;
-    shell->fHeight = 1.0f;
+    auto shell = scene::make<scene::Drawable>(
+        {.roles = {scene::role<settings_style::Shell>}});
     fShell = shell.get();
 
     // The alpha goes on the drawable, not into the colour: a Box paints its
     // colour and then sets the alpha it was given, so an alpha carried in the
     // colour is thrown away and the panel comes out opaque.
-    auto sidebar =
-        std::make_unique<nodes::Box>(skia::colorSetARGB(255, 23, 19, 30));
-    sidebar->fAlpha = 252.0f / 255.0f;
-    sidebar->fRelativeSizeAxes = scene::Axes::kY;
-    sidebar->fWidth = kSidebarWidth;
-    sidebar->fHeight = 1.0f;
-    auto sections =
-        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
-    sections->fRelativeSizeAxes = scene::Axes::kX;
-    sections->fWidth = 1.0f;
-    sections->fAutoSizeAxes = scene::Axes::kY;
-    sections->fY = 70.0f;
+    auto sidebar = scene::make<nodes::Box>(
+        {.roles = {scene::role<settings_style::Sidebar>}},
+        skia::colorSetARGB(255, 23, 19, 30));
+    auto sections = scene::make<nodes::FillFlow>(
+        {.roles = {scene::role<settings_style::Sections>}},
+        nodes::FillFlow::Direction::kVertical);
     sections->setSpacing(0.0f, 5.0f);
     for (std::size_t i = 0; i < Settings::kSections.size(); ++i) {
-      sections->add(std::make_unique<SectionNode>(this, i));
+      sections->add<SectionNode>(
+          {.roles = {scene::role<settings_style::Section>}}, this, i);
     }
     sidebar->add(std::move(sections));
     shell->add(std::move(sidebar));
 
-    auto panel =
-        std::make_unique<nodes::Box>(skia::colorSetARGB(255, 31, 25, 40));
-    panel->fAlpha = 250.0f / 255.0f;
-    panel->fRelativeSizeAxes = scene::Axes::kY;
-    panel->fWidth = kPanelWidth;
-    panel->fHeight = 1.0f;
-    panel->fX = kSidebarWidth;
+    auto panel = scene::make<nodes::Box>(
+        {.roles = {scene::role<settings_style::Panel>}},
+        skia::colorSetARGB(255, 31, 25, 40));
 
     // Text draws its baseline at the top of its box plus the size, so these
     // are placed by where the baseline used to be: 56 and 78.
-    auto title = std::make_unique<nodes::Text>("settings", 30.0f, skia::kWhite);
-    title->fX = kContentMargins;
-    title->fY = 26.0f;
-    panel->add(std::move(title));
-    auto subtitle = std::make_unique<nodes::Text>(
+    panel->add<nodes::Text>({.roles = {scene::role<settings_style::Title>}},
+                            "settings", 30.0f, skia::kWhite);
+    panel->add<nodes::Text>(
+        {.roles = {scene::role<settings_style::Subtitle>}},
         "change the way osu! behaves", 13.0f, skia::kWhite);
-    subtitle->fAlpha = 0.6f;
-    subtitle->fX = kContentMargins;
-    subtitle->fY = 65.0f;
-    panel->add(std::move(subtitle));
 
-    auto scroll = std::make_unique<nodes::ScrollContainer>();
-    scroll->fRelativeSizeAxes = scene::Axes::kBoth;
-    scroll->fWidth = 1.0f;
-    scroll->fHeight = 1.0f;
-    scroll->fMargin = {kContentTop, 0.0f, 0.0f, 0.0f};
+    auto scroll = scene::make<nodes::ScrollContainer>(
+        {.roles = {scene::role<settings_style::Scroll>}});
     fScroll = scroll.get();
 
-    auto column =
-        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
-    column->fRelativeSizeAxes = scene::Axes::kX;
-    column->fWidth = 1.0f;
-    column->fAutoSizeAxes = scene::Axes::kY;
-    column->fMargin = {8.0f, 0.0f, 0.0f, 0.0f};
+    auto column = scene::make<nodes::FillFlow>(
+        {.roles = {scene::role<settings_style::Column>}},
+        nodes::FillFlow::Direction::kVertical);
     column->setSpacing(0.0f, kItemSpacing);
     fColumn = column.get();
 
@@ -711,38 +785,35 @@ private:
     for (std::size_t i = 0; i < defs.size(); ++i) {
       if (defs[i].fSection != lastSection) {
         lastSection = defs[i].fSection;
-        auto header = std::make_unique<nodes::Text>(
+        auto header = scene::make<nodes::Text>(
+            {.roles = {scene::role<settings_style::SectionHeader>}},
             Settings::kSections[static_cast<std::size_t>(defs[i].fSection)],
             18.0f, palette::kAccent);
-        header->fX = kContentMargins;
         fSectionHeaders[static_cast<std::size_t>(defs[i].fSection)] =
             header.get();
         column->add(std::move(header));
       }
-      auto row = std::make_unique<RowNode>(this, i);
+      auto row = scene::make<RowNode>(
+          {.roles = {scene::role<settings_style::Row>}}, this, i);
       fRowNodes[i] = row.get();
       column->add(std::move(row));
     }
     scroll->add(std::move(column));
     panel->add(std::move(scroll));
 
-    auto list = std::make_unique<ChoiceListNode>(this);
+    auto list = scene::make<ChoiceListNode>(
+        {.roles = {scene::role<settings_style::ChoiceList>}}, this);
     fChoiceList = list.get();
     // A tree can be rebuilt with a list already open.
     fChoiceList->openFor(this->openRow());
     panel->add(std::move(list));
 
-    auto hint = std::make_unique<nodes::Text>("Ctrl+O to close", 12.0f,
-                                              skia::kWhite);
-    hint->fAlpha = 0.5f;
-    hint->fAnchor = scene::Anchor::kBottomLeft;
-    hint->fOrigin = scene::Anchor::kBottomLeft;
-    hint->fX = kContentMargins;
-    hint->fY = -21.0f; // baseline 24 above the bottom edge
-    panel->add(std::move(hint));
+    panel->add<nodes::Text>({.roles = {scene::role<settings_style::Hint>}},
+                            "Ctrl+O to close", 12.0f, skia::kWhite);
 
     shell->add(std::move(panel));
     root->add(std::move(shell));
+    root->setStyleSheet<SettingsTheme>();
     return root;
   }
 

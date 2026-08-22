@@ -20,7 +20,7 @@ export namespace skiff::widgets {
 // A rounded rectangle with a label in it that calls something when clicked,
 // and lightens under the pointer. AdwButton, and the five hand-written ones
 // this replaces.
-class Button : public Drawable {
+class Button : public skiff::scene::TypedDrawable<Button> {
 public:
   Button(std::string label, std::function<void()> action)
       : fLabel(std::move(label)), fAction(std::move(action)) {

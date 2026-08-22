@@ -38,6 +38,7 @@ import present;
 import client.setpage;
 import skiff.scene;
 import skiff.nodes;
+import skiff.widgets.button;
 import client.gameplayview;
 import client.mods;
 import client.video;
@@ -57,6 +58,74 @@ extern "C" EMSCRIPTEN_KEEPALIVE void osu_maps_synced() {
 #endif
 
 namespace client {
+
+namespace delete_dialog_style {
+struct Root;
+struct Panel;
+struct Column;
+struct Prompt;
+struct Title;
+struct Detail;
+struct Buttons;
+struct Button;
+} // namespace delete_dialog_style
+
+struct DeleteDialogTheme {
+  static constexpr auto styles =
+      skiff::scene::makeStyleSheet()
+          .rule(skiff::scene::select<skiff::nodes::Box,
+                                     delete_dialog_style::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kBoth,
+                 .backgroundColour = skia::colorSetARGB(200, 8, 6, 12)})
+          .rule(skiff::scene::select<skiff::nodes::Box,
+                                     delete_dialog_style::Panel>(),
+                {.anchor = skiff::scene::Anchor::kCentre,
+                 .origin = skiff::scene::Anchor::kCentre,
+                 .width = 560.0f,
+                 .height = 240.0f,
+                 .padding = skiff::scene::Margin::all(20.0f),
+                 .cornerRadius = 12.0f,
+                 .backgroundColour = client::palette::kBackground5})
+          .rule(skiff::scene::select<skiff::nodes::FillFlow,
+                                     delete_dialog_style::Column>(),
+                {.width = 1.0f,
+                 .relativeSize = skiff::scene::Axes::kX,
+                 .autoSize = skiff::scene::Axes::kY})
+          .rule(skiff::scene::select<skiff::nodes::Text,
+                                     delete_dialog_style::Prompt>(),
+                {.anchor = skiff::scene::Anchor::kTopCentre,
+                 .origin = skiff::scene::Anchor::kTopCentre,
+                 .maxWidth = 520.0f,
+                 .alpha = 0.75f,
+                 .colour = skia::kWhite,
+                 .fontSize = 16.0f})
+          .rule(skiff::scene::select<skiff::nodes::Text,
+                                     delete_dialog_style::Title>(),
+                {.anchor = skiff::scene::Anchor::kTopCentre,
+                 .origin = skiff::scene::Anchor::kTopCentre,
+                 .maxWidth = 520.0f,
+                 .colour = skia::kWhite,
+                 .fontSize = 20.0f,
+                 .fontBold = true})
+          .rule(skiff::scene::select<skiff::nodes::Text,
+                                     delete_dialog_style::Detail>(),
+                {.anchor = skiff::scene::Anchor::kTopCentre,
+                 .origin = skiff::scene::Anchor::kTopCentre,
+                 .maxWidth = 520.0f,
+                 .alpha = 0.6f,
+                 .colour = skia::kWhite,
+                 .fontSize = 13.0f})
+          .rule(skiff::scene::select<skiff::nodes::FillFlow,
+                                     delete_dialog_style::Buttons>(),
+                {.anchor = skiff::scene::Anchor::kBottomCentre,
+                 .origin = skiff::scene::Anchor::kBottomCentre,
+                 .autoSize = skiff::scene::Axes::kBoth})
+          .rule(skiff::scene::select<skiff::widgets::Button,
+                                     delete_dialog_style::Button>(),
+                {.width = 240.0f, .height = 46.0f});
+};
 
 using audio_client::alFormat;
 using audio_client::AudioContext;
@@ -5170,28 +5239,22 @@ private:
     namespace scene = skiff::scene;
     namespace nodes = skiff::nodes;
 
-    auto root = std::make_unique<nodes::Box>(skia::colorSetARGB(200, 8, 6, 12));
-    root->fRelativeSizeAxes = scene::Axes::kBoth;
-    root->fWidth = 1.0f;
-    root->fHeight = 1.0f;
+    auto root = scene::make<nodes::Box>(
+        {.roles = {scene::role<delete_dialog_style::Root>}},
+        skia::colorSetARGB(200, 8, 6, 12));
+    root->setStyleSheet<DeleteDialogTheme>();
 
-    auto panel = std::make_unique<nodes::Box>(client::palette::kBackground5);
-    panel->fWidth = 560.0f;
-    panel->fHeight = 240.0f;
-    panel->fAnchor = scene::Anchor::kCentre;
-    panel->fOrigin = scene::Anchor::kCentre;
-    panel->fCornerRadius = 12.0f;
-    panel->fPadding = scene::Margin::all(20.0f);
-    panel->fAlpha = 0.0f;
-    panel->fY = 20.0f;
+    auto *panel = root->add<nodes::Box>(
+        {.y = 20.0f,
+         .alpha = 0.0f,
+         .roles = {scene::role<delete_dialog_style::Panel>}},
+        client::palette::kBackground5);
     panel->fadeTo(1.0f, 200.0, scene::Easing::kOutQuint);
     panel->moveToY(0.0f, 400.0, scene::Easing::kOutQuint);
 
-    auto column = std::make_unique<nodes::FillFlow>(
+    auto *column = panel->add<nodes::FillFlow>(
+        {.roles = {scene::role<delete_dialog_style::Column>}},
         nodes::FillFlow::Direction::kVertical);
-    column->fRelativeSizeAxes = scene::Axes::kX;
-    column->fWidth = 1.0f;
-    column->fAutoSizeAxes = scene::Axes::kY;
     column->setSpacing(0.0f, 8.0f);
 
     const auto &meta = infos.front().fMeta;
@@ -5200,28 +5263,20 @@ private:
         meta.fArtistUnicode.empty() ? meta.fArtist : meta.fArtistUnicode,
         meta.fTitleUnicode.empty() ? meta.fTitle : meta.fTitleUnicode);
 
-    const auto line = [&](std::string text, float size, skia::SkColor colour,
-                          bool bold, float alpha) {
-      auto node =
-          std::make_unique<nodes::Text>(std::move(text), size, colour, bold);
-      node->fAnchor = scene::Anchor::kTopCentre;
-      node->fOrigin = scene::Anchor::kTopCentre;
-      node->setMaxWidth(520.0f);
-      node->fAlpha = alpha;
-      return node;
-    };
-    column->add(line("Confirm deletion of", 16.0f, skia::kWhite, false, 0.75f));
-    column->add(line(title, 20.0f, skia::kWhite, true, 1.0f));
-    column->add(line(
+    column->add<nodes::Text>(
+        {.roles = {scene::role<delete_dialog_style::Prompt>}},
+        "Confirm deletion of", 16.0f, skia::kWhite, false);
+    column->add<nodes::Text>(
+        {.roles = {scene::role<delete_dialog_style::Title>}}, title, 20.0f,
+        skia::kWhite, true);
+    column->add<nodes::Text>(
+        {.roles = {scene::role<delete_dialog_style::Detail>}},
         std::format("{} difficulties will be removed from disk", infos.size()),
-        13.0f, skia::kWhite, false, 0.6f));
-    panel->add(std::move(column));
+        13.0f, skia::kWhite, false);
 
-    auto buttons = std::make_unique<nodes::FillFlow>(
+    auto *buttons = panel->add<nodes::FillFlow>(
+        {.roles = {scene::role<delete_dialog_style::Buttons>}},
         nodes::FillFlow::Direction::kHorizontal);
-    buttons->fAutoSizeAxes = scene::Axes::kBoth;
-    buttons->fAnchor = scene::Anchor::kBottomCentre;
-    buttons->fOrigin = scene::Anchor::kBottomCentre;
     buttons->setSpacing(20.0f, 0.0f);
     buttons->fWrap = false;
     buttons->add(this->dialogButton("Yes. Totally. Delete it.",
@@ -5236,9 +5291,6 @@ private:
           fConfirmDelete = false;
           fConfirmScene.reset();
         }));
-    panel->add(std::move(buttons));
-
-    root->add(std::move(panel));
     return root;
   }
 
@@ -5246,24 +5298,14 @@ private:
   dialogButton(std::string label, skia::SkColor accent,
                std::function<void()> action) {
     namespace scene = skiff::scene;
-    namespace nodes = skiff::nodes;
-
-    auto button = std::make_unique<nodes::Clickable>(std::move(action));
-    button->fWidth = 240.0f;
-    button->fHeight = 46.0f;
-
-    auto background = std::make_unique<nodes::Box>(client::palette::kCardBg);
-    background->fRelativeSizeAxes = scene::Axes::kBoth;
-    background->fWidth = 1.0f;
-    background->fHeight = 1.0f;
-    background->fCornerRadius = 10.0f;
-    button->add(std::move(background));
-
-    auto text =
-        std::make_unique<nodes::Text>(std::move(label), 15.0f, accent, false);
-    text->fAnchor = scene::Anchor::kCentre;
-    text->fOrigin = scene::Anchor::kCentre;
-    button->add(std::move(text));
+    auto button = scene::make<skiff::widgets::Button>(
+        {.roles = {scene::role<delete_dialog_style::Button>}},
+        std::move(label), std::move(action));
+    button->fTheme.fSurface = client::palette::kCardBg;
+    button->fTheme.fSurfaceHover = client::palette::kBackground4;
+    button->fTheme.fText = accent;
+    button->fTheme.fCorner = 10.0f;
+    button->fTheme.fFontSize = 15.0f;
     return button;
   }
 

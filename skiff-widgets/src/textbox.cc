@@ -21,7 +21,7 @@ export namespace skiff::widgets {
 // and reports changes; the keyboard belongs to whoever is routing input, so
 // the screen still decides what a keystroke means and pushes the result back
 // through setText.
-class TextBox : public Drawable {
+class TextBox : public skiff::scene::TypedDrawable<TextBox> {
 public:
   explicit TextBox(std::string placeholder = {})
       : fPlaceholder(std::move(placeholder)) {

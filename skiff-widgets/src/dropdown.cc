@@ -32,9 +32,12 @@ export namespace skiff::widgets {
 // notices the pointer arriving on its own. None of those is arithmetic anybody
 // has to write down, and none of them can drift from the arithmetic somewhere
 // else that used to have to agree with it.
-class DropdownList : public skiff::nodes::FillFlow {
+class DropdownList
+    : public skiff::scene::TypedDrawable<DropdownList,
+                                         skiff::nodes::FillFlow> {
 public:
-  DropdownList() : FillFlow(Direction::kVertical, 0.0f, kRowGap) {
+  DropdownList()
+      : TypedDrawable(Direction::kVertical, 0.0f, kRowGap) {
     fAutoSizeAxes = Axes::kY;
     // Two above the first row, four below the last, which is where the plate
     // ends. Asymmetric because that is how it has always looked.

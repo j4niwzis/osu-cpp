@@ -193,6 +193,82 @@ inline const widgets::Theme kTextBoxTheme = {
     .fPaddingX = 12.0f,
 };
 
+namespace style {
+struct Root;
+struct Scroll;
+struct Column;
+struct Header;
+struct SearchPanel;
+struct SearchColumn;
+struct SearchBox;
+struct FilterRows;
+struct FilterRow;
+struct SortBar;
+struct Empty;
+struct Cards;
+struct Expansion;
+} // namespace style
+
+struct ListingTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::select<nodes::Box, style::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .backgroundColour = kBackground6})
+          .rule(scene::select<nodes::ScrollContainer, style::Scroll>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::FillFlow, style::Column>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::selectAny<style::Header>(),
+                {.width = 1.0f,
+                 .height = 55.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::select<nodes::Box, style::SearchPanel>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .padding = scene::Margin{20.0f, kHorizontalPadding, 20.0f,
+                                          kHorizontalPadding},
+                 .backgroundColour = kDark6})
+          .rule(scene::select<nodes::FillFlow, style::SearchColumn>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY})
+          .rule(scene::select<widgets::TextBox, style::SearchBox>(),
+                {.width = 1.0f,
+                 .height = 40.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::select<nodes::FillFlow, style::FilterRows>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .padding = scene::Margin::horizontal(10.0f)})
+          .rule(scene::select<widgets::TabBar, style::FilterRow>(),
+                {.width = 1.0f, .relativeSize = scene::Axes::kX})
+          .rule(scene::select<widgets::TabBar, style::SortBar>(),
+                {.width = 1.0f,
+                 .height = kSortBarHeight,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::selectAny<style::Empty>(),
+                {.width = 1.0f,
+                 .height = 250.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::select<nodes::FillFlow, style::Cards>(),
+                {.width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .padding = scene::Margin{15.0f, kPanelPadding,
+                                          20.0f + kExpandedMaxHeight,
+                                          kPanelPadding}})
+          .rule(scene::selectAny<style::Expansion>(), {.masking = true});
+};
+
 // BeatmapSetOnlineStatus, in the colours the website gives it.
 inline skia::SkColor statusColour(std::string_view status) {
   if (status == "ranked" || status == "approved" || status == "qualified") {
@@ -990,7 +1066,7 @@ private:
   // is what pushed the rest of the listing down the page.
   class ExpansionNode : public scene::Drawable {
   public:
-    explicit ExpansionNode(Listing *owner) : fOwner(owner) { fMasking = true; }
+    explicit ExpansionNode(Listing *owner) : fOwner(owner) {}
 
   protected:
     void measure(const skia::SkRect &parent) override {
@@ -1070,11 +1146,7 @@ private:
   // OverlayHeader with its title and description.
   class HeaderNode : public scene::Drawable {
   public:
-    explicit HeaderNode(Listing *owner) : fOwner(owner) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fHeight = 55.0f;
-    }
+    explicit HeaderNode(Listing *owner) : fOwner(owner) {}
 
   protected:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
@@ -1107,11 +1179,7 @@ private:
   // NotFoundDrawable: 250 high, its text centred.
   class EmptyNode : public scene::Drawable {
   public:
-    explicit EmptyNode(Listing *owner) : fOwner(owner) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fHeight = 250.0f;
-    }
+    explicit EmptyNode(Listing *owner) : fOwner(owner) {}
 
   protected:
     void drawSelf(skia::SkCanvas *canvas, float alpha) override {
@@ -1135,59 +1203,46 @@ private:
     fExpandedCard = nullptr;
     fCards.clear();
 
-    auto root = std::make_unique<nodes::Box>(kBackground6);
-    root->fRelativeSizeAxes = scene::Axes::kBoth;
-    root->fWidth = 1.0f;
-    root->fHeight = 1.0f;
+    auto root = scene::make<nodes::Box>(
+        {.roles = {scene::role<style::Root>}}, kBackground6);
 
-    auto scroll = std::make_unique<nodes::ScrollContainer>();
-    scroll->fRelativeSizeAxes = scene::Axes::kBoth;
-    scroll->fWidth = 1.0f;
-    scroll->fHeight = 1.0f;
+    auto scroll = scene::make<nodes::ScrollContainer>(
+        {.roles = {scene::role<style::Scroll>}});
     fScroll = scroll.get();
 
-    auto column =
-        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
-    column->fRelativeSizeAxes = scene::Axes::kX;
-    column->fWidth = 1.0f;
-    column->fAutoSizeAxes = scene::Axes::kY;
+    auto column = scene::make<nodes::FillFlow>(
+        {.roles = {scene::role<style::Column>}},
+        nodes::FillFlow::Direction::kVertical);
 
-    column->add(std::make_unique<HeaderNode>(this));
+    column->add<HeaderNode>({.roles = {scene::role<style::Header>}}, this);
 
     // BeatmapListingSearchControl over Dark6: padded 20 vertical and
     // HORIZONTAL_PADDING horizontal, contents 20 apart.
-    auto panel = std::make_unique<nodes::Box>(kDark6);
-    panel->fRelativeSizeAxes = scene::Axes::kX;
-    panel->fWidth = 1.0f;
-    panel->fAutoSizeAxes = scene::Axes::kY;
-    panel->fPadding = {20.0f, kHorizontalPadding, 20.0f, kHorizontalPadding};
+    auto panel = scene::make<nodes::Box>(
+        {.roles = {scene::role<style::SearchPanel>}}, kDark6);
 
-    auto panelColumn =
-        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
-    panelColumn->fRelativeSizeAxes = scene::Axes::kX;
-    panelColumn->fWidth = 1.0f;
-    panelColumn->fAutoSizeAxes = scene::Axes::kY;
+    auto panelColumn = scene::make<nodes::FillFlow>(
+        {.roles = {scene::role<style::SearchColumn>}},
+        nodes::FillFlow::Direction::kVertical);
     panelColumn->setSpacing(0.0f, 20.0f);
     // BeatmapSearchTextBox: OsuTextBox is 40 high with a 5px corner radius.
     fSearchBox = panelColumn->add<widgets::TextBox>(
-        {.fillX = true, .height = 40.0f}, "type in keywords...");
+        {.roles = {scene::role<style::SearchBox>}}, "type in keywords...");
     fSearchBox->fSearchIcon = true;
     fSearchBox->fTheme = kTextBoxTheme;
 
     // The filter rows, indented 10 and spaced 5, in lazer's order.
-    auto rows =
-        std::make_unique<nodes::FillFlow>(nodes::FillFlow::Direction::kVertical);
-    rows->fRelativeSizeAxes = scene::Axes::kX;
-    rows->fWidth = 1.0f;
-    rows->fAutoSizeAxes = scene::Axes::kY;
-    rows->fPadding = {0.0f, 10.0f, 0.0f, 10.0f};
+    auto rows = scene::make<nodes::FillFlow>(
+        {.roles = {scene::role<style::FilterRows>}},
+        nodes::FillFlow::Direction::kVertical);
     rows->setSpacing(0.0f, kRowSpacing);
     // BeatmapSearchFilterRow: a 100px caption column beside a wrapping row
     // of tabs. Three of these are sets of toggles rather than one-of-many,
     // which is why the bar asks rather than being told what is on.
     const auto filterRow = [&](const char *header,
                                std::span<const char *const> labels, Kind kind) {
-      auto *row = rows->add<widgets::TabBar>({.fillX = true});
+      auto *row = rows->add<widgets::TabBar>(
+          {.roles = {scene::role<style::FilterRow>}});
       row->fTheme = kTabTheme;
       row->fHeader = header;
       row->fHeaderWidth = kRowLabelWidth;
@@ -1219,26 +1274,20 @@ private:
     panel->add(std::move(panelColumn));
     column->add(std::move(panel));
 
-    column->add(std::make_unique<SortBarNode>(this));
+    column->add<SortBarNode>({.roles = {scene::role<style::SortBar>}}, this);
 
     // The cards, in panelTarget's 20px padding: as many per row as fit, 10
     // apart, rows centred -- which is the flow's job, not arithmetic here.
     if (fVisible.empty()) {
-      column->add(std::make_unique<EmptyNode>(this));
+      column->add<EmptyNode>({.roles = {scene::role<style::Empty>}}, this);
     } else {
-      auto grid = std::make_unique<nodes::FillFlow>(
+      auto grid = scene::make<nodes::FillFlow>(
+          {.roles = {scene::role<style::Cards>}},
           nodes::FillFlow::Direction::kHorizontal);
-      grid->fRelativeSizeAxes = scene::Axes::kX;
-      grid->fWidth = 1.0f;
-      grid->fAutoSizeAxes = scene::Axes::kY;
-      // Room under the last row for a dropdown to open into, which is what
-      // BeatmapListingOverlay leaves with its own bottom padding.
-      grid->fPadding = {15.0f, kPanelPadding, 20.0f + kExpandedMaxHeight,
-                        kPanelPadding};
       grid->setSpacing(kCardSpacing, kCardSpacing);
       grid->fCentreRows = true;
       for (const int idx : fVisible) {
-        auto card = std::make_unique<CardNode>(this, idx);
+        auto card = scene::make<CardNode>({}, this, idx);
         fCards.emplace_back(idx, card.get());
         grid->add(std::move(card));
       }
@@ -1248,10 +1297,12 @@ private:
     scroll->add(std::move(column));
     // After the column, so it draws over the cards and is asked about clicks
     // before they are -- and inside the scroll, so it travels with them.
-    auto expansion = std::make_unique<ExpansionNode>(this);
+    auto expansion = scene::make<ExpansionNode>(
+        {.roles = {scene::role<style::Expansion>}}, this);
     fExpansion = expansion.get();
     scroll->add(std::move(expansion));
     root->add(std::move(scroll));
+    root->setStyleSheet<ListingTheme>();
     return root;
   }
 

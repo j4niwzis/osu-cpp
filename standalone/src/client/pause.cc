@@ -44,6 +44,55 @@ inline constexpr skia::SkColor kYellowDark =
     skia::colorSetARGB(255, 0xee, 0xaa, 0x00);
 inline constexpr skia::SkColor kRed = skia::colorSetARGB(255, 170, 27, 39);
 
+namespace style {
+struct Root;
+struct Background;
+struct Grid;
+struct Header;
+struct Buttons;
+struct Button;
+struct Info;
+} // namespace style
+
+struct PauseTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::selectAny<style::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<nodes::Box, style::Background>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .alpha = kBackgroundAlpha,
+                 .backgroundColour = skia::colorSetARGB(255, 0, 0, 0)})
+          .rule(scene::select<nodes::Grid, style::Grid>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::selectAny<style::Header>(),
+                {.anchor = scene::Anchor::kCentre,
+                 .origin = scene::Anchor::kCentre})
+          .rule(scene::select<nodes::FillFlow, style::Buttons>(),
+                {.anchor = scene::Anchor::kCentre,
+                 .origin = scene::Anchor::kCentre,
+                 .width = 1.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .autoSize = scene::Axes::kY,
+                 .padding = scene::Margin::horizontal(kHorizontalPadding)})
+          .rule(scene::selectAny<style::Button>(),
+                {.width = 1.0f,
+                 .height = kButtonHeight,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::selectAny<style::Info>(),
+                {.anchor = scene::Anchor::kCentre,
+                 .origin = scene::Anchor::kCentre,
+                 .width = 1.0f,
+                 .height = 72.0f,
+                 .relativeSize = scene::Axes::kX});
+};
+
 class PauseMenu {
 public:
   struct Ctx {
@@ -133,10 +182,7 @@ private:
   // 5, and a font draws a string with the advances it has.
   class HeaderNode : public scene::Drawable {
   public:
-    explicit HeaderNode(PauseMenu *owner) : fOwner(owner) {
-      fAnchor = scene::Anchor::kTopCentre;
-      fOrigin = scene::Anchor::kTopCentre;
-    }
+    explicit HeaderNode(PauseMenu *owner) : fOwner(owner) {}
 
   protected:
     void measure(const skia::SkRect &) override {
@@ -161,9 +207,6 @@ private:
                skia::SkColor colour)
         : fOwner(owner), fIndex(index), fLabel(std::move(label)),
           fColour(colour) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fHeight = kButtonHeight;
       fTriangles.setVelocity(0.7f); // DialogButton's TrianglesV2
     }
 
@@ -313,11 +356,7 @@ private:
   // pause happened, and the accuracy so far.
   class InfoNode : public scene::Drawable {
   public:
-    explicit InfoNode(PauseMenu *owner) : fOwner(owner) {
-      fRelativeSizeAxes = scene::Axes::kX;
-      fWidth = 1.0f;
-      fHeight = 72.0f;
-    }
+    explicit InfoNode(PauseMenu *owner) : fOwner(owner) {}
 
   protected:
     void update(double) override {
@@ -355,34 +394,38 @@ private:
   };
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
-    auto root = scene::make<scene::Drawable>({.fill = true});
+    auto root = scene::make<scene::Drawable>(
+        {.roles = {scene::role<style::Root>}});
 
-    root->add<nodes::Box>({.fill = true, .alpha = kBackgroundAlpha},
-                          skia::colorSetARGB(255, 0, 0, 0));
+    root->add<nodes::Box>(
+        {.roles = {scene::role<style::Background>}},
+        skia::colorSetARGB(255, 0, 0, 0));
 
     // GameplayMenuOverlay is a GridContainer of four rows: one that takes
     // what is left, the buttons at their own height, another that takes what
     // is left, and a footer at its own height. Written down rather than
     // worked out.
-    auto *grid = root->add<nodes::Grid>({.fill = true});
+    auto *grid =
+        root->add<nodes::Grid>({.roles = {scene::role<style::Grid>}});
     grid->setRows(
         {nodes::Grid::Track::fraction(), nodes::Grid::Track::automatic(),
          nodes::Grid::Track::fraction(), nodes::Grid::Track::automatic()});
 
-    grid->add<HeaderNode>({.place = scene::Anchor::kCentre}, this);
+    grid->add<HeaderNode>({.roles = {scene::role<style::Header>}}, this);
 
     auto *column = grid->add<nodes::FillFlow>(
-        {.place = scene::Anchor::kCentre,
-         .fillX = true,
-         .autoSize = scene::Axes::kY,
-         .padding = {0.0f, kHorizontalPadding, 0.0f, kHorizontalPadding}},
+        {.roles = {scene::role<style::Buttons>}},
         nodes::FillFlow::Direction::kVertical, 0.0f, kButtonSpacing);
-    column->add<ButtonNode>({}, this, 0, "Continue", kGreen);
-    column->add<ButtonNode>({}, this, 1, "Retry", kYellowDark);
-    column->add<ButtonNode>({}, this, 2, "Quit", kRed);
+    column->add<ButtonNode>({.roles = {scene::role<style::Button>}}, this, 0,
+                            "Continue", kGreen);
+    column->add<ButtonNode>({.roles = {scene::role<style::Button>}}, this, 1,
+                            "Retry", kYellowDark);
+    column->add<ButtonNode>({.roles = {scene::role<style::Button>}}, this, 2,
+                            "Quit", kRed);
 
-    grid->add<InfoNode>({.place = scene::Anchor::kCentre}, this);
+    grid->add<InfoNode>({.roles = {scene::role<style::Info>}}, this);
 
+    root->setStyleSheet<PauseTheme>();
     return root;
   }
 
