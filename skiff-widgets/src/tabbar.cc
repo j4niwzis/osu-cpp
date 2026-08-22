@@ -153,6 +153,7 @@ protected:
   }
 
   bool acceptsInput() const override { return true; }
+  bool hoverChangesAppearance() const override { return true; }
 
   bool onClick(float x, float y) override {
     const int hit = this->tabAt(x, y);

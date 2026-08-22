@@ -94,6 +94,25 @@ TEST(Button, PrimaryAndEnabledStateOwnDamageAndInput) {
   EXPECT_EQ(clicks, 1);
 }
 
+TEST(Hover, OnlyVisibleHoverChangesCauseDamage) {
+  auto root = scene::make<scene::Drawable>({.fill = true});
+  auto *slider = root->add<widgets::SliderBar>(
+      {.width = 100.0f, .height = 14.0f});
+  slider->fOnSet = [](float) {};
+  root->add<widgets::Button>(
+      {.y = 20.0f, .width = 100.0f, .height = 30.0f}, "Apply", [] {});
+  root->layoutIfNeeded(skia::SkRect::MakeWH(120.0f, 60.0f));
+  (void)root->takeDamage();
+
+  root->setHover(20.0f, 7.0f);
+  EXPECT_TRUE(slider->hovered());
+  EXPECT_TRUE(root->takeDamage().isEmpty());
+
+  root->setHover(20.0f, 35.0f);
+  EXPECT_FALSE(slider->hovered());
+  EXPECT_FALSE(root->takeDamage().isEmpty());
+}
+
 TEST(TextBox, TextAndSelectionOwnDamage) {
   auto root = scene::make<scene::Drawable>({.fill = true});
   auto *box = root->add<widgets::TextBox>(

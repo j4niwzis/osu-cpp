@@ -651,6 +651,7 @@ private:
     }
 
     bool acceptsInput() const override { return true; }
+    bool hoverChangesAppearance() const override { return true; }
 
     bool onClick(float, float) override {
       fOwner->fAction = {Action::kSection, fIndex, 0};

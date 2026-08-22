@@ -1100,9 +1100,11 @@ protected:
 
   virtual bool acceptsInput() const { return false; }
   // Whether the pointer entering or leaving changes what this draws. Taking
-  // input is the usual reason to light up, so that is the default; a drawable
-  // that takes input only to swallow it says so.
-  virtual bool hoverChangesAppearance() const { return this->acceptsInput(); }
+  // input and drawing hover are separate capabilities: click-only surfaces,
+  // sliders and toggles should not damage a frame merely because the pointer
+  // crossed their bounds. Style-driven hover marks damage when the resolved
+  // properties actually change; a custom-painted hover opts in here.
+  virtual bool hoverChangesAppearance() const { return false; }
   virtual bool onClick(float, float) { return false; }
   virtual bool onScroll(float) { return false; }
 
