@@ -46,6 +46,7 @@ import client.video;
 import client.videoexport;
 import client.framestate;
 import client.fonts;
+import client.judgements;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -376,9 +377,7 @@ private:
   double fLastClockSyncWall = std::numeric_limits<double>::lowest();
   static constexpr double kClockSyncIntervalMs = 250.0;
   AudioPlayer fAudio;
-  std::unordered_map<std::string, SamplePlayer> fSamples;
-  std::size_t fPlayedEvents = 0;
-  int fCombo = 0;
+  client::JudgementPresenter fJudgements;
 
   // Font
   skia::SkFont fFont;
@@ -2380,7 +2379,8 @@ private:
     const auto t0 = clock::now();
     fPlay.fEngine->advance(now);
     const auto t1 = clock::now();
-    this->playHitsounds(now);
+    fJudgements.process(now, *fPlay.fEngine, *fPlay.fMap, fComboInfo, fView,
+                        fSet, fSkin);
     fView.render(this->gameplayCtx(fFrame.fSurface->getCanvas()), now);
     const auto t2 = clock::now();
     this->present();
@@ -2469,8 +2469,7 @@ private:
   void resetGameplayState() {
     fHasRawPrev = false;
     fVirtualCursor = osu::kPlayfieldCenter;
-    fPlayedEvents = 0;
-    fCombo = 0;
+    fJudgements.reset();
     fView.reset();
     fPlay.fAutoplayEvents.clear();
     fAutoplayIndex = 0;
@@ -3314,9 +3313,7 @@ private:
   void applyAudioSettings() {
     fAudio.setVolume(this->musicGain());
     fMirrors.setVolume(this->musicGain());
-    for (auto &[name, player] : fSamples) {
-      player.setVolume(this->effectGain());
-    }
+    fJudgements.setGain(this->effectGain());
   }
 
   [[nodiscard]] float musicGain() const {
@@ -4483,165 +4480,6 @@ private:
     }
   }
 
-  void playHitsounds(double now) {
-    const auto &events = fPlay.fEngine->events();
-    while (fPlayedEvents < events.size()) {
-      const auto &ev = events[fPlayedEvents++];
-      const int previous = fCombo;
-      // The engine owns the combo now that a slider hands out several
-      // judgements: its ticks and its tail each raise it, and only some of
-      // them break it.
-      fCombo = fPlay.fEngine->score().fCombo;
-      fView.setCombo(fCombo);
-      // Ticks and tails are scored but not shown; lazer pops the head's
-      // judgement at the head and nothing at all for what is under it.
-      if (ev.fKind != osu::HitKind::kBasic) {
-        // Not shown as a judgement, but the follow circle reacts to every one
-        // of them: it pops on a tick and blows out on a dropped one.
-        if (ev.fKind == osu::HitKind::kLargeTick ||
-            ev.fKind == osu::HitKind::kSliderTail) {
-          const bool tail = ev.fKind == osu::HitKind::kSliderTail;
-          const bool hit =
-              !std::holds_alternative<osu::judgement::Miss>(ev.fResult);
-          // A tail's own time is 36ms before the slider's end; lazer plays
-          // the end animation at the end.
-          const double when =
-              tail && ev.fIndex < fPlay.fMap->fObjects.size()
-                  ? osu::objectEnd(fPlay.fMap->fObjects[ev.fIndex], *fPlay.fMap)
-                        .second
-                  : now;
-          fView.noteSliderNested(ev.fIndex, tail, hit, when);
-        }
-        continue;
-      }
-      const auto pos = this->objectPosition(ev.fIndex);
-      const bool counts =
-          !std::holds_alternative<osu::judgement::Miss>(ev.fResult) &&
-          ev.fIndex < fComboInfo.fIndices.size();
-      fView.addJudgement(ev.fResult, ev.fIndex, pos, now,
-                         counts ? fComboInfo.fIndices[ev.fIndex] : 0, counts);
-      if (std::holds_alternative<osu::judgement::Miss>(ev.fResult)) {
-        if (previous > 20) {
-          this->playSample("combobreak");
-        }
-        continue;
-      }
-      const double hitTime =
-          ev.fIndex < fPlay.fMap->fObjects.size()
-              ? osu::startTime(fPlay.fMap->fObjects[ev.fIndex])
-              : now;
-      this->playObjectHitsound(hitTime, ev.fIndex);
-    }
-  }
-
-  [[nodiscard]] static const char *
-  sampleSetName(const osu::SampleSet &set) noexcept {
-    return std::visit(
-        osu::Overloaded{
-            [](osu::sampleSet::None) -> const char * { return nullptr; },
-            [](osu::sampleSet::Normal) -> const char * { return "normal"; },
-            [](osu::sampleSet::Soft) -> const char * { return "soft"; },
-            [](osu::sampleSet::Drum) -> const char * { return "drum"; },
-        },
-        set);
-  }
-
-  [[nodiscard]] const char *sampleSetNameOrDefault(const osu::SampleSet &set,
-                                                   double time) const {
-    if (const char *name = sampleSetName(set))
-      return name;
-    if (const auto *tp = fPlay.fMap->activeTiming(time)) {
-      if (const char *name = sampleSetName(tp->fSet))
-        return name;
-    }
-    return "normal";
-  }
-
-  [[nodiscard]] std::filesystem::path
-  findSkinSamplePath(const std::string &name) const {
-    for (const std::string_view ext : {".wav", ".ogg"}) {
-      const auto skinPath = fSkin.root() / (name + std::string(ext));
-      if (std::filesystem::exists(skinPath))
-        return skinPath;
-    }
-    return {};
-  }
-
-  void playSample(const std::string &name) {
-    if (name.empty())
-      return;
-
-    for (const std::string_view ext : {".wav", ".ogg"}) {
-      const std::string key = name + std::string(ext);
-      const auto bytes = fSet.findFile(key);
-      if (!bytes.empty()) {
-        auto &player = fSamples[key];
-        if (!player.loaded()) {
-          player.load(bytes, std::string(ext));
-          player.setVolume(this->effectGain());
-        }
-        player.play();
-        return;
-      }
-    }
-
-    const auto path = this->findSkinSamplePath(name);
-    if (path.empty())
-      return;
-    auto &player = fSamples[path.string()];
-    if (!player.loaded()) {
-      player.load(path);
-      player.setVolume(this->effectGain());
-    }
-    player.play();
-  }
-
-  void playHitSample(double time, osu::HitSound sound,
-                     const osu::HitSample &sample) {
-    const std::string normalSet =
-        this->sampleSetNameOrDefault(sample.fNormalSet, time);
-    const std::string additionSet =
-        this->sampleSetNameOrDefault(sample.fAdditionSet, time);
-    this->playSample(normalSet + "-hitnormal");
-    if ((sound & osu::HitSound::kWhistle) != osu::HitSound::kNone)
-      this->playSample(additionSet + "-hitwhistle");
-    if ((sound & osu::HitSound::kFinish) != osu::HitSound::kNone)
-      this->playSample(additionSet + "-hitfinish");
-    if ((sound & osu::HitSound::kClap) != osu::HitSound::kNone)
-      this->playSample(additionSet + "-hitclap");
-  }
-
-  void playObjectHitsound(double time, std::size_t index) {
-    if (index >= fPlay.fMap->fObjects.size())
-      return;
-    std::visit(osu::Overloaded{
-                   [this, time](const osu::Circle &o) {
-                     this->playHitSample(time, o.fSound, o.fSample);
-                   },
-                   [this, time](const osu::Slider &o) {
-                     this->playHitSample(time, o.fSound, o.fSample);
-                   },
-                   [this, time](const osu::Spinner &o) {
-                     this->playHitSample(time, o.fSound, o.fSample);
-                   },
-               },
-               fPlay.fMap->fObjects[index]);
-  }
-
-  [[nodiscard]] osu::Vec2 objectPosition(std::size_t index) const {
-    if (index >= fPlay.fMap->fObjects.size()) {
-      return osu::kPlayfieldCenter;
-    }
-    return osu::objectPosition(fPlay.fMap->fObjects[index]);
-  }
-
-  [[nodiscard]] std::pair<osu::Vec2, double>
-  objectEnd(std::size_t index) const {
-    if (index >= fPlay.fMap->fObjects.size()) {
-      return {osu::kPlayfieldCenter, 0.0};
-    }
-    return osu::objectEnd(fPlay.fMap->fObjects[index], *fPlay.fMap);
-  }
 
   // Cursor trail as a single feathered ribbon.
   //
