@@ -90,6 +90,23 @@ pointer. Custom node types that need type selectors derive from
 `scene::TypedDrawable<MyNode>`. Nodes that only need role selectors may keep
 deriving from `scene::Drawable`.
 
+## Building and testing
+
+`skiff` is the library project, `test` is a standalone test consumer, and
+`all` is the aggregate project. The test project fetches the module build of
+`j4niwzis/googletest-modules` through CPM and therefore requires CMake 4.3.4
+or newer.
+
+```sh
+cmake -S all -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Configure `test` directly to build only the library and its tests. Pass
+`-DTEST_INSTALLED_VERSION=ON` to test a previously installed `skiff` package
+instead of the adjacent source tree.
+
 ## Redrawing
 
 Changing anything marks the node damaged, and the damage walks up to the root

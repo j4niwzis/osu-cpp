@@ -29,6 +29,7 @@ public:
     fColour = colour;
     this->markDamaged();
   }
+  [[nodiscard]] skia::SkColor colour() const noexcept { return fColour; }
 
 protected:
   void applyNodeStyle(const Style &style, bool active) override {

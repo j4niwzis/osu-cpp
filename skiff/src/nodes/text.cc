@@ -56,6 +56,9 @@ public:
     this->invalidateLayout();
   }
   [[nodiscard]] const std::string &text() const noexcept { return fText; }
+  [[nodiscard]] float fontSize() const noexcept { return fSize; }
+  [[nodiscard]] skia::SkColor colour() const noexcept { return fColour; }
+  [[nodiscard]] bool bold() const noexcept { return fBold; }
 
   // Set to clip instead of auto-sizing: the text is cut to the given width.
   // fMaxWidth is the drawable's own, so a Spec can set it as well.
