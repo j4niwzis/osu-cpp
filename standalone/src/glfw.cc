@@ -78,6 +78,7 @@ inline constexpr int kVisible = GLFW_VISIBLE;
 inline constexpr int kDecorated = GLFW_DECORATED;
 
 inline constexpr int kKeyEscape = GLFW_KEY_ESCAPE;
+inline constexpr int kKeyTab = GLFW_KEY_TAB;
 inline constexpr int kKeySpace = GLFW_KEY_SPACE;
 inline constexpr int kKeyEnter = GLFW_KEY_ENTER;
 inline constexpr int kKeyZ = GLFW_KEY_Z;
