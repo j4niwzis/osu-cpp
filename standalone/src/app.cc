@@ -1711,216 +1711,23 @@ private:
     return nowMs + (phase < 600.0 ? 600.0 - phase : 1000.0 - phase);
   }
 
-  // Clips the frame to what changed. Everything draws exactly as it would
-  // have -- the screens repaint from state, so a clipped repaint of a region
-  // is the same pixels -- only the work outside the clip is skipped.
   void beginFrame() {
-    fFrame.fDrawing = true;
-    fFrame.fBlitRegions.clear(); // empty means the whole surface goes over
-    // How old the contents of the buffer being drawn into are, from the
-    // window system rather than from a constant of mine. -1 when nobody will
-    // say, which is when the constants come back.
-    fFrame.fBufferAge = this->partialRedraw() ? present::bufferAge() : -1;
-    // Reported, before anything below asserts one. Every question about what
-    // the window's buffers hold has to be answerable as "nobody said", and
-    // this is the only place that knows.
-    fFrame.fAgeReported = fFrame.fBufferAge >= 0;
-    fFrame.fBufferAgeAssumed = false;
-    // Nobody will say, but the answer may still be knowable: a driver that
-    // swaps by copying leaves the back buffer holding the last frame, which
-    // is an age of one, and a repaint of this frame's damage alone. Asserted
-    // rather than guessed, because getting it wrong looks like smearing.
-    if (fFrame.fBufferAge < 0 && this->partialRedraw()) {
-      const int assumed = fForcedBufferAge > 0 ? fForcedBufferAge
-                                               : fSettings.choice("bufferage");
-      if (assumed > 0) {
-        fFrame.fBufferAge = assumed;
-        fFrame.fBufferAgeAssumed = true;
-      }
-    }
-    // Take the accumulator as this frame's damage and hand a fresh one to the
-    // screens, which fill it in as they draw for the frame after this.
-    //
-    // The window is resized by the server; the event saying so reaches this
-    // thread through a queue. Every frame in between is drawn into a buffer
-    // that has already been reallocated at the new size -- and a buffer that
-    // has just been reallocated holds nothing, so a frame clipped to what
-    // moved leaves the rest of it black. That is the flicker: not the frames
-    // after a size event, which repaint whole and always did, but the ones
-    // before it arrives.
-    //
-    // Nothing in the damage bookkeeping can know that, because the whole of
-    // it is downstream of the event. So the size is asked of the window
-    // system directly, on the thread that is drawing, once a frame.
-    // Second line: a resize that landed after the surfaces were chosen cannot
-    // be acted on within this frame, but it can stop it clipping.
-    const std::uint64_t reported =
-        fReportedSize.load(std::memory_order_acquire);
-    const auto windowW = static_cast<int>(reported >> 32);
-    const auto windowH = static_cast<int>(reported & 0xffffffffu);
-    if (windowW > 0 && windowH > 0 &&
-        (windowW != fWin.fScreenW || windowH != fWin.fScreenH)) {
-      fFrame.fBlitHistory.clear();
-      fFrame.fFullDamage = true;
-      fFrame.fFullDamageReason = "the window is not the size we were told";
-    }
-
-    // A full repaint still owed to a buffer that has not had one.
-    if (fFrame.fFullRepaintsOwed > 0) {
-      --fFrame.fFullRepaintsOwed;
-      if (!fFrame.fFullDamage) {
-        fFrame.fFullDamage = true;
-        fFrame.fFullDamageReason = "buffer has not had this screen yet";
-      }
-    }
-    // A window being dragged by its corner does not stop reallocating buffers
-    // when the last size event arrives, and it reallocates them on frames
-    // where the size came back the same -- which is a frame resize() is not
-    // called for, so nothing clears the blit history and nothing owes a full
-    // repaint. The frame then clips to what moved and lands in a buffer that
-    // has never been drawn into, which is the whole screen black but the live
-    // region. Counting frames cannot cover that, because the frames are not
-    // the thing that ends: the drag is. So the settle is in wall time, and
-    // every frame inside it repaints whole.
-    if (wallMs() - fLastResizeWall < kResizeSettleMs) {
-      if (!fFrame.fFullDamage) {
-        fFrame.fFullDamage = true;
-        fFrame.fFullDamageReason = "resize settling";
-      }
-    }
-    // What the frame repaints. A frame drawn with nothing marked repaints
-    // everything -- the buffer being drawn into is several frames old and
-    // there is no region to trust -- so it is reported as full, honestly.
-    // The answer to those frames is not to relabel them: it is not to draw
-    // them, which is what the owed-frame count above is for.
-    if (!fFrame.fFullDamage && fFrame.fDamage.empty()) {
-      fFrame.fFullDamageReason = "nothing marked itself";
-    }
-    fFrame.fComputedClipFull = fFrame.fFullDamage || fFrame.fDamage.empty();
-    fFrame.fComputedClip = fFrame.fDamage;
-    fFrame.fFrameClipFull = fFrame.fComputedClipFull;
-    fFrame.fFrameClip.clear();
-    if (!fFrame.fFrameClipFull) {
-      fFrame.fFrameClip = fFrame.fDamage;
-    }
-    fFrame.fDamage.clear();
-    fFrame.fFullDamage = false;
-    fFrame.fDamageDrives = false;
-
-    // Showing the regions means repainting everything: the outlines are put
-    // on a back buffer the window will come back to, and cleaning them up
-    // afterwards would have to land on that same buffer rather than on
-    // whichever one is next. Repainting whole sidesteps that entirely -- the
-    // tool costs frames while it is on, and in exchange it never lies or
-    // leaves anything behind.
-    if (fFrame.showingDamage(fSettings.flag("damageoverlay"))) {
-      fFrame.fFrameClipFull = true;
-      fFrame.fFrameClip.clear();
-    }
-    fFrame.rememberBlitRegion();
-
-    // Every number the clip decision is made from, at the point it is made:
-    // after the blit history has been updated for this frame, so the line
-    // cannot disagree with what the frame then does. Printed when the answer
-    // or the buffer age changes, and for the second after a size event.
-    if (fFrame.fDiag.fTraceRepaint) {
-      const bool willClip = !fFrame.fComputedClipFull &&
-                            this->partialRedraw() &&
-                            !fFrame.historyShorterThan(fFrame.drawReach());
-      const bool resizing = wallMs() - fLastResizeWall < 1000.0;
-      if (willClip != fFrame.fDiag.fTracedClipping ||
-          fFrame.fBufferAge != fFrame.fDiag.fTracedAge ||
-          (fFrame.fBlitHistory.size() < fFrame.fDiag.fTracedHistory) || resizing) {
-        std::println(std::cerr,
-                     "[repaint] {:8.0f} ms  age {}{}  reach {}  history {}  "
-                     "{}  -> {}{}",
-                     wallMs(), fFrame.fBufferAge,
-                     fFrame.fBufferAgeAssumed ? " (assumed)" : "",
-                     fFrame.drawReach(), fFrame.fBlitHistory.size(),
-                     fFrame.fComputedClipFull ? "whole screen" : "a region",
-                     willClip ? "CLIPS" : "repaints whole",
-                     fFrame.fComputedClipFull
-                         ? std::string(" -- ") + fFrame.fFullDamageReason
-                         : std::string());
-      }
-      fFrame.fDiag.fTracedClipping = willClip;
-      fFrame.fDiag.fTracedAge = fFrame.fBufferAge;
-      fFrame.fDiag.fTracedHistory = fFrame.fBlitHistory.size();
-    }
-
-    if (!fFrame.fSurface) {
-      return;
-    }
-    auto *canvas = fFrame.fSurface->getCanvas();
-    fFrame.fFrameSave = canvas->save();
-
-    // A full repaint paints every pixel only if every screen covers every
-    // pixel, and the clipped path below is the only one that clears. That
-    // holds while the surface being drawn into held the last frame: whatever
-    // a screen leaves uncovered was already right. It stops holding the
-    // moment the surface is new -- resize() drops the raster one and the
-    // next frame allocates a fresh one, and a window buffer coming round for
-    // the first time is fresh too. Then what a screen leaves uncovered is
-    // not the last frame, it is nothing, and nothing is black.
-    //
-    // Only while there is reason to doubt the surface, which is the frames a
-    // repaint is owed for and the settle after a size event. In the steady
-    // state this would be a full-screen memset on every gameplay frame, paid
-    // to cover a case that cannot happen there.
-    if (fFrame.fComputedClipFull &&
-        (fFrame.fFullRepaintsOwed > 0 ||
-         wallMs() - fLastResizeWall < kResizeSettleMs)) {
-      canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
-    }
-
-    // Partial repainting draws straight into the window: there is no second
-    // surface and nothing is copied. The buffer being drawn into is one of
-    // several the window cycles through, so it is missing everything the last
-    // few frames changed.
-    //
-    // Clipped to one rectangle rather than to a region of several: a region
-    // takes Skia off its analytic clip path and onto clip masks, which are
-    // paid per draw call and cost more than the pixels they save.
-    if (!this->partialRedraw() || fFrame.historyShorterThan(fFrame.drawReach())) {
-      return;
-    }
-    const skia::SkIRect bounds = fFrame.damageOver(fFrame.drawReach());
-    if (bounds.isEmpty()) {
-      return;
-    }
-    // Past half the screen the clip stops paying for itself: every draw call
-    // is recorded and tested either way, and only pixels are saved.
-    const std::int64_t screenArea =
-        static_cast<std::int64_t>(fWin.fScreenW) * fWin.fScreenH;
-    const std::int64_t boundsArea =
-        static_cast<std::int64_t>(bounds.width()) * bounds.height();
-    if (boundsArea * 2 > screenArea) {
-      return;
-    }
-    canvas->clipIRect(bounds);
-    // Remembered for the blit, which is a different question with a different
-    // answer: what the window is missing rather than what this surface is.
-    //
-    // Only where the window system reports a buffer age. An assumed age is a
-    // claim about the window's buffers that nothing has checked, and carrying
-    // a region across on the strength of it is what leaves the screen black
-    // around whatever moved: the server resizes the window between one frame
-    // and the next, the buffer that comes back has never been painted, and a
-    // frame that carries only its own damage into it fills in a rectangle and
-    // leaves the rest as it found it. Blitting whole costs one window-sized
-    // copy on a renderer that has the whole frame in memory anyway, and the
-    // drawing above is still clipped, which is where the work actually is.
-    if (fFrame.fAgeReported && !fFrame.historyShorterThan(fFrame.windowReach())) {
-      const skia::SkIRect carry = fFrame.damageOver(fFrame.windowReach());
-      if (!carry.isEmpty()) {
-        fFrame.fBlitRegions.push_back(carry);
-      }
-    }
-    // What is repainted starts clean: the buffer holds an older frame, and
-    // anything translucent drawn over it would otherwise stack up.
-    if (fState != State::kPlaying) {
-      canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
-    }
+    const bool partial = this->partialRedraw();
+    const int assumedAge =
+        fForcedBufferAge > 0 ? fForcedBufferAge
+                             : fSettings.choice("bufferage");
+    fFrame.begin({.fPartial = partial,
+                  .fAssumedBufferAge = assumedAge,
+                  .fReportedSize =
+                      fReportedSize.load(std::memory_order_acquire),
+                  .fWidth = fWin.fScreenW,
+                  .fHeight = fWin.fScreenH,
+                  .fNow = wallMs(),
+                  .fLastResize = fLastResizeWall,
+                  .fShowDamage =
+                      fFrame.showingDamage(
+                          fSettings.flag("damageoverlay")),
+                  .fPlaying = fState == State::kPlaying});
   }
 
   // The half of a screen that is not drawing: what is in the tree, where it
@@ -2541,24 +2348,13 @@ private:
     fFrame.fDrawing = false;
   }
 
-  // How many back buffers the window may be cycling through; each of them
-  // needs the pixels a repaint produced, so a region stays in the blit set
-  // for that many frames.
-  //
-  // There is no way to ask: GLFW does not say, the driver need not tell, and
-  // a compositor can hold one of its own on top of whatever the driver does.
-  // Three was a guess, and the guess is what a screen change was landing on
-  // -- one buffer short means one buffer still holding the screen that was
+  // One atomic value lets the callback publish a coherent framebuffer size.
   [[nodiscard]] static std::uint64_t packSize(int width, int height) {
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(width))
             << 32) |
            static_cast<std::uint32_t>(height);
   }
 
-  // How long after the last size event a window is still assumed to be
-  // throwing its buffers away. The same quarter second the slider bodies wait
-  // for, and for the same reason: that is how long a drag keeps arriving.
-  static constexpr double kResizeSettleMs = 250.0;
   void framePlaying() {
     using clock = std::chrono::steady_clock;
     // Zero until the first frame has been through, so that nothing before it

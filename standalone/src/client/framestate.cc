@@ -16,6 +16,18 @@ class FrameState {
   friend class App;
 
 public:
+  struct BeginOptions {
+    bool fPartial = false;
+    int fAssumedBufferAge = 0;
+    std::uint64_t fReportedSize = 0;
+    int fWidth = 0;
+    int fHeight = 0;
+    double fNow = 0.0;
+    double fLastResize = 0.0;
+    bool fShowDamage = false;
+    bool fPlaying = false;
+  };
+
   void requestRedraw(double now, double durationMs = 0.0) {
     fRedrawUntilWall = std::max(fRedrawUntilWall, now + durationMs);
   }
@@ -90,6 +102,114 @@ public:
   void consume(skiff::scene::FrameResult result) {
     this->damage(result.fDamage);
     fSceneWantsFrame = fSceneWantsFrame || result.fWantsAnotherFrame;
+  }
+
+  void begin(const BeginOptions &opts) {
+    fDrawing = true;
+    fBlitRegions.clear();
+    fBufferAge = opts.fPartial ? present::bufferAge() : -1;
+    fAgeReported = fBufferAge >= 0;
+    fBufferAgeAssumed = false;
+    if (fBufferAge < 0 && opts.fPartial && opts.fAssumedBufferAge > 0) {
+      fBufferAge = opts.fAssumedBufferAge;
+      fBufferAgeAssumed = true;
+    }
+
+    const int reportedWidth = static_cast<int>(opts.fReportedSize >> 32);
+    const int reportedHeight =
+        static_cast<int>(opts.fReportedSize & 0xffffffffu);
+    if (reportedWidth > 0 && reportedHeight > 0 &&
+        (reportedWidth != opts.fWidth || reportedHeight != opts.fHeight)) {
+      fBlitHistory.clear();
+      fFullDamage = true;
+      fFullDamageReason = "the window is not the size we were told";
+    }
+    if (fFullRepaintsOwed > 0) {
+      --fFullRepaintsOwed;
+      if (!fFullDamage) {
+        fFullDamage = true;
+        fFullDamageReason = "buffer has not had this screen yet";
+      }
+    }
+    if (opts.fNow - opts.fLastResize < kResizeSettleMs && !fFullDamage) {
+      fFullDamage = true;
+      fFullDamageReason = "resize settling";
+    }
+    if (!fFullDamage && fDamage.empty()) {
+      fFullDamageReason = "nothing marked itself";
+    }
+    fComputedClipFull = fFullDamage || fDamage.empty();
+    fComputedClip = fDamage;
+    fFrameClipFull = fComputedClipFull;
+    fFrameClip = fFrameClipFull ? std::vector<skia::SkIRect>{} : fDamage;
+    fDamage.clear();
+    fFullDamage = false;
+    fDamageDrives = false;
+    if (opts.fShowDamage) {
+      fFrameClipFull = true;
+      fFrameClip.clear();
+    }
+    this->rememberBlitRegion();
+
+    if (fDiag.fTraceRepaint) {
+      const bool willClip =
+          !fComputedClipFull && opts.fPartial &&
+          !this->historyShorterThan(this->drawReach());
+      const bool resizing = opts.fNow - opts.fLastResize < 1000.0;
+      if (willClip != fDiag.fTracedClipping ||
+          fBufferAge != fDiag.fTracedAge ||
+          fBlitHistory.size() < fDiag.fTracedHistory || resizing) {
+        std::println(std::cerr,
+                     "[repaint] {:8.0f} ms  age {}{}  reach {}  history {}  "
+                     "{}  -> {}{}",
+                     opts.fNow, fBufferAge,
+                     fBufferAgeAssumed ? " (assumed)" : "", this->drawReach(),
+                     fBlitHistory.size(),
+                     fComputedClipFull ? "whole screen" : "a region",
+                     willClip ? "CLIPS" : "repaints whole",
+                     fComputedClipFull
+                         ? std::string(" -- ") + fFullDamageReason
+                         : std::string());
+      }
+      fDiag.fTracedClipping = willClip;
+      fDiag.fTracedAge = fBufferAge;
+      fDiag.fTracedHistory = fBlitHistory.size();
+    }
+
+    if (!fSurface) {
+      return;
+    }
+    auto *canvas = fSurface->getCanvas();
+    fFrameSave = canvas->save();
+    if (fComputedClipFull &&
+        (fFullRepaintsOwed > 0 ||
+         opts.fNow - opts.fLastResize < kResizeSettleMs)) {
+      canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
+    }
+    if (!opts.fPartial || this->historyShorterThan(this->drawReach())) {
+      return;
+    }
+    const skia::SkIRect bounds = this->damageOver(this->drawReach());
+    if (bounds.isEmpty()) {
+      return;
+    }
+    const std::int64_t screenArea =
+        static_cast<std::int64_t>(opts.fWidth) * opts.fHeight;
+    const std::int64_t boundsArea =
+        static_cast<std::int64_t>(bounds.width()) * bounds.height();
+    if (boundsArea * 2 > screenArea) {
+      return;
+    }
+    canvas->clipIRect(bounds);
+    if (fAgeReported && !this->historyShorterThan(this->windowReach())) {
+      const skia::SkIRect carry = this->damageOver(this->windowReach());
+      if (!carry.isEmpty()) {
+        fBlitRegions.push_back(carry);
+      }
+    }
+    if (!opts.fPlaying) {
+      canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
+    }
   }
 
   [[nodiscard]] bool because(double now, const char *reason) {
@@ -263,6 +383,7 @@ private:
   static constexpr std::size_t kSwapChainDepth = 4;
   static constexpr int kFullRepaintsAfterChange = 6;
   static constexpr std::size_t kBlitHistoryDepth = 8;
+  static constexpr double kResizeSettleMs = 250.0;
 
   struct Diagnostics {
     const char *fLoggedFullReason = nullptr;
