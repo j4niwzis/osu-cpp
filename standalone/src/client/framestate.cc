@@ -7,7 +7,7 @@ import present;
 
 export namespace client {
 
-class App;
+extern "C++" class App;
 
 // The mutable state of incremental presentation. Only App may inspect the
 // frame currently being assembled; all invalidation enters through methods,

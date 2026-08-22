@@ -73,7 +73,7 @@ using audio_client::audioContext;
 using audio_client::AudioPlayer;
 using audio_client::SamplePlayer;
 
-export class App {
+export extern "C++" class App {
 public:
   App(std::optional<osu::BeatmapSet> set, osu::ModSet mods, bool headless,
       bool autoplay, std::filesystem::path replayPath = {}, bool record = false,
