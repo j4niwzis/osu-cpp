@@ -1,12 +1,6 @@
 cmake_minimum_required(VERSION 4.3.3 FATAL_ERROR)
 
-set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
-  # This specific value changes as experimental support evolves. See
-  # `Help/dev/experimental.rst` in the CMake source corresponding to
-  # your CMake build for the exact value to use.
-  "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
-
-set(CMAKE_CXX_MODULE_STD ON)
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/import-std.cmake)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 project(osucppTests LANGUAGES CXX)
