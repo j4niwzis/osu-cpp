@@ -469,10 +469,12 @@ public:
   }
 
   void strokeRounded(const skia::SkRect &rect, float radius,
-                     skia::SkColor color, float width) const {
+                     skia::SkColor color, float width,
+                     float alpha = 1.0f) const {
     skia::SkPaint p;
     p.setAntiAlias(true);
     p.setColor(color);
+    p.setAlphaf(combinedAlpha(color, alpha));
     p.setStyle(skia::kStrokeStyle);
     p.setStrokeWidth(width);
     fCanvas->drawRRect(skia::SkRRect::MakeRectXY(rect, radius, radius), p);
