@@ -261,7 +261,7 @@ public:
   }
 
   void frameSongSelect() {
-    auto *canvas = fApp.fFrame.fSurface->getCanvas();
+    auto *canvas = fApp.fFrame.canvas();
 #ifdef __EMSCRIPTEN__
     if (!fApp.fLibraryLoaded) {
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
@@ -685,7 +685,7 @@ public:
   }
 
   void frameDownload() {
-    auto *canvas = fApp.fFrame.fSurface->getCanvas();
+    auto *canvas = fApp.fFrame.canvas();
     fApp.fListing.render(canvas);
     fApp.fSetPage.render(canvas);
     fApp.drawScreenFadeIn(canvas);
@@ -737,9 +737,9 @@ public:
     // said. The scene is still redrawn, because a clipped repaint has to put
     // back whatever was under the piece being repainted.
     fApp.fView.invalidate();
-    fApp.fView.render(fApp.gameplayCtx(fApp.fFrame.fSurface->getCanvas()),
-                 fApp.fPlay.fPausedNow);
-    fApp.fPauseMenu.render(fApp.fFrame.fSurface->getCanvas());
+    auto *canvas = fApp.fFrame.canvas();
+    fApp.fView.render(fApp.gameplayCtx(canvas), fApp.fPlay.fPausedNow);
+    fApp.fPauseMenu.render(canvas);
     fApp.present();
   }
 
@@ -765,7 +765,7 @@ public:
 
   void frameResults() {
     fApp.fView.invalidate();
-    auto *canvas = fApp.fFrame.fSurface->getCanvas();
+    auto *canvas = fApp.fFrame.canvas();
     fApp.drawScreenBackground(canvas);
     const skiff::paint::Painter p(canvas, fApp.fFont);
 

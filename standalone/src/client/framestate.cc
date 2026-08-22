@@ -104,6 +104,13 @@ public:
     fSceneWantsFrame = fSceneWantsFrame || result.fWantsAnotherFrame;
   }
 
+  // Screen controllers draw into the frame currently being assembled, but
+  // do not own or replace its surface. Expose precisely that capability
+  // instead of making every controller a friend of FrameState.
+  [[nodiscard]] skia::SkCanvas *canvas() const noexcept {
+    return fSurface ? fSurface->getCanvas() : nullptr;
+  }
+
   void begin(const BeginOptions &opts) {
     fDrawing = true;
     fBlitRegions.clear();
