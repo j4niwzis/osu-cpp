@@ -740,14 +740,13 @@ private:
   std::vector<listing::Entry> fFound;
   std::map<long, std::shared_ptr<http::Handle>> fTransfers;
   bool fSearchPending = false;
-  std::size_t fMirror = 0;
   int fSearchOffset = 0; // how much of the current search is loaded
   std::uint32_t fSearchGeneration = 0; // older queries are dropped
   bool fMoreAvailable = true; // a full page came back, so ask for the next
   std::string fDownloadStatus;
   // Track previews come from osu!'s own preview endpoint and play on their
   // own source, so the menu music is untouched.
-  client::AudioPlayer fPreview;
+  audio_client::AudioPlayer fPreview;
   long fPreviewId = -1;
   bool fPreviewPending = false;
   std::uint32_t fPreviewGeneration = 0; // stale fetches must not start playing
