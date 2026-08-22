@@ -50,6 +50,7 @@ import client.judgements;
 import client.windowruntime;
 import client.playresult;
 import client.appinput;
+import client.applibrary;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -99,6 +100,7 @@ public:
 
 private:
   friend class client::AppInput<App>;
+  friend class client::AppLibrary<App>;
 
   osu::BeatmapSet fSet;
   osu::ModSet fMods = osu::mod::kNone;
@@ -220,6 +222,7 @@ private:
     kResults,
   };
   client::AppInput<App> fInput{*this};
+  client::AppLibrary<App> fLibraryRuntime{*this};
   State fState = State::kMainMenu;
   bool fHasInitialSet = false;
 
@@ -582,7 +585,7 @@ private:
     fDisplayFont = std::move(fonts.fDisplay);
     this->resize(fWin.fScreenW, fWin.fScreenH);
 
-    this->initLibrary();
+    fLibraryRuntime.initLibrary();
     // Launched with a beatmap on the command line => skip the main menu and
     // drop straight into song select on the imported set (it sorts to a known
     // index, so just point the selection at it).
@@ -1013,7 +1016,7 @@ private:
     if (client::http::poll() > 0 || fLoader.poll() > 0) {
       fFrame.requestRedraw(wallMs(), 600.0);
     }
-    this->drainDroppedFiles();
+    fLibraryRuntime.drainDroppedFiles();
     fInput.drainInput();
     {
       const double wallNow = wallMs();
@@ -1036,7 +1039,7 @@ private:
     if (fState != State::kPlaying && fState != State::kPaused &&
         wallMs() - fMusicPollWall > 50.0) {
       fMusicPollWall = wallMs();
-      this->updateMenuMusic();
+      fLibraryRuntime.updateMenuMusic();
     }
     if (!this->needsFrame()) {
       // Nothing to show: no clear, no draw, no swap, so the front buffer
@@ -1572,313 +1575,6 @@ private:
 #endif
   }
 
-  // ---- Library ----------------------------------------------------------
-
-  void initLibrary() {
-#ifdef __EMSCRIPTEN__
-    fMapsDir = "/maps";
-#else
-    if (const char *home = std::getenv("HOME"); home != nullptr) {
-      fMapsDir = std::filesystem::path(home) / ".local" / "share" /
-                 "osu_client" / "maps";
-    } else {
-      fMapsDir = "maps";
-    }
-#endif
-    std::error_code ec;
-    std::filesystem::create_directories(fMapsDir, ec);
-    fThumbDir = fMapsDir / "thumbnails";
-    fLibrary.configure(fLoader, fMapsDir, fThumbDir,
-                       [this] { this->syncMapsDir(); });
-    fReplayDir = fMapsDir.parent_path() / "replays";
-    std::filesystem::create_directories(fThumbDir, ec);
-    fLibrary.loadCache();
-    fReplayBrowser.initialize(fMapsDir.parent_path() / "replay-index.json",
-                              fReplayDir);
-    fSettings.load(fMapsDir.parent_path() / "settings.json");
-    // What the mirrors cannot do for themselves: the library they import
-    // into, the corner they report to, and the music that steps aside for a
-    // preview.
-    fMirrors.configure({
-                           [this](std::string text, skia::SkColor colour) {
-                             this->notify(std::move(text), colour);
-                           },
-                           [this](long id) {
-                             return fLibrary.libraryIndexForSet(
-                                        static_cast<int>(id)) >= 0;
-                           },
-                           [this](const std::filesystem::path &path) {
-                             return fLibrary.addOszToLibrary(
-                                 path, true,
-                                 client::parseQuery(fFilter.text()));
-                           },
-                           [this](int entry) { fListing.entryChanged(entry); },
-                           [this] {
-                             fListing.resetSortForSearch();
-                             fListing.scrollToStart();
-                           },
-                           [this] { return this->musicGain(); },
-                           [this] { return fAudio.playing(); },
-                           [this] { fAudio.pause(); },
-                           [this] { fAudio.resume(); },
-                           [this] { this->syncMapsDir(); },
-                       },
-                       fMapsDir);
-    fSwapIntervalRequest.store(fSettings.flag("vsync") ? 1 : 0,
-                               std::memory_order_release);
-    fAppliedDim = fSettings.value("dim");
-
-    if (fHasInitialSet) {
-      client::library::Entry entry;
-      entry.fInfos = fSet.fBeatmaps;
-      entry.fLoaded = std::make_shared<osu::BeatmapSet>(fSet);
-      fLibrary.sets().push_back(std::move(entry));
-      fLibrary.loadedOrder().push_back(0);
-    }
-
-    fLibrary.scanArchives();
-    this->syncMapsDir();
-
-    this->resortLibrary();
-    fLibrary.markDirty();
-    fLibrary.rebuildVisible(client::parseQuery(fFilter.text()));
-    // Sets come out of the cache and off the disk in whatever order each was
-    // written in; the difficulties within them are put in rating order here,
-    // once, before anything selects one by position.
-    fAppliedStarChoice = fSettings.choice("stars");
-    fLibrary.setRanked(fAppliedStarChoice == 1);
-    fLibrary.sortLibraryByStars();
-
-    // Start on a random set so the menu isn't always greeted by the same
-    // track (unless a specific beatmap was passed on the command line).
-    if (!fHasInitialSet && !fLibrary.sets().empty()) {
-      std::uniform_int_distribution<std::size_t> pick(
-          0, fLibrary.sets().size() - 1);
-      fLibrary.selSet() = static_cast<int>(pick(fUiRng));
-      fLibrary.selDiff() = 0;
-    }
-    fLibraryLoaded = true;
-    std::println(std::cerr, "[library] {} sets", fLibrary.sets().size());
-  }
-
-  // Loop the selected set's audio quietly under the menus, lazer-style. Only
-  // reloads when the selection changes; stops when gameplay takes over.
-  void updateMenuMusic() {
-    if (fLibrary.sets().empty()) {
-      return;
-    }
-    if (fMenuMusicForSet == fLibrary.selSet()) {
-      // The track is given a moment to start before its silence counts as
-      // having ended; OpenAL reports a source as stopped until it does.
-      // Paused for a preview is not the same as finished.
-      if (!fAudio.playing() && !fMirrors.ducked() &&
-          wallMs() - fMenuTrackWall > 1000.0 && fState != State::kResults) {
-        // The results screen belongs to the map that was just played, and
-        // moving on from it would move the selection out from under the
-        // player, who is going back to that map.
-        this->nextMenuTrack();
-      }
-      return;
-    }
-    auto set = fLibrary.setFor(fLibrary.selSet());
-    if (!set) {
-      return; // still loading; try again next frame
-    }
-    fMenuMusicForSet = fLibrary.selSet();
-    // The grace period starts when the track is asked for, not when it starts
-    // playing: decoding takes a few hundred milliseconds, and silence while
-    // that happens is not a track that ended. This is what made the client
-    // open on one beatmap and jump to another a second later.
-    fMenuTrackWall = wallMs();
-    if (set->fBeatmaps.empty()) {
-      fAudio.stop();
-      return;
-    }
-    const auto &audioName = set->fBeatmaps.front().fMeta.fAudioFilename;
-    if (audioName.empty()) {
-      fAudio.stop();
-      return;
-    }
-    const auto bytes = set->findFile(audioName);
-    if (bytes.empty()) {
-      fAudio.stop();
-      return;
-    }
-    // Decoding an MP3 takes hundreds of milliseconds -- the remaining stall
-    // when changing selection. Decode on the worker, upload to OpenAL here.
-    const std::string ext = detail::fileExtension(audioName);
-    std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
-    auto pcm = std::make_shared<audio_client::DecodedAudio>();
-    const int forSet = fLibrary.selSet();
-    // The index alone is not identity: deleting a beatmap shifts everything
-    // after it, so the path is checked too before this track is adopted.
-    const auto forPath =
-        fLibrary.sets()[static_cast<std::size_t>(fLibrary.selSet())].fPath;
-    fLoader.submit(
-        static_cast<std::uint64_t>(fLibrary.selSet()) | (3ull << 32),
-        [copy = std::move(copy), ext, pcm] {
-          *pcm = audio_client::decodeAudio(copy, ext);
-        },
-        [this, forSet, forPath, pcm] {
-          if (forSet != fLibrary.selSet() || pcm->fSamples.empty()) {
-            return; // selection moved on while decoding
-          }
-          if (forSet >= static_cast<int>(fLibrary.sets().size()) ||
-              fLibrary.sets()[static_cast<std::size_t>(forSet)].fPath !=
-                  forPath) {
-            return; // that entry is not the one this was decoded for
-          }
-          fAudio.adopt(std::move(*pcm));
-          fAudio.setLooping(false); // the next track is chosen when it ends
-          fMenuTrackWall = wallMs();
-          fAudio.setVolume(this->musicGain());
-          fAudio.play();
-          fMainMenu.trackChanged(wallMs());
-        });
-  }
-
-  // Picks another map to listen to. Random, and never the one just heard as
-  // long as there is anything else in the library.
-  void nextMenuTrack() {
-    fFrame.requestRedraw(wallMs(), 1500.0);
-    if (fLibrary.visible().size() > 1) {
-      // One draw, uniform over everything except the one just heard. Drawing
-      // again until the draw differs is unbiased but can fail, and failing
-      // eight times in a row meant playing the same track over again -- which
-      // is the opposite of what this is for.
-      std::size_t current = fLibrary.visible().size();
-      for (std::size_t i = 0; i < fLibrary.visible().size(); ++i) {
-        if (fLibrary.visible()[i] == fLibrary.selSet()) {
-          current = i;
-          break;
-        }
-      }
-      const bool skipping = current < fLibrary.visible().size();
-      std::uniform_int_distribution<std::size_t> pick(
-          0, fLibrary.visible().size() - (skipping ? 2 : 1));
-      std::size_t idx = pick(fUiRng);
-      if (skipping && idx >= current) {
-        ++idx; // the gap left by the one being skipped closes over it
-      }
-      fLibrary.selSet() = fLibrary.visible()[idx];
-      fLibrary.selDiff() = 0; // the carousel follows the selection on its own
-      fMenuTrackWall = wallMs();
-      return;
-    }
-    // Nothing else to play: start this one again.
-    fMenuTrackWall = wallMs();
-    fAudio.play();
-  }
-
-  void stopMenuMusic() {
-    fMenuMusicForSet = -1;
-    fAudio.setLooping(false);
-    fAudio.stop();
-    fMainMenu.stopped();
-  }
-
-  void syncMapsDir() {
-#ifdef __EMSCRIPTEN__
-    EM_ASM(FS.syncfs(false, function(err){}));
-#endif
-  }
-
-  // ---- Import an external .osz into the library -------------------------
-  //
-  // No portable file dialog exists in this stack, so: on desktop we shell out
-  // to whatever GTK/KDE picker is installed (zenity/kdialog/matedialog/qarma);
-  // in the browser the JS side handles the <input type=file> and drops the
-  // bytes at /import.osz, then calls back. Either way the chosen archive is
-  // copied into the maps dir and added to the library.
-  // Files dropped onto the window (the reliable import path: no dialog
-  // binary required, works on any desktop).
-  void drainDroppedFiles() {
-    const auto paths = fWindowRuntime.takeDroppedFiles();
-    for (const auto &p : paths) {
-      this->importFrom(std::filesystem::path(p));
-    }
-  }
-
-  bool importFrom(const std::filesystem::path &src) {
-    if (!fLibrary.importArchive(src, client::parseQuery(fFilter.text()))) {
-      return false;
-    }
-    if (fState == State::kMainMenu) {
-      this->switchState(State::kSongSelect);
-    }
-    return true;
-  }
-
-  void importOsz() {
-#ifdef __EMSCRIPTEN__
-    EM_ASM({
-      if (Module.osuPickBeatmap)
-        Module.osuPickBeatmap();
-    });
-#else
-    const std::filesystem::path chosen = this->runFilePicker();
-    if (chosen.empty()) {
-      return; // cancelled, or no dialog available (already reported)
-    }
-    this->importFrom(chosen);
-#endif
-  }
-
-#ifndef __EMSCRIPTEN__
-  // Shell out to a native file dialog via std::system (no POSIX popen: that
-  // needs <stdio.h>, which mixes badly with `import std` on this toolchain).
-  // The picker writes the chosen path to a temp file; we read it back.
-  [[nodiscard]] std::filesystem::path runFilePicker() {
-    std::error_code ec;
-    const auto tmp =
-        std::filesystem::temp_directory_path(ec) / "osu_client_import.txt";
-    const std::string tmpStr = tmp.string();
-    const std::string commands[] = {
-        "zenity --file-selection "
-        "--file-filter='osu! beatmap | *.osz *.zip' --title='Import beatmap'",
-        "kdialog --getopenfilename . '*.osz *.zip|osu! beatmap'",
-        "matedialog --file-selection",
-        "qarma --file-selection",
-    };
-    for (const auto &pick : commands) {
-      // Is the binary even installed? `command -v` keeps a missing dialog
-      // from looking like a user cancellation.
-      const std::string bin = pick.substr(0, pick.find(' '));
-      if (std::system(("command -v " + bin + " > /dev/null 2>&1").c_str()) !=
-          0) {
-        continue;
-      }
-      std::filesystem::remove(tmp, ec);
-      const std::string cmd = pick + " > '" + tmpStr + "' 2>/dev/null";
-      const int rc = std::system(cmd.c_str());
-      if (rc != 0) {
-        std::println(std::cerr, "[import] {} exited {} (cancelled?)", bin, rc);
-        return {};
-      }
-      std::ifstream in(tmp);
-      if (!in) {
-        continue;
-      }
-      std::string path;
-      std::getline(in, path);
-      std::filesystem::remove(tmp, ec);
-      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
-        path.pop_back();
-      }
-      if (!path.empty()) {
-        return std::filesystem::path(path);
-      }
-      return {};
-    }
-    std::println(std::cerr,
-                 "[import] no file dialog installed (tried zenity, kdialog, "
-                 "matedialog, qarma). Drag a .osz onto the window instead, or "
-                 "copy it into {}",
-                 fMapsDir.string());
-    return {};
-  }
-#endif
-
   // ---- Download screen logic -------------------------------------------
 
 
@@ -2128,7 +1824,7 @@ private:
       fInput.openDownloads();
       break;
     case MenuAction::kImport:
-      this->importOsz();
+      fLibraryRuntime.importOsz();
       break;
     case MenuAction::kExit:
       this->requestQuit();
@@ -2606,7 +2302,7 @@ private:
 #ifdef __EMSCRIPTEN__
     if (!fLibraryLoaded) {
       if (detail::gMapsSynced.load(std::memory_order_acquire)) {
-        this->initLibrary();
+        fLibraryRuntime.initLibrary();
       } else {
         fFrame.damageAll("waiting on local storage");
         return;
@@ -2951,7 +2647,7 @@ private:
       this->selectRandom();
       return true;
     case Action::kImport:
-      this->importOsz();
+      fLibraryRuntime.importOsz();
       return true;
     case Action::kBrowse:
       fInput.openDownloads();
@@ -3011,7 +2707,7 @@ private:
     const auto index = static_cast<std::size_t>(fLibrary.selSet());
     // The track playing under the menu belongs to this set; let it go before
     // the file does.
-    this->stopMenuMusic();
+    fLibraryRuntime.stopMenuMusic();
     fMenuMusicForSet = -1;
     fBackgroundForSet = -1;
 

@@ -1,0 +1,349 @@
+module;
+
+#ifdef __EMSCRIPTEN__
+#include "emscripten_macro.h"
+#endif
+
+export module client.applibrary;
+
+import std;
+import osu;
+import skia;
+import audio;
+import client.audio;
+import client.filter;
+import client.library;
+import client.loader;
+import client.listing;
+import client.mirrors;
+import client.replaybrowser;
+import client.settings;
+import client.util;
+
+export namespace client {
+
+template <class Host> class AppLibrary {
+public:
+  explicit AppLibrary(Host &app) : fApp(app) {}
+
+  // ---- Library ----------------------------------------------------------
+
+  void initLibrary() {
+#ifdef __EMSCRIPTEN__
+    fApp.fMapsDir = "/maps";
+#else
+    if (const char *home = std::getenv("HOME"); home != nullptr) {
+      fApp.fMapsDir = std::filesystem::path(home) / ".local" / "share" /
+                 "osu_client" / "maps";
+    } else {
+      fApp.fMapsDir = "maps";
+    }
+#endif
+    std::error_code ec;
+    std::filesystem::create_directories(fApp.fMapsDir, ec);
+    fApp.fThumbDir = fApp.fMapsDir / "thumbnails";
+    fApp.fLibrary.configure(fApp.fLoader, fApp.fMapsDir, fApp.fThumbDir,
+                       [this] { this->syncMapsDir(); });
+    fApp.fReplayDir = fApp.fMapsDir.parent_path() / "replays";
+    std::filesystem::create_directories(fApp.fThumbDir, ec);
+    fApp.fLibrary.loadCache();
+    fApp.fReplayBrowser.initialize(
+        fApp.fMapsDir.parent_path() / "replay-index.json", fApp.fReplayDir);
+    fApp.fSettings.load(fApp.fMapsDir.parent_path() / "settings.json");
+    // What the mirrors cannot do for themselves: the library they import
+    // into, the corner they report to, and the music that steps aside for a
+    // preview.
+    fApp.fMirrors.configure({
+                           [this](std::string text, skia::SkColor colour) {
+                             fApp.notify(std::move(text), colour);
+                           },
+                           [this](long id) {
+                             return fApp.fLibrary.libraryIndexForSet(
+                                        static_cast<int>(id)) >= 0;
+                           },
+                           [this](const std::filesystem::path &path) {
+                             return fApp.fLibrary.addOszToLibrary(
+                                 path, true,
+                                 client::parseQuery(fApp.fFilter.text()));
+                           },
+                           [this](int entry) {
+                             fApp.fListing.entryChanged(entry);
+                           },
+                           [this] {
+                             fApp.fListing.resetSortForSearch();
+                             fApp.fListing.scrollToStart();
+                           },
+                           [this] { return fApp.musicGain(); },
+                           [this] { return fApp.fAudio.playing(); },
+                           [this] { fApp.fAudio.pause(); },
+                           [this] { fApp.fAudio.resume(); },
+                           [this] { this->syncMapsDir(); },
+                       },
+                       fApp.fMapsDir);
+    fApp.fSwapIntervalRequest.store(fApp.fSettings.flag("vsync") ? 1 : 0,
+                               std::memory_order_release);
+    fApp.fAppliedDim = fApp.fSettings.value("dim");
+
+    if (fApp.fHasInitialSet) {
+      client::library::Entry entry;
+      entry.fInfos = fApp.fSet.fBeatmaps;
+      entry.fLoaded = std::make_shared<osu::BeatmapSet>(fApp.fSet);
+      fApp.fLibrary.sets().push_back(std::move(entry));
+      fApp.fLibrary.loadedOrder().push_back(0);
+    }
+
+    fApp.fLibrary.scanArchives();
+    this->syncMapsDir();
+
+    fApp.resortLibrary();
+    fApp.fLibrary.markDirty();
+    fApp.fLibrary.rebuildVisible(client::parseQuery(fApp.fFilter.text()));
+    // Sets come out of the cache and off the disk in whatever order each was
+    // written in; the difficulties within them are put in rating order here,
+    // once, before anything selects one by position.
+    fApp.fAppliedStarChoice = fApp.fSettings.choice("stars");
+    fApp.fLibrary.setRanked(fApp.fAppliedStarChoice == 1);
+    fApp.fLibrary.sortLibraryByStars();
+
+    // Start on a random set so the menu isn't always greeted by the same
+    // track (unless a specific beatmap was passed on the command line).
+    if (!fApp.fHasInitialSet && !fApp.fLibrary.sets().empty()) {
+      std::uniform_int_distribution<std::size_t> pick(
+          0, fApp.fLibrary.sets().size() - 1);
+      fApp.fLibrary.selSet() = static_cast<int>(pick(fApp.fUiRng));
+      fApp.fLibrary.selDiff() = 0;
+    }
+    fApp.fLibraryLoaded = true;
+    std::println(std::cerr, "[library] {} sets", fApp.fLibrary.sets().size());
+  }
+
+  // Loop the selected set's audio quietly under the menus, lazer-style. Only
+  // reloads when the selection changes; stops when gameplay takes over.
+  void updateMenuMusic() {
+    if (fApp.fLibrary.sets().empty()) {
+      return;
+    }
+    if (fApp.fMenuMusicForSet == fApp.fLibrary.selSet()) {
+      // The track is given a moment to start before its silence counts as
+      // having ended; OpenAL reports a source as stopped until it does.
+      // Paused for a preview is not the same as finished.
+      if (!fApp.fAudio.playing() && !fApp.fMirrors.ducked() &&
+          fApp.wallMs() - fApp.fMenuTrackWall > 1000.0 &&
+          fApp.fState != State::kResults) {
+        // The results screen belongs to the map that was just played, and
+        // moving on from it would move the selection out from under the
+        // player, who is going back to that map.
+        this->nextMenuTrack();
+      }
+      return;
+    }
+    auto set = fApp.fLibrary.setFor(fApp.fLibrary.selSet());
+    if (!set) {
+      return; // still loading; try again next frame
+    }
+    fApp.fMenuMusicForSet = fApp.fLibrary.selSet();
+    // The grace period starts when the track is asked for, not when it starts
+    // playing: decoding takes a few hundred milliseconds, and silence while
+    // that happens is not a track that ended. This is what made the client
+    // open on one beatmap and jump to another a second later.
+    fApp.fMenuTrackWall = fApp.wallMs();
+    if (set->fBeatmaps.empty()) {
+      fApp.fAudio.stop();
+      return;
+    }
+    const auto &audioName = set->fBeatmaps.front().fMeta.fAudioFilename;
+    if (audioName.empty()) {
+      fApp.fAudio.stop();
+      return;
+    }
+    const auto bytes = set->findFile(audioName);
+    if (bytes.empty()) {
+      fApp.fAudio.stop();
+      return;
+    }
+    // Decoding an MP3 takes hundreds of milliseconds -- the remaining stall
+    // when changing selection. Decode on the worker, upload to OpenAL here.
+    const std::string ext = detail::fileExtension(audioName);
+    std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
+    auto pcm = std::make_shared<audio_client::DecodedAudio>();
+    const int forSet = fApp.fLibrary.selSet();
+    // The index alone is not identity: deleting a beatmap shifts everything
+    // after it, so the path is checked too before this track is adopted.
+    const auto forPath = fApp.fLibrary
+                             .sets()[static_cast<std::size_t>(
+                                 fApp.fLibrary.selSet())]
+                             .fPath;
+    fApp.fLoader.submit(
+        static_cast<std::uint64_t>(fApp.fLibrary.selSet()) | (3ull << 32),
+        [copy = std::move(copy), ext, pcm] {
+          *pcm = audio_client::decodeAudio(copy, ext);
+        },
+        [this, forSet, forPath, pcm] {
+          if (forSet != fApp.fLibrary.selSet() || pcm->fSamples.empty()) {
+            return; // selection moved on while decoding
+          }
+          if (forSet >= static_cast<int>(fApp.fLibrary.sets().size()) ||
+              fApp.fLibrary.sets()[static_cast<std::size_t>(forSet)].fPath !=
+                  forPath) {
+            return; // that entry is not the one this was decoded for
+          }
+          fApp.fAudio.adopt(std::move(*pcm));
+          fApp.fAudio.setLooping(false); // the next track is chosen when it ends
+          fApp.fMenuTrackWall = fApp.wallMs();
+          fApp.fAudio.setVolume(fApp.musicGain());
+          fApp.fAudio.play();
+          fApp.fMainMenu.trackChanged(fApp.wallMs());
+        });
+  }
+
+  // Picks another map to listen to. Random, and never the one just heard as
+  // long as there is anything else in the library.
+  void nextMenuTrack() {
+    fApp.fFrame.requestRedraw(fApp.wallMs(), 1500.0);
+    if (fApp.fLibrary.visible().size() > 1) {
+      // One draw, uniform over everything except the one just heard. Drawing
+      // again until the draw differs is unbiased but can fail, and failing
+      // eight times in a row meant playing the same track over again -- which
+      // is the opposite of what this is for.
+      std::size_t current = fApp.fLibrary.visible().size();
+      for (std::size_t i = 0; i < fApp.fLibrary.visible().size(); ++i) {
+        if (fApp.fLibrary.visible()[i] == fApp.fLibrary.selSet()) {
+          current = i;
+          break;
+        }
+      }
+      const bool skipping = current < fApp.fLibrary.visible().size();
+      std::uniform_int_distribution<std::size_t> pick(
+          0, fApp.fLibrary.visible().size() - (skipping ? 2 : 1));
+      std::size_t idx = pick(fApp.fUiRng);
+      if (skipping && idx >= current) {
+        ++idx; // the gap left by the one being skipped closes over it
+      }
+      fApp.fLibrary.selSet() = fApp.fLibrary.visible()[idx];
+      fApp.fLibrary.selDiff() = 0; // the carousel follows the selection on its own
+      fApp.fMenuTrackWall = fApp.wallMs();
+      return;
+    }
+    // Nothing else to play: start this one again.
+    fApp.fMenuTrackWall = fApp.wallMs();
+    fApp.fAudio.play();
+  }
+
+  void stopMenuMusic() {
+    fApp.fMenuMusicForSet = -1;
+    fApp.fAudio.setLooping(false);
+    fApp.fAudio.stop();
+    fApp.fMainMenu.stopped();
+  }
+
+  void syncMapsDir() {
+#ifdef __EMSCRIPTEN__
+    EM_ASM(FS.syncfs(false, function(err){}));
+#endif
+  }
+
+  // ---- Import an external .osz into the library -------------------------
+  //
+  // No portable file dialog exists in this stack, so: on desktop we shell out
+  // to whatever GTK/KDE picker is installed (zenity/kdialog/matedialog/qarma);
+  // in the browser the JS side handles the <input type=file> and drops the
+  // bytes at /import.osz, then calls back. Either way the chosen archive is
+  // copied into the maps dir and added to the library.
+  // Files dropped onto the window (the reliable import path: no dialog
+  // binary required, works on any desktop).
+  void drainDroppedFiles() {
+    const auto paths = fApp.fWindowRuntime.takeDroppedFiles();
+    for (const auto &p : paths) {
+      this->importFrom(std::filesystem::path(p));
+    }
+  }
+
+  bool importFrom(const std::filesystem::path &src) {
+    if (!fApp.fLibrary.importArchive(
+            src, client::parseQuery(fApp.fFilter.text()))) {
+      return false;
+    }
+    if (fApp.fState == State::kMainMenu) {
+      fApp.switchState(State::kSongSelect);
+    }
+    return true;
+  }
+
+  void importOsz() {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({
+      if (Module.osuPickBeatmap)
+        Module.osuPickBeatmap();
+    });
+#else
+    const std::filesystem::path chosen = this->runFilePicker();
+    if (chosen.empty()) {
+      return; // cancelled, or no dialog available (already reported)
+    }
+    this->importFrom(chosen);
+#endif
+  }
+
+#ifndef __EMSCRIPTEN__
+  // Shell out to a native file dialog via std::system (no POSIX popen: that
+  // needs <stdio.h>, which mixes badly with `import std` on this toolchain).
+  // The picker writes the chosen path to a temp file; we read it back.
+  [[nodiscard]] std::filesystem::path runFilePicker() {
+    std::error_code ec;
+    const auto tmp =
+        std::filesystem::temp_directory_path(ec) / "osu_client_import.txt";
+    const std::string tmpStr = tmp.string();
+    const std::string commands[] = {
+        "zenity --file-selection "
+        "--file-filter='osu! beatmap | *.osz *.zip' --title='Import beatmap'",
+        "kdialog --getopenfilename . '*.osz *.zip|osu! beatmap'",
+        "matedialog --file-selection",
+        "qarma --file-selection",
+    };
+    for (const auto &pick : commands) {
+      // Is the binary even installed? `command -v` keeps a missing dialog
+      // from looking like a user cancellation.
+      const std::string bin = pick.substr(0, pick.find(' '));
+      if (std::system(("command -v " + bin + " > /dev/null 2>&1").c_str()) !=
+          0) {
+        continue;
+      }
+      std::filesystem::remove(tmp, ec);
+      const std::string cmd = pick + " > '" + tmpStr + "' 2>/dev/null";
+      const int rc = std::system(cmd.c_str());
+      if (rc != 0) {
+        std::println(std::cerr, "[import] {} exited {} (cancelled?)", bin, rc);
+        return {};
+      }
+      std::ifstream in(tmp);
+      if (!in) {
+        continue;
+      }
+      std::string path;
+      std::getline(in, path);
+      std::filesystem::remove(tmp, ec);
+      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
+        path.pop_back();
+      }
+      if (!path.empty()) {
+        return std::filesystem::path(path);
+      }
+      return {};
+    }
+    std::println(std::cerr,
+                 "[import] no file dialog installed (tried zenity, kdialog, "
+                 "matedialog, qarma). Drag a .osz onto the window instead, or "
+                 "copy it into {}",
+                 fApp.fMapsDir.string());
+    return {};
+  }
+#endif
+
+  // ---- Download screen logic -------------------------------------------
+
+private:
+  using State = typename Host::State;
+  Host &fApp;
+};
+
+} // namespace client

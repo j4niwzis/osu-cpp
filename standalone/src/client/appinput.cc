@@ -375,7 +375,7 @@ public:
       return;
     }
     if (key == glfw::kKeyF5) {
-      fApp.importOsz();
+      fApp.fLibraryRuntime.importOsz();
       return;
     }
     if (key == glfw::kKeyF2) {
