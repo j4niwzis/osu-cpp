@@ -17,7 +17,7 @@ using skiff::scene::Spec;
 export namespace skiff::nodes {
 
 // Anything that reacts to a click. The action is what the screen wants done.
-class Clickable : public Drawable {
+class Clickable : public skiff::scene::TypedDrawable<Clickable> {
 public:
   explicit Clickable(std::function<void()> action)
       : fAction(std::move(action)) {}

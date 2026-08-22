@@ -24,7 +24,7 @@ export namespace skiff::nodes {
 // into an offscreen surface and blits that until something inside changes.
 // While the subtree is animating, caching would cost more than it saves, so
 // it draws straight through.
-class CachedContainer : public Drawable {
+class CachedContainer : public skiff::scene::TypedDrawable<CachedContainer> {
 public:
   // The GPU context the cache surfaces are created on, handed over by the app
   // once the renderer exists.

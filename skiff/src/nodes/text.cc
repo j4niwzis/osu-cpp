@@ -12,13 +12,14 @@ using skiff::scene::Drawable;
 using skiff::scene::Easing;
 using skiff::scene::Margin;
 using skiff::scene::Spec;
+using skiff::scene::Style;
 } // namespace skiff::nodes
 
 export namespace skiff::nodes {
 
 // A line of text. Auto-sizes to what it draws, so a flow can lay it out
 // without anyone measuring by hand.
-class Text : public Drawable {
+class Text : public skiff::scene::TypedDrawable<Text> {
 public:
   Text(std::string text, float size, skia::SkColor colour, bool bold = false)
       : fText(std::move(text)), fSize(size), fColour(colour), fBold(bold) {}
@@ -31,7 +32,29 @@ public:
     fMeasuredSize = -1.0f;
     this->invalidateLayout();
   }
-  void setColour(skia::SkColor colour) { fColour = colour; }
+  void setColour(skia::SkColor colour) {
+    if (colour == fColour) {
+      return;
+    }
+    fColour = colour;
+    this->markDamaged();
+  }
+  void setFontSize(float size) {
+    if (size == fSize) {
+      return;
+    }
+    fSize = size;
+    fMeasuredSize = -1.0f;
+    this->invalidateLayout();
+  }
+  void setBold(bool bold) {
+    if (bold == fBold) {
+      return;
+    }
+    fBold = bold;
+    fMeasuredSize = -1.0f;
+    this->invalidateLayout();
+  }
   [[nodiscard]] const std::string &text() const noexcept { return fText; }
 
   // Set to clip instead of auto-sizing: the text is cut to the given width.
@@ -68,6 +91,32 @@ public:
   }
 
 protected:
+  void applyNodeStyle(const Style &style, bool active) override {
+    if (!active && !fNodeStyleActive) {
+      return;
+    }
+    if (active && !fNodeStyleActive) {
+      fBaseSize = fSize;
+      fBaseColour = fColour;
+      fBaseBold = fBold;
+    }
+    const float size = active ? style.fontSize.value_or(fBaseSize) : fBaseSize;
+    const skia::SkColor colour =
+        active ? style.colour.value_or(fBaseColour) : fBaseColour;
+    const bool bold = active ? style.fontBold.value_or(fBaseBold) : fBaseBold;
+    if (size != fSize || bold != fBold) {
+      fSize = size;
+      fBold = bold;
+      fMeasuredSize = -1.0f;
+      this->invalidateLayout();
+    }
+    if (colour != fColour) {
+      fColour = colour;
+      this->markDamaged();
+    }
+    fNodeStyleActive = active;
+  }
+
   // Text sizes itself: a flow then reads the size off like any other child.
   void measure(const skia::SkRect &parent) override {
     if (fMeasuredSize == fSize && !fWrapped) {
@@ -150,6 +199,10 @@ private:
   bool fElided = false;
   std::vector<std::string> fLines;
   float fMeasuredSize = -1.0f; // the size the cached width was measured at
+  float fBaseSize = 0.0f;
+  skia::SkColor fBaseColour = 0;
+  bool fBaseBold = false;
+  bool fNodeStyleActive = false;
 };
 
 } // namespace skiff::nodes

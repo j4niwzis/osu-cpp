@@ -9,7 +9,7 @@ It is four modules:
 | --- | --- |
 | `skia` | a module wrapper over the Skia headers, so nothing downstream needs a global module fragment |
 | `skiff.paint` | a font stack with fallbacks behind a primary face, a canvas painter, easing curves |
-| `skiff.scene` | the graph: anchors and origins, relative and automatic sizing, padding and margins, transforms with easing, hit testing, and damage tracking that yields a dirty rectangle per frame |
+| `skiff.scene` | the graph: anchors and origins, relative and automatic sizing, typed stylesheets, transforms with easing, hit testing, and damage tracking that yields a dirty rectangle per frame |
 | `skiff.nodes` | the drawables: `Box`, `Text`, `Sprite`, `FillFlow`, `ScrollContainer`, `CachedContainer`, `Clickable` |
 
 ## Writing a tree
@@ -35,6 +35,60 @@ auto *label = plate->add<nodes::Text>({.place = scene::Anchor::kCentre},
 relative sizing at 1.0 on one axis or both. Zero means unspecified, which is
 what lets `{}` be a no-op and a custom node keep the size its constructor
 chose.
+
+## Styling
+
+Reusable appearance and layout belongs in a typed stylesheet. Both node kinds
+and application-defined roles are C++ types, so there are no selector strings,
+runtime hashes or RTTI:
+
+```cpp
+struct Button;
+struct ButtonLabel;
+struct Sidebar;
+
+struct LazerTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::select<nodes::Box, Button>(),
+                {.height = 42.0f,
+                 .padding = scene::Margin::horizontal(14.0f),
+                 .cornerRadius = 8.0f,
+                 .backgroundColour = kButton,
+                 .transitionMs = 120.0})
+          .rule(scene::select<nodes::Box, Button>().when(
+                    scene::StyleState::kHover),
+                {.scale = 1.03f, .backgroundColour = kButtonHover})
+          .rule(scene::select<nodes::Text, ButtonLabel>(),
+                {.colour = kWhite,
+                 .fontSize = 16.0f,
+                 .fontBold = true})
+          .rule(scene::selectAny<Sidebar>().atMostWidth(900.0f),
+                {.visible = false});
+};
+
+auto root = scene::make<nodes::Box>({.fill = true}, kBackground);
+auto *button = root->add<nodes::Box>({.roles = {scene::role<Button>}}, kButton);
+button->add<nodes::Text>({.roles = {scene::role<ButtonLabel>}}, "Play", 14.0f,
+                         kWhite);
+root->setStyleSheet<LazerTheme>();
+```
+
+Later matching rules override earlier ones. Foreground colour, font size and
+font weight inherit through containers; backgrounds do not. State is
+updated with `setSelected()` and `setDisabled()`, while hover is maintained by
+`setHover()`. Width constraints on selectors are lightweight media queries.
+Position, size, scale and alpha use the rule's transition when a selector
+starts or stops matching. Removing the sheet restores each node's original
+values.
+
+The selector's node and role list are template parameters, and each `.rule()`
+returns a new stylesheet type containing the previous rule tuple. Because the
+theme owns that tuple as `static constexpr`, resolving a node is an unrolled,
+allocation-free pass; each subtree stores only one generated resolver function
+pointer. Custom node types that need type selectors derive from
+`scene::TypedDrawable<MyNode>`. Nodes that only need role selectors may keep
+deriving from `scene::Drawable`.
 
 ## Redrawing
 

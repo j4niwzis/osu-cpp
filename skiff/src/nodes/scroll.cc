@@ -17,7 +17,7 @@ using skiff::scene::Spec;
 export namespace skiff::nodes {
 
 // A container that scrolls its children and clips them to itself.
-class ScrollContainer : public Drawable {
+class ScrollContainer : public skiff::scene::TypedDrawable<ScrollContainer> {
 public:
   ScrollContainer() { fMasking = true; }
 

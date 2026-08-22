@@ -17,7 +17,7 @@ using skiff::scene::Spec;
 export namespace skiff::nodes {
 
 // An image, cropped to fill its box rather than squashed into it.
-class Sprite : public Drawable {
+class Sprite : public skiff::scene::TypedDrawable<Sprite> {
 public:
   explicit Sprite(skia::Sp<skia::SkImage> image) : fImage(std::move(image)) {}
 

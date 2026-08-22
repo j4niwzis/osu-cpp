@@ -97,11 +97,19 @@ inline constexpr float kSettled = 0.002f;
 struct Margin {
   float fTop = 0.0f, fRight = 0.0f, fBottom = 0.0f, fLeft = 0.0f;
 
-  [[nodiscard]] static Margin all(float v) { return {v, v, v, v}; }
-  [[nodiscard]] static Margin horizontal(float v) { return {0, v, 0, v}; }
-  [[nodiscard]] static Margin vertical(float v) { return {v, 0, v, 0}; }
-  [[nodiscard]] float totalX() const noexcept { return fLeft + fRight; }
-  [[nodiscard]] float totalY() const noexcept { return fTop + fBottom; }
+  [[nodiscard]] static constexpr Margin all(float v) { return {v, v, v, v}; }
+  [[nodiscard]] static constexpr Margin horizontal(float v) {
+    return {0, v, 0, v};
+  }
+  [[nodiscard]] static constexpr Margin vertical(float v) {
+    return {v, 0, v, 0};
+  }
+  [[nodiscard]] constexpr float totalX() const noexcept {
+    return fLeft + fRight;
+  }
+  [[nodiscard]] constexpr float totalY() const noexcept {
+    return fTop + fBottom;
+  }
 };
 
 // The box a thing of that size occupies when its `origin` point is put on the
@@ -185,6 +193,31 @@ struct Transform {
 
 // ---- the specification ----------------------------------------------------
 
+namespace detail {
+struct StyleKey {};
+template <class Tag> inline constexpr StyleKey styleRoleKey{};
+template <class Node> inline constexpr StyleKey styleNodeKey{};
+} // namespace detail
+
+// A role is a type-safe name shared by a node and a selector. Applications
+// define empty tag types (`struct PrimaryButton;`) and never coordinate
+// string spellings. The inline template object gives each tag one stable key
+// across modules without RTTI, registration or hashing.
+class StyleRole {
+public:
+  template <class Tag> [[nodiscard]] static constexpr StyleRole of() {
+    return StyleRole(&detail::styleRoleKey<Tag>);
+  }
+
+  [[nodiscard]] bool operator==(const StyleRole &) const noexcept = default;
+
+private:
+  explicit constexpr StyleRole(const detail::StyleKey *key) : fKey(key) {}
+  const detail::StyleKey *fKey;
+};
+
+template <class Tag> inline constexpr StyleRole role = StyleRole::of<Tag>();
+
 // Every layout input a drawable has, gathered into one aggregate so that a
 // node can be written down rather than assembled field by field:
 //
@@ -243,12 +276,184 @@ struct Spec {
   std::optional<float> scale{};
   std::optional<float> alpha{};
   std::optional<bool> visible{};
+
+  // Selector roles can be declared with the rest of the node.
+  std::vector<StyleRole> roles{};
+  std::optional<bool> selected{};
+  std::optional<bool> disabled{};
 };
+
+// ---- declarative styling -------------------------------------------------
+
+class Drawable;
+
+// State selectors deliberately cover the states a retained UI owns. More
+// involved application state remains an ordinary class: for example a
+// download row can add/remove "complete" without teaching the scene graph
+// what a download is.
+enum class StyleState : std::uint8_t {
+  kNone = 0,
+  kHover = 1 << 0,
+  kSelected = 1 << 1,
+  kDisabled = 1 << 2,
+};
+
+[[nodiscard]] constexpr StyleState operator|(StyleState a,
+                                             StyleState b) noexcept {
+  return static_cast<StyleState>(static_cast<std::uint8_t>(a) |
+                                 static_cast<std::uint8_t>(b));
+}
+
+[[nodiscard]] constexpr bool hasState(StyleState states,
+                                      StyleState state) noexcept {
+  return (static_cast<std::uint8_t>(states) &
+          static_cast<std::uint8_t>(state)) != 0;
+}
+
+// The declarations understood by every drawable, plus the inheritable visual
+// declarations understood by Text and Box. Unlike Spec, margins are optional
+// here: a rule must be able to explicitly clear a margin supplied by a less
+// specific rule.
+struct Style {
+  std::optional<Anchor> anchor{}, origin{};
+  std::optional<float> x{}, y{};
+  std::optional<float> width{}, height{};
+  std::optional<Axes> relativeSize{}, autoSize{}, grow{};
+  std::optional<float> minWidth{}, maxWidth{}, minHeight{}, maxHeight{};
+  std::optional<Align> alignSelf{};
+  std::optional<float> depth{};
+  std::optional<Margin> margin{}, padding{};
+  std::optional<float> cornerRadius{};
+  std::optional<bool> masking{};
+  std::optional<float> scale{}, alpha{};
+  std::optional<bool> visible{};
+
+  // Foreground colour, font size and weight inherit. Background colour does
+  // not, matching CSS and preventing a container's text colour from filling
+  // every Box below it.
+  std::optional<skia::SkColor> colour{};
+  std::optional<skia::SkColor> backgroundColour{};
+  std::optional<float> fontSize{};
+  std::optional<bool> fontBold{};
+
+  // A state change animates properties for which Drawable already has a
+  // transform (position, size, scale and alpha). Zero or absent is immediate.
+  std::optional<double> transitionMs{};
+  std::optional<Easing> transitionEasing{};
+
+  void overlay(const Style &other) {
+#define SKIFF_OVERLAY(member)                                                  \
+  if (other.member)                                                            \
+  member = other.member
+    SKIFF_OVERLAY(anchor);
+    SKIFF_OVERLAY(origin);
+    SKIFF_OVERLAY(x);
+    SKIFF_OVERLAY(y);
+    SKIFF_OVERLAY(width);
+    SKIFF_OVERLAY(height);
+    SKIFF_OVERLAY(relativeSize);
+    SKIFF_OVERLAY(autoSize);
+    SKIFF_OVERLAY(grow);
+    SKIFF_OVERLAY(minWidth);
+    SKIFF_OVERLAY(maxWidth);
+    SKIFF_OVERLAY(minHeight);
+    SKIFF_OVERLAY(maxHeight);
+    SKIFF_OVERLAY(alignSelf);
+    SKIFF_OVERLAY(depth);
+    SKIFF_OVERLAY(margin);
+    SKIFF_OVERLAY(padding);
+    SKIFF_OVERLAY(cornerRadius);
+    SKIFF_OVERLAY(masking);
+    SKIFF_OVERLAY(scale);
+    SKIFF_OVERLAY(alpha);
+    SKIFF_OVERLAY(visible);
+    SKIFF_OVERLAY(colour);
+    SKIFF_OVERLAY(backgroundColour);
+    SKIFF_OVERLAY(fontSize);
+    SKIFF_OVERLAY(fontBold);
+    SKIFF_OVERLAY(transitionMs);
+    SKIFF_OVERLAY(transitionEasing);
+#undef SKIFF_OVERLAY
+  }
+};
+
+// Selector identity is entirely in the type. StaticStyleSheet retains each
+// instantiation in its rule tuple, so matching a node neither allocates nor
+// walks a runtime list of role keys.
+struct AnyDrawable {};
+
+template <class Node, class... Roles> class Selector {
+public:
+  [[nodiscard]] constexpr Selector when(this Selector self,
+                                          StyleState state) {
+    self.fStates = self.fStates | state;
+    return self;
+  }
+  [[nodiscard]] constexpr Selector atLeastWidth(this Selector self,
+                                                 float width) {
+    self.fMinViewportWidth = width;
+    return self;
+  }
+  [[nodiscard]] constexpr Selector atMostWidth(this Selector self,
+                                                float width) {
+    self.fMaxViewportWidth = width;
+    return self;
+  }
+
+private:
+  StyleState fStates = StyleState::kNone;
+  std::optional<float> fMinViewportWidth{}, fMaxViewportWidth{};
+
+  template <class, class...> friend struct StyleRule;
+};
+
+template <class Node, class... Roles>
+[[nodiscard]] constexpr Selector<Node, Roles...> select() {
+  return {};
+}
+
+template <class... Roles>
+[[nodiscard]] constexpr Selector<AnyDrawable, Roles...> selectAny() {
+  return {};
+}
+
+template <class Node, class... Roles> struct StyleRule {
+  Selector<Node, Roles...> fSelector;
+  Style fStyle;
+
+  [[nodiscard]] bool matches(const Drawable &node) const;
+};
+
+template <class... Rules> class StaticStyleSheet {
+public:
+  constexpr StaticStyleSheet() requires(sizeof...(Rules) == 0) = default;
+  explicit constexpr StaticStyleSheet(std::tuple<Rules...> rules)
+      : fRules(std::move(rules)) {}
+
+  template <class Node, class... Roles>
+  [[nodiscard]] constexpr auto rule(this StaticStyleSheet self,
+                                    Selector<Node, Roles...> selector,
+                                    Style style) {
+    using Rule = StyleRule<Node, Roles...>;
+    Rule rule{selector, style};
+    return StaticStyleSheet<Rules..., Rule>{std::tuple_cat(
+        std::move(self.fRules), std::tuple<Rule>{std::move(rule)})};
+  }
+
+  [[nodiscard]] Style resolve(const Drawable &node) const;
+
+private:
+  std::tuple<Rules...> fRules;
+};
+
+[[nodiscard]] constexpr StaticStyleSheet<> makeStyleSheet() { return {}; }
 
 // ---- the node ------------------------------------------------------------
 
 class Drawable {
 public:
+  using SkiffNodeType = Drawable;
+
   Drawable() = default;
   Drawable(const Drawable &) = delete;
   Drawable &operator=(const Drawable &) = delete;
@@ -288,6 +493,82 @@ public:
 
   // -- computed by layout()
   skia::SkRect fBounds = skia::SkRect::MakeEmpty();
+
+  // Concrete node types get their key from TypedDrawable<T>. Plain Drawable
+  // remains selectable too, which is useful for anonymous containers.
+  [[nodiscard]] virtual const detail::StyleKey *
+  styleTypeKey() const noexcept {
+    return &detail::styleNodeKey<Drawable>;
+  }
+
+  void addStyleRole(StyleRole role) {
+    if (this->hasStyleRole(role)) {
+      return;
+    }
+    fStyleRoles.push_back(role);
+    this->restyleFromHere(true);
+  }
+  template <class Role> void addStyleRole() {
+    this->addStyleRole(StyleRole::of<Role>());
+  }
+  void removeStyleRole(StyleRole role) {
+    const auto old = fStyleRoles.size();
+    std::erase(fStyleRoles, role);
+    if (fStyleRoles.size() != old) {
+      this->restyleFromHere(true);
+    }
+  }
+  template <class Role> void removeStyleRole() {
+    this->removeStyleRole(StyleRole::of<Role>());
+  }
+  [[nodiscard]] bool hasStyleRole(StyleRole role) const noexcept {
+    return std::ranges::find(fStyleRoles, role) != fStyleRoles.end();
+  }
+
+  void setSelected(bool selected) {
+    if (selected == fSelected) {
+      return;
+    }
+    fSelected = selected;
+    this->restyleFromHere(true);
+  }
+  [[nodiscard]] bool selected() const noexcept { return fSelected; }
+
+  void setDisabled(bool disabled) {
+    if (disabled == fDisabled) {
+      return;
+    }
+    fDisabled = disabled;
+    this->restyleFromHere(true);
+  }
+  [[nodiscard]] bool disabled() const noexcept { return fDisabled; }
+
+  [[nodiscard]] float styleViewportWidth() const noexcept {
+    const Drawable *root = this;
+    while (root->fParent != nullptr) {
+      root = root->fParent;
+    }
+    return !root->fLastParent.isEmpty() ? root->fLastParent.width()
+                                        : root->fBounds.width();
+  }
+
+  // A theme owns a `static constexpr auto styles = makeStyleSheet()...`.
+  // The subtree keeps only this generated resolver; the sheet itself has no
+  // runtime storage and cannot dangle.
+  template <class Theme> void setStyleSheet() {
+    static_assert(requires(const Drawable &node) {
+      { Theme::styles.resolve(node) } -> std::same_as<Style>;
+    });
+    fStyleResolver = &resolveTheme<Theme>;
+    this->restyleFromHere(false);
+  }
+  void clearStyleSheet() {
+    if (fStyleResolver == nullptr) {
+      return;
+    }
+    fStyleResolver = nullptr;
+    this->restyleFromHere(false);
+  }
 
   // Writes a spec onto this drawable. Anything the spec does not mention is
   // left as the class set it, which is what makes `{}` a no-op and lets a
@@ -375,6 +656,25 @@ public:
       fVisible = *spec.visible;
     }
 
+    bool identityChanged = false;
+    for (StyleRole role : spec.roles) {
+      if (!this->hasStyleRole(role)) {
+        fStyleRoles.push_back(role);
+        identityChanged = true;
+      }
+    }
+    if (spec.selected && *spec.selected != fSelected) {
+      fSelected = *spec.selected;
+      identityChanged = true;
+    }
+    if (spec.disabled && *spec.disabled != fDisabled) {
+      fDisabled = *spec.disabled;
+      identityChanged = true;
+    }
+    if (identityChanged) {
+      this->restyleFromHere(true);
+    }
+
     // Sizing an axis both from the parent and from the children asks for two
     // different numbers at once. The framework throws here; this is a build
     // that has to keep drawing, so it says which node did it and picks the
@@ -398,6 +698,9 @@ public:
   void add(std::unique_ptr<Drawable> child) {
     child->fParent = this;
     fChildren.push_back(std::move(child));
+    Drawable *added = fChildren.back().get();
+    added->restyleSubtree(this->activeStyleResolver(),
+                          fStyleApplied ? &fResolvedStyle : nullptr, false);
     this->markDamaged();
   }
 
@@ -475,7 +778,14 @@ public:
     if (fLayoutValid && parent == fLastParent && !this->animatingTree()) {
       return false;
     }
+    const bool hadViewport = !fLastParent.isEmpty();
+    const bool viewportChanged = parent != fLastParent;
     fLastParent = parent;
+    if (viewportChanged && this->activeStyleResolver() != nullptr) {
+      // Width-constrained selectors are media queries. Resolve them before
+      // layout so the new declarations participate in this same pass.
+      this->restyleFromHere(hadViewport);
+    }
     this->layout(parent);
     return true;
   }
@@ -620,7 +930,7 @@ public:
   // is clicked first. Coordinates are absolute the whole way down, which is
   // what having laid everything out in absolute terms buys.
   [[nodiscard]] Drawable *hitTest(float x, float y) {
-    if (!fVisible || fAlpha <= 0.001f) {
+    if (!fVisible || fAlpha <= 0.001f || fDisabled) {
       return nullptr;
     }
     if (fMasking && !fBounds.contains(x, y)) {
@@ -637,7 +947,7 @@ public:
   // Delivers a click to the front-most drawable that wants it, then up the
   // tree until something handles it.
   bool click(float x, float y) {
-    if (!fVisible || fAlpha <= 0.001f) {
+    if (!fVisible || fAlpha <= 0.001f || fDisabled) {
       return false;
     }
     if (fMasking && !fBounds.contains(x, y)) {
@@ -654,7 +964,7 @@ public:
   }
 
   bool scroll(float x, float y, float ticks) {
-    if (!fVisible || !fBounds.contains(x, y)) {
+    if (!fVisible || fDisabled || !fBounds.contains(x, y)) {
       return false;
     }
     for (auto it = fChildren.rbegin(); it != fChildren.rend(); ++it) {
@@ -732,16 +1042,18 @@ public:
     }
   }
 
-  void applyHover(float x, float y) {
+  void applyHover(float x, float y, bool ancestorVisible = true) {
     // Every node remembers where the pointer was, not just the root: a
     // control with parts -- a row of tabs, a bar of icons -- has to know
     // which of its own parts is under it, and asking the screen that owns it
     // was how the screens ended up passing their mouse position down by hand.
     fLastHoverX = x;
     fLastHoverY = y;
-    const bool hovered = fVisible && fBounds.contains(x, y);
+    const bool visible = ancestorVisible && fVisible;
+    const bool hovered = visible && fBounds.contains(x, y);
     if (hovered != fHovered) {
       fHovered = hovered;
+      this->restyleFromHere(true);
       // Only where hover is drawn. Every box, flow and container in the tree
       // was marking itself as the pointer crossed it, which is a repaint for
       // a picture that did not change -- and there are a lot more containers
@@ -750,8 +1062,10 @@ public:
         this->markDamaged();
       }
     }
+    const bool childrenVisible =
+        visible && (!fMasking || fBounds.contains(x, y));
     for (auto &child : fChildren) {
-      child->applyHover(x, y);
+      child->applyHover(x, y, childrenVisible);
     }
   }
 
@@ -783,6 +1097,11 @@ protected:
   virtual bool hoverChangesAppearance() const { return this->acceptsInput(); }
   virtual bool onClick(float, float) { return false; }
   virtual bool onScroll(float) { return false; }
+
+  // Node-specific declarations. Box and Text use this for colour, and Text
+  // for inherited font properties. `active` becoming false means restore the
+  // constructor/setter values captured on the first styled application.
+  virtual void applyNodeStyle(const Style &, bool) {}
 
   // The children in the order they are drawn: the order they were added,
   // unless one of them has been given a depth. Sorting is stable, so an
@@ -826,6 +1145,240 @@ protected:
   bool fHoverSeen = false;
 
 private:
+  struct CommonStyleValues {
+    Anchor fAnchor = Anchor::kTopLeft;
+    Anchor fOrigin = Anchor::kTopLeft;
+    float fX = 0.0f, fY = 0.0f;
+    float fWidth = 0.0f, fHeight = 0.0f;
+    Axes fRelativeSize = Axes::kNone;
+    Axes fAutoSize = Axes::kNone;
+    Axes fGrow = Axes::kNone;
+    float fMinWidth = 0.0f, fMaxWidth = 0.0f;
+    float fMinHeight = 0.0f, fMaxHeight = 0.0f;
+    std::optional<Align> fAlignSelf{};
+    float fDepth = 0.0f;
+    Margin fMargin{}, fPadding{};
+    float fCornerRadius = 0.0f;
+    bool fMasking = false;
+    float fScale = 1.0f, fAlpha = 1.0f;
+    bool fVisible = true;
+  };
+
+  [[nodiscard]] CommonStyleValues commonStyleValues() const {
+    return {fAnchor,
+            fOrigin,
+            fX,
+            fY,
+            fWidth,
+            fHeight,
+            fRelativeSizeAxes,
+            fAutoSizeAxes,
+            fGrowAxes,
+            fMinWidth,
+            fMaxWidth,
+            fMinHeight,
+            fMaxHeight,
+            fAlignSelf,
+            fDepth,
+            fMargin,
+            fPadding,
+            fCornerRadius,
+            fMasking,
+            fScale,
+            fAlpha,
+            fVisible};
+  }
+
+  [[nodiscard]] static bool sameMargin(const Margin &a,
+                                       const Margin &b) noexcept {
+    return a.fTop == b.fTop && a.fRight == b.fRight &&
+           a.fBottom == b.fBottom && a.fLeft == b.fLeft;
+  }
+
+  [[nodiscard]] static bool sameCommon(const CommonStyleValues &a,
+                                       const CommonStyleValues &b) noexcept {
+    return a.fAnchor == b.fAnchor && a.fOrigin == b.fOrigin && a.fX == b.fX &&
+           a.fY == b.fY && a.fWidth == b.fWidth && a.fHeight == b.fHeight &&
+           a.fRelativeSize == b.fRelativeSize &&
+           a.fAutoSize == b.fAutoSize && a.fGrow == b.fGrow &&
+           a.fMinWidth == b.fMinWidth && a.fMaxWidth == b.fMaxWidth &&
+           a.fMinHeight == b.fMinHeight && a.fMaxHeight == b.fMaxHeight &&
+           a.fAlignSelf == b.fAlignSelf && a.fDepth == b.fDepth &&
+           sameMargin(a.fMargin, b.fMargin) &&
+           sameMargin(a.fPadding, b.fPadding) &&
+           a.fCornerRadius == b.fCornerRadius && a.fMasking == b.fMasking &&
+           a.fScale == b.fScale && a.fAlpha == b.fAlpha &&
+           a.fVisible == b.fVisible;
+  }
+
+  [[nodiscard]] static CommonStyleValues
+  styledValues(CommonStyleValues values, const Style &style) {
+#define SKIFF_STYLE_VALUE(declaration, member)                                 \
+  if (style.declaration)                                                       \
+  values.member = *style.declaration
+    SKIFF_STYLE_VALUE(anchor, fAnchor);
+    SKIFF_STYLE_VALUE(origin, fOrigin);
+    SKIFF_STYLE_VALUE(x, fX);
+    SKIFF_STYLE_VALUE(y, fY);
+    SKIFF_STYLE_VALUE(width, fWidth);
+    SKIFF_STYLE_VALUE(height, fHeight);
+    SKIFF_STYLE_VALUE(relativeSize, fRelativeSize);
+    SKIFF_STYLE_VALUE(autoSize, fAutoSize);
+    SKIFF_STYLE_VALUE(grow, fGrow);
+    SKIFF_STYLE_VALUE(minWidth, fMinWidth);
+    SKIFF_STYLE_VALUE(maxWidth, fMaxWidth);
+    SKIFF_STYLE_VALUE(minHeight, fMinHeight);
+    SKIFF_STYLE_VALUE(maxHeight, fMaxHeight);
+    SKIFF_STYLE_VALUE(alignSelf, fAlignSelf);
+    SKIFF_STYLE_VALUE(depth, fDepth);
+    SKIFF_STYLE_VALUE(margin, fMargin);
+    SKIFF_STYLE_VALUE(padding, fPadding);
+    SKIFF_STYLE_VALUE(cornerRadius, fCornerRadius);
+    SKIFF_STYLE_VALUE(masking, fMasking);
+    SKIFF_STYLE_VALUE(scale, fScale);
+    SKIFF_STYLE_VALUE(alpha, fAlpha);
+    SKIFF_STYLE_VALUE(visible, fVisible);
+#undef SKIFF_STYLE_VALUE
+    return values;
+  }
+
+  void setStyledProperty(Property property, float target,
+                         float previousTarget, double durationMs, Easing easing,
+                         bool animate) {
+    if (target == previousTarget) {
+      return;
+    }
+    if (animate && durationMs > 0.0) {
+      float from = 0.0f;
+      switch (property) {
+      case Property::kAlpha:
+        from = fAlpha;
+        break;
+      case Property::kX:
+        from = fX;
+        break;
+      case Property::kY:
+        from = fY;
+        break;
+      case Property::kWidth:
+        from = fWidth;
+        break;
+      case Property::kHeight:
+        from = fHeight;
+        break;
+      case Property::kScale:
+        from = fScale;
+        break;
+      }
+      this->transformTo(property, from, target, durationMs, easing);
+    } else {
+      this->transformTo(property, target, target, 0.0, easing);
+    }
+  }
+
+  void applyCommonStyle(const Style &style, bool active, bool animate) {
+    if (!active && !fStyleApplied) {
+      return;
+    }
+    if (!fStyleApplied) {
+      fStyleBase = this->commonStyleValues();
+      fStyledTarget = fStyleBase;
+    }
+
+    const CommonStyleValues target =
+        active ? styledValues(fStyleBase, style) : fStyleBase;
+    const CommonStyleValues previousTarget = fStyledTarget;
+    const bool changed = !sameCommon(target, previousTarget);
+    const double duration = style.transitionMs.value_or(0.0);
+    const Easing easing = style.transitionEasing.value_or(Easing::kOutQuint);
+
+    fAnchor = target.fAnchor;
+    fOrigin = target.fOrigin;
+    fRelativeSizeAxes = target.fRelativeSize;
+    fAutoSizeAxes = target.fAutoSize;
+    fGrowAxes = target.fGrow;
+    fMinWidth = target.fMinWidth;
+    fMaxWidth = target.fMaxWidth;
+    fMinHeight = target.fMinHeight;
+    fMaxHeight = target.fMaxHeight;
+    fAlignSelf = target.fAlignSelf;
+    fDepth = target.fDepth;
+    fMargin = target.fMargin;
+    fPadding = target.fPadding;
+    fCornerRadius = target.fCornerRadius;
+    fMasking = target.fMasking;
+    fVisible = target.fVisible;
+
+    this->setStyledProperty(Property::kX, target.fX, previousTarget.fX,
+                            duration, easing, animate);
+    this->setStyledProperty(Property::kY, target.fY, previousTarget.fY,
+                            duration, easing, animate);
+    this->setStyledProperty(Property::kWidth, target.fWidth,
+                            previousTarget.fWidth, duration, easing, animate);
+    this->setStyledProperty(Property::kHeight, target.fHeight,
+                            previousTarget.fHeight, duration, easing, animate);
+    this->setStyledProperty(Property::kScale, target.fScale,
+                            previousTarget.fScale, duration, easing, animate);
+    this->setStyledProperty(Property::kAlpha, target.fAlpha,
+                            previousTarget.fAlpha, duration, easing, animate);
+
+    fStyledTarget = target;
+    if (changed) {
+      this->invalidateLayout();
+    }
+  }
+
+  using StyleResolver = Style (*)(const Drawable &);
+
+  template <class Theme>
+  [[nodiscard]] static Style resolveTheme(const Drawable &node) {
+    return Theme::styles.resolve(node);
+  }
+
+  [[nodiscard]] StyleResolver activeStyleResolver() const {
+    for (const Drawable *node = this; node != nullptr; node = node->fParent) {
+      if (node->fStyleResolver != nullptr) {
+        return node->fStyleResolver;
+      }
+    }
+    return nullptr;
+  }
+
+  void restyleFromHere(bool animate) {
+    const StyleResolver resolver =
+        fParent != nullptr ? fParent->activeStyleResolver() : nullptr;
+    const Style *inherited =
+        fParent != nullptr && fParent->fStyleApplied
+            ? &fParent->fResolvedStyle
+            : nullptr;
+    this->restyleSubtree(resolver, inherited, animate);
+  }
+
+  void restyleSubtree(StyleResolver inheritedResolver,
+                      const Style *inheritedStyle, bool animate) {
+    const StyleResolver resolver =
+        fStyleResolver != nullptr ? fStyleResolver : inheritedResolver;
+    const bool active = resolver != nullptr;
+    Style resolved = active ? resolver(*this) : Style{};
+    if (inheritedStyle != nullptr) {
+      if (!resolved.colour)
+        resolved.colour = inheritedStyle->colour;
+      if (!resolved.fontSize)
+        resolved.fontSize = inheritedStyle->fontSize;
+      if (!resolved.fontBold)
+        resolved.fontBold = inheritedStyle->fontBold;
+    }
+
+    this->applyCommonStyle(resolved, active, animate);
+    this->applyNodeStyle(resolved, active);
+    fResolvedStyle = resolved;
+    fStyleApplied = active;
+    for (auto &child : fChildren) {
+      child->restyleSubtree(resolver,
+                            active ? &fResolvedStyle : inheritedStyle, animate);
+    }
+  }
+
   void transformTo(Property property, float from, float to, double durationMs,
                    Easing e) {
     // A new transform on a property replaces whatever was animating it.
@@ -891,6 +1444,14 @@ private:
   double fDelayMs = 0.0;
   bool fLayoutValid = false;
   skia::SkRect fLastParent = skia::SkRect::MakeEmpty();
+  StyleResolver fStyleResolver = nullptr;
+  std::vector<StyleRole> fStyleRoles;
+  bool fSelected = false;
+  bool fDisabled = false;
+  bool fStyleApplied = false;
+  Style fResolvedStyle;
+  CommonStyleValues fStyleBase;
+  CommonStyleValues fStyledTarget;
 
 public:
   // Damage bookkeeping is reached through the parent chain, so these are not
@@ -899,6 +1460,64 @@ public:
   skia::SkRect fDamageAccum = skia::SkRect::MakeEmpty(); // meaningful at roots
   Drawable *fParent = nullptr;
 };
+
+// Supplies a concrete node key without RTTI. The scene still owns drawables
+// through Drawable, so an explicit-object member cannot recover Derived at
+// selector-matching time; this one-method CRTP bridge retains it.
+template <class Derived> class TypedDrawable : public Drawable {
+public:
+  using SkiffNodeType = Derived;
+
+  [[nodiscard]] const detail::StyleKey *
+  styleTypeKey() const noexcept override {
+    return &detail::styleNodeKey<Derived>;
+  }
+};
+
+template <class Node, class... Roles>
+bool StyleRule<Node, Roles...>::matches(const Drawable &node) const {
+  if constexpr (!std::same_as<Node, AnyDrawable>) {
+    static_assert(std::derived_from<Node, Drawable>,
+                  "a style selector must name a Drawable type");
+    static_assert(
+        std::same_as<typename Node::SkiffNodeType, Node>,
+        "a selectable custom node must derive from TypedDrawable<T>");
+    if (node.styleTypeKey() != &detail::styleNodeKey<Node>) {
+      return false;
+    }
+  }
+  if (!(node.hasStyleRole(role<Roles>) && ...)) {
+    return false;
+  }
+  const float viewportWidth = node.styleViewportWidth();
+  return (!fSelector.fMinViewportWidth ||
+          viewportWidth >= *fSelector.fMinViewportWidth) &&
+         (!fSelector.fMaxViewportWidth ||
+          viewportWidth <= *fSelector.fMaxViewportWidth) &&
+         (!hasState(fSelector.fStates, StyleState::kHover) ||
+          node.hovered()) &&
+         (!hasState(fSelector.fStates, StyleState::kSelected) ||
+          node.selected()) &&
+         (!hasState(fSelector.fStates, StyleState::kDisabled) ||
+          node.disabled());
+}
+
+template <class... Rules>
+Style StaticStyleSheet<Rules...>::resolve(const Drawable &node) const {
+  Style out;
+  std::apply(
+      [&]<class... SheetRules>(const SheetRules &...rules) {
+        ([&] {
+          if (rules.matches(node)) {
+            // Source order is the cascade: a later matching rule wins.
+            out.overlay(rules.fStyle);
+          }
+        }(),
+         ...);
+      },
+      fRules);
+  return out;
+}
 
 // Builds a detached node -- a screen's root, or anything handed to somebody
 // else's add(). The same spec as Drawable::add, for the cases where there is

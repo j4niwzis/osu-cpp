@@ -28,7 +28,7 @@ export namespace skiff::nodes {
 // A cell does not move its child. The child is laid out against the cell as
 // though it were its parent, so it centres itself or hangs off a corner with
 // its own anchor and origin, which is how the framework this follows does it.
-class Grid : public Drawable {
+class Grid : public skiff::scene::TypedDrawable<Grid> {
 public:
   struct Track {
     enum class Kind : std::uint8_t { kFixed, kAuto, kFraction };

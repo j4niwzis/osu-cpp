@@ -18,7 +18,7 @@ export namespace skiff::nodes {
 
 // FillFlowContainer: children laid end to end, wrapping when they run out of
 // room, which is how lazer builds every list and row of filters.
-class FillFlow : public Drawable {
+class FillFlow : public skiff::scene::TypedDrawable<FillFlow> {
 public:
   enum class Direction : std::uint8_t { kHorizontal, kVertical };
 
