@@ -18,7 +18,7 @@ import client.audio;
 import client.input;
 import client.timing;
 import client.http;
-import client.replaycache;
+import client.replaybrowser;
 import client.filter;
 import client.loader;
 import skiff.paint;
@@ -325,36 +325,9 @@ private:
   std::string fToast;
   skia::SkColor fToastColor = skia::kWhite;
   double fToastWall = 0.0;
-  struct ReplayFile {
-    std::filesystem::path fPath;
-    std::string fLabel;
-    osu::ReplayScore fScore; // from the .osr header, via the index
-    std::string fGrade;
-    bool fHasScore = false;
-    int fRules = -1;            // what it was recorded under, -1 if not ours
-    bool fLegacyFormat = false; // no seed frame: old rules, no choice
-  };
-  bool fReplayListOpen = false;
-  // Which rules the replay about to be watched plays under. Set from the
-  // index when the selection moves -- a replay recorded here remembers what
-  // it was played under -- and then it is the user's to flip.
-  bool fReplayLegacyRules = false;
-  std::vector<ReplayFile> fReplays;
-  std::string fReplayFilter; // md5 the list was built for
-  client::ReplayIndex fReplayIndex;
-  client::results::Panels fPanels;
-  client::results::Actions fResultActions;
-  // Which replay each panel stands for; -1 is the score in hand, which has
-  // no file. The strip knows nothing about replays, only about scores.
-  std::vector<int> fPanelEntries;
+  client::ReplayBrowser fReplayBrowser;
 
   // Pause / results overlays.
-  struct MenuButton {
-    skia::SkRect fRect;
-    std::string fLabel;
-    skia::SkColor fAccent;
-  };
-  std::vector<MenuButton> fReplayButtons; // rebuilt with the replay overlay
   double fPolledCursorX = -1.0, fPolledCursorY = -1.0; // wasm cursor polling
   std::atomic<bool> fRefreshRequested{false}; // set by the event thread
   std::atomic<int> fWindowX{0}, fWindowY{0};  // where the window sits
@@ -398,7 +371,6 @@ private:
   // The difficulty of the map being played, under the ranked calculator and
   // with the mods applied, kept so the play can be priced when it ends.
   float fDrawnMouseX = -1.0f, fDrawnMouseY = -1.0f;
-  int fHotReplayPanel = -1;
   client::ReplayVideoExporter fVideoExporter;
 
   // ---- Settings overlay -------------------------------------------------
@@ -486,8 +458,8 @@ private:
                              : osu::RuleSet::kLazer;
     std::optional<osu::ReplayData> replay;
     if (fAutoplay && !fReplayPath.empty()) {
-      rules = fReplayLegacyRules ? osu::RuleSet::kLegacyClient
-                                 : osu::RuleSet::kLazer;
+      rules = fReplayBrowser.legacyRules() ? osu::RuleSet::kLegacyClient
+                                           : osu::RuleSet::kLazer;
       std::ifstream file(fReplayPath, std::ios::binary);
       if (file) {
         std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file),
@@ -992,8 +964,8 @@ private:
       if (fFilter.dragging()) {
         this->dragFilterRange(ev.fX);
       }
-      if (fPanels.dragging()) {
-        fPanels.drag(ev.fX);
+      if (fReplayBrowser.panelsDragging()) {
+        fReplayBrowser.dragPanels(ev.fX);
       }
       if (fState == State::kPlaying && !fAutoplay) {
         fCursor = this->cursorFromEvent(ev);
@@ -1012,7 +984,7 @@ private:
         break;
       }
       if (this->panelListActive()) {
-        fPanels.scrollBy(ev.fX * 120.0f);
+        fReplayBrowser.scrollPanels(ev.fX * 120.0f);
         break;
       }
       if (fState == State::kSongSelect) {
@@ -1147,8 +1119,8 @@ private:
         return;
       }
 
-      if (fReplayListOpen) {
-        fReplayListOpen = false;
+      if (fReplayBrowser.open()) {
+        fReplayBrowser.close();
         return;
       }
       if (fSettingsPanel.open()) {
@@ -1166,7 +1138,7 @@ private:
 
     // The browser covers the screen, so it takes keys before the screen under
     // it does -- otherwise the arrows would move the carousel behind it.
-    if (fReplayListOpen) {
+    if (fReplayBrowser.open()) {
       this->keyReplayList(key);
       return;
     }
@@ -1348,14 +1320,16 @@ private:
   }
 
   void keyReplayList(int key) {
-    if (key == glfw::kKeyLeft && fPanels.selected() > 0) {
-      fPanels.select(fPanels.selected() - 1);
-    } else if (key == glfw::kKeyRight &&
-               fPanels.selected() + 1 <
-                   static_cast<int>(fPanelEntries.size())) {
-      fPanels.select(fPanels.selected() + 1);
+    std::optional<std::filesystem::path> watch;
+    if (key == glfw::kKeyLeft) {
+      watch = fReplayBrowser.key(client::ReplayBrowser::Key::kPrevious);
+    } else if (key == glfw::kKeyRight) {
+      watch = fReplayBrowser.key(client::ReplayBrowser::Key::kNext);
     } else if (key == glfw::kKeyEnter) {
-      this->watchSelectedReplay();
+      watch = fReplayBrowser.key(client::ReplayBrowser::Key::kActivate);
+    }
+    if (watch) {
+      this->watchReplay(*watch);
     }
   }
 
@@ -1413,7 +1387,7 @@ private:
 
     // The replay strip is still immediate-mode and modal while open. An
     // empty stack also cancels capture in a retained scene it covers.
-    if (!fReplayListOpen) {
+    if (!fReplayBrowser.open()) {
       switch (fState) {
       case State::kMainMenu:
         add(fMainMenu.sceneRoot());
@@ -1433,7 +1407,7 @@ private:
         add(fPauseMenu.sceneRoot());
         break;
       case State::kResults:
-        add(fResultActions.sceneRoot());
+        add(fReplayBrowser.resultActionsRoot());
         break;
       default:
         break;
@@ -1495,19 +1469,10 @@ private:
     if (this->exportClick(x, y)) {
       return;
     }
-    if (fReplayListOpen) {
-      // The strip handled anything over it; the actions below it are ours,
-      // and they are the rules toggle then export, in that order.
-      for (std::size_t i = 0; i < fReplayButtons.size(); ++i) {
-        if (!fReplayButtons[i].fRect.contains(x, y)) {
-          continue;
-        }
-        if (i == 0) {
-          this->toggleReplayRules();
-        } else {
-          this->exportSelectedReplay();
-        }
-        return;
+    if (fReplayBrowser.open()) {
+      if (fReplayBrowser.clickOverlay(x, y) ==
+          client::ReplayBrowser::OverlayAction::kExport) {
+        this->exportSelectedReplay();
       }
       return;
     }
@@ -1583,7 +1548,7 @@ private:
       this->applyPauseAction(fPauseMenu.click(x, y));
       break;
     case State::kResults:
-      this->applyResultAction(fResultActions.click(x, y));
+      this->applyResultAction(fReplayBrowser.clickResultAction(x, y));
       break;
     default:
       break;
@@ -1618,10 +1583,12 @@ private:
       break;
     case Action::kExport:
       fExportDialog.show();
-      fReplayListOpen = false; // one overlay at a time
+      fReplayBrowser.close(); // one overlay at a time
       break;
     case Action::kToggleRules:
-      this->toggleReplayRules();
+      if (fReplayBrowser.toggleRules()) {
+        fView.invalidate();
+      }
       break;
     case Action::kNone:
       break;
@@ -1732,7 +1699,8 @@ private:
     fStateEnterWall = wallMs();
     if (st == State::kResults) {
       // The side panels are the other replays for this beatmap.
-      this->scanReplays();
+      fReplayBrowser.selectBeatmap(this->beatmapMd5(), fReplayPath,
+                                   fReplayPath.empty());
     }
     if (st == State::kMainMenu) {
       // Returning to the menu always lands on the top level, never on a
@@ -2211,19 +2179,13 @@ private:
         this->damage(region);
       }
     }
-    if (fReplayListOpen) {
-      if (fPanels.scrolling() || fPanels.movedSinceDrawn()) {
-        // Dragged or gliding: a drag sets the position outright, so the
-        // target says nothing about it. Where it was when it was last drawn
-        // does.
-        fPanels.noteDrawn();
+    if (fReplayBrowser.open()) {
+      const auto motion =
+          fReplayBrowser.updateMotion(fWin.fMouseX, fWin.fMouseY);
+      if (motion.fFullDamage) {
         this->damageAll("replay browser moving");
-      } else {
-        const int hot = fPanels.hot(fWin.fMouseX, fWin.fMouseY);
-        if (hot != fHotReplayPanel) {
-          fHotReplayPanel = hot;
-          this->damage(fPanels.band());
-        }
+      } else if (motion.fDamage) {
+        this->damage(*motion.fDamage);
       }
     }
     if (fExportDialog.open()) {
@@ -2241,7 +2203,7 @@ private:
     // disappearance repaint the underlying screen once. Retained overlays
     // report their own damage between those two transitions.
     const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
-                         fExportDialog.open() || fReplayListOpen ||
+                         fExportDialog.open() || fReplayBrowser.open() ||
                          fDeleteDialog.open() || fSetPage.open();
     // Only while one is moving, or on the frame it appears or goes away: a
     // settled overlay is as static as the screen under it, and the screens do
@@ -2326,7 +2288,8 @@ private:
     // The results screen counts up, slides its panels and fades in, all of
     // which end. After that it is a still picture like any other.
     if (fState == State::kResults &&
-        (wallMs() - fStateEnterWall < 2500.0 || fPanels.scrolling())) {
+        (wallMs() - fStateEnterWall < 2500.0 ||
+         fReplayBrowser.scrolling())) {
       return this->frameBecause("results settling");
     }
     // The logo tracks the music and the triangles drift, and either is a
@@ -2356,7 +2319,7 @@ private:
     // The replay browser's strip glides to the panel that was picked. It is
     // drawn as an overlay rather than as a screen, so it has nobody else to
     // ask for the frames that carry it there.
-    if (fReplayListOpen && fPanels.scrolling()) {
+    if (fReplayBrowser.open() && fReplayBrowser.scrolling()) {
       return this->frameBecause("replay strip gliding");
     }
     // Every retained tree reports damage and continuation as one atomic
@@ -2677,7 +2640,7 @@ private:
       // itself; here it is only drawn.
       this->drawSettings(canvas);
     }
-    if (fReplayListOpen) {
+    if (fReplayBrowser.open()) {
       this->drawReplayList(canvas);
     }
     if (fExportDialog.open()) {
@@ -3314,8 +3277,8 @@ private:
     fReplayDir = fMapsDir.parent_path() / "replays";
     std::filesystem::create_directories(fThumbDir, ec);
     fLibrary.loadCache();
-    fReplayIndex.load(fMapsDir.parent_path() / "replay-index.json");
-    fReplayIndex.refresh(fReplayDir);
+    fReplayBrowser.initialize(fMapsDir.parent_path() / "replay-index.json",
+                              fReplayDir);
     fSettings.load(fMapsDir.parent_path() / "settings.json");
     // What the mirrors cannot do for themselves: the library they import
     // into, the corner they report to, and the music that steps aside for a
@@ -4197,25 +4160,19 @@ private:
   // are listed in a panel; picking one starts the map with that replay.
 
   void toggleReplayList() {
-    fReplayListOpen = !fReplayListOpen;
-    if (fReplayListOpen) {
-      // Catch replays dropped in from outside; unchanged files are only
-      // stat'ed, so this is a directory listing and nothing more.
-      fReplayIndex.refresh(fReplayDir);
-      this->scanReplays();
-    }
+    const std::string wanted =
+        fState == State::kResults || fState == State::kPlaying
+            ? this->beatmapMd5()
+            : this->difficultyMd5(fLibrary.selSet(), fLibrary.selDiff());
+    fReplayBrowser.toggle(wanted, fReplayPath);
   }
 
   // The browser lists the selected difficulty's replays, so a selection made
   // while it is open has to rebuild the list.
   void refreshReplayFilter() {
-    if (!fReplayListOpen) {
-      return;
-    }
-    if (this->difficultyMd5(fLibrary.selSet(), fLibrary.selDiff()) !=
-        fReplayFilter) {
-      this->scanReplays();
-    }
+    fReplayBrowser.refreshFilter(
+        this->difficultyMd5(fLibrary.selSet(), fLibrary.selDiff()),
+        fReplayPath);
   }
 
   // md5 of a difficulty in the library, which is what an .osr records. It is
@@ -4229,84 +4186,16 @@ private:
     return infos[static_cast<std::size_t>(diffIdx)].fMd5;
   }
 
-  // The replays of the difficulty in question, as a leaderboard shows. The
-  // index answers this without touching the disk.
-  void scanReplays() {
-    const std::string wanted =
-        fState == State::kResults || fState == State::kPlaying
-            ? this->beatmapMd5()
-            : this->difficultyMd5(fLibrary.selSet(), fLibrary.selDiff());
-    fReplayFilter = wanted;
-    fReplays.clear();
-    for (const auto *e : fReplayIndex.forBeatmap(wanted)) {
-      fReplays.push_back({e->fPath, e->fLabel, e->fScore, e->fGrade,
-                          e->fHasScore, e->fRules, e->fLegacyFormat});
-    }
-    // Best first, which is the order a leaderboard is in and the order these
-    // panels imply by sitting in a row. The index hands them over in whatever
-    // order the directory was read in, which is no order at all.
-    std::ranges::stable_sort(fReplays, [](const ReplayFile &a,
-                                          const ReplayFile &b) {
-      const std::int64_t left =
-          a.fHasScore ? static_cast<std::int64_t>(a.fScore.fTotalScore) : -1;
-      const std::int64_t right =
-          b.fHasScore ? static_cast<std::int64_t>(b.fScore.fTotalScore) : -1;
-      return left > right;
-    });
-
-    // The score in hand starts expanded and centred; after watching a replay
-    // it is that replay's own panel, which is already in the list.
-    fPanels.select(0);
-    for (std::size_t i = 0; i < fReplays.size(); ++i) {
-      if (!fReplayPath.empty() && fReplays[i].fPath == fReplayPath) {
-        fPanels.select(static_cast<int>(i));
-        break;
-      }
-    }
-    fPanelEntries.clear();
-    this->syncReplayRulesToSelection();
-  }
-
   void drawReplayList(skia::SkCanvas *canvas) {
-    if (!fReplayListOpen) {
-      fPanels.clear();
-      return;
-    }
-    const skiff::paint::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(220, 8, 6, 12));
-    p.textCentered("replays", sw * 0.5f, 62.0f, 26.0f, skia::kWhite);
-    this->renderPanels(canvas, /*ownScore=*/false);
-
-    // The same action the results screen offers, for a replay off the disk.
-    fReplayButtons.clear();
-    if (this->selectedReplay() != nullptr) {
-      const float bw = std::min(260.0f, sw * 0.22f);
-      const float gap = 14.0f;
-      float bx = (sw - (bw * 2.0f + gap)) * 0.5f;
-      fReplayButtons.push_back(
-          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f),
-           this->rulesToggleLabel(),
-           this->rulesToggleEnabled()
-               ? client::palette::kAccent2
-               : skia::colorSetARGB(255, 120, 120, 130)});
-      this->drawMenuButton(canvas, fReplayButtons.back());
-      bx += bw + gap;
-      fReplayButtons.push_back(
-          {skia::SkRect::MakeXYWH(bx, sh - 92.0f, bw, 46.0f), "export video",
-           skia::colorSetARGB(255, 170, 102, 255)});
-      this->drawMenuButton(canvas, fReplayButtons.back());
-    }
+    fReplayBrowser.renderOverlay(canvas, this->panelCtx(false));
   }
 
   // Renders a saved replay to video: the exporter draws whatever gameplay
   // state is loaded, so the map and the replay's events are brought in
   // exactly as starting a playback would, without entering gameplay.
   void exportSelectedReplay() {
-    const auto *replay = this->selectedReplay();
-    if (replay == nullptr) {
+    const auto replay = fReplayBrowser.selectedPath();
+    if (!replay) {
       return;
     }
     auto set = fLibrary.setForBlocking(fLibrary.selSet());
@@ -4317,7 +4206,7 @@ private:
     fSet = *set;
     fPlayingSet = fLibrary.selSet();
     fPlayingDiff = fLibrary.selDiff();
-    fReplayPath = replay->fPath;
+    fReplayPath = *replay;
     fAutoplay = true;
     this->resetGameplayState();
     this->startGameplay(
@@ -4326,62 +4215,8 @@ private:
     fMenuMusicForSet = -1; // the menu loop restarts once the export is done
     fReplayPath.clear();
     fAutoplay = fCliAutoplay;
-    fReplayListOpen = false;
+    fReplayBrowser.close();
     fExportDialog.show();
-  }
-
-  // The strip of score panels, from the run in hand and the replays saved for
-  // this difficulty. Rebuilt for every frame that draws it, as it always was:
-  // a download finishing or a replay being saved changes what belongs in it.
-  void renderPanels(skia::SkCanvas *canvas, bool ownScore) {
-    fPanelEntries.clear();
-    std::vector<client::results::Entry> entries;
-    if (ownScore) {
-      const auto &sc = fResult.fScore;
-      client::results::Entry own;
-      own.fOwn = true;
-      own.fGrade = fResult.fGrade;
-      own.fTotal = sc.fScore;
-      own.f300 = sc.fGreat;
-      own.f100 = sc.fGood;
-      own.f50 = sc.fMeh;
-      own.fMiss = sc.fMiss;
-      own.fCombo = sc.fMaxCombo;
-      own.fAccuracy = sc.accuracy();
-      own.fDetail = true;
-      own.fTickHit = sc.fLargeTickHit;
-      own.fTickTotal = sc.fLargeTickHit + sc.fLargeTickMiss;
-      own.fTailHit = sc.fTailHit;
-      own.fTailTotal = sc.fTailHit + sc.fTailMiss;
-      entries.push_back(std::move(own));
-      fPanelEntries.push_back(-1);
-    }
-    for (std::size_t i = 0; i < fReplays.size(); ++i) {
-      // The run just played is already the expanded panel, so its own file is
-      // not listed a second time.
-      if (ownScore && !fPlay.fLastSavedReplay.empty() &&
-          fReplays[i].fPath == fPlay.fLastSavedReplay) {
-        continue;
-      }
-      const auto &r = fReplays[i];
-      client::results::Entry e;
-      e.fHasScore = r.fHasScore;
-      e.fGrade = r.fGrade;
-      e.fLabel = r.fLabel;
-      if (r.fHasScore) {
-        e.fTotal = static_cast<std::uint64_t>(r.fScore.fTotalScore);
-        e.f300 = r.fScore.f300;
-        e.f100 = r.fScore.f100;
-        e.f50 = r.fScore.f50;
-        e.fMiss = r.fScore.fMiss;
-        e.fCombo = r.fScore.fMaxCombo;
-        e.fAccuracy = r.fScore.accuracy();
-      }
-      entries.push_back(std::move(e));
-      fPanelEntries.push_back(static_cast<int>(i));
-    }
-    fPanels.setEntries(std::move(entries));
-    fPanels.render(canvas, this->panelCtx(ownScore));
   }
 
   // The beatmap every panel in the strip belongs to: the one just played on
@@ -4430,25 +4265,16 @@ private:
 
   // The strip took the press; what follows from it is the client's.
   bool panelListClick(float x, float y, bool pressed) {
-    using Hit = client::results::Panels::Hit;
-    switch (fPanels.click(x, y, pressed)) {
-    case Hit::kNone:
-      return false;
-    case Hit::kActivated:
-      this->watchSelectedReplay();
-      return true;
-    case Hit::kSelected:
-      this->syncReplayRulesToSelection();
-      return true;
-    case Hit::kTaken:
-      return true;
+    const auto result = fReplayBrowser.clickPanels(x, y, pressed);
+    if (result.fWatch) {
+      this->watchReplay(*result.fWatch);
     }
-    return true;
+    return result.fTaken;
   }
 
   // The strip is live on the results screen and in the browser overlay.
   [[nodiscard]] bool panelListActive() const {
-    return fReplayListOpen || fState == State::kResults;
+    return fReplayBrowser.open() || fState == State::kResults;
   }
 
   void watchReplay(const std::filesystem::path &path) {
@@ -4460,7 +4286,7 @@ private:
     if (setIdx < 0) {
       return;
     }
-    fReplayListOpen = false;
+    fReplayBrowser.close();
     fPendingReplay = path; // startPlay picks it up and drives the engine
     this->startPlay(setIdx, diffIdx);
   }
@@ -5041,39 +4867,23 @@ private:
     this->present();
   }
 
-  void drawMenuButton(skia::SkCanvas *canvas, const MenuButton &b) {
-    const bool hover = b.fRect.contains(fWin.fMouseX, fWin.fMouseY);
-    this->fillRounded(canvas, b.fRect, 12.0f, hover ? kCardSel : kCardBg);
-    this->strokeRounded(canvas, b.fRect, 12.0f, b.fAccent, hover ? 3.0f : 2.0f);
-    this->drawTextCentered(canvas, b.fLabel, b.fRect.centerX(),
-                           b.fRect.centerY() + 7.0f, 20.0f,
-                           hover ? b.fAccent : skia::kWhite);
-  }
-
   // ---- Results ----------------------------------------------------------
 
   void updateResults() {
-    // The rules toggle only exists when there is a saved replay to watch
-    // under them; the score in hand was played under whatever it was played
-    // under and cannot be replayed from here.
-    const bool rulesToggle = this->selectedReplay() != nullptr;
-    fResultActions.update({.fFont = &fFont,
-                           .fWidth = static_cast<float>(fWin.fScreenW),
-                           .fHeight = static_cast<float>(fWin.fScreenH),
-                           .fMouseX = fWin.fMouseX,
-                           .fMouseY = fWin.fMouseY,
-                           .fNowMs = wallMs(),
-                           .fRulesAvailable = rulesToggle,
-                           .fRulesLabel = rulesToggle ? this->rulesToggleLabel()
-                                                     : std::string{},
-                           .fRulesEnabled = this->rulesToggleEnabled()});
-    this->consumeFrame(fResultActions.finishFrame());
-    // The strip of panels moves when another score is chosen and while it is
-    // dragged; a drag sets the position outright, so the target says nothing
-    // about it.
-    if (fPanels.scrolling() || fPanels.movedSinceDrawn()) {
-      fPanels.noteDrawn();
+    fReplayBrowser.updateResultActions(
+        {.fFont = &fFont,
+         .fWidth = static_cast<float>(fWin.fScreenW),
+         .fHeight = static_cast<float>(fWin.fScreenH),
+         .fMouseX = fWin.fMouseX,
+         .fMouseY = fWin.fMouseY,
+         .fNowMs = wallMs()});
+    this->consumeFrame(fReplayBrowser.finishResultFrame());
+    const auto motion =
+        fReplayBrowser.updateMotion(fWin.fMouseX, fWin.fMouseY);
+    if (motion.fFullDamage) {
       this->damageAll("results strip moving");
+    } else if (motion.fDamage) {
+      this->damage(*motion.fDamage);
     }
   }
 
@@ -5088,66 +4898,19 @@ private:
     p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
                skia::colorSetARGB(160, 10, 8, 14));
 
-    this->renderPanels(canvas, /*ownScore=*/fReplayPath.empty());
-    fResultActions.render(canvas);
+    std::optional<client::ReplayBrowser::OwnScore> own;
+    if (fReplayPath.empty()) {
+      own = client::ReplayBrowser::OwnScore{.fScore = fResult.fScore,
+                                            .fGrade = fResult.fGrade,
+                                            .fPp = fResult.fPp,
+                                            .fMean = fResult.fMean,
+                                            .fUr = fResult.fUr};
+    }
+    fReplayBrowser.renderResults(canvas, this->panelCtx(bool(own)),
+                                 std::move(own), fPlay.fLastSavedReplay);
 
     this->drawScreenFadeIn(canvas);
     this->present();
-  }
-
-  // The replay behind the expanded panel, if it is not the score in hand.
-  [[nodiscard]] const ReplayFile *selectedReplay() const {
-    const int panel = fPanels.selected();
-    if (panel < 0 || panel >= static_cast<int>(fPanelEntries.size())) {
-      return nullptr;
-    }
-    const int idx = fPanelEntries[static_cast<std::size_t>(panel)];
-    if (idx < 0 || idx >= static_cast<int>(fReplays.size())) {
-      return nullptr; // the score in hand, which has no file to play
-    }
-    return &fReplays[static_cast<std::size_t>(idx)];
-  }
-
-  void watchSelectedReplay() {
-    if (const auto *replay = this->selectedReplay()) {
-      this->watchReplay(replay->fPath);
-    }
-  }
-
-  // The label on the rules toggle, and whether it can be pressed at all.
-  // A replay from the .xz era was scored by the old model and its frames are
-  // in the old shape, so there is nothing to choose.
-  [[nodiscard]] std::string rulesToggleLabel() const {
-    const auto *replay = this->selectedReplay();
-    if (replay != nullptr && replay->fLegacyFormat) {
-      return "rules: old (forced)";
-    }
-    return fReplayLegacyRules ? "rules: old" : "rules: osu!lazer";
-  }
-
-  [[nodiscard]] bool rulesToggleEnabled() const {
-    const auto *replay = this->selectedReplay();
-    return replay != nullptr && !replay->fLegacyFormat;
-  }
-
-  void toggleReplayRules() {
-    if (this->rulesToggleEnabled()) {
-      fReplayLegacyRules = !fReplayLegacyRules;
-      fView.invalidate();
-    }
-  }
-
-  // Moving the selection re-reads what that replay was recorded under, which
-  // is the only sensible starting point: it is the answer that reproduces the
-  // score in the panel. Anything not written by this client starts on osu!'s
-  // rules, which is what the client plays by now.
-  void syncReplayRulesToSelection() {
-    const auto *replay = this->selectedReplay();
-    if (replay == nullptr) {
-      fReplayLegacyRules = false;
-      return;
-    }
-    fReplayLegacyRules = replay->fLegacyFormat || replay->fRules == 1;
   }
 
   bool initSkia() {
@@ -5787,7 +5550,7 @@ private:
     fPlay.fLastSavedReplay = outPath;
     // Which rules this was played under lives here, in the index, and not in
     // the .osr: every field of that file belongs to osu!'s format.
-    fReplayIndex.add(
+    fReplayBrowser.add(
         outPath, fPlay.fEngine->rules() == osu::RuleSet::kLegacyClient ? 1 : 0);
     std::println(std::cerr, "[replay] saved {}", outPath.string());
   }
