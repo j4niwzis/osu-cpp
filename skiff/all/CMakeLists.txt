@@ -8,6 +8,7 @@ else()
     "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 endif()
 set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_MODULE_STD ON)
 
 project(SkiffBuildAll LANGUAGES CXX)
