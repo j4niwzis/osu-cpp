@@ -47,6 +47,7 @@ import client.videoexport;
 import client.framestate;
 import client.fonts;
 import client.judgements;
+import client.windowruntime;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -125,6 +126,8 @@ private:
   bool fNoGlow = false;
 
   // Window / GL / Skia
+  client::WindowRuntime fWindowRuntime;
+  // Render APIs still take the native handle; ownership lives in the runtime.
   glfw::GLFWwindow *fWindow = nullptr;
   skia::Sp<skia::GrDirectContext> fContext;
   client::FrameState fFrame;
@@ -154,26 +157,9 @@ private:
   bool fHasRawPrev = false;
   std::uint32_t fHeldMask = 0; // bit per held key/button (Z/X/Space/M1/M2)
 
-  // Event queue: filled on the GLFW event-pump (main) thread, drained on the
-  // render thread. 4096 slots absorb multi-second bursts of cursor reports.
-  SpscQueue<4096> fInputQueue;
-  std::atomic<bool> fQuit{false};
-  std::atomic<int> fExitCode{0};
-  // Cursor-mode change requests marshalled to the main thread (GLFW requires
-  // glfwSetInputMode on the thread that owns the window). -1 = none.
-  std::atomic<int> fCursorModeRequest{-1};
-  std::atomic<int> fRawMotionRequest{-1};
   // Swap interval is a property of the context, so only the thread holding it
   // may set it; a toggle in the settings parks the value here.
   std::atomic<int> fSwapIntervalRequest{-1};
-  // The last framebuffer size the window system reported, written by the
-  // thread that owns the window and read by the one that draws. The resize
-  // event carries the same numbers, but it goes through a queue that is
-  // drained at the top of a frame: a resize arriving after that is not known
-  // to the frame already being drawn, and that frame is the one that clips
-  // into a buffer the server has just reallocated. This is the same fact
-  // without the queue.
-  std::atomic<std::uint64_t> fReportedSize{0};
   int fSwapInterval = -1;
   int fRefreshHz = 60; // the monitor's, sampled where GLFW allows the query
   // Whether the window system answered at all, which is a different question
@@ -252,8 +238,6 @@ private:
   std::filesystem::path fMapsDir;
   std::filesystem::path fThumbDir;
   std::filesystem::path fReplayDir;
-  std::mutex fDropMutex;             // guards fDropped
-  std::vector<std::string> fDropped; // files dropped onto the window
   client::songselect::Footer fSelectFooter;
   client::DeleteDialog fDeleteDialog;
 
@@ -275,9 +259,6 @@ private:
 
   // Pause / results overlays.
   double fPolledCursorX = -1.0, fPolledCursorY = -1.0; // wasm cursor polling
-  std::atomic<bool> fRefreshRequested{false}; // set by the event thread
-  std::atomic<int> fWindowX{0}, fWindowY{0};  // where the window sits
-  std::atomic<int> fWorkAreaX{0}, fWorkAreaY{0}, fWorkAreaW{0}, fWorkAreaH{0};
   client::pause::PauseMenu fPauseMenu;
   bool fRetryPending = false;
   int fPlayingSet = -1;
@@ -523,193 +504,24 @@ private:
   }
 
   [[nodiscard]] int runWindowed() {
-    if (!glfw::glfwInit()) {
+    if (!fWindowRuntime.open([this] { this->toggleFullscreen(); })) {
       return 1;
     }
-
-#ifdef __EMSCRIPTEN__
-    glfw::glfwWindowHint(glfw::kClientApi, glfw::kOpenGLApi);
-    glfw::glfwWindowHint(glfw::kContextVersionMajor, 3);
-    glfw::glfwWindowHint(glfw::kContextVersionMinor, 0);
-    glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
-    glfw::glfwWindowHint(glfw::kSamples, 0);
-
-    int fsw = EM_ASM_INT({ return Module.canvas.width; });
-    int fsh = EM_ASM_INT({ return Module.canvas.height; });
-    fWindow = glfw::glfwCreateWindow(fsw, fsh, "osu_client", nullptr, nullptr);
-#else
-    const auto monitor = glfw::glfwGetPrimaryMonitor();
-    const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-    fWin.fScreenW = mode->width;
-    fWin.fScreenH = mode->height;
-    if (mode->refreshRate > 0) {
-      fRefreshHz = mode->refreshRate;
-    }
-
-    // Desktop GL first, then GLES: a phone or a tablet running a Linux the
-    // client can otherwise be built for has drivers that only speak GLES,
-    // often through EGL only. Skia's Ganesh backend is happy with either --
-    // GrGLMakeNativeInterface picks up whichever one is current -- so the
-    // difference is entirely in how the context is asked for.
-    struct ContextChoice {
-      const char *fName;
-      int fApi;
-      int fMajor;
-      int fMinor;
-      int fProfile;
-      int fCreation;
-    };
-    // OSU_EGL asks for the context through EGL rather than GLX. On X11 the
-    // native path is GLX, which has the buffer age extension but no way to
-    // hand the compositor a damage region; EGL has both. Kept behind a switch
-    // because changing how the context is created is not something to do
-    // quietly on every machine.
-    const int desktopCreation = std::getenv("OSU_EGL") != nullptr
-                                    ? glfw::kEglContextApi
-                                    : glfw::kNativeContextApi;
-    const ContextChoice choices[] = {
-        {"gl 4.1 core", glfw::kOpenGLApi, 4, 1, glfw::kOpenGLCoreProfile,
-         desktopCreation},
-        {"gl 3.0", glfw::kOpenGLApi, 3, 0, glfw::kOpenGLAnyProfile,
-         desktopCreation},
-        {"gles 3.0", glfw::kOpenGLEsApi, 3, 0, glfw::kOpenGLAnyProfile,
-         glfw::kEglContextApi},
-        {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,
-         glfw::kEglContextApi},
-    };
-    for (const auto &choice : choices) {
-      glfw::glfwWindowHint(glfw::kClientApi, choice.fApi);
-      glfw::glfwWindowHint(glfw::kContextVersionMajor, choice.fMajor);
-      glfw::glfwWindowHint(glfw::kContextVersionMinor, choice.fMinor);
-      glfw::glfwWindowHint(glfw::kOpenGLProfile, choice.fProfile);
-      glfw::glfwWindowHint(glfw::kOpenGLForwardCompat,
-                           choice.fApi == glfw::kOpenGLApi && choice.fMajor >= 3
-                               ? glfw::kTrue
-                               : glfw::kFalse);
-      glfw::glfwWindowHint(glfw::kContextCreationApi, choice.fCreation);
-      glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
-      fWindow = glfw::glfwCreateWindow(fWin.fScreenW, fWin.fScreenH,
-                                       "osu_client", monitor, nullptr);
-      if (fWindow != nullptr) {
-        std::println(std::cerr, "[gfx] context: {}", choice.fName);
-        break;
-      }
-    }
-#endif
-    if (fWindow == nullptr) {
-      glfw::glfwTerminate();
-      return 1;
-    }
-    glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorNormal);
+    fWindow = fWindowRuntime.window();
+    const auto initial = fWindowRuntime.initialExtent();
+    fWin.fScreenW = initial.fWidth;
+    fWin.fScreenH = initial.fHeight;
+    fRefreshHz = fWindowRuntime.refreshHz();
 #ifdef __EMSCRIPTEN__
     EM_ASM(Module.setCursorVisible(true));
 #endif
-
-    glfw::glfwSetWindowUserPointer(fWindow, this);
-    // Callbacks run on the event-pump (main) thread. They do two things only:
-    // stamp the event with the wall clock and enqueue it. Window management
-    // (close, fullscreen) is handled right here because GLFW requires it on
-    // this thread; everything gameplay-related is consumed by the render
-    // thread via drainInput().
-    glfw::glfwSetKeyCallback(
-        fWindow, [](glfw::GLFWwindow *w, int key, int, int action, int mods) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self == nullptr)
-            return;
-          if (action == glfw::kPress && key == glfw::kKeyF11) {
-            self->toggleFullscreen();
-            return;
-          }
-          // Auto-repeat is carried through rather than dropped here: it is
-          // meaningless for gameplay and necessary for a held backspace, and
-          // only the consumer knows which of the two it is looking at.
-          self->enqueue({App::wallMs(), EventType::kKey, key, action,
-                         static_cast<float>(mods)});
-        });
-    // The window system asking for the window back: dragged off the screen
-    // and returned, uncovered, unminimised. Whatever was in those buffers is
-    // gone, and a client that repaints only what it changed has to be told,
-    // or it paints its little rectangle onto whatever the compositor left.
-    glfw::glfwSetWindowRefreshCallback(fWindow, [](glfw::GLFWwindow *w) {
-      auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-      if (self != nullptr) {
-        self->noteWindowPlacement();
-        self->fRefreshRequested.store(true, std::memory_order_release);
-      }
-    });
-    // Where the window is, tracked from the thread that is allowed to ask:
-    // what has to be repainted after an expose is the part of the window a
-    // screen is actually showing.
-    glfw::glfwSetWindowPosCallback(fWindow, [](glfw::GLFWwindow *w, int, int) {
-      auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-      if (self != nullptr) {
-        self->noteWindowPlacement();
-      }
-    });
-    this->noteWindowPlacement();
-    glfw::glfwSetMouseButtonCallback(fWindow, [](glfw::GLFWwindow *w,
-                                                 int button, int action, int) {
-      auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-      if (self == nullptr)
-        return;
-      self->enqueue({App::wallMs(), EventType::kMouseButton, button, action});
-    });
-    glfw::glfwSetCursorPosCallback(
-        fWindow, [](glfw::GLFWwindow *w, double x, double y) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self == nullptr)
-            return;
-          self->enqueue({App::wallMs(), EventType::kCursorMove, 0, 0,
-                         static_cast<float>(x), static_cast<float>(y)});
-        });
-    glfw::glfwSetScrollCallback(
-        fWindow, [](glfw::GLFWwindow *w, double, double y) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self == nullptr)
-            return;
-          self->enqueue(
-              {App::wallMs(), EventType::kScroll, 0, 0, static_cast<float>(y)});
-        });
-    glfw::glfwSetDropCallback(
-        fWindow, [](glfw::GLFWwindow *w, int count, const char **paths) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self == nullptr) {
-            return;
-          }
-          // Paths are only valid for the duration of the callback, and this
-          // runs on the event-pump thread: copy them out for the render
-          // thread to import.
-          const std::scoped_lock lock(self->fDropMutex);
-          for (int i = 0; i < count; ++i) {
-            self->fDropped.emplace_back(paths[i]);
-          }
-        });
-    glfw::glfwSetCharCallback(
-        fWindow, [](glfw::GLFWwindow *w, unsigned int codepoint) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self == nullptr)
-            return;
-          self->enqueue({App::wallMs(), EventType::kChar,
-                         static_cast<std::int32_t>(codepoint), 0});
-        });
-    glfw::glfwSetFramebufferSizeCallback(
-        fWindow, [](glfw::GLFWwindow *w, int width, int height) {
-          auto *self = static_cast<App *>(glfw::glfwGetWindowUserPointer(w));
-          if (self == nullptr)
-            return;
-          self->fReportedSize.store(App::packSize(width, height),
-                                    std::memory_order_release);
-          // Surface recreation must happen where the GL context is current:
-          // marshal to the render thread.
-          self->enqueue({App::wallMs(), EventType::kResize, width, height});
-        });
 
 #ifdef __EMSCRIPTEN__
     glfw::glfwMakeContextCurrent(fWindow);
 
     if (!this->initSkia()) {
-      glfw::glfwDestroyWindow(fWindow);
-      glfw::glfwTerminate();
+      fWindowRuntime.close();
+      fWindow = nullptr;
       return 1;
     }
 
@@ -750,22 +562,9 @@ private:
     // stamps and enqueues input, and services the few window operations that
     // GLFW pins to this thread.
     std::thread renderThread([this] { this->renderThreadMain(); });
-
-    while (!fQuit.load(std::memory_order_acquire) &&
-           !glfw::glfwWindowShouldClose(fWindow)) {
-      glfw::glfwWaitEvents();
-      const int cursorMode = fCursorModeRequest.exchange(-1);
-      if (cursorMode != -1) {
-        glfw::glfwSetInputMode(fWindow, glfw::kCursor, cursorMode);
-      }
-      const int rawMotion = fRawMotionRequest.exchange(-1);
-      if (rawMotion != -1 && glfw::glfwRawMouseMotionSupported()) {
-        glfw::glfwSetInputMode(fWindow, glfw::kRawMouseMotion, rawMotion);
-      }
-    }
-    fQuit.store(true, std::memory_order_release);
+    fWindowRuntime.pumpEvents();
     renderThread.join();
-    return fExitCode.load(std::memory_order_acquire);
+    return fWindowRuntime.exitCode();
 #endif
   }
 
@@ -774,7 +573,7 @@ private:
     glfw::glfwMakeContextCurrent(fWindow);
 
     if (!this->initSkia()) {
-      fExitCode.store(1, std::memory_order_release);
+      fWindowRuntime.setExitCode(1);
       this->requestQuit();
       return;
     }
@@ -797,8 +596,7 @@ private:
       fStateEnterWall = wallMs();
     }
 
-    while (!fQuit.load(std::memory_order_acquire) &&
-           !glfw::glfwWindowShouldClose(fWindow)) {
+    while (!fWindowRuntime.quitting()) {
       this->frame();
     }
 
@@ -808,7 +606,7 @@ private:
       if (fRecord)
         this->saveReplay();
     }
-    fExitCode.store(0, std::memory_order_release);
+    fWindowRuntime.setExitCode(0);
     this->requestQuit();
     glfw::glfwMakeContextCurrent(nullptr);
   }
@@ -816,13 +614,12 @@ private:
 #endif
 
   void requestQuit() {
-    fQuit.store(true, std::memory_order_release);
-    glfw::glfwPostEmptyEvent(); // wakes the native pump; harmless on wasm
+    fWindowRuntime.requestQuit();
   }
 
   [[nodiscard]] static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
 
-  void enqueue(const Event &ev) { fInputQueue.tryPush(ev); }
+  void enqueue(const Event &ev) { fWindowRuntime.push(ev); }
 
   // ---- Input consumption (render thread) -------------------------------
   //
@@ -841,7 +638,7 @@ private:
     bool resized = false;
     int width = 0;
     int height = 0;
-    while (fInputQueue.tryPop(ev)) {
+    while (fWindowRuntime.pop(ev)) {
       if (ev.fType == EventType::kResize) {
         resized = true;
         width = ev.fA;
@@ -1718,8 +1515,7 @@ private:
                              : fSettings.choice("bufferage");
     fFrame.begin({.fPartial = partial,
                   .fAssumedBufferAge = assumedAge,
-                  .fReportedSize =
-                      fReportedSize.load(std::memory_order_acquire),
+                  .fReportedSize = fWindowRuntime.reportedSize(),
                   .fWidth = fWin.fScreenW,
                   .fHeight = fWin.fScreenH,
                   .fNow = wallMs(),
@@ -1961,45 +1757,13 @@ private:
   // The part of the window that a screen is actually showing, in the window's
   // own coordinates. Empty when nothing is known about the placement.
   [[nodiscard]] skia::SkIRect visiblePortion() const {
-    const int x = fWindowX.load(std::memory_order_acquire);
-    const int y = fWindowY.load(std::memory_order_acquire);
-    const int areaX = fWorkAreaX.load(std::memory_order_acquire);
-    const int areaY = fWorkAreaY.load(std::memory_order_acquire);
-    const int areaW = fWorkAreaW.load(std::memory_order_acquire);
-    const int areaH = fWorkAreaH.load(std::memory_order_acquire);
-    if (areaW <= 0 || areaH <= 0 || fWin.fScreenW <= 0 || fWin.fScreenH <= 0) {
+    const auto visible =
+        fWindowRuntime.visiblePortion(fWin.fScreenW, fWin.fScreenH);
+    if (!visible) {
       return skia::SkIRect::MakeEmpty();
     }
-    skia::SkIRect window =
-        skia::SkIRect::MakeXYWH(x, y, fWin.fScreenW, fWin.fScreenH);
-    const skia::SkIRect area =
-        skia::SkIRect::MakeXYWH(areaX, areaY, areaW, areaH);
-    if (!window.intersect(area)) {
-      return skia::SkIRect::MakeEmpty();
-    }
-    // Back into the window's own coordinates, and grown a little: the edge
-    // between shown and hidden is not worth being exact about.
-    window.offset(-x, -y);
-    window.outset(4, 4);
-    return window;
-  }
-
-  // Called on the event thread, where asking about windows and monitors is
-  // allowed; the render thread reads the numbers.
-  void noteWindowPlacement() {
-    int x = 0, y = 0;
-    glfw::glfwGetWindowPos(fWindow, &x, &y);
-    fWindowX.store(x, std::memory_order_release);
-    fWindowY.store(y, std::memory_order_release);
-    if (const auto monitor = glfw::glfwGetPrimaryMonitor();
-        monitor != nullptr) {
-      int ax = 0, ay = 0, aw = 0, ah = 0;
-      glfw::glfwGetMonitorWorkarea(monitor, &ax, &ay, &aw, &ah);
-      fWorkAreaX.store(ax, std::memory_order_release);
-      fWorkAreaY.store(ay, std::memory_order_release);
-      fWorkAreaW.store(aw, std::memory_order_release);
-      fWorkAreaH.store(ah, std::memory_order_release);
-    }
+    return skia::SkIRect::MakeLTRB((*visible)[0], (*visible)[1],
+                                    (*visible)[2], (*visible)[3]);
   }
 
   void frame() {
@@ -2007,7 +1771,7 @@ private:
     // loaded, say -- could leave this set; outside frame() nothing is drawing
     // by definition.
     fFrame.fDrawing = false;
-    if (fRefreshRequested.exchange(false, std::memory_order_acquire)) {
+    if (fWindowRuntime.takeRefreshRequest()) {
       // Set on the event thread, acted on here: everything those buffers held
       // is suspect, so the history of what they hold goes with it.
       fFrame.fBlitHistory.clear();
@@ -2348,13 +2112,6 @@ private:
     fFrame.fDrawing = false;
   }
 
-  // One atomic value lets the callback publish a coherent framebuffer size.
-  [[nodiscard]] static std::uint64_t packSize(int width, int height) {
-    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(width))
-            << 32) |
-           static_cast<std::uint32_t>(height);
-  }
-
   void framePlaying() {
     using clock = std::chrono::steady_clock;
     // Zero until the first frame has been through, so that nothing before it
@@ -2615,12 +2372,7 @@ private:
     if (fState == State::kPlaying) {
       this->setCursorVisible(false); // re-evaluates the mode below
     }
-    fRawMotionRequest.store(fSettings.flag("rawinput") ? glfw::kTrue
-                                                       : glfw::kFalse,
-                            std::memory_order_release);
-#ifndef __EMSCRIPTEN__
-    glfw::glfwPostEmptyEvent();
-#endif
+    fWindowRuntime.requestRawMotion(fSettings.flag("rawinput"));
   }
 
   void setCursorVisible(bool visible) {
@@ -2635,9 +2387,7 @@ private:
 #else
     const int hidden =
         this->relativeCursor() ? glfw::kCursorDisabled : glfw::kCursorHidden;
-    fCursorModeRequest.store(visible ? glfw::kCursorNormal : hidden,
-                             std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
+    fWindowRuntime.requestCursorMode(visible ? glfw::kCursorNormal : hidden);
 #endif
   }
 
@@ -2862,14 +2612,7 @@ private:
   // Files dropped onto the window (the reliable import path: no dialog
   // binary required, works on any desktop).
   void drainDroppedFiles() {
-    std::vector<std::string> paths;
-    {
-      const std::scoped_lock lock(fDropMutex);
-      if (fDropped.empty()) {
-        return;
-      }
-      paths.swap(fDropped);
-    }
+    const auto paths = fWindowRuntime.takeDroppedFiles();
     for (const auto &p : paths) {
       this->importFrom(std::filesystem::path(p));
     }
@@ -3003,8 +2746,7 @@ private:
       this->resize(fw, fh);
     }
 
-    if (fQuit.load(std::memory_order_acquire) ||
-        glfw::glfwWindowShouldClose(fWindow)) {
+    if (fWindowRuntime.quitting()) {
       if (fPlay.fEngine &&
           (fState == State::kPlaying || fState == State::kPaused)) {
         this->printResult();
@@ -4425,11 +4167,8 @@ private:
     fAudio.stop();
     fFrame.fSurface.reset();
     fContext.reset();
-    if (fWindow != nullptr) {
-      glfw::glfwDestroyWindow(fWindow);
-      fWindow = nullptr;
-    }
-    glfw::glfwTerminate();
+    fWindowRuntime.close();
+    fWindow = nullptr;
   }
 
   [[nodiscard]] double nowMs() {
@@ -4548,7 +4287,7 @@ private:
       const double ur = 10.0 * std::sqrt(variance);
       std::println("hit error: {:+.1f} ms avg, UR {:.0f}", mean, ur);
     }
-    const auto dropped = fInputQueue.dropped();
+    const auto dropped = fWindowRuntime.droppedInput();
     if (dropped > 0) {
       std::println("warning: {} input events dropped", dropped);
     }
