@@ -450,15 +450,10 @@ private:
   double fUiDt = 16.0; // ms since the last frame, as measured
   // What the parts of song select that are still drawn immediately last drew,
   // so they can say when it changes rather than repainting on every frame.
-  int fHotFilter = 0; // which filter control the pointer is on
   int fHotFooter = 0; // which footer chip the pointer is on
   skia::SkRect fHotFooterRect = skia::SkRect::MakeEmpty();
-  std::int64_t fFilterState = -1;
-  bool fFilterCaret = false;
   bool fDrawnOptionsOpen = false;
   bool fDrawnEmpty = false;
-  std::size_t fDrawnVisibleCount = 0;
-  std::string fDrawnFilterText;
   std::int64_t fWedgeKey = -1;
 
   // ---- Main menu --------------------------------------------------------
@@ -4641,10 +4636,9 @@ private:
 
   // ---- Song select ------------------------------------------------------
   //
-  // The carousel is a scene tree in client.carousel: it decides where panels
-  // are, which of them exist, and what has to be repainted. The wedge, the
-  // filter control and the footer are still drawn immediately, and each says
-  // which strip of the screen it covers and when what it shows changed.
+  // The carousel and filter are scene trees: they decide where their nodes
+  // are, route their input and report what has to be repainted. The info wedge
+  // and footer remain immediate-mode for now.
 
   void updateSongSelect() {
 #ifdef __EMSCRIPTEN__
@@ -4703,30 +4697,16 @@ private:
     fCarousel.update(ctx);
     this->damage(fCarousel.takeDamage());
 
-    // Two things in the filter respond to the pointer -- the dropdowns and the
-    // rows of an open list -- so it is repainted when which of them is under
-    // the pointer changes, rather than for as long as the pointer is inside
-    // it. The handles of the difficulty slider move while dragged.
-    const int hotFilter = fFilter.hotElement(fWin.fMouseX, fWin.fMouseY);
-    const std::int64_t filterState = fFilter.stateKey();
-    if (hotFilter != fHotFilter || filterState != fFilterState ||
-        fFilter.dragging()) {
-      fHotFilter = hotFilter;
-      fFilterState = filterState;
-      this->damage(client::FilterControl::bounds(fWin.fScreenW));
-    }
-    // The caret and the set count are inside the search box, which is what
-    // gets repainted for them -- and the caret only exists while there is
-    // text to put it after, so an empty filter asks for nothing at all.
-    const bool caret = fFilter.caretShown(wallMs());
-    if (caret != fFilterCaret ||
-        fLibrary.visible().size() != fDrawnVisibleCount ||
-        fFilter.text() != fDrawnFilterText) {
-      fFilterCaret = caret;
-      fDrawnVisibleCount = fLibrary.visible().size();
-      fDrawnFilterText = fFilter.text();
-      this->damage(fFilter.searchBox());
-    }
+    client::FilterControl::Ctx filterCtx;
+    filterCtx.fFont = &fFont;
+    filterCtx.fWidth = sw;
+    filterCtx.fHeight = sh;
+    filterCtx.fMouseX = fWin.fMouseX;
+    filterCtx.fMouseY = fWin.fMouseY;
+    filterCtx.fVisibleCount = fLibrary.visible().size();
+    filterCtx.fNowMs = wallMs();
+    fFilter.update(filterCtx);
+    this->damage(fFilter.takeDamage());
     if (!fFilter.text().empty()) {
       this->wakeAt(nextCaretFlip(wallMs()));
     }
@@ -4819,8 +4799,7 @@ private:
   // view it filters and reacts when the criteria change.
 
   void drawFilterControl(skia::SkCanvas *canvas) {
-    fFilter.draw(canvas, fFont, fWin.fScreenW, fWin.fMouseX, fWin.fMouseY,
-                 fLibrary.visible().size(), wallMs());
+    fFilter.render(canvas);
   }
 
   bool filterClick(float x, float y, bool pressed) {

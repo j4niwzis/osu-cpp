@@ -17,6 +17,110 @@ using skiff::scene::Spec;
 
 export namespace skiff::widgets {
 
+// The closed half of a dropdown. The label, current value and open state are
+// data; hover, hit testing and the chevron belong to the widget. Keeping this
+// beside DropdownList gives screens both reusable pieces without forcing a
+// particular placement or state model on them.
+class DropdownButton : public skiff::scene::TypedDrawable<DropdownButton> {
+public:
+  DropdownButton(std::string label = {}, std::string value = {})
+      : fLabel(std::move(label)), fValue(std::move(value)) {
+    fHeight = 30.0f;
+  }
+
+  Theme fTheme = theme();
+  float fLabelWidth = 52.0f;
+  float fChevronWidth = 22.0f;
+  float fStrokeWidth = 1.0f;
+  float fOpenStrokeWidth = 2.0f;
+  float fLabelAlpha = 0.5f;
+  float fValueAlpha = 0.95f;
+  std::function<void()> fOnOpen;
+
+  void setLabel(std::string label) {
+    if (label == fLabel) {
+      return;
+    }
+    fLabel = std::move(label);
+    this->markDamaged();
+  }
+
+  void setValue(std::string value) {
+    if (value == fValue) {
+      return;
+    }
+    fValue = std::move(value);
+    this->markDamaged();
+  }
+
+  void setOpen(bool open) {
+    if (open == fOpen) {
+      return;
+    }
+    fOpen = open;
+    this->markDamaged();
+  }
+  [[nodiscard]] bool open() const noexcept { return fOpen; }
+
+protected:
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    skia::SkFont *font = skiff::paint::defaultFont();
+    if (font == nullptr) {
+      return;
+    }
+    const skiff::paint::Painter p(canvas, *font);
+    p.fillRounded(fBounds, fTheme.fCorner,
+                  fHovered || fOpen ? fTheme.fSurfaceHover : fTheme.fSurface,
+                  alpha);
+    p.strokeRounded(fBounds, fTheme.fCorner,
+                    fOpen ? fTheme.fAccent : fTheme.fSurfaceActive,
+                    fOpen ? fOpenStrokeWidth : fStrokeWidth, alpha);
+    const float baseline = p.middleBaseline(fBounds, fTheme.fFontSize);
+    p.textClipped(fLabel, fBounds.fLeft + fTheme.fPaddingX, baseline,
+                  fLabelWidth, fTheme.fFontSize, fTheme.fLabel,
+                  alpha * fLabelAlpha);
+    const float valueLeft =
+        fBounds.fLeft + fTheme.fPaddingX + fLabelWidth;
+    p.textClipped(fValue, valueLeft, baseline,
+                  std::max(0.0f, fBounds.fRight - valueLeft - fChevronWidth),
+                  fTheme.fFontSize, fTheme.fText, alpha * fValueAlpha);
+
+    skia::SkPaint triangle;
+    triangle.setAntiAlias(true);
+    triangle.setColor(fTheme.fText);
+    triangle.setAlphaf(alpha * 0.7f);
+    skia::SkPathBuilder path;
+    const float cx = fBounds.fRight - fChevronWidth * 0.5f;
+    const float cy = fBounds.centerY();
+    if (fOpen) {
+      path.moveTo(cx - 5.0f, cy + 2.5f);
+      path.lineTo(cx + 5.0f, cy + 2.5f);
+      path.lineTo(cx, cy - 3.5f);
+    } else {
+      path.moveTo(cx - 5.0f, cy - 2.5f);
+      path.lineTo(cx + 5.0f, cy - 2.5f);
+      path.lineTo(cx, cy + 3.5f);
+    }
+    path.close();
+    canvas->drawPath(path.detach(), triangle);
+  }
+
+  bool acceptsInput() const override { return static_cast<bool>(fOnOpen); }
+
+  bool onClick(float, float) override {
+    if (!fOnOpen) {
+      return false;
+    }
+    fOnOpen();
+    return true;
+  }
+
+private:
+  std::string fLabel;
+  std::string fValue;
+  bool fOpen = false;
+};
+
 // The open half of a dropdown: a plate with a row per option, the current one
 // held at full strength and the one under the pointer lit.
 //
@@ -75,6 +179,18 @@ public:
   }
   [[nodiscard]] int current() const noexcept { return fCurrent; }
 
+  void setExpanded(bool expanded) {
+    if (expanded == fVisible) {
+      return;
+    }
+    // Hiding must repaint the old plate before visibility makes it stop
+    // contributing damage. Showing needs layout because hidden flow children
+    // were deliberately skipped.
+    this->markDamaged();
+    fVisible = expanded;
+    this->invalidateLayout();
+  }
+
 protected:
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
     skia::SkFont *font = skiff::paint::defaultFont();
@@ -85,6 +201,7 @@ protected:
     // The rows are children and draw themselves over this.
     const skiff::paint::Painter p(canvas, *font);
     p.fillRounded(fBounds, fPlateRadius, fTheme.fSurface, alpha);
+    p.strokeRounded(fBounds, fPlateRadius, fTheme.fAccent, 1.5f, alpha);
   }
 
   // A click that lands between two rows is still a click on the list, and is
@@ -114,11 +231,13 @@ private:
       }
       const Theme &theme = fList->fTheme;
       const skiff::paint::Painter p(canvas, *font);
-      p.fillRounded(fBounds, fList->fRowRadius,
-                    fHovered ? theme.fSurfaceActive : theme.fSurfaceHover,
-                    alpha);
       const bool chosen = static_cast<int>(fIndex) == fList->fCurrent;
-      p.textIn(fBounds, fList->fLabels[fIndex], fList->fFontSize, theme.fText,
+      if (chosen || fHovered) {
+        p.fillRounded(fBounds, fList->fRowRadius,
+                      chosen ? theme.fAccent : theme.fSurfaceHover, alpha);
+      }
+      p.textIn(fBounds, fList->fLabels[fIndex], fList->fFontSize,
+               chosen ? theme.fOnAccent : theme.fText,
                alpha * (chosen ? 1.0f : fList->fDimAlpha), false,
                fList->fTextInset);
     }

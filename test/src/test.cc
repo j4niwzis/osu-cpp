@@ -2,7 +2,7 @@ import std;
 import gtest;
 import osu;
 
-#include "gtest_macro.h"
+#include "gtest/gtest-macros.h"
 
 namespace osu {
 

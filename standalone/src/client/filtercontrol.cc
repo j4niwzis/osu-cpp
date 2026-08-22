@@ -3,19 +3,136 @@ export module client.filtercontrol;
 import std;
 import skia;
 import skiff.paint;
+import skiff.scene;
+import skiff.nodes;
+import skiff.widgets.textbox;
+import skiff.widgets.dropdown;
+import skiff.widgets.sliderbar;
 import client.palette;
-
-// skiff::paint is the framework's drawing side; the short name keeps
-// the lines below at the width they were written at.
-namespace paint = skiff::paint;
 
 export namespace client {
 
-// osu!lazer's FilterControl: a sheared panel hanging from the top-right of
-// song select holding the search box, a two-handle difficulty range slider
-// and the Sort / Group dropdowns. The panel is sheared while its children
-// stay upright, exactly as lazer shears the container and un-shears the
-// contents.
+namespace scene = skiff::scene;
+namespace nodes = skiff::nodes;
+namespace widgets = skiff::widgets;
+
+inline constexpr float kFilterShear = 0.15f;
+inline constexpr float kFilterHeight = 141.0f;
+
+namespace filter_style {
+struct Search;
+struct Count;
+struct Range;
+struct RangeLabel;
+struct RangeValue;
+struct RangeSlider;
+struct Dropdowns;
+struct Dropdown;
+struct List;
+} // namespace filter_style
+
+namespace filter_detail {
+
+// The only screen-specific drawing left in the control. Its children are
+// ordinary upright drawables; only the dark plate has lazer's shear.
+class Wedge : public scene::TypedDrawable<Wedge> {
+protected:
+  void drawSelf(skia::SkCanvas *canvas, float alpha) override {
+    skia::SkPathBuilder path;
+    path.moveTo(fBounds.fLeft + kFilterShear * fBounds.height(), fBounds.fTop);
+    path.lineTo(fBounds.fRight, fBounds.fTop);
+    path.lineTo(fBounds.fRight, fBounds.fBottom);
+    path.lineTo(fBounds.fLeft, fBounds.fBottom);
+    path.close();
+    skia::SkPaint background;
+    background.setAntiAlias(true);
+    background.setColor(skia::colorSetARGB(232, 24, 19, 32));
+    background.setAlphaf(alpha);
+    canvas->drawPath(path.detach(), background);
+  }
+};
+
+// When a list is open, a click outside it dismisses it before reaching the
+// carousel. Closed, this root is transparent to input.
+class Root : public scene::TypedDrawable<Root> {
+public:
+  std::function<bool()> fDismiss;
+
+protected:
+  bool acceptsInput() const override { return static_cast<bool>(fDismiss); }
+  bool hoverChangesAppearance() const override { return false; }
+  bool onClick(float, float) override { return fDismiss && fDismiss(); }
+};
+
+} // namespace filter_detail
+
+struct FilterTheme {
+  static constexpr auto styles =
+      scene::makeStyleSheet()
+          .rule(scene::select<filter_detail::Root>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth})
+          .rule(scene::select<filter_detail::Wedge>(),
+                {.anchor = scene::Anchor::kTopRight,
+                 .origin = scene::Anchor::kTopRight,
+                 .width = 0.56f,
+                 .height = kFilterHeight,
+                 .relativeSize = scene::Axes::kX,
+                 .maxWidth = 760.0f,
+                 .padding = scene::Margin{
+                     12.0f, 40.0f, 0.0f,
+                     kFilterShear * kFilterHeight + 16.0f}})
+          .rule(scene::selectAny<filter_style::Search>(),
+                {.width = 1.0f,
+                 .height = 32.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::selectAny<filter_style::Count>(),
+                {.anchor = scene::Anchor::kCentreRight,
+                 .origin = scene::Anchor::kCentreRight,
+                 .x = -8.0f,
+                 .alpha = 0.55f,
+                 .fontSize = 13.0f})
+          .rule(scene::selectAny<filter_style::Range>(),
+                {.x = 0.0f,
+                 .y = 46.0f,
+                 .width = 0.62f,
+                 .height = 26.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::selectAny<filter_style::RangeLabel>(),
+                {.alpha = 0.6f, .fontSize = 12.0f})
+          .rule(scene::selectAny<filter_style::RangeValue>(),
+                {.anchor = scene::Anchor::kTopRight,
+                 .origin = scene::Anchor::kTopRight,
+                 .alpha = 0.9f,
+                 .colour = palette::kAccent2,
+                 .fontSize = 12.0f})
+          .rule(scene::selectAny<filter_style::RangeSlider>(),
+                {.y = 10.0f,
+                 .width = 1.0f,
+                 .height = 14.0f,
+                 .relativeSize = scene::Axes::kX})
+          .rule(scene::selectAny<filter_style::Dropdowns>(),
+                {.x = 0.0f,
+                 .y = 84.0f,
+                 .width = 1.0f,
+                 .height = 30.0f,
+                 .relativeSize = scene::Axes::kX,
+                 .maxWidth = 370.0f})
+          .rule(scene::selectAny<filter_style::Dropdown>(),
+                {.height = 30.0f, .grow = scene::Axes::kX})
+          .rule(scene::selectAny<filter_style::List>(),
+                {.anchor = scene::Anchor::kBottomLeft,
+                 .origin = scene::Anchor::kTopLeft,
+                 .y = 4.0f,
+                 .width = 1.0f,
+                 .relativeSize = scene::Axes::kX});
+};
+
+// osu!lazer's song-select filter. The state exposed to the library remains
+// small, while presentation is a retained Skiff tree: layouts place the
+// controls, widgets own their hit testing, and damage follows the nodes that
+// actually changed.
 class FilterControl {
 public:
   enum class SortMode : std::uint8_t {
@@ -38,70 +155,29 @@ public:
   static constexpr std::array<const char *, 6> kGroupNames = {
       "No grouping", "Artist", "Author", "Difficulty", "Length", "Title"};
 
-  static constexpr float kShear = 0.15f;   // OsuGame.SHEAR
-  static constexpr float kHeight = 141.0f; // HEIGHT_FROM_SCREEN_TOP
+  static constexpr float kShear = kFilterShear;
+  static constexpr float kHeight = kFilterHeight;
   static constexpr float kDiffRangeCap = 10.0f;
 
+  struct Ctx {
+    skia::SkFont *fFont = nullptr;
+    float fWidth = 0.0f;
+    float fHeight = 0.0f;
+    float fMouseX = 0.0f;
+    float fMouseY = 0.0f;
+    std::size_t fVisibleCount = 0;
+    double fNowMs = 0.0;
+  };
+
   [[nodiscard]] const std::string &text() const noexcept { return fFilterText; }
-
-  // Which element the pointer is on, as one number. Only two things in here
-  // respond to hover -- the two dropdowns and the rows of an open list -- so
-  // a client that repaints regions can repaint this control when that number
-  // changes, rather than for as long as the pointer is anywhere inside it.
-  [[nodiscard]] int hotElement(float x, float y) const {
-    for (std::size_t i = 0; i < fSortItemRects.size(); ++i) {
-      if (fSortItemRects[i].contains(x, y)) {
-        return 100 + static_cast<int>(i);
-      }
-    }
-    for (std::size_t i = 0; i < fGroupItemRects.size(); ++i) {
-      if (fGroupItemRects[i].contains(x, y)) {
-        return 200 + static_cast<int>(i);
-      }
-    }
-    if (fSortRect.contains(x, y)) {
-      return 1;
-    }
-    if (fGroupRect.contains(x, y)) {
-      return 2;
-    }
-    return 0;
-  }
-
-  // Everything it draws that is not the text or the count: the two criteria,
-  // whether a list is open, and where the difficulty handles sit.
-  [[nodiscard]] std::int64_t stateKey() const {
-    return (static_cast<std::int64_t>(fSortMode) << 40) ^
-           (static_cast<std::int64_t>(fGroupMode) << 34) ^
-           (fSortOpen ? 1LL << 32 : 0) ^ (fGroupOpen ? 1LL << 33 : 0) ^
-           static_cast<std::int64_t>(fDiffRangeMin * 100.0f) ^
-           (static_cast<std::int64_t>(fDiffRangeMax * 100.0f) << 16);
-  }
-
-  // Where the control actually is. It is a wedge anchored to the top right --
-  // it does not span the width of the screen, and a client that repaints
-  // regions was repainting the title wedge on the far left along with it.
-  [[nodiscard]] static skia::SkRect bounds(int screenW) {
-    const float sw = static_cast<float>(screenW);
-    const float panelW = std::min(760.0f, sw * 0.56f);
-    return skia::SkRect::MakeLTRB(sw - panelW, 0.0f, sw, kHeight);
-  }
-
-  // The search box within it: the caret and the set count are the only things
-  // up here that change without being touched, and both are inside this.
-  [[nodiscard]] const skia::SkRect &searchBox() const noexcept {
-    return fSearchBoxRect;
-  }
-
-  // A caret is only drawn where there is text to put it after.
-  [[nodiscard]] bool caretShown(double nowMs) const {
-    return !fFilterText.empty() && std::fmod(nowMs, 1000.0) < 600.0;
-  }
   [[nodiscard]] SortMode sortMode() const noexcept { return fSortMode; }
   [[nodiscard]] GroupMode groupMode() const noexcept { return fGroupMode; }
   [[nodiscard]] float rangeMin() const noexcept { return fDiffRangeMin; }
   [[nodiscard]] float rangeMax() const noexcept { return fDiffRangeMax; }
-  [[nodiscard]] bool dragging() const noexcept { return fDraggingRange >= 0; }
+  [[nodiscard]] bool dragging() const noexcept {
+    return fRangeSlider != nullptr && fRangeSlider->dragging();
+  }
+
   [[nodiscard]] bool takeDirty() noexcept {
     const bool was = fDirty;
     fDirty = false;
@@ -132,274 +208,249 @@ public:
     fDirty = true;
   }
 
-  void endDrag() noexcept { fDraggingRange = -1; }
-
   void cycleSort() {
     fSortMode = static_cast<SortMode>((static_cast<int>(fSortMode) + 1) %
                                       static_cast<int>(kSortNames.size()));
     fDirty = true;
   }
 
-  void draw(skia::SkCanvas *canvas, skia::SkFont &font, int screenW,
-            float mouseX, float mouseY, std::size_t visibleCount,
-            double nowMs) {
-    fMouseX = mouseX;
-    fMouseY = mouseY;
-    const paint::Painter p(canvas, font);
-    const float sw = static_cast<float>(screenW);
-    const float panelW = std::min(760.0f, sw * 0.56f);
-    const float left = sw - panelW;
-    const float h = kHeight;
-    const float shear = kShear * h;
-
-    // Sheared background wedge, anchored top-right and mirrored, as lazer's
-    // WedgeBackground with Scale(-1, 1).
-    skia::SkPathBuilder wedge;
-    wedge.moveTo(left + shear, 0.0f);
-    wedge.lineTo(sw, 0.0f);
-    wedge.lineTo(sw, h);
-    wedge.lineTo(left, h);
-    wedge.close();
-    skia::SkPaint bg;
-    bg.setAntiAlias(true);
-    bg.setColor(skia::colorSetARGB(232, 24, 19, 32));
-    p.canvas()->drawPath(wedge.detach(), bg);
-
-    const float pad = 16.0f;
-    const float contentL = left + shear + pad;
-    const float contentR = sw - 40.0f; // lazer keeps a 40px right margin
-
-    // ---- Search box.
-    fSearchBoxRect =
-        skia::SkRect::MakeLTRB(contentL, 12.0f, contentR, 44.0f);
-    p.fillRounded(fSearchBoxRect, 6.0f,
-                      skia::colorSetARGB(255, 40, 32, 52));
-    p.strokeRounded(fSearchBoxRect, 6.0f,
-                        fFilterText.empty() ? skia::colorSetARGB(255, 70, 58, 88)
-                                            : palette::kAccent,
-                        2.0f);
-    const bool caret = std::fmod(nowMs, 1000.0) < 600.0;
-    if (fFilterText.empty()) {
-      p.textClipped("type to search", fSearchBoxRect.fLeft + 12.0f,
-                            fSearchBoxRect.centerY() + 5.0f,
-                            fSearchBoxRect.width() - 100.0f, 15.0f,
-                            skia::kWhite, 0.42f);
-    } else {
-      p.textClipped(fFilterText + (caret ? "|" : " "),
-                            fSearchBoxRect.fLeft + 12.0f,
-                            fSearchBoxRect.centerY() + 5.0f,
-                            fSearchBoxRect.width() - 100.0f, 15.0f,
-                            skia::kWhite);
+  void update(const Ctx &ctx) {
+    if (ctx.fFont == nullptr) {
+      return;
     }
-    const std::string count =
-        std::format("{} sets", visibleCount);
-    p.textClipped(count, fSearchBoxRect.fRight - 84.0f,
-                          fSearchBoxRect.centerY() + 5.0f, 80.0f, 13.0f,
-                          skia::kWhite, 0.55f);
-
-    // ---- Difficulty range slider (two handles, min range 0.1 as in lazer).
-    const float rangeW = (contentR - contentL) * 0.62f;
-    fRangeRect = skia::SkRect::MakeXYWH(contentL, 58.0f, rangeW, 26.0f);
-    this->drawDifficultyRange(p, fRangeRect);
-
-    // ---- Sort / Group dropdowns.
-    const float ddY = 96.0f;
-    const float ddW = std::min(180.0f, (contentR - contentL - 10.0f) * 0.5f);
-    fSortRect = skia::SkRect::MakeXYWH(contentL, ddY, ddW, 30.0f);
-    fGroupRect = skia::SkRect::MakeXYWH(contentL + ddW + 10.0f, ddY, ddW, 30.0f);
-    this->drawDropdown(p, fSortRect, "Sort",
-                       kSortNames[static_cast<std::size_t>(fSortMode)],
-                       fSortOpen);
-    this->drawDropdown(p, fGroupRect, "Group",
-                       kGroupNames[static_cast<std::size_t>(fGroupMode)],
-                       fGroupOpen);
-
-    // Expanded lists draw last so they sit above the carousel.
-    fSortItemRects.clear();
-    fGroupItemRects.clear();
-    if (fSortOpen) {
-      this->drawDropdownItems(p, fSortRect,
-                              std::span<const char *const>(kSortNames),
-                              static_cast<int>(fSortMode), fSortItemRects);
+    nodes::Text::setFont(ctx.fFont);
+    bool rebuilt = false;
+    if (!fScene) {
+      fScene = this->build();
+      rebuilt = true;
     }
-    if (fGroupOpen) {
-      this->drawDropdownItems(p, fGroupRect,
-                              std::span<const char *const>(kGroupNames),
-                              static_cast<int>(fGroupMode), fGroupItemRects);
-    }
-  }
 
-  void drawDifficultyRange(const paint::Painter &p, const skia::SkRect &r) {
-    p.textClipped("Difficulty", r.fLeft, r.fTop + 2.0f, 90.0f,
-                          12.0f, skia::kWhite, 0.6f);
-    const skia::SkRect track =
-        skia::SkRect::MakeXYWH(r.fLeft, r.fTop + 14.0f, r.width(), 6.0f);
-    p.fillRounded(track, 3.0f, skia::colorSetARGB(255, 52, 44, 66));
-    const float t0 = fDiffRangeMin / kDiffRangeCap;
-    const float t1 = fDiffRangeMax / kDiffRangeCap;
-    p.fillRounded(
-        skia::SkRect::MakeLTRB(track.fLeft + track.width() * t0, track.fTop,
-                               track.fLeft + track.width() * t1, track.fBottom),
-        3.0f, palette::kAccent);
-    p.circle(track.fLeft + track.width() * t0, track.centerY(), 7.0f,
-             skia::kWhite);
-    p.circle(track.fLeft + track.width() * t1, track.centerY(), 7.0f,
-             skia::kWhite);
-    const std::string label =
+    fSearchBox->setText(fFilterText);
+    fSearchBox->tickCaret(ctx.fNowMs, !fFilterText.empty());
+    fCount->setText(std::format("{} sets", ctx.fVisibleCount));
+    fRangeValue->setText(
         fDiffRangeMax >= kDiffRangeCap
             ? std::format("{:.1f} - ∞", fDiffRangeMin)
-            : std::format("{:.1f} - {:.1f}", fDiffRangeMin, fDiffRangeMax);
-    p.textClipped(label, r.fRight - 96.0f, r.fTop + 2.0f, 96.0f,
-                          12.0f, palette::kAccent2, 0.9f);
+            : std::format("{:.1f} - {:.1f}", fDiffRangeMin, fDiffRangeMax));
+    fRangeSlider->setRange(fDiffRangeMin / kDiffRangeCap,
+                           fDiffRangeMax / kDiffRangeCap);
+    fSortButton->setValue(kSortNames[static_cast<std::size_t>(fSortMode)]);
+    fGroupButton->setValue(kGroupNames[static_cast<std::size_t>(fGroupMode)]);
+    fSortList->setCurrent(static_cast<int>(fSortMode));
+    fGroupList->setCurrent(static_cast<int>(fGroupMode));
+    this->syncOpenState();
+
+    const skia::SkRect screen =
+        skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
+    fScene->updateTree(ctx.fNowMs);
+    fScene->layoutIfNeeded(screen);
+    if (rebuilt) {
+      fScene->markDamaged();
+    }
+    fScene->setHover(ctx.fMouseX, ctx.fMouseY);
   }
 
-  void drawDropdown(const paint::Painter &p, const skia::SkRect &r,
-                    const char *label, const char *value, bool open) {
-    const bool hover = r.contains(fMouseX, fMouseY);
-    p.fillRounded(r, 6.0f,
-                      hover || open ? skia::colorSetARGB(255, 56, 46, 72)
-                                    : skia::colorSetARGB(255, 40, 32, 52));
-    p.strokeRounded(r, 6.0f,
-                        open ? palette::kAccent : skia::colorSetARGB(255, 70, 58, 88),
-                        open ? 2.0f : 1.0f);
-    p.textClipped(label, r.fLeft + 10.0f, r.centerY() + 4.0f,
-                          52.0f, 12.0f, skia::kWhite, 0.5f);
-    p.textClipped(value, r.fLeft + 62.0f, r.centerY() + 4.0f,
-                          r.width() - 84.0f, 13.0f, skia::kWhite, 0.95f);
-    // Chevron.
-    skia::SkPaint tri;
-    tri.setAntiAlias(true);
-    tri.setColor(skia::kWhite);
-    tri.setAlphaf(0.7f);
-    skia::SkPathBuilder c;
-    const float cx = r.fRight - 14.0f;
-    const float cy = r.centerY();
-    if (open) {
-      c.moveTo(cx - 5.0f, cy + 2.5f);
-      c.lineTo(cx + 5.0f, cy + 2.5f);
-      c.lineTo(cx, cy - 3.5f);
-    } else {
-      c.moveTo(cx - 5.0f, cy - 2.5f);
-      c.lineTo(cx + 5.0f, cy - 2.5f);
-      c.lineTo(cx, cy + 3.5f);
+  void render(skia::SkCanvas *canvas) {
+    if (fScene && canvas != nullptr) {
+      fScene->draw(canvas);
     }
-    c.close();
-    p.canvas()->drawPath(c.detach(), tri);
   }
 
-  void drawDropdownItems(const paint::Painter &p, const skia::SkRect &anchor,
-                         std::span<const char *const> items, int current,
-                         std::vector<skia::SkRect> &out) {
-    const float itemH = 26.0f;
-    const skia::SkRect box = skia::SkRect::MakeXYWH(
-        anchor.fLeft, anchor.fBottom + 4.0f, anchor.width(),
-        itemH * static_cast<float>(items.size()) + 8.0f);
-    p.fillRounded(box, 6.0f, skia::colorSetARGB(248, 30, 24, 40));
-    p.strokeRounded(box, 6.0f, palette::kAccent, 1.5f);
-    for (std::size_t i = 0; i < items.size(); ++i) {
-      const skia::SkRect row = skia::SkRect::MakeXYWH(
-          box.fLeft + 4.0f, box.fTop + 4.0f + static_cast<float>(i) * itemH,
-          box.width() - 8.0f, itemH);
-      out.push_back(row);
-      const bool hover = row.contains(fMouseX, fMouseY);
-      const bool active = static_cast<int>(i) == current;
-      if (hover || active) {
-        p.fillRounded(row, 4.0f,
-                          active ? palette::kAccent
-                                 : skia::colorSetARGB(255, 52, 42, 66));
-      }
-      p.textClipped(items[i], row.fLeft + 10.0f,
-                            row.centerY() + 4.0f, row.width() - 20.0f, 13.0f,
-                            active ? skia::colorSetARGB(255, 20, 16, 26)
-                                   : skia::kWhite,
-                            0.95f);
-    }
+  [[nodiscard]] skia::SkRect takeDamage() {
+    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
   }
 
   // Returns true when the control consumed the click.
   bool click(float x, float y, bool pressed) {
     if (!pressed) {
-      fDraggingRange = -1;
+      this->endDrag();
       return false;
     }
-    for (std::size_t i = 0; i < fSortItemRects.size(); ++i) {
-      if (fSortItemRects[i].contains(x, y)) {
-        fSortMode = static_cast<SortMode>(i);
-        fSortOpen = false;
-        fDirty = true;
-        return true;
-      }
-    }
-    for (std::size_t i = 0; i < fGroupItemRects.size(); ++i) {
-      if (fGroupItemRects[i].contains(x, y)) {
-        fGroupMode = static_cast<GroupMode>(i);
-        fGroupOpen = false;
-        fDirty = true;
-        return true;
-      }
-    }
-    if (fSortRect.contains(x, y)) {
-      fSortOpen = !fSortOpen;
-      fGroupOpen = false;
-      return true;
-    }
-    if (fGroupRect.contains(x, y)) {
-      fGroupOpen = !fGroupOpen;
-      fSortOpen = false;
-      return true;
-    }
-    if (fRangeRect.contains(x, y)) {
-      const skia::SkRect track = skia::SkRect::MakeXYWH(
-          fRangeRect.fLeft, fRangeRect.fTop + 14.0f, fRangeRect.width(), 6.0f);
-      const float t =
-          std::clamp((x - track.fLeft) / track.width(), 0.0f, 1.0f) *
-          kDiffRangeCap;
-      fDraggingRange =
-          std::abs(t - fDiffRangeMin) <= std::abs(t - fDiffRangeMax) ? 0 : 1;
-      this->dragRange(x);
-      return true;
-    }
-    if (fSortOpen || fGroupOpen) {
-      fSortOpen = fGroupOpen = false;
-      return true;
-    }
-    return fSearchBoxRect.contains(x, y);
+    return fScene && fScene->click(x, y);
   }
 
   void dragRange(float x) {
-    if (fDraggingRange < 0) {
-      return;
+    if (fRangeSlider != nullptr) {
+      fRangeSlider->dragTo(x);
     }
-    const float t =
-        std::clamp((x - fRangeRect.fLeft) / fRangeRect.width(), 0.0f, 1.0f) *
-        kDiffRangeCap;
-    constexpr float kMinRange = 0.1f; // DifficultyRangeSlider.MinRange
-    if (fDraggingRange == 0) {
-      fDiffRangeMin = std::min(t, fDiffRangeMax - kMinRange);
-    } else {
-      fDiffRangeMax = std::max(t, fDiffRangeMin + kMinRange);
+  }
+
+  void endDrag() noexcept {
+    if (fRangeSlider != nullptr) {
+      fRangeSlider->endDrag();
     }
-    fDirty = true;
   }
 
 private:
+  inline static const widgets::Theme kControlTheme = {
+      .fSurface = skia::colorSetARGB(255, 40, 32, 52),
+      .fSurfaceHover = skia::colorSetARGB(255, 56, 46, 72),
+      .fSurfaceActive = skia::colorSetARGB(255, 70, 58, 88),
+      .fText = skia::kWhite,
+      .fLabel = skia::kWhite,
+      .fTextDim = skia::colorSetARGB(255, 190, 180, 202),
+      .fTextFaint = skia::colorSetARGB(255, 170, 160, 182),
+      .fAccent = palette::kAccent,
+      .fOnAccent = skia::colorSetARGB(255, 20, 16, 26),
+      .fCorner = 6.0f,
+      .fFontSize = 13.0f,
+      .fRowHeight = 32.0f,
+      .fPaddingX = 10.0f,
+  };
+
+  inline static const widgets::Theme kListTheme = {
+      .fSurface = skia::colorSetARGB(248, 30, 24, 40),
+      .fSurfaceHover = skia::colorSetARGB(255, 52, 42, 66),
+      .fSurfaceActive = skia::colorSetARGB(255, 56, 46, 72),
+      .fText = skia::kWhite,
+      .fLabel = skia::kWhite,
+      .fTextDim = skia::colorSetARGB(255, 190, 180, 202),
+      .fTextFaint = skia::colorSetARGB(255, 170, 160, 182),
+      .fAccent = palette::kAccent,
+      .fOnAccent = skia::colorSetARGB(255, 20, 16, 26),
+      .fCorner = 6.0f,
+      .fFontSize = 13.0f,
+      .fRowHeight = 26.0f,
+      .fPaddingX = 10.0f,
+  };
+
+  [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
+    auto root = scene::make<filter_detail::Root>({});
+    root->fDismiss = [this] {
+      if (!fSortOpen && !fGroupOpen) {
+        return false;
+      }
+      fSortOpen = false;
+      fGroupOpen = false;
+      this->syncOpenState();
+      return true;
+    };
+
+    auto *panel = root->add<filter_detail::Wedge>({});
+
+    auto *search = panel->add<nodes::Clickable>(
+        {.roles = {scene::role<filter_style::Search>}}, [] {});
+    fSearchBox = search->add<widgets::TextBox>(
+        {.fill = true}, "type to search");
+    fSearchBox->fTheme = kControlTheme;
+    fSearchBox->fTrailingInset = 92.0f;
+    fCount = search->add<nodes::Text>(
+        {.roles = {scene::role<filter_style::Count>}}, "0 sets", 13.0f,
+        skia::kWhite);
+
+    auto *range = panel->add<scene::Drawable>(
+        {.roles = {scene::role<filter_style::Range>}});
+    range->add<nodes::Text>(
+        {.roles = {scene::role<filter_style::RangeLabel>}}, "Difficulty",
+        12.0f, skia::kWhite);
+    fRangeValue = range->add<nodes::Text>(
+        {.roles = {scene::role<filter_style::RangeValue>}}, "0.0 - ∞", 12.0f,
+        palette::kAccent2);
+    fRangeSlider = range->add<widgets::RangeSlider>(
+        {.roles = {scene::role<filter_style::RangeSlider>}});
+    fRangeSlider->fTheme = kControlTheme;
+    fRangeSlider->fMinSpan = 0.1f / kDiffRangeCap;
+    fRangeSlider->fOnSet = [this](float low, float high) {
+      fDiffRangeMin = low * kDiffRangeCap;
+      fDiffRangeMax = high * kDiffRangeCap;
+      fDirty = true;
+    };
+
+    auto *dropdowns = panel->add<nodes::FillFlow>(
+        {.roles = {scene::role<filter_style::Dropdowns>}},
+        nodes::FillFlow::Direction::kHorizontal, 10.0f, 0.0f);
+    dropdowns->fWrap = false;
+    fSortButton = dropdowns->add<widgets::DropdownButton>(
+        {.roles = {scene::role<filter_style::Dropdown>}}, "Sort", "Title");
+    fGroupButton = dropdowns->add<widgets::DropdownButton>(
+        {.roles = {scene::role<filter_style::Dropdown>}}, "Group",
+        "No grouping");
+    fSortButton->fTheme = kControlTheme;
+    fGroupButton->fTheme = kControlTheme;
+    fSortButton->fOnOpen = [this] {
+      fSortOpen = !fSortOpen;
+      fGroupOpen = false;
+      this->syncOpenState();
+    };
+    fGroupButton->fOnOpen = [this] {
+      fGroupOpen = !fGroupOpen;
+      fSortOpen = false;
+      this->syncOpenState();
+    };
+
+    fSortList = root->add<widgets::DropdownList>(
+        {.roles = {scene::role<filter_style::List>}});
+    fGroupList = root->add<widgets::DropdownList>(
+        {.roles = {scene::role<filter_style::List>}});
+    fSortList->fFollow = fSortButton;
+    fGroupList->fFollow = fGroupButton;
+    fSortList->fTheme = kListTheme;
+    fGroupList->fTheme = kListTheme;
+    fSortList->fRowHeight = 24.0f;
+    fGroupList->fRowHeight = 24.0f;
+    fSortList->setOptions(this->options(kSortNames));
+    fGroupList->setOptions(this->options(kGroupNames));
+    fSortList->fOnChoose = [this](int index) {
+      fSortMode = static_cast<SortMode>(index);
+      fSortOpen = false;
+      fDirty = true;
+      this->syncOpenState();
+    };
+    fGroupList->fOnChoose = [this](int index) {
+      fGroupMode = static_cast<GroupMode>(index);
+      fGroupOpen = false;
+      fDirty = true;
+      this->syncOpenState();
+    };
+    this->syncOpenState();
+    root->setStyleSheet<FilterTheme>();
+    return root;
+  }
+
+  template <std::size_t N>
+  [[nodiscard]] static std::vector<std::string>
+  options(const std::array<const char *, N> &names) {
+    std::vector<std::string> out;
+    out.reserve(N);
+    for (const char *name : names) {
+      out.emplace_back(name);
+    }
+    return out;
+  }
+
+  void syncOpenState() {
+    if (fSortButton != nullptr) {
+      fSortButton->setOpen(fSortOpen);
+    }
+    if (fGroupButton != nullptr) {
+      fGroupButton->setOpen(fGroupOpen);
+    }
+    if (fSortList != nullptr) {
+      fSortList->setExpanded(fSortOpen);
+    }
+    if (fGroupList != nullptr) {
+      fGroupList->setExpanded(fGroupOpen);
+    }
+  }
+
   std::string fFilterText;
   SortMode fSortMode = SortMode::kTitle;
   GroupMode fGroupMode = GroupMode::kNone;
   float fDiffRangeMin = 0.0f;
   float fDiffRangeMax = kDiffRangeCap;
-  int fDraggingRange = -1;
   bool fSortOpen = false;
   bool fGroupOpen = false;
   bool fDirty = true;
-  float fMouseX = 0.0f;
-  float fMouseY = 0.0f;
-  skia::SkRect fSearchBoxRect = skia::SkRect::MakeEmpty();
-  skia::SkRect fSortRect = skia::SkRect::MakeEmpty();
-  skia::SkRect fGroupRect = skia::SkRect::MakeEmpty();
-  skia::SkRect fRangeRect = skia::SkRect::MakeEmpty();
-  std::vector<skia::SkRect> fSortItemRects;
-  std::vector<skia::SkRect> fGroupItemRects;
+
+  std::unique_ptr<scene::Drawable> fScene;
+  widgets::TextBox *fSearchBox = nullptr;
+  nodes::Text *fCount = nullptr;
+  nodes::Text *fRangeValue = nullptr;
+  widgets::RangeSlider *fRangeSlider = nullptr;
+  widgets::DropdownButton *fSortButton = nullptr;
+  widgets::DropdownButton *fGroupButton = nullptr;
+  widgets::DropdownList *fSortList = nullptr;
+  widgets::DropdownList *fGroupList = nullptr;
 };
 
 } // namespace client

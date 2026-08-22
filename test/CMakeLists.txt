@@ -25,11 +25,14 @@ include(../cmake/tools.cmake)
 include(../cmake/CPM.cmake)
 
 CPMAddPackage(
-  NAME googletest
-  GITHUB_REPOSITORY google/googletest
-  GIT_TAG release-1.12.1
-  VERSION 1.12.1
-  OPTIONS "INSTALL_GTEST OFF" "gtest_force_shared_crt"
+  NAME googletest_modules
+  GITHUB_REPOSITORY j4niwzis/googletest-modules
+  GIT_TAG 706920f1d230f0316d271466d8885735be3e300e
+  OPTIONS
+    "BUILD_GMOCK OFF"
+    "gtest_build_modules ON"
+    "gtest_build_tests OFF"
+    "gtest_build_samples OFF"
 )
 CPMAddPackage("gh:TheLartians/Format.cmake@1.7.3")
 
@@ -48,22 +51,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 endif()
 add_executable(${PROJECT_NAME} ${sources})
 
-target_include_directories(${PROJECT_NAME} PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
 target_link_libraries(${PROJECT_NAME} gtest gtest_main osucpp::osucpp)
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_SCAN_FOR_MODULES ON)
-
-# gtest module
-set(gtest_module_source ${CMAKE_CURRENT_SOURCE_DIR}/src/gtest.cc)
-if(EXISTS ${gtest_module_source})
-  target_sources(${PROJECT_NAME} PRIVATE
-    FILE_SET CXX_MODULES
-    FILES ${gtest_module_source}
-  )
-endif()
+set_target_properties(${PROJECT_NAME} PROPERTIES
+  CXX_STANDARD 23
+  CXX_EXTENSIONS OFF
+  CXX_SCAN_FOR_MODULES ON)
 
 # ---- Add osucppTests ----
 

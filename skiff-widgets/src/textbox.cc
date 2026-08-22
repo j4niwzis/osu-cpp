@@ -33,6 +33,10 @@ public:
   Theme fTheme = theme();
   std::string fPlaceholder;
   bool fSearchIcon = false; // the magnifier lazer puts in its search boxes
+  // Space owned by a trailing status, clear button or other overlay. The
+  // TextBox still owns clipping and caret placement; its parent need not
+  // reproduce either calculation to put something at the right edge.
+  float fTrailingInset = 0.0f;
 
   void setText(std::string text) {
     if (text == fText) {
@@ -81,7 +85,8 @@ protected:
     }
 
     const float baseline = p.middleBaseline(fBounds, fTheme.fFontSize);
-    const float room = fBounds.fRight - textLeft - fTheme.fPaddingX;
+    const float room = std::max(
+        0.0f, fBounds.fRight - textLeft - fTheme.fPaddingX - fTrailingInset);
     if (fText.empty()) {
       p.text(fPlaceholder, textLeft, baseline, fTheme.fFontSize,
              fTheme.fTextFaint, alpha * 0.6f);
