@@ -17,7 +17,11 @@ namespace widgets = skiff::widgets;
 TEST(RangeSlider, OwnsHandleSelectionDragAndMinimumSpan) {
   auto root = scene::make<scene::Drawable>({.fill = true});
   auto *slider = root->add<widgets::RangeSlider>(
-      {.x = 10.0f, .y = 13.0f, .width = 100.0f, .height = 14.0f});
+      {.x = 10.0f,
+       .y = 13.0f,
+       .width = 100.0f,
+       .height = 14.0f,
+       .relativeSize = scene::Axes::kNone});
   slider->fMinSpan = 0.1f;
   int changes = 0;
   slider->fOnSet = [&changes](float, float) { ++changes; };

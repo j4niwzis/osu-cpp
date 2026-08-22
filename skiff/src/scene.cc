@@ -602,7 +602,10 @@ public:
     if (spec.height) {
       fHeight = *spec.height;
     }
-    Axes relative = spec.relativeSize.value_or(Axes::kNone);
+    // Start with the constructor's mode when the spec only adds a fill axis,
+    // but honour an explicitly supplied kNone: fixed-size callers need to be
+    // able to clear a widget's full-width default.
+    Axes relative = spec.relativeSize.value_or(fRelativeSizeAxes);
     if (spec.fill || spec.fillX) {
       relative = axesUnion(relative, Axes::kX);
       fWidth = 1.0f;
@@ -611,7 +614,7 @@ public:
       relative = axesUnion(relative, Axes::kY);
       fHeight = 1.0f;
     }
-    if (relative != Axes::kNone) {
+    if (spec.relativeSize || spec.fill || spec.fillX || spec.fillY) {
       fRelativeSizeAxes = relative;
     }
     if (spec.autoSize) {
