@@ -48,6 +48,7 @@ import client.framestate;
 import client.fonts;
 import client.judgements;
 import client.windowruntime;
+import client.playresult;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -264,14 +265,7 @@ private:
   int fPlayingSet = -1;
   int fPlayingDiff = -1;
 
-  struct ResultData {
-    osu::ScoreState fScore{};
-    double fMean = 0.0;
-    double fUr = 0.0;
-    std::string fGrade = "F";
-    double fPp = 0.0;
-  };
-  ResultData fResult;
+  client::PlayResult fResult;
 
   // ---- UI animation state ----
   double fStateEnterWall = 0.0;
@@ -2216,7 +2210,10 @@ private:
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
     c.fHitLighting = fSettings.flag("hitlighting");
-    c.fPp = fPlay.fEngine ? this->pricePlay(fPlay.fEngine->score()) : 0.0;
+    c.fPp = fPlay.fEngine
+                ? client::pricePlay(fPlay.fPlayAttributes,
+                                    fPlay.fEngine->score())
+                : 0.0;
     c.fShowProfile = fShowProfile;
     return c;
   }
@@ -2303,7 +2300,8 @@ private:
   }
 
   void finishPlay() {
-    this->captureResult();
+    fResult =
+        client::captureResult(*fPlay.fEngine, fPlay.fPlayAttributes);
     this->printResult();
     // Replays are kept by default (the setting can turn it off), so a good
     // run is never lost because the flag was not passed.
@@ -2314,48 +2312,6 @@ private:
     this->switchState(State::kResults);
     fView.invalidate();
     this->setCursorVisible(true);
-  }
-
-  // What a score is worth against the map being played. Pure arithmetic over
-  // the counts, so it is cheap enough to ask on every frame.
-  [[nodiscard]] double pricePlay(const osu::ScoreState &sc) const {
-    osu::ScoreInput input;
-    input.fGreat = sc.fGreat;
-    input.fOk = sc.fGood;
-    input.fMeh = sc.fMeh;
-    input.fMiss = sc.fMiss;
-    input.fMaxCombo = sc.fMaxCombo;
-    input.fSliderTailHits = sc.fTailHit;
-    input.fLargeTickHits = sc.fLargeTickHit;
-    return osu::performanceRanked(fPlay.fPlayAttributes, input).fTotal;
-  }
-
-  void captureResult() {
-    fResult.fScore = fPlay.fEngine->score();
-    double sum = 0.0;
-    double sumSq = 0.0;
-    std::size_t n = 0;
-    for (const double d : fPlay.fEngine->tapDeltas()) {
-      sum += d;
-      sumSq += d * d;
-      ++n;
-    }
-    if (n > 0) {
-      const double mean = sum / static_cast<double>(n);
-      fResult.fMean = mean;
-      fResult.fUr =
-          10.0 * std::sqrt(std::max(0.0, sumSq / static_cast<double>(n) -
-                                             mean * mean));
-    } else {
-      fResult.fMean = 0.0;
-      fResult.fUr = 0.0;
-    }
-    fResult.fGrade = osu::gradeString(osu::computeGrade(fResult.fScore));
-
-    // What the play is worth. The counts come straight off the score: the
-    // tails and ticks are the ones a performance calculation asks for, and
-    // this client has them because it judges them.
-    fResult.fPp = this->pricePlay(fResult.fScore);
   }
 
   // With an absolute pointer the desktop cursor stops at the screen edge, so
@@ -4266,103 +4222,29 @@ private:
   }
 
   void printResult() {
-    std::println("{}", fPlay.fEngine->score());
-
-    // Timing statistics over actual taps (circles + slider heads). Judgement
-    // events are the wrong series for this: sliders/spinners are finalized at
-    // their end and carry the object duration as delta, which is why the
-    // first version of these stats produced impossible URs.
-    double sum = 0.0;
-    double sumSq = 0.0;
-    std::size_t n = 0;
-    for (const double d : fPlay.fEngine->tapDeltas()) {
-      sum += d;
-      sumSq += d * d;
-      ++n;
-    }
-    if (n > 0) {
-      const double mean = sum / static_cast<double>(n);
-      const double variance =
-          std::max(0.0, sumSq / static_cast<double>(n) - mean * mean);
-      const double ur = 10.0 * std::sqrt(variance);
-      std::println("hit error: {:+.1f} ms avg, UR {:.0f}", mean, ur);
-    }
-    const auto dropped = fWindowRuntime.droppedInput();
-    if (dropped > 0) {
-      std::println("warning: {} input events dropped", dropped);
+    if (fPlay.fEngine) {
+      client::printResult(*fPlay.fEngine, fWindowRuntime.droppedInput());
     }
   }
 
   [[nodiscard]] std::string beatmapMd5() const {
-    for (const auto &info : fSet.fBeatmaps) {
-      if (info.fFilename == fBeatmapFilename) {
-        return info.fMd5;
-      }
-    }
-    return {};
+    return client::beatmapMd5(fSet, fBeatmapFilename);
   }
 
   void saveReplay() {
-    if (fPlay.fRecordedEvents.empty() || !fPlay.fMap)
+    if (!fPlay.fMap || !fPlay.fEngine || !fReplayPath.empty()) {
       return;
-    if (!fReplayPath.empty()) {
-      return; // watching a replay must not write it back out as a new one
     }
-    auto now = std::chrono::system_clock::now();
-    auto t = std::chrono::system_clock::to_time_t(now);
-    std::ostringstream nameStream;
-    nameStream << std::put_time(std::localtime(&t), "%Y%m%d_%H%M%S");
-    // The .osr header has fields for the score, so it goes in there rather
-    // than into a sidecar: the file stays a plain, original-format replay.
-    const auto &sc = fPlay.fEngine->score();
-    osu::ReplayScore score;
-    score.f300 = static_cast<std::uint16_t>(sc.fGreat);
-    score.f100 = static_cast<std::uint16_t>(sc.fGood);
-    score.f50 = static_cast<std::uint16_t>(sc.fMeh);
-    score.fMiss = static_cast<std::uint16_t>(sc.fMiss);
-    score.fTotalScore = static_cast<std::int32_t>(sc.fScore);
-    score.fMaxCombo = static_cast<std::uint16_t>(sc.fMaxCombo);
-    score.fPerfect = sc.fMiss == 0 && sc.fGood == 0 && sc.fMeh == 0;
-    // The counts the four legacy shorts have no room for, written into the
-    // block osu! reads at the end of the file so an import gets this score's
-    // real accuracy and rank instead of a legacy approximation of them.
-    const auto maxStats = fPlay.fEngine->maximumStatistics();
-    osu::ReplayStatistics stats;
-    stats.fPresent = true;
-    stats.fGreat = sc.fGreat;
-    stats.fOk = sc.fGood;
-    stats.fMeh = sc.fMeh;
-    stats.fMiss = sc.fMiss;
-    stats.fLargeTickHit = sc.fLargeTickHit;
-    stats.fLargeTickMiss = sc.fLargeTickMiss;
-    stats.fSliderTailHit = sc.fTailHit;
-    stats.fSmallBonus = sc.fSmallBonus;
-    stats.fLargeBonus = sc.fLargeBonus;
-    stats.fMaxGreat = maxStats.fGreat;
-    stats.fMaxLargeTick = maxStats.fLargeTick;
-    stats.fMaxSliderTail = maxStats.fSliderTail;
-    stats.fMaxSmallBonus = maxStats.fSmallBonus;
-    stats.fMaxLargeBonus = maxStats.fLargeBonus;
-    stats.fRank = osu::gradeString(osu::computeGrade(sc));
-    stats.fTotalScore = static_cast<std::int64_t>(sc.fScore);
-    auto replayBytes =
-        osu::encodeReplay(fPlay.fRecordedEvents, this->beatmapMd5(), "Player",
-                          fMods, score, stats);
-    std::error_code ec;
-    std::filesystem::create_directories(fReplayDir, ec);
-    const std::filesystem::path outPath =
-        fReplayDir /
-        (fPlay.fMap->fMeta.fVersion + "_" + nameStream.str() + ".osr");
-    std::ofstream out(outPath, std::ios::binary);
-    for (std::uint8_t b : replayBytes)
-      out.put(static_cast<char>(b));
-    out.close();
-    fPlay.fLastSavedReplay = outPath;
-    // Which rules this was played under lives here, in the index, and not in
-    // the .osr: every field of that file belongs to osu!'s format.
+    const auto saved =
+        client::saveReplay(fPlay.fRecordedEvents, *fPlay.fMap, *fPlay.fEngine,
+                           this->beatmapMd5(), fMods, fReplayDir);
+    if (!saved) {
+      return;
+    }
+    fPlay.fLastSavedReplay = *saved;
     fReplayBrowser.add(
-        outPath, fPlay.fEngine->rules() == osu::RuleSet::kLegacyClient ? 1 : 0);
-    std::println(std::cerr, "[replay] saved {}", outPath.string());
+        *saved, fPlay.fEngine->rules() == osu::RuleSet::kLegacyClient ? 1 : 0);
+    std::println(std::cerr, "[replay] saved {}", saved->string());
   }
 
   [[nodiscard]] osu::Vec2 toPlayfield(float sx, float sy) const {
