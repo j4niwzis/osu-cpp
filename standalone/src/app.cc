@@ -3241,7 +3241,7 @@ private:
                        [this] { this->syncMapsDir(); });
     fReplayDir = fMapsDir.parent_path() / "replays";
     std::filesystem::create_directories(fThumbDir, ec);
-    fLibrary.cache().load(fMapsDir / "metadata-cache.json");
+    fLibrary.loadCache();
     fReplayIndex.load(fMapsDir.parent_path() / "replay-index.json");
     fReplayIndex.refresh(fReplayDir);
     fSettings.load(fMapsDir.parent_path() / "settings.json");
@@ -3456,29 +3456,9 @@ private:
   }
 
   bool importFrom(const std::filesystem::path &src) {
-    std::error_code ec;
-    if (!std::filesystem::exists(src, ec)) {
-      std::println(std::cerr, "[import] no such file: {}", src.string());
+    if (!fLibrary.importArchive(src, client::parseQuery(fFilter.text()))) {
       return false;
     }
-    const auto ext = detail::lowerExtension(src);
-    if (ext != ".osz" && ext != ".zip") {
-      std::println(std::cerr, "[import] not a beatmap archive: {}",
-                   src.string());
-      return false;
-    }
-    const auto dest = fMapsDir / src.filename();
-    std::filesystem::copy_file(
-        src, dest, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-      std::println(std::cerr, "[import] copy failed: {}", ec.message());
-      return false;
-    }
-    if (!fLibrary.addOszToLibrary(dest, true,
-                                  client::parseQuery(fFilter.text()))) {
-      return false;
-    }
-    std::println(std::cerr, "[import] added {}", dest.filename().string());
     if (fState == State::kMainMenu) {
       this->switchState(State::kSongSelect);
     }
@@ -5315,31 +5295,15 @@ private:
       return;
     }
     const auto index = static_cast<std::size_t>(fLibrary.selSet());
-    const auto path = fLibrary.sets()[index].fPath;
-    const std::string name =
-        path.empty() ? std::string{} : path.filename().string();
-
     // The track playing under the menu belongs to this set; let it go before
     // the file does.
     this->stopMenuMusic();
     fMenuMusicForSet = -1;
     fBackgroundForSet = -1;
 
-    fLibrary.sets().erase(fLibrary.sets().begin() +
-                          static_cast<std::ptrdiff_t>(index));
-    if (!path.empty()) {
-      std::error_code ec;
-      std::filesystem::remove(path, ec);
-      std::filesystem::remove(fLibrary.thumbPathFor(path), ec);
-      fLibrary.cache().remove(name);
-      fLibrary.cache().save();
-    }
+    const std::string name = fLibrary.deleteSet(index);
     this->resortLibrary();
     fLibrary.rebuildVisible(client::parseQuery(fFilter.text()));
-    fLibrary.selSet() =
-        std::clamp(fLibrary.selSet(), 0,
-                   std::max(0, static_cast<int>(fLibrary.sets().size()) - 1));
-    fLibrary.selDiff() = 0;
     fPlayingSet = -1;
     fPlayingDiff = -1;
     this->notify(name.empty() ? "beatmap deleted"

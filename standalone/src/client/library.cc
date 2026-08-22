@@ -51,7 +51,7 @@ public:
     fSync = std::move(sync);
   }
 
-  [[nodiscard]] MapCache &cache() { return fCache; }
+  void loadCache() { fCache.load(fMapsDir / "metadata-cache.json"); }
   [[nodiscard]] const std::vector<Entry> &sets() const { return fSets; }
   [[nodiscard]] std::vector<Entry> &sets() { return fSets; }
   [[nodiscard]] const std::vector<int> &visible() const { return fVisible; }
@@ -674,6 +674,66 @@ public:
       }
     }
     return true;
+  }
+
+  // Copy an archive chosen outside the maps directory into the library and
+  // index it. App owns the picker; Library owns where beatmaps are stored.
+  bool importArchive(const std::filesystem::path &src,
+                     const Criteria &criteria) {
+    std::error_code ec;
+    if (!std::filesystem::exists(src, ec)) {
+      std::println(std::cerr, "[import] no such file: {}", src.string());
+      return false;
+    }
+    const std::string ext = toLowerAscii(src.extension().string());
+    if (ext != ".osz" && ext != ".zip") {
+      std::println(std::cerr, "[import] not a beatmap archive: {}",
+                   src.string());
+      return false;
+    }
+    const auto dest = fMapsDir / src.filename();
+    std::filesystem::copy_file(
+        src, dest, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      std::println(std::cerr, "[import] copy failed: {}", ec.message());
+      return false;
+    }
+    if (!this->addOszToLibrary(dest, true, criteria)) {
+      return false;
+    }
+    std::println(std::cerr, "[import] added {}", dest.filename().string());
+    return true;
+  }
+
+  // Remove an entry, its archive, thumbnail and cache record as one library
+  // operation. Returns the filename used by the UI notification.
+  [[nodiscard]] std::string deleteSet(std::size_t index) {
+    if (index >= fSets.size()) {
+      return {};
+    }
+    const auto path = fSets[index].fPath;
+    const std::string name =
+        path.empty() ? std::string{} : path.filename().string();
+    fSets.erase(fSets.begin() + static_cast<std::ptrdiff_t>(index));
+    fLoadedOrder.clear(); // deletion shifted every following index
+    for (std::size_t i = 0; i < fSets.size(); ++i) {
+      if (fSets[i].fLoaded) {
+        fLoadedOrder.push_back(static_cast<int>(i));
+      }
+    }
+    if (!path.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+      std::filesystem::remove(this->thumbPathFor(path), ec);
+      fCache.remove(name);
+      fCache.save();
+      fSync();
+    }
+    fSelSet = std::clamp(
+        fSelSet, 0, std::max(0, static_cast<int>(fSets.size()) - 1));
+    fSelDiff = 0;
+    fDirty = true;
+    return name;
   }
 
   void sortLibraryByStars() {
