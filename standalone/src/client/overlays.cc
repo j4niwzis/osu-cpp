@@ -170,11 +170,8 @@ public:
   };
 
   [[nodiscard]] bool open() const noexcept { return fOpen; }
-  [[nodiscard]] bool animating() const noexcept {
-    return fScene && fScene->animatingTree();
-  }
   [[nodiscard]] bool visible() const noexcept {
-    return fOpen || (fScene && fScene->fAlpha > 0.002f);
+    return fOpen || (fScene && fScene->alpha() > 0.002f);
   }
   void toggle() noexcept { fOpen = !fOpen; }
   void close() noexcept { fOpen = false; }
@@ -188,7 +185,7 @@ public:
     if (!fScene || shape != fShape) {
       fShape = shape;
       fScene = this->build(entries);
-      fScene->fAlpha = 0.0f;
+      fScene->setAlpha(0.0f);
       fTargetOpen = !fOpen;
       rebuilt = true;
     }
@@ -213,8 +210,8 @@ public:
     }
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
   // Applies the click to the mod set; the root swallows misses while open.
@@ -241,8 +238,8 @@ private:
     auto *main = root->add<nodes::FillFlow>(
         {.roles = {scene::role<mod_select_style::Main>}},
         nodes::FillFlow::Direction::kVertical);
-    main->fWrap = false;
-    main->fCrossAlign = scene::Align::kMiddle;
+    main->setWrap(false);
+    main->setCrossAlign(scene::Align::kMiddle);
     main->add<scene::Drawable>(
         {.roles = {scene::role<mod_select_style::Spacer>}});
 
@@ -250,13 +247,13 @@ private:
         {.roles = {scene::role<mod_select_style::Columns>}});
     columns->setColumns({nodes::Grid::Track::fraction(),
                          nodes::Grid::Track::fraction()});
-    columns->fColumnGap = 40.0f;
+    columns->setGaps(0.0f, 40.0f);
     for (int column = 0; column < static_cast<int>(kModColumns.size());
          ++column) {
       auto *flow = columns->add<nodes::FillFlow>(
           {.roles = {scene::role<mod_select_style::Column>}},
           nodes::FillFlow::Direction::kVertical, 0.0f, 12.0f);
-      flow->fWrap = false;
+      flow->setWrap(false);
       flow->add<nodes::Text>(
           {.roles = {scene::role<mod_select_style::Header>}},
           kModColumns[static_cast<std::size_t>(column)], 16.0f,
@@ -538,8 +535,8 @@ public:
     }
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
   // Returns true when "render" was pressed.
@@ -603,24 +600,24 @@ private:
     auto *presets = panel->add<nodes::FillFlow>(
         {.roles = {scene::role<export_dialog_style::Presets>}},
         nodes::FillFlow::Direction::kHorizontal, 8.0f, 0.0f);
-    presets->fWrap = false;
+    presets->setWrap(false);
     for (std::size_t i = 0; i < kVideoPresets.size(); ++i) {
       auto *button = presets->add<skiff::widgets::Button>(
           {.roles = {scene::role<export_dialog_style::Preset>}},
           kVideoPresets[i].fLabel, [this, i] { this->choosePreset(i); });
-      button->fTheme = kPresetTheme;
+      button->setTheme(kPresetTheme);
       fPresetButtons.push_back(button);
     }
 
     fCustomBox = panel->add<skiff::widgets::TextBox>(
         {.roles = {scene::role<export_dialog_style::Custom>}},
         "or type a size, like 2560x1440");
-    fCustomBox->fTheme = kCustomTheme;
+    fCustomBox->setTheme(kCustomTheme);
 
     auto *render = panel->add<skiff::widgets::Button>(
         {.roles = {scene::role<export_dialog_style::Render>}}, "render",
         [this] { fRenderRequested = true; });
-    render->fTheme = kPresetTheme;
+    render->setTheme(kPresetTheme);
     render->setPrimary(true);
 
     fStatusText = panel->add<nodes::Text>(

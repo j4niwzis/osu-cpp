@@ -27,7 +27,10 @@ public:
     fHeight = fTheme.fRowHeight;
   }
 
-  Theme fTheme = theme();
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
 
   void setPrimary(bool primary) {
     if (primary == fPrimary) {
@@ -73,8 +76,18 @@ public:
   }
 
 protected:
+  Theme fTheme = theme();
   bool acceptsInput() const override { return fEnabled; }
   bool hoverChangesAppearance() const override { return fEnabled; }
+  bool focusChangesAppearance() const override { return fEnabled; }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kButton;
+    out.fLabel = fLabel;
+    out.fDisabled = !fEnabled;
+    return out;
+  }
 
   bool onClick(float x, float y) override {
     if (!fEnabled || !fBounds.contains(x, y)) {
@@ -92,8 +105,9 @@ protected:
       return;
     }
     const skiff::paint::Painter p(canvas, *font);
+    const bool hot = (fHovered || this->focused()) && fEnabled;
     skia::SkColor fill = fPrimary ? fTheme.fAccent : fTheme.fSurface;
-    if (fHovered && fEnabled) {
+    if (hot) {
       fill =
           fPrimary ? skiff::paint::lighten(fill, 0.12f) : fTheme.fSurfaceHover;
     }
@@ -101,13 +115,12 @@ protected:
                   alpha * (fEnabled ? 1.0f : 0.5f));
     if (fOutlined && !fPrimary) {
       p.strokeRounded(fBounds, fTheme.fCorner, fTheme.fAccent,
-                      fHovered && fEnabled ? 3.0f : 2.0f,
+                      hot ? 3.0f : 2.0f,
                       alpha * (fEnabled ? 1.0f : 0.5f));
     }
     const skia::SkColor text =
         fPrimary ? fTheme.fOnAccent
-                 : (fOutlined && fHovered && fEnabled ? fTheme.fAccent
-                                                       : fTheme.fText);
+                 : (fOutlined && hot ? fTheme.fAccent : fTheme.fText);
     p.textCentredIn(fBounds, fLabel, fTheme.fFontSize,
                     text,
                     alpha * (fEnabled ? 1.0f : 0.5f), true);

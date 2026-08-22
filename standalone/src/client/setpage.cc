@@ -508,16 +508,10 @@ public:
     fScene->setHover(ctx.fMouseX, ctx.fMouseY);
   }
 
-  // The region this page repainted, for a caller that clips frames to
-  // damage. Empty means nothing moved.
-  // Whether a transform in the tree is still running: eased values say so
-  // themselves, transforms have to be asked.
-  [[nodiscard]] bool animating() const {
-    return fOpen && fScene && fScene->animatingTree();
-  }
-
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    auto result = fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
+    result.fWantsAnotherFrame = fOpen && result.fWantsAnotherFrame;
+    return result;
   }
 
   [[nodiscard]] Result click(float x, float y) {
@@ -590,7 +584,7 @@ private:
     auto *badges = left->add<nodes::FillFlow>(
         {.roles = {scene::role<style::Badges>}},
         nodes::FillFlow::Direction::kHorizontal, 4.0f, 0.0f);
-    badges->fWrap = false;
+    badges->setWrap(false);
     const auto badge = [&](const char *label, skia::SkColor colour) {
       badges
           ->add<nodes::Box>({.roles = {scene::role<style::Badge>}},
@@ -622,8 +616,8 @@ private:
     auto *mapper = left->add<nodes::FillFlow>(
         {.roles = {scene::role<style::Mapper>}},
         nodes::FillFlow::Direction::kHorizontal);
-    mapper->fWrap = false;
-    mapper->fCrossAlign = scene::Align::kMiddle;
+    mapper->setWrap(false);
+    mapper->setCrossAlign(scene::Align::kMiddle);
     mapper->add<nodes::Text>({.roles = {scene::role<style::MapperLabel>}},
                              "mapped by ", 14.0f, listing::kContent2, false);
     mapper->add<nodes::Text>({.roles = {scene::role<style::MapperName>}},
@@ -643,7 +637,7 @@ private:
     auto row = scene::make<nodes::FillFlow>(
         {.roles = {scene::role<style::Buttons>}},
         nodes::FillFlow::Direction::kHorizontal, kButtonsSpacing, 0.0f);
-    row->fWrap = false;
+    row->setWrap(false);
 
     auto *play = row->add<nodes::Clickable>(
         {.roles = {scene::role<style::PlayButton>}},
@@ -743,7 +737,7 @@ private:
     auto *columns = section->add<nodes::FillFlow>(
         {.roles = {scene::role<style::InfoColumns>}},
         nodes::FillFlow::Direction::kHorizontal, 30.0f, 0.0f);
-    columns->fWrap = false;
+    columns->setWrap(false);
     auto *left = columns->add<nodes::FillFlow>(
         {.roles = {scene::role<style::InfoLeft>}},
         nodes::FillFlow::Direction::kVertical, 0.0f, 8.0f);
@@ -754,8 +748,8 @@ private:
       auto *heading = left->add<nodes::FillFlow>(
           {.roles = {scene::role<style::Heading>}},
           nodes::FillFlow::Direction::kHorizontal, 8.0f, 0.0f);
-      heading->fWrap = false;
-      heading->fCrossAlign = scene::Align::kMiddle;
+      heading->setWrap(false);
+      heading->setCrossAlign(scene::Align::kMiddle);
       heading
           ->add<nodes::Box>({.roles = {scene::role<style::StarBadge>}},
                             client::palette::starColor(diff.fStars))
@@ -805,7 +799,7 @@ private:
       auto *row = left->add<nodes::FillFlow>(
           {.roles = {scene::role<style::MetadataRow>}},
           nodes::FillFlow::Direction::kHorizontal);
-      row->fWrap = false;
+      row->setWrap(false);
       row->add<nodes::Text>({.roles = {scene::role<style::MetadataLabel>}},
                             label, 11.0f, listing::kContent2, false)
           ->setMaxWidth(110.0f);

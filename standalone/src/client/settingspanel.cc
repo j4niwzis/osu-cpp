@@ -223,11 +223,12 @@ public:
   void touched() noexcept { fTouched = true; }
 
   // Everything that decides what the panel looks like, with nothing drawn.
-  // Returns what has to be repainted for it: empty means it is on screen and
-  // showing exactly what it showed last frame, which is what an open settings
-  // panel does almost all of the time.
-  [[nodiscard]] skia::SkRect update(skia::SkFont &font, Settings &settings,
-                                    const Frame &frame) {
+  // Returns both what changed and whether time can change it again. Keeping
+  // those answers together prevents the caller from consuming the damage and
+  // accidentally forgetting the continuation frame of a slide or scroll.
+  [[nodiscard]] scene::FrameResult update(skia::SkFont &font,
+                                          Settings &settings,
+                                          const Frame &frame) {
     fFont = &font;
     fSettings = &settings;
     fMouseX = frame.fMouseX;
@@ -244,7 +245,7 @@ public:
       fScene.reset();
       fTouched = false;
       fScrollTicks = 0.0f;
-      return skia::SkRect::MakeEmpty();
+      return {};
     }
 
     if (!fScene || fBuiltFor != settings.defs().size()) {
@@ -258,24 +259,24 @@ public:
     // still moving".
     const float shellX = -(kSidebarWidth + kPanelWidth) * (1.0f - fSlide);
     const float fade = std::min(1.0f, fSlide * 2.0f);
-    if (fShell != nullptr && fShell->fX != shellX) {
-      fShell->fX = shellX;
-      fShell->invalidateLayout();
+    if (fShell != nullptr && fShell->x() != shellX) {
+      fShell->setPosition(shellX, fShell->y());
     }
     if (fDim != nullptr) {
-      fDim->fAlpha = fade * (110.0f / 255.0f);
+      fDim->setAlpha(fade * (110.0f / 255.0f));
     }
     if (fShell != nullptr) {
-      fShell->fAlpha = fade;
+      fShell->setAlpha(fade);
     }
 
     // A viewport of nothing after the last row. Not decoration: clicking the
     // last section in the sidebar scrolls its header to the top, and it can
     // only get there if there is a screen's worth of column behind it.
     const float tail = sh - kContentTop;
-    if (fColumn != nullptr && fColumn->fPadding.fBottom != tail) {
-      fColumn->fPadding.fBottom = tail;
-      fColumn->invalidateLayout();
+    if (fColumn != nullptr && fColumn->padding().fBottom != tail) {
+      scene::Margin padding = fColumn->padding();
+      padding.fBottom = tail;
+      fColumn->setPadding(padding);
     }
 
     const skia::SkRect screen = skia::SkRect::MakeWH(sw, sh);
@@ -290,7 +291,8 @@ public:
     this->trackViewportSection();
     fScene->setHover(frame.fMouseX, frame.fMouseY);
 
-    skia::SkRect damage = fScene->takeDamage();
+    scene::FrameResult result = fScene->finishFrame();
+    skia::SkRect &damage = result.fDamage;
     // A column in motion moves everything in it, by fractions of a pixel per
     // frame, and a clip is a whole number of them: the edges of what moved
     // and the edges of what is repainted stop agreeing, which is a seam at
@@ -299,17 +301,19 @@ public:
     if (fScroll != nullptr && fScroll->moving()) {
       fTouched = true;
     }
-    if (this->animating(frame.fNowMs) || fTouched) {
+    const bool sliding = this->animating(frame.fNowMs);
+    result.fWantsAnotherFrame = result.fWantsAnotherFrame || sliding;
+    if (sliding || fTouched) {
       // Sliding dims the whole screen with it, which is one of the few honest
       // whole-screen repaints there are.
-      damage = this->animating(frame.fNowMs) ? screen : damage;
-      if (fTouched && !this->animating(frame.fNowMs)) {
+      damage = sliding ? screen : damage;
+      if (fTouched && !sliding) {
         damage.join(skia::SkRect::MakeXYWH(
             std::max(0.0f, shellX), 0.0f, kSidebarWidth + kPanelWidth, sh));
       }
     }
     fTouched = false;
-    return damage;
+    return result;
   }
 
   void render(skia::SkCanvas *canvas) {
@@ -488,12 +492,12 @@ private:
       case SettingKind::kSlider:
         fSlider = this->add<widgets::SliderBar>(
             {.roles = {scene::role<settings_style::Slider>}});
-        fSlider->fTheme = kControlTheme;
+        fSlider->setTheme(kControlTheme);
         break;
       case SettingKind::kToggle:
         fToggle = this->add<widgets::Toggle>(
             {.roles = {scene::role<settings_style::Toggle>}});
-        fToggle->fTheme = kControlTheme;
+        fToggle->setTheme(kControlTheme);
         fToggle->fOnToggle = [owner, index] {
           owner->fAction = {Action::kToggle, index, 0};
         };
@@ -679,7 +683,7 @@ private:
       fTheme = kListTheme;
       // Hung off the control that opens it: fFollow makes the anchor and the
       // relative width come from that node instead of from the parent.
-      fVisible = false;
+      this->setVisible(false);
       fOnChoose = [owner](int option) {
         owner->fAction = {Action::kChoiceSet,
                           static_cast<std::size_t>(owner->fOpenChoice), option};
@@ -689,8 +693,8 @@ private:
     // Set when a row opens or closes, not per frame: layout() reads fFollow
     // before measure() runs, so it cannot be decided in measure().
     void openFor(const RowNode *row) {
-      fFollow = row != nullptr ? row->control() : nullptr;
-      fVisible = fFollow != nullptr;
+      this->setFollow(row != nullptr ? row->control() : nullptr);
+      this->setVisible(fFollow != nullptr);
     }
 
   protected:
@@ -825,11 +829,11 @@ private:
     if (fScroll == nullptr) {
       return;
     }
-    const float top = fScroll->fBounds.fTop + 80.0f;
+    const float top = fScroll->bounds().fTop + 80.0f;
     int active = 0;
     for (std::size_t i = 0; i < fSectionHeaders.size(); ++i) {
       const scene::Drawable *header = fSectionHeaders[i];
-      if (header != nullptr && header->fBounds.fTop <= top) {
+      if (header != nullptr && header->bounds().fTop <= top) {
         active = static_cast<int>(i);
       }
     }
@@ -844,8 +848,8 @@ private:
     }
     // Where the header is, in the column's own coordinates: the column has
     // already been scrolled by however much, so its own top moved with it.
-    const float offset = fSectionHeaders[section]->fBounds.fTop -
-                         fColumn->fBounds.fTop;
+    const float offset = fSectionHeaders[section]->bounds().fTop -
+                         fColumn->bounds().fTop;
     fScroll->scrollTo(std::max(0.0f, offset));
     fTouched = true;
   }

@@ -31,10 +31,12 @@ public:
     fHeight = 6.0f;
   }
 
-  Theme fTheme = theme();
-  float fKnobRadius = 7.0f;
-  float fTrackRadius = 3.0f;
   std::function<void(float)> fOnSet;
+
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
 
   void setFraction(float fraction) {
     const float clamped = std::clamp(fraction, 0.0f, 1.0f);
@@ -55,6 +57,10 @@ public:
   }
 
 protected:
+  Theme fTheme = theme();
+  float fKnobRadius = 7.0f;
+  float fTrackRadius = 3.0f;
+
   // The knob stands proud of the track, so the box that takes a click is
   // taller than the box that is drawn.
   [[nodiscard]] skia::SkRect reach() const {
@@ -82,6 +88,37 @@ protected:
   // whatever is behind it.
   bool acceptsInput() const override { return static_cast<bool>(fOnSet); }
 
+  void onPointerEvent(skiff::scene::PointerEvent &event) override {
+    if (event.fPhase != skiff::scene::EventPhase::kTarget || !fOnSet) {
+      return;
+    }
+    if (event.fAction == skiff::scene::PointerAction::kDown &&
+        this->reach().contains(event.fX, event.fY)) {
+      fDragging = true;
+      fOnSet(this->fractionAt(event.fX));
+      event.capturePointer();
+      event.requestFocus();
+      event.handle();
+    } else if (event.fAction == skiff::scene::PointerAction::kMove &&
+               fDragging) {
+      fOnSet(this->fractionAt(event.fX));
+      event.handle();
+    } else if ((event.fAction == skiff::scene::PointerAction::kUp ||
+                event.fAction == skiff::scene::PointerAction::kCancel) &&
+               fDragging) {
+      fDragging = false;
+      event.releasePointer();
+      event.handle();
+    }
+  }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kSlider;
+    out.fValue = std::format("{:.3f}", fFraction);
+    return out;
+  }
+
   bool onClick(float x, float y) override {
     if (!fOnSet || !this->reach().contains(x, y)) {
       return false;
@@ -94,6 +131,7 @@ protected:
 
 private:
   float fFraction = 0.0f;
+  bool fDragging = false;
 };
 
 // A track with two independently draggable ends. Values stay normalised so
@@ -111,12 +149,19 @@ public:
     fHeight = 14.0f;
   }
 
-  Theme fTheme = theme();
-  float fKnobRadius = 7.0f;
-  float fTrackHeight = 6.0f;
-  float fTrackRadius = 3.0f;
-  float fMinSpan = 0.0f;
   std::function<void(float, float)> fOnSet;
+
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
+  void setMinimumSpan(float span) {
+    span = std::clamp(span, 0.0f, 1.0f);
+    if (span != fMinSpan) {
+      fMinSpan = span;
+      this->setRange(fLow, fHigh);
+    }
+  }
 
   void setRange(float low, float high) {
     low = std::clamp(low, 0.0f, 1.0f);
@@ -164,6 +209,12 @@ public:
   void endDrag() noexcept { fDragging = -1; }
 
 protected:
+  Theme fTheme = theme();
+  float fKnobRadius = 7.0f;
+  float fTrackHeight = 6.0f;
+  float fTrackRadius = 3.0f;
+  float fMinSpan = 0.0f;
+
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
     skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr) {
@@ -188,6 +239,36 @@ protected:
   }
 
   bool acceptsInput() const override { return static_cast<bool>(fOnSet); }
+
+  void onPointerEvent(skiff::scene::PointerEvent &event) override {
+    if (event.fPhase != skiff::scene::EventPhase::kTarget || !fOnSet) {
+      return;
+    }
+    if (event.fAction == skiff::scene::PointerAction::kDown &&
+        fBounds.contains(event.fX, event.fY)) {
+      this->onClick(event.fX, event.fY);
+      event.capturePointer();
+      event.requestFocus();
+      event.handle();
+    } else if (event.fAction == skiff::scene::PointerAction::kMove &&
+               this->dragging()) {
+      this->dragTo(event.fX);
+      event.handle();
+    } else if ((event.fAction == skiff::scene::PointerAction::kUp ||
+                event.fAction == skiff::scene::PointerAction::kCancel) &&
+               this->dragging()) {
+      this->endDrag();
+      event.releasePointer();
+      event.handle();
+    }
+  }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kSlider;
+    out.fValue = std::format("{:.3f}–{:.3f}", fLow, fHigh);
+    return out;
+  }
 
   bool onClick(float x, float) override {
     if (!fOnSet) {
@@ -228,16 +309,28 @@ public:
     fHeight = 22.0f;
   }
 
+  std::function<void()> fOnToggle;
+
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
+
+  void setOn(bool on) {
+    if (on == fOn) {
+      return;
+    }
+    fOn = on;
+    this->markDamaged();
+  }
+  [[nodiscard]] bool on() const noexcept { return fOn; }
+
+protected:
   Theme fTheme = theme();
   float fKnobRadius = 8.0f;
   float fKnobInset = 11.0f;
   float fTauMs = 60.0f;
-  std::function<void()> fOnToggle;
 
-  void setOn(bool on) { fOn = on; }
-  [[nodiscard]] bool on() const noexcept { return fOn; }
-
-protected:
   bool settling() const override {
     return std::abs(fKnob - (fOn ? 1.0f : 0.0f)) > skiff::scene::kSettled;
   }
@@ -266,6 +359,13 @@ protected:
   }
 
   bool acceptsInput() const override { return static_cast<bool>(fOnToggle); }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kToggle;
+    out.fValue = fOn ? "on" : "off";
+    return out;
+  }
 
   bool onClick(float, float) override {
     if (!fOnToggle) {

@@ -9,7 +9,7 @@ It is four modules:
 | --- | --- |
 | `skia` | a module wrapper over the Skia headers, so nothing downstream needs a global module fragment |
 | `skiff.paint` | a font stack with fallbacks behind a primary face, a canvas painter, easing curves |
-| `skiff.scene` | the graph: anchors and origins, relative and automatic sizing, typed stylesheets, transforms with easing, hit testing, and damage tracking that yields a dirty rectangle per frame |
+| `skiff.scene` | the graph: layout, typed stylesheets, transforms, routed input, accessibility semantics, and frame scheduling |
 | `skiff.nodes` | the drawables: `Box`, `Text`, `Sprite`, `FillFlow`, `ScrollContainer`, `CachedContainer`, `Clickable` |
 
 ## Writing a tree
@@ -90,6 +90,25 @@ pointer. Custom node types that need type selectors derive from
 `scene::TypedDrawable<MyNode>`. Nodes that only need role selectors may keep
 deriving from `scene::Drawable`.
 
+Layout inputs are protected after construction. Runtime code reads them with
+`bounds()`, `x()`, `y()`, `alpha()` and the other const accessors, and changes
+them through invalidating methods such as `setPosition()`, `setSize()`,
+`setVisible()` and `setAlpha()`. Only container subclasses can use the raw
+child-arrangement hooks while they are already inside a layout pass.
+
+## Input and accessibility
+
+`dispatchPointer()`, `dispatchKey()` and `dispatchText()` route capture,
+target and bubble phases through one path. Pointer capture and keyboard focus
+are owned by the scene root; Tab traverses focusable nodes, and text events
+keep provisional IME composition separate from committed UTF-8. `InputRouter`
+stacks scene roots and makes modal ownership explicit, including hiding the
+covered layers from `semantics()`.
+
+Widgets expose a platform-neutral semantics tree with roles, labels, values,
+selection, disabled and focus state. A window-system accessibility adapter can
+consume that tree without teaching scene nodes about a specific OS API.
+
 ## Building and testing
 
 `skiff` is the library project, `test` is a standalone test consumer, and
@@ -109,15 +128,19 @@ instead of the adjacent source tree.
 
 ## Redrawing
 
-Changing anything marks the node damaged, and the damage walks up to the root
-through the parents' bounds and masking. A frame asks the root for one
-rectangle:
+Changing anything through the runtime API marks the node damaged, and the
+damage walks up to the root through the parents' bounds and masking. Damage
+and continuation are consumed together so a caller cannot forget to schedule
+the rest of an animation:
 
 ```cpp
 label->setText("734pp");           // no-op if the string did not change
 root->updateTree(nowMs);
 root->layoutIfNeeded(screen);
-const skia::SkRect dirty = root->takeDamage();
+const scene::FrameResult frame = root->finishFrame();
+repaint(frame.fDamage);
+if (frame.fWantsAnotherFrame)
+  requestFrame();
 ```
 
 That rectangle is the point of the whole thing: the framework it is shaped

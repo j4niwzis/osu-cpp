@@ -256,8 +256,8 @@ public:
     }
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
   // Returns true when the control consumed the click.
@@ -332,8 +332,8 @@ private:
         {.roles = {scene::role<filter_style::Search>}}, [] {});
     fSearchBox = search->add<widgets::TextBox>(
         {.fill = true}, "type to search");
-    fSearchBox->fTheme = kControlTheme;
-    fSearchBox->fTrailingInset = 92.0f;
+    fSearchBox->setTheme(kControlTheme);
+    fSearchBox->setTrailingInset(92.0f);
     fCount = search->add<nodes::Text>(
         {.roles = {scene::role<filter_style::Count>}}, "0 sets", 13.0f,
         skia::kWhite);
@@ -348,8 +348,8 @@ private:
         palette::kAccent2);
     fRangeSlider = range->add<widgets::RangeSlider>(
         {.roles = {scene::role<filter_style::RangeSlider>}});
-    fRangeSlider->fTheme = kControlTheme;
-    fRangeSlider->fMinSpan = 0.1f / kDiffRangeCap;
+    fRangeSlider->setTheme(kControlTheme);
+    fRangeSlider->setMinimumSpan(0.1f / kDiffRangeCap);
     fRangeSlider->fOnSet = [this](float low, float high) {
       fDiffRangeMin = low * kDiffRangeCap;
       fDiffRangeMax = high * kDiffRangeCap;
@@ -359,14 +359,14 @@ private:
     auto *dropdowns = panel->add<nodes::FillFlow>(
         {.roles = {scene::role<filter_style::Dropdowns>}},
         nodes::FillFlow::Direction::kHorizontal, 10.0f, 0.0f);
-    dropdowns->fWrap = false;
+    dropdowns->setWrap(false);
     fSortButton = dropdowns->add<widgets::DropdownButton>(
         {.roles = {scene::role<filter_style::Dropdown>}}, "Sort", "Title");
     fGroupButton = dropdowns->add<widgets::DropdownButton>(
         {.roles = {scene::role<filter_style::Dropdown>}}, "Group",
         "No grouping");
-    fSortButton->fTheme = kControlTheme;
-    fGroupButton->fTheme = kControlTheme;
+    fSortButton->setTheme(kControlTheme);
+    fGroupButton->setTheme(kControlTheme);
     fSortButton->fOnOpen = [this] {
       fSortOpen = !fSortOpen;
       fGroupOpen = false;
@@ -382,12 +382,12 @@ private:
         {.roles = {scene::role<filter_style::List>}});
     fGroupList = root->add<widgets::DropdownList>(
         {.roles = {scene::role<filter_style::List>}});
-    fSortList->fFollow = fSortButton;
-    fGroupList->fFollow = fGroupButton;
-    fSortList->fTheme = kListTheme;
-    fGroupList->fTheme = kListTheme;
-    fSortList->fRowHeight = 24.0f;
-    fGroupList->fRowHeight = 24.0f;
+    fSortList->setFollow(fSortButton);
+    fGroupList->setFollow(fGroupButton);
+    fSortList->setTheme(kListTheme);
+    fGroupList->setTheme(kListTheme);
+    fSortList->setRowHeight(24.0f);
+    fGroupList->setRowHeight(24.0f);
     fSortList->setOptions(this->options(kSortNames));
     fGroupList->setOptions(this->options(kGroupNames));
     fSortList->fOnChoose = [this](int index) {

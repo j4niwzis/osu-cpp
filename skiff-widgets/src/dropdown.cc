@@ -28,14 +28,12 @@ public:
     fHeight = 30.0f;
   }
 
-  Theme fTheme = theme();
-  float fLabelWidth = 52.0f;
-  float fChevronWidth = 22.0f;
-  float fStrokeWidth = 1.0f;
-  float fOpenStrokeWidth = 2.0f;
-  float fLabelAlpha = 0.5f;
-  float fValueAlpha = 0.95f;
   std::function<void()> fOnOpen;
+
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
 
   void setLabel(std::string label) {
     if (label == fLabel) {
@@ -63,6 +61,14 @@ public:
   [[nodiscard]] bool open() const noexcept { return fOpen; }
 
 protected:
+  Theme fTheme = theme();
+  float fLabelWidth = 52.0f;
+  float fChevronWidth = 22.0f;
+  float fStrokeWidth = 1.0f;
+  float fOpenStrokeWidth = 2.0f;
+  float fLabelAlpha = 0.5f;
+  float fValueAlpha = 0.95f;
+
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
     skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr) {
@@ -70,7 +76,8 @@ protected:
     }
     const skiff::paint::Painter p(canvas, *font);
     p.fillRounded(fBounds, fTheme.fCorner,
-                  fHovered || fOpen ? fTheme.fSurfaceHover : fTheme.fSurface,
+                  fHovered || this->focused() || fOpen ? fTheme.fSurfaceHover
+                                                       : fTheme.fSurface,
                   alpha);
     p.strokeRounded(fBounds, fTheme.fCorner,
                     fOpen ? fTheme.fAccent : fTheme.fSurfaceActive,
@@ -108,6 +115,18 @@ protected:
   bool acceptsInput() const override { return static_cast<bool>(fOnOpen); }
   bool hoverChangesAppearance() const override {
     return static_cast<bool>(fOnOpen) && !fOpen;
+  }
+  bool focusChangesAppearance() const override {
+    return static_cast<bool>(fOnOpen) && !fOpen;
+  }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kButton;
+    out.fLabel = fLabel;
+    out.fValue = fValue;
+    out.fHint = fOpen ? "expanded" : "collapsed";
+    return out;
   }
 
   bool onClick(float, float) override {
@@ -152,14 +171,37 @@ public:
     fWrap = false;
   }
 
-  Theme fTheme = theme();
-  float fRowHeight = 24.0f;
-  float fFontSize = 13.0f;
-  float fPlateRadius = 6.0f;
-  float fRowRadius = 6.0f;
-  float fTextInset = 12.0f;
-  float fDimAlpha = 0.8f; // an option that is not the current one
   std::function<void(int)> fOnChoose;
+
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
+  void setRowHeight(float height) {
+    if (height != fRowHeight) {
+      fRowHeight = height;
+      this->invalidateLayout();
+    }
+  }
+  void setFontSize(float size) {
+    if (size != fFontSize) {
+      fFontSize = size;
+      this->markDamaged();
+    }
+  }
+  void setRadii(float plate, float row) {
+    if (plate != fPlateRadius || row != fRowRadius) {
+      fPlateRadius = plate;
+      fRowRadius = row;
+      this->markDamaged();
+    }
+  }
+  void setTextInset(float inset) {
+    if (inset != fTextInset) {
+      fTextInset = inset;
+      this->markDamaged();
+    }
+  }
 
   void setOptions(std::vector<std::string> options) {
     if (options == fLabels) {
@@ -186,16 +228,21 @@ public:
     if (expanded == fVisible) {
       return;
     }
-    // Hiding must repaint the old plate before visibility makes it stop
-    // contributing damage. Showing needs layout because hidden flow children
-    // were deliberately skipped.
-    this->markDamaged();
-    fVisible = expanded;
-    this->invalidateLayout();
+    // setVisible damages the old plate before hiding it and invalidates the
+    // flow because hidden children were deliberately skipped.
+    this->setVisible(expanded);
   }
   [[nodiscard]] bool expanded() const noexcept { return fVisible; }
 
 protected:
+  Theme fTheme = theme();
+  float fRowHeight = 24.0f;
+  float fFontSize = 13.0f;
+  float fPlateRadius = 6.0f;
+  float fRowRadius = 6.0f;
+  float fTextInset = 12.0f;
+  float fDimAlpha = 0.8f; // an option that is not the current one
+
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
     skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr || fLabels.empty()) {
@@ -213,8 +260,15 @@ protected:
   // it must not receive what was aimed at the gap. Rows are children, so they
   // are asked first and this is only reached by the gaps.
   bool acceptsInput() const override { return fVisible; }
+  bool focusable() const override { return false; }
   bool hoverChangesAppearance() const override { return false; }
   bool onClick(float, float) override { return true; }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kList;
+    return out;
+  }
 
 private:
   static constexpr float kRowGap = 2.0f;
@@ -249,6 +303,16 @@ private:
     bool acceptsInput() const override { return true; }
     bool hoverChangesAppearance() const override {
       return static_cast<int>(fIndex) != fList->fCurrent;
+    }
+
+    [[nodiscard]] skiff::scene::Semantics semantics() const override {
+      skiff::scene::Semantics out;
+      out.fRole = skiff::scene::SemanticRole::kListItem;
+      if (fIndex < fList->fLabels.size()) {
+        out.fLabel = fList->fLabels[fIndex];
+      }
+      out.fSelected = static_cast<int>(fIndex) == fList->fCurrent;
+      return out;
     }
 
     bool onClick(float, float) override {

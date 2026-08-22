@@ -122,18 +122,11 @@ public:
                          this->maxScroll());
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
-  }
-
-  // The scroll and the pop are both eased, and neither announces itself as
-  // damage until it has moved something.
-  [[nodiscard]] bool animating() const {
-    // approach() snaps exactly to its target, so equality is the point at
-    // which no future update can change the picture. Using a looser epsilon
-    // here stopped scheduling frames while approach() still had distance to
-    // cover; the safety frame or next mouse event then made it move again.
-    return fScrollAnim != fTarget || fPop < 1.0f;
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    auto result = fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
+    result.fWantsAnotherFrame =
+        result.fWantsAnotherFrame || fScrollAnim != fTarget || fPop < 1.0f;
+    return result;
   }
 
   [[nodiscard]] float scrollOffset() const noexcept { return fScrollAnim; }

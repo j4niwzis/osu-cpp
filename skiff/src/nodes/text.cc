@@ -63,8 +63,12 @@ public:
   // Set to clip instead of auto-sizing: the text is cut to the given width.
   // fMaxWidth is the drawable's own, so a Spec can set it as well.
   void setMaxWidth(float width) {
+    if (width == fMaxWidth) {
+      return;
+    }
     fMaxWidth = width;
     fMeasuredSize = -1.0f;
+    this->invalidateLayout();
   }
 
   // Broken across lines at spaces instead of running past the width. The

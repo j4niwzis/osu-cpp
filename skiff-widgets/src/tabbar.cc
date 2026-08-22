@@ -35,21 +35,38 @@ public:
     fWidth = 1.0f;
   }
 
-  Theme fTheme = theme();
-
-  std::string fHeader;       // caption in the column to the left, may be empty
-  float fHeaderWidth = 0.0f; // where the tabs start, header or no header
-  float fFontSize = 13.0f;
-  float fLineHeight = 16.0f;
-  float fBaseline = -1.0f; // within a line box; below zero means fFontSize
-  float fSpacing = 10.0f;
-  float fSelectedExtra = 0.0f; // room after the selected tab for a decoration
-  bool fWrap = true;
   std::function<void(int)> fOnSelect;
   // Which tabs read as selected. Left unset it is the one whose value is
   // selected(); a bar where several can be on at once -- a set of toggles
   // laid out as tabs -- answers for itself instead.
   std::function<bool(int)> fIsActive;
+
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
+  void setHeader(std::string header, float width) {
+    if (header != fHeader || width != fHeaderWidth) {
+      fHeader = std::move(header);
+      fHeaderWidth = width;
+      this->invalidateLayout();
+    }
+  }
+  void setMetrics(float fontSize, float lineHeight, float spacing) {
+    if (fontSize != fFontSize || lineHeight != fLineHeight ||
+        spacing != fSpacing) {
+      fFontSize = fontSize;
+      fLineHeight = lineHeight;
+      fSpacing = spacing;
+      this->invalidateLayout();
+    }
+  }
+  void setWrap(bool wrap) {
+    if (wrap != fWrap) {
+      fWrap = wrap;
+      this->invalidateLayout();
+    }
+  }
 
   void setTabs(std::vector<Tab> tabs) {
     if (tabs.size() == fTabs.size() &&
@@ -87,6 +104,16 @@ public:
   }
 
 protected:
+  Theme fTheme = theme();
+  std::string fHeader;       // caption in the column to the left, may be empty
+  float fHeaderWidth = 0.0f; // where the tabs start, header or no header
+  float fFontSize = 13.0f;
+  float fLineHeight = 16.0f;
+  float fBaseline = -1.0f; // within a line box; below zero means fFontSize
+  float fSpacing = 10.0f;
+  float fSelectedExtra = 0.0f; // room after the selected tab for a decoration
+  bool fWrap = true;
+
   // The height depends on how the tabs wrap, which depends on the width this
   // has been given, so it is worked out here where that is known and the
   // positions are kept for drawing and for hit testing.
@@ -153,6 +180,48 @@ protected:
   }
 
   bool acceptsInput() const override { return true; }
+
+  void onKeyEvent(skiff::scene::KeyEvent &event) override {
+    if (event.fPhase != skiff::scene::EventPhase::kTarget ||
+        !event.fPressed || fTabs.empty()) {
+      return;
+    }
+    const auto selected = std::ranges::find_if(
+        fTabs, [this](const Tab &tab) { return tab.fValue == fSelected; });
+    std::size_t index = selected == fTabs.end()
+                            ? 0
+                            : static_cast<std::size_t>(selected - fTabs.begin());
+    if (event.fKey == skiff::scene::Key::kLeft ||
+        event.fKey == skiff::scene::Key::kUp) {
+      index = (index + fTabs.size() - 1) % fTabs.size();
+    } else if (event.fKey == skiff::scene::Key::kRight ||
+               event.fKey == skiff::scene::Key::kDown) {
+      index = (index + 1) % fTabs.size();
+    } else if (event.fKey == skiff::scene::Key::kHome) {
+      index = 0;
+    } else if (event.fKey == skiff::scene::Key::kEnd) {
+      index = fTabs.size() - 1;
+    } else {
+      Drawable::onKeyEvent(event);
+      return;
+    }
+    if (fOnSelect) {
+      fOnSelect(fTabs[index].fValue);
+    }
+    event.handle();
+  }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kTab;
+    out.fLabel = fHeader;
+    const auto selected = std::ranges::find_if(
+        fTabs, [this](const Tab &tab) { return tab.fValue == fSelected; });
+    if (selected != fTabs.end()) {
+      out.fValue = selected->fLabel;
+    }
+    return out;
+  }
 
   bool onClick(float x, float y) override {
     const int hit = this->tabAt(x, y);

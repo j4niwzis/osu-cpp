@@ -19,11 +19,17 @@ export namespace skiff::nodes {
 // Anything that reacts to a click. The action is what the screen wants done.
 class Clickable : public skiff::scene::TypedDrawable<Clickable> {
 public:
-  explicit Clickable(std::function<void()> action)
-      : fAction(std::move(action)) {}
+  explicit Clickable(std::function<void()> action, std::string label = {})
+      : fAction(std::move(action)), fLabel(std::move(label)) {}
 
 protected:
   bool acceptsInput() const override { return true; }
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kButton;
+    out.fLabel = fLabel;
+    return out;
+  }
   bool onClick(float, float) override {
     if (fAction) {
       fAction();
@@ -33,6 +39,7 @@ protected:
 
 private:
   std::function<void()> fAction;
+  std::string fLabel;
 };
 
 } // namespace skiff::nodes

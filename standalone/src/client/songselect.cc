@@ -231,8 +231,8 @@ public:
     }
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
 private:
@@ -311,7 +311,7 @@ private:
     fDifficulties = plate->add<skiff::nodes::FillFlow>(
         {.roles = {skiff::scene::role<style::Difficulties>}},
         skiff::nodes::FillFlow::Direction::kHorizontal, 0.0f, 0.0f);
-    fDifficulties->fWrap = false;
+    fDifficulties->setWrap(false);
     root->setStyleSheet<InfoWedgeTheme>();
     return root;
   }
@@ -395,8 +395,8 @@ public:
     }
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
   [[nodiscard]] Action click(float x, float y) {
@@ -459,7 +459,7 @@ private:
           this->setOptionsOpen(false);
           fPending = action;
         });
-    button->fTheme = kButtonTheme;
+    button->setTheme(kButtonTheme);
     button->setAccent(accent);
     button->setOutlined(true);
     return button;
@@ -483,12 +483,12 @@ private:
           this->setOptionsOpen(false);
           fPending = Action::kBack;
         });
-    back->fTheme = kButtonTheme;
+    back->setTheme(kButtonTheme);
 
     auto *actions = bar->add<skiff::nodes::FillFlow>(
         {.roles = {skiff::scene::role<style::Actions>}},
         skiff::nodes::FillFlow::Direction::kHorizontal, 10.0f, 0.0f);
-    actions->fWrap = false;
+    actions->setWrap(false);
     this->addButton(*actions, "mods", palette::kAccent, Action::kMods);
     this->addButton(*actions, "random",
                     skia::colorSetARGB(255, 102, 204, 255), Action::kRandom);
@@ -498,19 +498,18 @@ private:
           this->setOptionsOpen(!this->optionsOpen());
           fPending = Action::kTaken;
         });
-    fOptionsButton->fTheme = kButtonTheme;
+    fOptionsButton->setTheme(kButtonTheme);
     fOptionsButton->setAccent(skia::colorSetARGB(255, 170, 102, 255));
     fOptionsButton->setOutlined(true);
 
     fOptions = root->add<skiff::widgets::DropdownList>(
         {.roles = {skiff::scene::role<style::Options>}});
-    fOptions->fTheme = kOptionsTheme;
-    fOptions->fRowHeight = 38.0f;
-    fOptions->fFontSize = 14.0f;
-    fOptions->fPlateRadius = 10.0f;
-    fOptions->fRowRadius = 8.0f;
-    fOptions->fTextInset = 14.0f;
-    fOptions->fFollow = fOptionsButton;
+    fOptions->setTheme(kOptionsTheme);
+    fOptions->setRowHeight(38.0f);
+    fOptions->setFontSize(14.0f);
+    fOptions->setRadii(10.0f, 8.0f);
+    fOptions->setTextInset(14.0f);
+    fOptions->setFollow(fOptionsButton);
     fOptions->setOptions({"import .osz", "browse beatmaps", "replays",
                           "delete beatmap", "settings"});
     fOptions->setCurrent(-1);

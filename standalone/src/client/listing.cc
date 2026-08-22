@@ -480,7 +480,7 @@ public:
     // it ended up, and on the frame a tree is built there is no answer yet.
     if (fSearchBox != nullptr) {
       fSearchBox->setText(fFilters.fQuery);
-      fTextBoxBounds = fSearchBox->fBounds;
+      fTextBoxBounds = fSearchBox->bounds();
       fCaretLive = skia::SkRect::Intersects(fTextBoxBounds, screen);
       fSearchBox->tickCaret(ctx.fNowMs, fCaretLive);
     }
@@ -499,20 +499,14 @@ public:
     return fPending;
   }
 
-  // What this screen repainted, for a caller that clips frames to damage.
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    auto result = fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
+    result.fWantsAnotherFrame = result.fWantsAnotherFrame || fTicking;
+    return result;
   }
 
   [[nodiscard]] bool textBoxHit(float x, float y) const {
     return fTextBoxBounds.contains(x, y);
-  }
-
-  // Whether anything in the tree is still moving. Eased values announce
-  // themselves through paint::approach; transforms do not, so they are
-  // asked directly.
-  [[nodiscard]] bool animating() const {
-    return fTicking || (fScene && fScene->animatingTree());
   }
 
   // When the picture changes next without anybody touching it: the caret is
@@ -1229,8 +1223,8 @@ private:
     // BeatmapSearchTextBox: OsuTextBox is 40 high with a 5px corner radius.
     fSearchBox = panelColumn->add<widgets::TextBox>(
         {.roles = {scene::role<style::SearchBox>}}, "type in keywords...");
-    fSearchBox->fSearchIcon = true;
-    fSearchBox->fTheme = kTextBoxTheme;
+    fSearchBox->setSearchIcon(true);
+    fSearchBox->setTheme(kTextBoxTheme);
 
     // The filter rows, indented 10 and spaced 5, in lazer's order.
     auto rows = scene::make<nodes::FillFlow>(
@@ -1244,12 +1238,9 @@ private:
                                std::span<const char *const> labels, Kind kind) {
       auto *row = rows->add<widgets::TabBar>(
           {.roles = {scene::role<style::FilterRow>}});
-      row->fTheme = kTabTheme;
-      row->fHeader = header;
-      row->fHeaderWidth = kRowLabelWidth;
-      row->fFontSize = kFilterFontSize;
-      row->fLineHeight = kFilterLineHeight;
-      row->fSpacing = kTabSpacing;
+      row->setTheme(kTabTheme);
+      row->setHeader(header, kRowLabelWidth);
+      row->setMetrics(kFilterFontSize, kFilterLineHeight, kTabSpacing);
       std::vector<widgets::TabBar::Tab> tabs;
       for (std::size_t i = 0; i < labels.size(); ++i) {
         tabs.push_back({labels[i], static_cast<int>(i)});
@@ -1286,7 +1277,7 @@ private:
           {.roles = {scene::role<style::Cards>}},
           nodes::FillFlow::Direction::kHorizontal);
       grid->setSpacing(kCardSpacing, kCardSpacing);
-      grid->fCentreRows = true;
+      grid->setCentreRows(true);
       for (const int idx : fVisible) {
         auto card = scene::make<CardNode>({}, this, idx);
         fCards.emplace_back(idx, card.get());

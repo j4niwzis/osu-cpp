@@ -45,19 +45,20 @@ public:
     }
   };
 
-  // Empty means one track taking everything, which is what a single row or a
-  // single column of children is.
-  std::vector<Track> fRows;
-  std::vector<Track> fColumns;
-  float fRowGap = 0.0f;
-  float fColumnGap = 0.0f;
-
   void setRows(std::vector<Track> rows) {
     fRows = std::move(rows);
     this->invalidateLayout();
   }
   void setColumns(std::vector<Track> columns) {
     fColumns = std::move(columns);
+    this->invalidateLayout();
+  }
+  void setGaps(float row, float column) {
+    if (row == fRowGap && column == fColumnGap) {
+      return;
+    }
+    fRowGap = row;
+    fColumnGap = column;
     this->invalidateLayout();
   }
 
@@ -81,6 +82,13 @@ public:
   }
 
 protected:
+  // Empty means one track taking everything, which is what a single row or a
+  // single column of children is.
+  std::vector<Track> fRows;
+  std::vector<Track> fColumns;
+  float fRowGap = 0.0f;
+  float fColumnGap = 0.0f;
+
   void layoutChildren() override {
     const skia::SkRect box = this->contentBox();
     const std::size_t columns = std::max<std::size_t>(1, fColumns.size());
@@ -92,7 +100,7 @@ protected:
     // What each child would be at its own size, which is what an automatic
     // track is sized by.
     for (auto &child : fChildren) {
-      if (child->fVisible) {
+      if (child->visible()) {
         child->layout(box);
       }
     }
@@ -104,7 +112,7 @@ protected:
 
     std::size_t index = 0;
     for (auto &child : fChildren) {
-      if (!child->fVisible) {
+      if (!child->visible()) {
         continue;
       }
       const std::size_t row = index / columns;
@@ -121,7 +129,7 @@ private:
   [[nodiscard]] std::size_t visibleCount() const {
     std::size_t count = 0;
     for (const auto &child : fChildren) {
-      count += child->fVisible ? 1 : 0;
+      count += child->visible() ? 1 : 0;
     }
     return count;
   }
@@ -133,7 +141,7 @@ private:
     float size = 0.0f;
     std::size_t index = 0;
     for (const auto &child : fChildren) {
-      if (!child->fVisible) {
+      if (!child->visible()) {
         continue;
       }
       const std::size_t at = horizontal ? index % columns : index / columns;
@@ -142,8 +150,8 @@ private:
         continue;
       }
       size = std::max(
-          size, horizontal ? child->fBounds.width() + child->fMargin.totalX()
-                           : child->fBounds.height() + child->fMargin.totalY());
+          size, horizontal ? child->bounds().width() + child->margin().totalX()
+                           : child->bounds().height() + child->margin().totalY());
     }
     return size;
   }

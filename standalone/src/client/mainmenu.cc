@@ -201,11 +201,6 @@ public:
     return index < fButtons.size() ? fButtons[index]->value(2) : 0.0f;
   }
 
-  // Anything in the menu still on its way somewhere.
-  [[nodiscard]] bool animating() const {
-    return fScene && fScene->animatingTree();
-  }
-
   void markButton(std::size_t index) {
     if (index < fButtons.size()) {
       fButtons[index]->markDamaged();
@@ -228,8 +223,8 @@ public:
     }
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
   // Hit testing walks the tree from the front, so the logo answers before the
@@ -563,14 +558,14 @@ public:
 
   // Marked while the screen updated. The rectangle is what to repaint; the
   // reason is non-null when the whole screen changed and says why.
-  [[nodiscard]] skia::SkRect takeDamage() { return fMenu.takeDamage(); }
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    auto result = fMenu.finishFrame();
+    result.fWantsAnotherFrame = result.fWantsAnotherFrame || fMoving;
+    return result;
+  }
   [[nodiscard]] const char *takeFullDamage() {
     return std::exchange(fFullDamage, nullptr);
   }
-
-  // Part-way to somewhere. The buttons say so through the tree; the dim and
-  // the logo are not nodes, so they say so through the flag.
-  [[nodiscard]] bool animating() const { return fMoving || fMenu.animating(); }
 
   // Returning to the menu always lands on the top level, never on a stale
   // submenu, and the logo re-eases into place from where it was.

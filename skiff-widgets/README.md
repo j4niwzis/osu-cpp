@@ -17,6 +17,12 @@ import skiff.widgets;           // or all of them
 | `skiff.widgets.button` | a labelled rectangle that calls something and lightens under the pointer |
 | `skiff.widgets.tabbar` | a row of text tabs, wrapping, with hover tracking and a hook for decorations |
 
+Controls use the scene router rather than screen-owned drag state: sliders
+capture the pointer, buttons and tabs activate from the keyboard, and text
+boxes receive committed UTF-8 and provisional IME composition. Their semantic
+roles, labels, values, selection and focus are available through the root's
+accessibility tree.
+
 ## Theming
 
 A widget draws itself from a `Theme` rather than from constants compiled into
@@ -24,8 +30,8 @@ it, so a screen restyles by handing one over:
 
 ```cpp
 auto *box = column->add<widgets::TextBox>({.fillX = true}, "search...");
-box->fTheme = kMyTheme;
-box->fSearchIcon = true;
+box->setTheme(kMyTheme);
+box->setSearchIcon(true);
 ```
 
 `theme()` is the process-wide default every widget copies at construction; set

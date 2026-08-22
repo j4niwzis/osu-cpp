@@ -21,7 +21,13 @@ class Sprite : public skiff::scene::TypedDrawable<Sprite> {
 public:
   explicit Sprite(skia::Sp<skia::SkImage> image) : fImage(std::move(image)) {}
 
-  void setImage(skia::Sp<skia::SkImage> image) { fImage = std::move(image); }
+  void setImage(skia::Sp<skia::SkImage> image) {
+    if (image.get() == fImage.get()) {
+      return;
+    }
+    fImage = std::move(image);
+    this->markDamaged();
+  }
 
 protected:
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {

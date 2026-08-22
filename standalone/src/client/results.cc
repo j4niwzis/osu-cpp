@@ -152,8 +152,8 @@ public:
     }
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
   [[nodiscard]] Action click(float x, float y) {
@@ -187,7 +187,7 @@ private:
     auto *button = row.add<skiff::widgets::Button>(
         {.roles = {skiff::scene::role<action_style::Button>}},
         std::move(label), [this, action] { fPressed = action; });
-    button->fTheme = kButtonTheme;
+    button->setTheme(kButtonTheme);
     button->setAccent(accent);
     button->setOutlined(true);
     return button;
@@ -203,7 +203,7 @@ private:
                        ? skiff::scene::role<action_style::Four>
                        : skiff::scene::role<action_style::Three>}},
         skiff::nodes::FillFlow::Direction::kHorizontal, 14.0f, 0.0f);
-    row->fWrap = false;
+    row->setWrap(false);
     this->addButton(*row, "retry", skia::colorSetARGB(255, 255, 204, 102),
                     Action::kRetry);
     this->addButton(*row, "back to song select", palette::kAccent2,

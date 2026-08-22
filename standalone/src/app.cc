@@ -207,6 +207,7 @@ private:
     bool fFullDamage = true;
     const char *fFullDamageReason = "start";
     bool fDamageDrives = false; // damage that is worth a frame of its own
+    bool fSceneWantsFrame = false; // retained trees own continuation requests
     std::vector<skia::SkIRect> fComputedClip; // what the frame would have used
     bool fComputedClipFull = true;
     std::vector<skia::SkIRect> fFrameClip;
@@ -1887,6 +1888,12 @@ private:
     fFrame.fDamage[best].join(area);
   }
 
+  void consumeFrame(skiff::scene::FrameResult result) {
+    this->damage(result.fDamage);
+    fFrame.fSceneWantsFrame =
+        fFrame.fSceneWantsFrame || result.fWantsAnotherFrame;
+  }
+
   // Clips the frame to what changed. Everything draws exactly as it would
   // have -- the screens repaint from state, so a clipped repaint of a region
   // is the same pixels -- only the work outside the clip is skipped.
@@ -2104,13 +2111,14 @@ private:
   // frame begins, so it is a reason to draw rather than a note about what to
   // repaint next time.
   void updateScreens() {
+    fFrame.fSceneWantsFrame = false;
     // The settings panel floats over whatever screen is up, and the screen
     // underneath has no idea it is there. It says what it repaints -- a
     // sidebar whose indicator is easing, an option list following the
     // pointer, the column while it scrolls -- and says nothing at all while
     // it is open and untouched, which is most of the time.
     if (fSettingsPanel.visible()) {
-      this->damage(
+      this->consumeFrame(
           fSettingsPanel.update(fFont, fSettings,
                                 {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
                                  fWin.fMouseY, wallMs(), fUiDt}));
@@ -2145,7 +2153,10 @@ private:
           fFont, entries, fMods,
           {fWin.fScreenW, fWin.fScreenH, fWin.fMouseX, fWin.fMouseY,
            wallMs()});
-      const skia::SkRect region = fModSelect.takeDamage();
+      const auto modFrame = fModSelect.finishFrame();
+      fFrame.fSceneWantsFrame =
+          fFrame.fSceneWantsFrame || modFrame.fWantsAnotherFrame;
+      const skia::SkRect region = modFrame.fDamage;
       if (region.width() >= static_cast<float>(fWin.fScreenW)) {
         this->damageAll("mod select fading");
       } else {
@@ -2170,7 +2181,15 @@ private:
     if (fExportDialog.open()) {
       fExportDialog.update(fFont, fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
                            fWin.fMouseY, wallMs());
-      this->damage(fExportDialog.takeDamage());
+      this->consumeFrame(fExportDialog.finishFrame());
+    }
+    if (fConfirmDelete && fConfirmScene) {
+      const skia::SkRect screen = skia::SkRect::MakeWH(
+          static_cast<float>(fWin.fScreenW), static_cast<float>(fWin.fScreenH));
+      fConfirmScene->updateTree(wallMs());
+      fConfirmScene->layoutIfNeeded(screen);
+      fConfirmScene->setHover(fWin.fMouseX, fWin.fMouseY);
+      this->consumeFrame(fConfirmScene->finishFrame());
     }
 
     // Overlays are drawn after the screen, over most of it, so appearance and
@@ -2184,8 +2203,6 @@ private:
     // mark what they change beneath it.
     if (overlay != fOverlayShown) {
       this->damageAll("overlay appeared or went away");
-    } else if (fSettingsPanel.animating(wallMs())) {
-      this->damageAll("overlay sliding");
     }
     fOverlayShown = overlay;
   }
@@ -2218,7 +2235,7 @@ private:
     // delete confirmation its tree. A frame drawn for one of them with
     // nothing marked repaints the whole window, which is what a pointer
     // resting inside any of them used to cost.
-    if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
+    if (fFrame.fSceneWantsFrame) {
       return false;
     }
     // A preview still being fetched has nothing on screen to show for it
@@ -2276,12 +2293,6 @@ private:
         (fSettings.flag("visualiser") || fSettings.flag("menutriangles"))) {
       return this->frameBecause("menu visualiser or triangles");
     }
-    // Something in the menu is part-way to where it is going: the buttons say
-    // so through the tree, and the dim and the logo through the flag, since
-    // neither of those is a node.
-    if (fState == State::kMainMenu && fMainMenu.animating()) {
-      return this->frameBecause("menu still easing");
-    }
     if (fState == State::kPaused && fSettings.flag("pausetriangles")) {
       return this->frameBecause(
           "pause triangles"); // triangles drift inside the buttons, as lazer's
@@ -2303,22 +2314,11 @@ private:
     if (fReplayListOpen && fPanels.scrolling()) {
       return this->frameBecause("replay strip gliding");
     }
-    // Overlays are drawn while they transition in and out, and after that only
-    // when something touches them -- which arrives as an event.
-    if (fSettingsPanel.animating(wallMs()) || fModSelect.animating()) {
-      return this->frameBecause("an overlay transitioning");
-    }
-    if (fConfirmDelete && fConfirmScene && fConfirmScene->animatingTree()) {
-      return this->frameBecause("the confirm dialog");
-    }
-    // Scene trees know whether anything in them is still moving, which is the
-    // one thing they cannot express as damage in advance.
-    if (fState == State::kDownload &&
-        (fListing.animating() || fSetPage.animating())) {
-      return this->frameBecause("the download screen");
-    }
-    if (fState == State::kSongSelect && fCarousel.animating()) {
-      return this->frameBecause("the carousel");
+    // Every retained tree reports damage and continuation as one atomic
+    // result during updateScreens(). The application does not inspect scene
+    // internals or duplicate each widget's settling condition here.
+    if (fFrame.fSceneWantsFrame) {
+      return this->frameBecause("a retained scene requested continuation");
     }
     const double now = wallMs();
     if (fFrame.fFramesOwed > 0) {
@@ -2345,7 +2345,7 @@ private:
     if (fDiag.fTraceRepaint && fState == State::kMainMenu &&
         now - fFrame.fLastDrawWall > 500.0) {
       std::println(std::cerr, "[menu] idle: animating {} dt {:.0f} ms",
-                   fMainMenu.animating(), fUiDt);
+                   fFrame.fSceneWantsFrame, fUiDt);
     }
     return now - fFrame.fLastDrawWall > 500.0
                ? this->frameBecause("the half-second safety net")
@@ -3859,7 +3859,7 @@ private:
     if (const char *reason = fMainMenu.takeFullDamage()) {
       this->damageAll(reason);
     }
-    this->damage(fMainMenu.takeDamage());
+    this->consumeFrame(fMainMenu.finishFrame());
   }
 
   void frameMainMenu() {
@@ -4648,7 +4648,7 @@ private:
     ctx.fSelectedSet = fLibrary.selSet();
     ctx.fSelectedDiff = fLibrary.selDiff();
     fCarousel.update(ctx);
-    this->damage(fCarousel.takeDamage());
+    this->consumeFrame(fCarousel.finishFrame());
 
     client::FilterControl::Ctx filterCtx;
     filterCtx.fFont = &fFont;
@@ -4659,7 +4659,7 @@ private:
     filterCtx.fVisibleCount = fLibrary.visible().size();
     filterCtx.fNowMs = wallMs();
     fFilter.update(filterCtx);
-    this->damage(fFilter.takeDamage());
+    this->consumeFrame(fFilter.finishFrame());
     if (!fFilter.text().empty()) {
       this->wakeAt(nextCaretFlip(wallMs()));
     }
@@ -4670,7 +4670,7 @@ private:
                           .fMouseX = fWin.fMouseX,
                           .fMouseY = fWin.fMouseY,
                           .fNowMs = wallMs()});
-    this->damage(fSelectFooter.takeDamage());
+    this->consumeFrame(fSelectFooter.finishFrame());
 
     if (!fLibrary.visible().empty()) {
       const auto &infos = fLibrary.infosFor(fLibrary.selSet());
@@ -4683,7 +4683,7 @@ private:
              .fDifficulty = fLibrary.selDiff(),
              .fRankedStars = fLibrary.ranked(),
              .fInfos = std::span<const osu::BeatmapInfo>(infos)});
-        this->damage(fInfoWedge.takeDamage());
+        this->consumeFrame(fInfoWedge.finishFrame());
       }
     }
   }
@@ -5033,7 +5033,7 @@ private:
         {.roles = {scene::role<delete_dialog_style::Buttons>}},
         nodes::FillFlow::Direction::kHorizontal);
     buttons->setSpacing(20.0f, 0.0f);
-    buttons->fWrap = false;
+    buttons->setWrap(false);
     buttons->add(this->dialogButton("Yes. Totally. Delete it.",
                                     skia::colorSetARGB(255, 255, 110, 110),
                                     [this] {
@@ -5056,11 +5056,13 @@ private:
     auto button = scene::make<skiff::widgets::Button>(
         {.roles = {scene::role<delete_dialog_style::Button>}},
         std::move(label), std::move(action));
-    button->fTheme.fSurface = client::palette::kCardBg;
-    button->fTheme.fSurfaceHover = client::palette::kBackground4;
-    button->fTheme.fText = accent;
-    button->fTheme.fCorner = 10.0f;
-    button->fTheme.fFontSize = 15.0f;
+    auto buttonTheme = skiff::widgets::theme();
+    buttonTheme.fSurface = client::palette::kCardBg;
+    buttonTheme.fSurfaceHover = client::palette::kBackground4;
+    buttonTheme.fText = accent;
+    buttonTheme.fCorner = 10.0f;
+    buttonTheme.fFontSize = 15.0f;
+    button->setTheme(buttonTheme);
     return button;
   }
 
@@ -5068,13 +5070,7 @@ private:
     if (!fConfirmDelete || !fConfirmScene) {
       return;
     }
-    const skia::SkRect screen = skia::SkRect::MakeWH(
-        static_cast<float>(fWin.fScreenW), static_cast<float>(fWin.fScreenH));
-    fConfirmScene->updateTree(wallMs());
-    fConfirmScene->layoutIfNeeded(screen);
-    fConfirmScene->setHover(fWin.fMouseX, fWin.fMouseY);
     fConfirmScene->draw(canvas);
-    this->damage(fConfirmScene->takeDamage());
   }
 
   bool confirmDeleteClick(float x, float y) {
@@ -5153,7 +5149,7 @@ private:
     fMirrors.pollPreview();
     fListing.setPreview(fMirrors.previewId(), fMirrors.previewProgress());
     fListing.update(ctx);
-    this->damage(fListing.takeDamage());
+    this->consumeFrame(fListing.finishFrame());
     if (fSetPage.open()) {
       const std::size_t idx = fMirrors.indexOfSet(fSetPage.setId());
       if (idx >= fMirrors.results().size()) {
@@ -5172,7 +5168,7 @@ private:
       page.fPreviewPlaying = fMirrors.previewId() == fSetPage.setId();
       page.fPreviewProgress = fMirrors.previewProgress();
       fSetPage.update(page);
-      this->damage(fSetPage.takeDamage());
+      this->consumeFrame(fSetPage.finishFrame());
     }
     // Covers are only fetched for what is on screen, which the listing knows
     // and the client did not: this used to walk every result that passed the
@@ -5226,7 +5222,7 @@ private:
                         ? static_cast<float>(fPlay.fEngine->score().accuracy())
                         : 1.0f;
     fPauseMenu.update(ctx);
-    this->damage(fPauseMenu.takeDamage());
+    this->consumeFrame(fPauseMenu.finishFrame());
   }
 
   // How far into the playable part of the map the pause happened, which is
@@ -5282,7 +5278,7 @@ private:
                            .fRulesLabel = rulesToggle ? this->rulesToggleLabel()
                                                      : std::string{},
                            .fRulesEnabled = this->rulesToggleEnabled()});
-    this->damage(fResultActions.takeDamage());
+    this->consumeFrame(fResultActions.finishFrame());
     // The strip of panels moves when another score is chosen and while it is
     // dragged; a drag sets the position outright, so the target says nothing
     // about it.

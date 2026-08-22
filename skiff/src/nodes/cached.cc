@@ -32,7 +32,10 @@ public:
     contextSlot() = context;
   }
 
-  void invalidateCache() { fCacheValid = false; }
+  void invalidateCache() {
+    fCacheValid = false;
+    this->markDamaged();
+  }
 
   void draw(skia::SkCanvas *canvas, float inheritedAlpha = 1.0f) override {
     if (!fVisible || fAlpha <= 0.001f) {
@@ -81,7 +84,7 @@ public:
       canvas->drawImage(image.get(), fBounds.fLeft, fBounds.fTop,
                         skia::SkSamplingOptions(), &paint);
     }
-    fDrawnBounds = fBounds;
+    this->noteDrawn();
   }
 
 protected:

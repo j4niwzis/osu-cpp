@@ -18,9 +18,8 @@ using skiff::scene::Spec;
 export namespace skiff::widgets {
 
 // A single line of editable text: OsuTextBox, AdwEntryRow. It owns the string
-// and reports changes; the keyboard belongs to whoever is routing input, so
-// the screen still decides what a keystroke means and pushes the result back
-// through setText.
+// and reports changes. Text and composition events arrive through the scene's
+// focus router, so screens do not need a parallel keyboard implementation.
 class TextBox : public skiff::scene::TypedDrawable<TextBox> {
 public:
   explicit TextBox(std::string placeholder = {})
@@ -30,19 +29,31 @@ public:
     fHeight = fTheme.fRowHeight;
   }
 
-  Theme fTheme = theme();
-  std::string fPlaceholder;
-  bool fSearchIcon = false; // the magnifier lazer puts in its search boxes
-  // Space owned by a trailing status, clear button or other overlay. The
-  // TextBox still owns clipping and caret placement; its parent need not
-  // reproduce either calculation to put something at the right edge.
-  float fTrailingInset = 0.0f;
+  std::function<void(std::string_view)> fOnChanged;
+
+  void setTheme(Theme value) {
+    fTheme = std::move(value);
+    this->markDamaged();
+  }
+  void setSearchIcon(bool enabled) {
+    if (enabled != fSearchIcon) {
+      fSearchIcon = enabled;
+      this->markDamaged();
+    }
+  }
+  void setTrailingInset(float inset) {
+    if (inset != fTrailingInset) {
+      fTrailingInset = inset;
+      this->markDamaged();
+    }
+  }
 
   void setText(std::string text) {
     if (text == fText) {
       return;
     }
     fText = std::move(text);
+    fCaret = fText.size();
     this->markDamaged();
   }
   [[nodiscard]] const std::string &text() const noexcept { return fText; }
@@ -61,13 +72,107 @@ public:
   }
 
 protected:
+  Theme fTheme = theme();
+  std::string fPlaceholder;
+  bool fSearchIcon = false; // the magnifier lazer puts in its search boxes
+  // Space owned by a trailing status, clear button or other overlay.
+  float fTrailingInset = 0.0f;
+
+  bool acceptsInput() const override { return true; }
+  bool focusChangesAppearance() const override { return true; }
+
+  bool onClick(float x, float y) override {
+    return fBounds.contains(x, y);
+  }
+
+  void onTextInput(skiff::scene::TextInputEvent &event) override {
+    if (event.fPhase != skiff::scene::EventPhase::kTarget) {
+      return;
+    }
+    if (event.fCommit) {
+      if (!event.fText.empty()) {
+        fText.insert(fCaret, event.fText);
+        fCaret += event.fText.size();
+        if (fOnChanged) {
+          fOnChanged(fText);
+        }
+      }
+      fComposition.clear();
+    } else {
+      fComposition = event.fComposition.empty() ? std::string(event.fText)
+                                                : std::string(event.fComposition);
+      fCompositionSelectionStart = event.fSelectionStart;
+      fCompositionSelectionLength = event.fSelectionLength;
+    }
+    this->markDamaged();
+    event.handle();
+  }
+
+  void onKeyEvent(skiff::scene::KeyEvent &event) override {
+    if (event.fPhase != skiff::scene::EventPhase::kTarget ||
+        !event.fPressed) {
+      return;
+    }
+    if (event.fKey == skiff::scene::Key::kBackspace) {
+      if (fCaret > 0) {
+        const std::size_t eraseFrom = previousCodepoint(fText, fCaret);
+        fText.erase(eraseFrom, fCaret - eraseFrom);
+        fCaret = eraseFrom;
+        if (fOnChanged) {
+          fOnChanged(fText);
+        }
+        this->markDamaged();
+      }
+      event.handle();
+    } else if (event.fKey == skiff::scene::Key::kDelete) {
+      if (fCaret < fText.size()) {
+        const std::size_t eraseTo = nextCodepoint(fText, fCaret);
+        fText.erase(fCaret, eraseTo - fCaret);
+        if (fOnChanged) {
+          fOnChanged(fText);
+        }
+        this->markDamaged();
+      }
+      event.handle();
+    } else if (event.fKey == skiff::scene::Key::kLeft) {
+      fCaret = previousCodepoint(fText, fCaret);
+      this->markDamaged();
+      event.handle();
+    } else if (event.fKey == skiff::scene::Key::kRight) {
+      fCaret = nextCodepoint(fText, fCaret);
+      this->markDamaged();
+      event.handle();
+    } else if (event.fKey == skiff::scene::Key::kHome) {
+      fCaret = 0;
+      this->markDamaged();
+      event.handle();
+    } else if (event.fKey == skiff::scene::Key::kEnd) {
+      fCaret = fText.size();
+      this->markDamaged();
+      event.handle();
+    } else if (event.fKey == skiff::scene::Key::kEscape &&
+               !fComposition.empty()) {
+      fComposition.clear();
+      this->markDamaged();
+      event.handle();
+    }
+  }
+
+  [[nodiscard]] skiff::scene::Semantics semantics() const override {
+    skiff::scene::Semantics out;
+    out.fRole = skiff::scene::SemanticRole::kTextBox;
+    out.fLabel = fPlaceholder;
+    out.fValue = fText;
+    return out;
+  }
+
   void drawSelf(skia::SkCanvas *canvas, float alpha) override {
     skia::SkFont *font = skiff::paint::defaultFont();
     if (font == nullptr) {
       return;
     }
     const skiff::paint::Painter p(canvas, *font);
-    const bool active = this->selected();
+    const bool active = this->selected() || this->focused();
     p.fillRounded(fBounds, fTheme.fCorner,
                   active ? fTheme.fAccent : fTheme.fSurface, alpha);
     const skia::SkColor textColour =
@@ -91,16 +196,22 @@ protected:
     const float baseline = p.middleBaseline(fBounds, fTheme.fFontSize);
     const float room = std::max(
         0.0f, fBounds.fRight - textLeft - fTheme.fPaddingX - fTrailingInset);
-    if (fText.empty()) {
+    const std::string shown = fText.substr(0, fCaret) + fComposition +
+                              fText.substr(fCaret);
+    if (shown.empty()) {
       p.text(fPlaceholder, textLeft, baseline, fTheme.fFontSize,
              fTheme.fTextFaint, alpha * 0.6f);
     } else {
-      p.textClipped(fText, textLeft, baseline, room, fTheme.fFontSize,
+      p.textClipped(shown, textLeft, baseline, room, fTheme.fFontSize,
                     textColour, alpha);
     }
     if (fCaretShown) {
       const float cx =
-          textLeft + std::min(room, p.measure(fText, fTheme.fFontSize)) + 2.0f;
+          textLeft +
+          std::min(room,
+                   p.measure(fText.substr(0, fCaret) + fComposition,
+                             fTheme.fFontSize)) +
+          2.0f;
       p.fillRect(skia::SkRect::MakeXYWH(cx, fBounds.centerY() - 9.0f, 1.5f,
                                         fTheme.fFontSize + 2.0f),
                  textColour, alpha * 0.8f);
@@ -108,7 +219,37 @@ protected:
   }
 
 private:
+  [[nodiscard]] static std::size_t previousCodepoint(std::string_view text,
+                                                      std::size_t from) {
+    if (from == 0) {
+      return 0;
+    }
+    --from;
+    while (from > 0 &&
+           (static_cast<unsigned char>(text[from]) & 0xc0u) == 0x80u) {
+      --from;
+    }
+    return from;
+  }
+
+  [[nodiscard]] static std::size_t nextCodepoint(std::string_view text,
+                                                  std::size_t from) {
+    if (from >= text.size()) {
+      return text.size();
+    }
+    ++from;
+    while (from < text.size() &&
+           (static_cast<unsigned char>(text[from]) & 0xc0u) == 0x80u) {
+      ++from;
+    }
+    return from;
+  }
+
   std::string fText;
+  std::string fComposition;
+  std::size_t fCaret = 0;
+  int fCompositionSelectionStart = 0;
+  int fCompositionSelectionLength = 0;
   bool fCaretShown = false;
 };
 

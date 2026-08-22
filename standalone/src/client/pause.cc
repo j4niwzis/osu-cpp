@@ -161,12 +161,8 @@ public:
                : Action::kNone;
   }
 
-  [[nodiscard]] skia::SkRect takeDamage() {
-    return fScene ? fScene->takeDamage() : skia::SkRect::MakeEmpty();
-  }
-
-  [[nodiscard]] bool animating() const {
-    return fScene && fScene->animatingTree();
+  [[nodiscard]] skiff::scene::FrameResult finishFrame() {
+    return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
 
 private:
