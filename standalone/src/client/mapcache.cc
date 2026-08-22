@@ -80,8 +80,8 @@ public:
         continue;
       }
       CachedSet cs;
-      cs.fSize = static_cast<std::uintmax_t>(numOf(o, "size"));
-      cs.fMtime = static_cast<std::int64_t>(numOf(o, "mtime"));
+      cs.fSize = static_cast<std::uintmax_t>(uintOf(o, "size"));
+      cs.fMtime = int64Of(o, "mtime");
       const bjson::value *diffsVal = o->if_contains("diffs");
       const bjson::array *diffs = diffsVal ? diffsVal->if_array() : nullptr;
       if (diffs != nullptr) {
@@ -212,6 +212,36 @@ private:
       }
     }
     return 0.0;
+  }
+  [[nodiscard]] static std::uint64_t uintOf(const bjson::object *o,
+                                            std::string_view key) {
+    if (const bjson::value *v = o->if_contains(key)) {
+      if (v->is_uint64()) {
+        return v->as_uint64();
+      }
+      if (v->is_int64() && v->as_int64() >= 0) {
+        return static_cast<std::uint64_t>(v->as_int64());
+      }
+      if (v->is_double()) {
+        return static_cast<std::uint64_t>(v->as_double());
+      }
+    }
+    return 0;
+  }
+  [[nodiscard]] static std::int64_t int64Of(const bjson::object *o,
+                                            std::string_view key) {
+    if (const bjson::value *v = o->if_contains(key)) {
+      if (v->is_int64()) {
+        return v->as_int64();
+      }
+      if (v->is_uint64()) {
+        return static_cast<std::int64_t>(v->as_uint64());
+      }
+      if (v->is_double()) {
+        return static_cast<std::int64_t>(v->as_double());
+      }
+    }
+    return 0;
   }
   [[nodiscard]] static int intOf(const bjson::object *o,
                                  std::string_view key) {

@@ -179,6 +179,8 @@ public:
         misses.push_back(path);
       }
     }
+    std::println(std::cerr, "[cache] reused {} sets; {} stale or new",
+                 archives.size() - misses.size(), misses.size());
 
     struct ParsedArchive {
       Entry fEntry;
