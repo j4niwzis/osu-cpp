@@ -45,6 +45,7 @@ import client.mods;
 import client.video;
 import client.videoexport;
 import client.framestate;
+import client.fonts;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -713,10 +714,10 @@ private:
       return 1;
     }
 
-    this->loadFonts();
-    fFont = this->loadFont(20.0f);
+    auto fonts = client::loadClientFonts(20.0f);
+    fFont = std::move(fonts.fUi);
     skiff::nodes::Text::setFont(&fFont);
-    fDisplayFont = this->loadDisplayFont(20.0f);
+    fDisplayFont = std::move(fonts.fDisplay);
     this->resize(fWin.fScreenW, fWin.fScreenH);
 
     // Persistent library at /maps (IDBFS). The initial syncfs is async; the
@@ -779,10 +780,10 @@ private:
       return;
     }
 
-    this->loadFonts();
-    fFont = this->loadFont(20.0f);
+    auto fonts = client::loadClientFonts(20.0f);
+    fFont = std::move(fonts.fUi);
     skiff::nodes::Text::setFont(&fFont);
-    fDisplayFont = this->loadDisplayFont(20.0f);
+    fDisplayFont = std::move(fonts.fDisplay);
     this->resize(fWin.fScreenW, fWin.fScreenH);
 
     this->initLibrary();
@@ -4329,159 +4330,6 @@ private:
     return static_cast<bool>(fContext);
   }
 
-  // Judgements are set in a heavy geometric display face. osu! and webosu-2
-  // use Venera, which is a commercial typeface, so the client ships
-  // Montserrat ExtraBold instead (SIL OFL 1.1, see assets/fonts/OFL.txt).
-  // Where a bundled asset can be: beside the install prefix, at the configured
-  // data dir, in the source tree, or next to the working directory.
-  [[nodiscard]] std::vector<std::filesystem::path>
-  assetCandidates(const std::string &name) const {
-    std::vector<std::filesystem::path> candidates;
-    std::error_code ec;
-    const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec && !exe.empty()) {
-      const auto prefix = exe.parent_path().parent_path(); // .../bin/x -> ...
-      candidates.push_back(prefix / "share" / "osu_client" / "fonts" / name);
-      candidates.push_back(exe.parent_path() / "fonts" / name);
-    }
-#ifdef OSU_CLIENT_DATADIR
-    candidates.emplace_back(std::filesystem::path(OSU_CLIENT_DATADIR) /
-                            "fonts" / name);
-#endif
-#ifdef OSU_CLIENT_SOURCE_ASSETS
-    candidates.emplace_back(std::filesystem::path(OSU_CLIENT_SOURCE_ASSETS) /
-                            "fonts" / name);
-#endif
-    candidates.emplace_back(std::filesystem::path("assets") / "fonts" / name);
-    candidates.emplace_back(std::filesystem::path("fonts") / name);
-    return candidates;
-  }
-
-  [[nodiscard]] skia::Sp<skia::SkTypeface>
-  loadTypeface(const std::string &name) {
-    for (const auto &path : this->assetCandidates(name)) {
-      std::error_code ec;
-      if (!std::filesystem::exists(path, ec)) {
-        continue;
-      }
-      auto data = skia::SkData::MakeFromFileName(path.c_str());
-      if (!data || data->isEmpty()) {
-        continue;
-      }
-      std::array<skia::Sp<skia::SkData>, 1> datas{std::move(data)};
-      auto mgr = skia::SkFontMgr_New_Custom_Data(datas);
-      if (!mgr || mgr->countFamilies() == 0) {
-        continue;
-      }
-      auto face = mgr->matchFamilyStyle(nullptr, skia::SkFontStyle());
-      if (!face) {
-        face = mgr->createStyleSet(0)->createTypeface(0);
-      }
-      if (face) {
-        skia::SkString family;
-        face->getFamilyName(&family);
-        std::println(std::cerr, "[ui] font \"{}\" from {}", family.c_str(),
-                     path.string());
-        return face;
-      }
-    }
-    std::println(std::cerr, "[ui] font missing: {}", name);
-    return nullptr;
-  }
-
-  // Everything the client draws with ships with it: Latin, Cyrillic and Greek
-  // from Inter, Japanese and Korean from Noto Sans, icons from Font Awesome.
-  // Any other font dropped into the same directory joins the fallback chain,
-  // which is how Chinese or anything else can be added without a rebuild.
-  void loadFonts() {
-    auto &stack = skiff::paint::fonts();
-    if (std::getenv("OSU_SYSTEM_FONT") != nullptr) {
-      // For comparing against what the system provides: when text is what
-      // costs, swapping the faces out in one run is worth the branch.
-      std::println(std::cerr, "[ui] bundled fonts skipped by request");
-      return;
-    }
-    auto primary = this->loadTypeface("Inter.ttf");
-    stack.setPrimary(primary);
-
-    for (const char *name :
-         {"NotoSansJP.ttf", "NotoSansKR.ttf", "FontAwesome-Solid.ttf"}) {
-      stack.addFallback(this->loadTypeface(name));
-    }
-    this->loadExtraFonts();
-
-    std::println(std::cerr, "[ui] {} fallback fonts loaded",
-                 stack.fallbackCount());
-  }
-
-  // Fonts the build does not know about, taken from the same directory.
-  void loadExtraFonts() {
-    static constexpr std::array<const char *, 4> kKnown = {
-        "Inter.ttf", "NotoSansJP.ttf", "NotoSansKR.ttf",
-        "FontAwesome-Solid.ttf"};
-    for (const auto &dir : this->assetCandidates("")) {
-      std::error_code ec;
-      if (!std::filesystem::is_directory(dir, ec)) {
-        continue;
-      }
-      for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
-        const auto ext = entry.path().extension().string();
-        if (ext != ".ttf" && ext != ".otf" && ext != ".ttc") {
-          continue;
-        }
-        const auto name = entry.path().filename().string();
-        if (std::ranges::find(kKnown, name) != kKnown.end() ||
-            name == "Montserrat-ExtraBold.ttf") {
-          continue;
-        }
-        skiff::paint::fonts().addFallback(this->loadTypeface(name));
-      }
-      return; // the first directory that exists is the one in use
-    }
-  }
-
-  [[nodiscard]] skia::SkFont loadDisplayFont(float size) {
-    if (auto face = this->loadTypeface("Montserrat-ExtraBold.ttf")) {
-      return skia::SkFont(std::move(face), size);
-    }
-    std::println(std::cerr,
-                 "[ui] no display font found; judgements fall back to the UI "
-                 "font");
-    return this->loadFont(size);
-  }
-
-  [[nodiscard]] skia::SkFont loadFont(float size) {
-    if (const auto &primary = skiff::paint::fonts().primary()) {
-      return skia::SkFont(primary, size);
-    }
-    // Only reached if the bundled fonts did not install; better a system face
-    // than no text at all.
-    for (const char *dir :
-         {"/usr/share/fonts/noto", "/usr/share/fonts/ttf-dejavu",
-          "/usr/share/fonts/TTF", "/usr/share/fonts"}) {
-      if (!std::filesystem::is_directory(dir)) {
-        continue;
-      }
-      auto mgr = skia::SkFontMgr_New_Custom_Directory(dir);
-      if (!mgr || mgr->countFamilies() == 0) {
-        continue;
-      }
-      auto face = mgr->matchFamilyStyle("Noto Sans", skia::SkFontStyle());
-      if (!face) {
-        face = mgr->matchFamilyStyle("DejaVu Sans", skia::SkFontStyle());
-      }
-      if (!face) {
-        face = mgr->createStyleSet(0)->createTypeface(0);
-      }
-      if (face) {
-        std::println(std::cerr, "[ui] falling back to a system font from {}",
-                     dir);
-        return skia::SkFont(std::move(face), size);
-      }
-    }
-    std::println(std::cerr, "[ui] no font found at all");
-    return skia::SkFont();
-  }
 
   // Playfield placement for the current screen size. Split out so the video
   // exporter can re-derive it for its offscreen resolution.
