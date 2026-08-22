@@ -9,7 +9,7 @@ set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
   # `Help/dev/experimental.rst` in the CMake source corresponding to
   # your CMake build for the exact value to use.
   "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
-set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD 23)
 
 set(CMAKE_CXX_MODULE_STD ON)
 

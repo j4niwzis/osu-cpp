@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.1.1 FATAL_ERROR)
 
 set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
-set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_MODULE_STD ON)
 
 project(osu_client LANGUAGES CXX)
@@ -107,7 +107,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
   ${MPG123_INCLUDE_DIRS}
 )
 
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 26)
+set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 
 # Where the bundled assets end up, so the client can find them when installed
 # and when run straight from the build tree.

@@ -7,7 +7,7 @@ else()
   set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
     "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 endif()
-set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_MODULE_STD ON)
 
 project(skiffTests LANGUAGES CXX)
@@ -42,7 +42,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   gtest_main
   skiff::skiff)
 set_target_properties(${PROJECT_NAME} PROPERTIES
-  CXX_STANDARD 26
+  CXX_STANDARD 23
   CXX_SCAN_FOR_MODULES ON)
 
 enable_testing()

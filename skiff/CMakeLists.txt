@@ -67,7 +67,7 @@ add_library(skiff::skiff ALIAS ${PROJECT_NAME})
 target_sources(${PROJECT_NAME} PUBLIC
   FILE_SET CXX_MODULES FILES ${skiff_sources})
 
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 26)
+set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_23)
 
 # skia.cc is the only thing here that reaches for headers, and it wants both

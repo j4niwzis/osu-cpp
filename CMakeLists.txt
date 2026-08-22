@@ -52,7 +52,7 @@ endif()
 add_library(${PROJECT_NAME} STATIC ${headers} ${sources})
 
 target_compile_features(${PROJECT_NAME}
-  PRIVATE   cxx_std_26
+  PRIVATE   cxx_std_23
   INTERFACE cxx_std_23)
 
 # being a cross-platform target, we enforce standards conformance on MSVC

@@ -52,7 +52,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 target_link_libraries(${PROJECT_NAME} gtest gtest_main osucpp::osucpp)
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 26)
+set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_SCAN_FOR_MODULES ON)
 
 # gtest module

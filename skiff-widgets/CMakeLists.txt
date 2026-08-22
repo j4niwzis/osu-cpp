@@ -42,7 +42,7 @@ add_library(skiff::widgets ALIAS ${PROJECT_NAME})
 target_sources(${PROJECT_NAME} PUBLIC
   FILE_SET CXX_MODULES FILES ${skiff_widget_sources})
 
-set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 26)
+set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_23)
 target_link_libraries(${PROJECT_NAME} PUBLIC skiff::skiff)
 
