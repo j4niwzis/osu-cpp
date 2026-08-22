@@ -101,7 +101,7 @@ public:
         fApp.dragSetting(ev.fX);
       }
       if (fApp.fFilter.dragging()) {
-        fApp.dragFilterRange(ev.fX);
+        fApp.fScreens.dragFilterRange(ev.fX);
       }
       if (fApp.fReplayBrowser.panelsDragging()) {
         fApp.fReplayBrowser.dragPanels(ev.fX);
@@ -122,7 +122,7 @@ public:
         fApp.scrollSettings(ev.fX);
         break;
       }
-      if (fApp.panelListActive()) {
+      if (fApp.fScreens.panelListActive()) {
         fApp.fReplayBrowser.scrollPanels(ev.fX * 120.0f);
         break;
       }
@@ -360,7 +360,7 @@ public:
       return;
     }
     if (key == glfw::kKeyF3) {
-      fApp.cycleSortMode();
+      fApp.fScreens.cycleSortMode();
       return;
     }
     // lazer's song select keeps the search box permanently focused: every
@@ -468,7 +468,7 @@ public:
       watch = fApp.fReplayBrowser.key(client::ReplayBrowser::Key::kActivate);
     }
     if (watch) {
-      fApp.watchReplay(*watch);
+      fApp.fScreens.watchReplay(*watch);
     }
   }
 
@@ -483,9 +483,10 @@ public:
         const bool pressed = action == glfw::kPress;
         // The panel strip takes the press before anything else so that a drag
         // that starts on a panel scrolls the list instead of selecting.
-        if (fApp.panelListActive() && !fApp.fExportDialog.open() &&
+        if (fApp.fScreens.panelListActive() && !fApp.fExportDialog.open() &&
             !fApp.fSettingsPanel.open() && !fApp.fModSelect.open() &&
-            fApp.panelListClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY, pressed)) {
+            fApp.fScreens.panelListClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
+                                         pressed)) {
           return;
         }
         if (pressed) {
@@ -494,7 +495,8 @@ public:
           this->routePointer(skiff::scene::PointerAction::kUp,
                              fApp.fWin.fMouseX, fApp.fWin.fMouseY);
           fApp.settingsClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY, false);
-          fApp.filterClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY, false);
+          fApp.fScreens.filterClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
+                                    false);
         }
       }
       return;
@@ -602,7 +604,7 @@ public:
   }
 
   void clickAt(float x, float y) {
-    if (fApp.confirmDeleteClick(x, y)) {
+    if (fApp.fScreens.confirmDeleteClick(x, y)) {
       return;
     }
     if (fApp.exportClick(x, y)) {
@@ -611,7 +613,7 @@ public:
     if (fApp.fReplayBrowser.open()) {
       if (fApp.fReplayBrowser.clickOverlay(x, y) ==
           client::ReplayBrowser::OverlayAction::kExport) {
-        fApp.exportSelectedReplay();
+        fApp.fScreens.exportSelectedReplay();
       }
       return;
     }
@@ -629,10 +631,10 @@ public:
       }
       break;
     case State::kSongSelect:
-      if (fApp.filterClick(x, y, true)) {
+      if (fApp.fScreens.filterClick(x, y, true)) {
         return;
       }
-      if (fApp.selectFooterClick(x, y)) {
+      if (fApp.fScreens.selectFooterClick(x, y)) {
         return;
       }
       if (const auto hit = fApp.fCarousel.click(x, y); hit.fHit) {

@@ -95,7 +95,7 @@ public:
     fApp.fLibrary.scanArchives();
     this->syncMapsDir();
 
-    fApp.resortLibrary();
+    fApp.fScreens.resortLibrary();
     fApp.fLibrary.markDirty();
     fApp.fLibrary.rebuildVisible(client::parseQuery(fApp.fFilter.text()));
     // Sets come out of the cache and off the disk in whatever order each was

@@ -51,6 +51,7 @@ import client.windowruntime;
 import client.playresult;
 import client.appinput;
 import client.applibrary;
+import client.appscreens;
 import bjson;
 #ifdef __EMSCRIPTEN__
 import emscripten;
@@ -101,6 +102,7 @@ public:
 private:
   friend class client::AppInput<App>;
   friend class client::AppLibrary<App>;
+  friend class client::AppScreens<App>;
 
   osu::BeatmapSet fSet;
   osu::ModSet fMods = osu::mod::kNone;
@@ -223,6 +225,7 @@ private:
   };
   client::AppInput<App> fInput{*this};
   client::AppLibrary<App> fLibraryRuntime{*this};
+  client::AppScreens<App> fScreens{*this};
   State fState = State::kMainMenu;
   bool fHasInitialSet = false;
 
@@ -766,15 +769,15 @@ private:
                                  fWin.fMouseY, wallMs(), fUiDt}));
     }
     if (fState == State::kDownload) {
-      this->updateDownload();
+      fScreens.updateDownload();
     } else if (fState == State::kSongSelect) {
-      this->updateSongSelect();
+      fScreens.updateSongSelect();
     } else if (fState == State::kPaused) {
-      this->updatePause();
+      fScreens.updatePause();
     } else if (fState == State::kMainMenu) {
       this->updateMainMenu();
     } else if (fState == State::kResults) {
-      this->updateResults();
+      fScreens.updateResults();
     }
     // A transition dims the whole screen, so a frame drawn during one has to
     // repaint whole: clipped to a region, everything outside it would stay
@@ -1118,19 +1121,19 @@ private:
       this->frameMainMenu();
       break;
     case State::kSongSelect:
-      this->frameSongSelect();
+      fScreens.frameSongSelect();
       break;
     case State::kDownload:
-      this->frameDownload();
+      fScreens.frameDownload();
       break;
     case State::kPlaying:
       this->framePlaying();
       break;
     case State::kPaused:
-      this->framePaused();
+      fScreens.framePaused();
       break;
     case State::kResults:
-      this->frameResults();
+      fScreens.frameResults();
       break;
     }
     this->limitFrameRate();
@@ -1211,7 +1214,7 @@ private:
       this->drawSettings(canvas);
     }
     if (fReplayBrowser.open()) {
-      this->drawReplayList(canvas);
+      fScreens.drawReplayList(canvas);
     }
     if (fExportDialog.open()) {
       this->drawExportDialog(canvas);
@@ -1341,7 +1344,7 @@ private:
     const double now = fPlay.fAwaitingFirstFrame ? 0.0 : this->nowMs();
     if (this->shouldStop(now)) {
       this->finishPlay();
-      this->frameResults();
+      fScreens.frameResults();
       return;
     }
     this->submitAutoplay(now);
@@ -2158,766 +2161,6 @@ private:
     fVideoExporter.clearFinished();
   }
 
-  // ---- Replay browser ------------------------------------------------------
-  //
-  // lazer surfaces past plays through the leaderboard beside song select and
-  // replays them with the standard playback path. Here the saved .osr files
-  // are listed in a panel; picking one starts the map with that replay.
-
-  void toggleReplayList() {
-    const std::string wanted =
-        fState == State::kResults || fState == State::kPlaying
-            ? this->beatmapMd5()
-            : this->difficultyMd5(fLibrary.selSet(), fLibrary.selDiff());
-    fReplayBrowser.toggle(wanted, fReplayPath);
-  }
-
-  // The browser lists the selected difficulty's replays, so a selection made
-  // while it is open has to rebuild the list.
-  void refreshReplayFilter() {
-    fReplayBrowser.refreshFilter(
-        this->difficultyMd5(fLibrary.selSet(), fLibrary.selDiff()),
-        fReplayPath);
-  }
-
-  // md5 of a difficulty in the library, which is what an .osr records. It is
-  // computed when the archive is parsed and kept in the metadata cache, so
-  // this costs nothing and never has to open the archive.
-  [[nodiscard]] std::string difficultyMd5(int setIdx, int diffIdx) const {
-    const auto &infos = fLibrary.infosFor(setIdx);
-    if (diffIdx < 0 || diffIdx >= static_cast<int>(infos.size())) {
-      return {};
-    }
-    return infos[static_cast<std::size_t>(diffIdx)].fMd5;
-  }
-
-  void drawReplayList(skia::SkCanvas *canvas) {
-    fReplayBrowser.renderOverlay(canvas, this->panelCtx(false));
-  }
-
-  // Renders a saved replay to video: the exporter draws whatever gameplay
-  // state is loaded, so the map and the replay's events are brought in
-  // exactly as starting a playback would, without entering gameplay.
-  void exportSelectedReplay() {
-    const auto replay = fReplayBrowser.selectedPath();
-    if (!replay) {
-      return;
-    }
-    auto set = fLibrary.setForBlocking(fLibrary.selSet());
-    if (!set || fLibrary.selDiff() < 0 ||
-        fLibrary.selDiff() >= static_cast<int>(set->fBeatmaps.size())) {
-      return;
-    }
-    fSet = *set;
-    fPlayingSet = fLibrary.selSet();
-    fPlayingDiff = fLibrary.selDiff();
-    fReplayPath = *replay;
-    fAutoplay = true;
-    this->resetGameplayState();
-    this->startGameplay(
-        fSet.fBeatmaps[static_cast<std::size_t>(fLibrary.selDiff())]);
-    fAudio.stop();
-    fMenuMusicForSet = -1; // the menu loop restarts once the export is done
-    fReplayPath.clear();
-    fAutoplay = fCliAutoplay;
-    fReplayBrowser.close();
-    fExportDialog.show();
-  }
-
-  // The beatmap every panel in the strip belongs to: the one just played on
-  // the results screen, the selected one in the browser.
-  [[nodiscard]] client::results::Ctx panelCtx(bool ownScore) {
-    client::results::Ctx ctx;
-    ctx.fFont = &fFont;
-    ctx.fWidth = static_cast<float>(fWin.fScreenW);
-    ctx.fHeight = static_cast<float>(fWin.fScreenH);
-    ctx.fMouseX = fWin.fMouseX;
-    ctx.fMouseY = fWin.fMouseY;
-    ctx.fNowWall = wallMs();
-    ctx.fEnterWall = fStateEnterWall;
-    ctx.fDtMs = fUiDt;
-    ctx.fOwnScore = ownScore;
-    ctx.fPp = fResult.fPp;
-    ctx.fMean = fResult.fMean;
-    ctx.fUr = fResult.fUr;
-
-    const bool results = fState == State::kResults;
-    const int setIdx = results ? fPlayingSet : fLibrary.selSet();
-    const int diffIdx = results ? fPlayingDiff : fLibrary.selDiff();
-    if (results && fPlay.fMap) {
-      const auto &m = fPlay.fMap->fMeta;
-      ctx.fTitle = m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode;
-      ctx.fArtist = m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode;
-    } else if (setIdx >= 0) {
-      const auto &infos = fLibrary.infosFor(setIdx);
-      if (diffIdx >= 0 && diffIdx < static_cast<int>(infos.size())) {
-        const auto &m = infos[static_cast<std::size_t>(diffIdx)].fMeta;
-        ctx.fTitle = m.fTitleUnicode.empty() ? m.fTitle : m.fTitleUnicode;
-        ctx.fArtist = m.fArtistUnicode.empty() ? m.fArtist : m.fArtistUnicode;
-      }
-    }
-    if (setIdx >= 0) {
-      const auto &infos = fLibrary.infosFor(setIdx);
-      if (diffIdx >= 0 && diffIdx < static_cast<int>(infos.size())) {
-        const auto &info = infos[static_cast<std::size_t>(diffIdx)];
-        ctx.fVersion = info.fMeta.fVersion;
-        ctx.fStars = fLibrary.shownStars(info);
-        ctx.fHasDifficulty = true;
-      }
-    }
-    return ctx;
-  }
-
-  // The strip took the press; what follows from it is the client's.
-  bool panelListClick(float x, float y, bool pressed) {
-    const auto result = fReplayBrowser.clickPanels(x, y, pressed);
-    if (result.fWatch) {
-      this->watchReplay(*result.fWatch);
-    }
-    return result.fTaken;
-  }
-
-  // The strip is live on the results screen and in the browser overlay.
-  [[nodiscard]] bool panelListActive() const {
-    return fReplayBrowser.open() || fState == State::kResults;
-  }
-
-  void watchReplay(const std::filesystem::path &path) {
-    // On the results screen the strip belongs to the map just played, which is
-    // not necessarily the one selected in the carousel.
-    const bool results = fState == State::kResults;
-    const int setIdx = results ? fPlayingSet : fLibrary.selSet();
-    const int diffIdx = results ? fPlayingDiff : fLibrary.selDiff();
-    if (setIdx < 0) {
-      return;
-    }
-    fReplayBrowser.close();
-    fPendingReplay = path; // startPlay picks it up and drives the engine
-    this->startPlay(setIdx, diffIdx);
-  }
-
-  // ---- Song select ------------------------------------------------------
-  //
-  // Song select is a collection of scene trees: they decide where their nodes
-  // are, route their input and report what has to be repainted.
-
-  void updateSongSelect() {
-#ifdef __EMSCRIPTEN__
-    if (!fLibraryLoaded) {
-      if (detail::gMapsSynced.load(std::memory_order_acquire)) {
-        fLibraryRuntime.initLibrary();
-      } else {
-        fFrame.damageAll("waiting on local storage");
-        return;
-      }
-    }
-#endif
-    this->refreshReplayFilter();
-    fLibrary.rebuildVisible(client::parseQuery(fFilter.text()));
-
-    this->ensureBackgroundForSelection();
-
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-
-    if (fLibrary.visible().empty() != fDrawnEmpty) {
-      fDrawnEmpty = fLibrary.visible().empty();
-      fFrame.damageAll("song select has nothing to list");
-    }
-
-    // The carousel retains this projection and rebuilds it only when the
-    // filtered library or expanded set changes.
-    if (!fLibrary.visible().empty()) {
-      const auto &infos = fLibrary.infosFor(fLibrary.selSet());
-      fLibrary.selDiff() =
-          std::clamp(fLibrary.selDiff(), 0,
-                     std::max(0, static_cast<int>(infos.size()) - 1));
-    }
-    fCarousel.setRows(
-        fLibrary.visibleRevision(), fLibrary.visible(), fLibrary.selSet(),
-        [this](int set) { return fLibrary.infosFor(set).size(); });
-
-    client::carousel::Carousel::Ctx ctx;
-    ctx.fWidth = sw;
-    ctx.fHeight = sh;
-    ctx.fTop = client::FilterControl::kHeight + 8.0f;
-    ctx.fBottom = sh - 62.0f;
-    ctx.fMouseX = fWin.fMouseX;
-    ctx.fMouseY = fWin.fMouseY;
-    ctx.fNowMs = wallMs();
-    ctx.fDtMs = fUiDt;
-    ctx.fSelectedSet = fLibrary.selSet();
-    ctx.fSelectedDiff = fLibrary.selDiff();
-    fCarousel.update(ctx);
-    fFrame.consume(fCarousel.finishFrame());
-
-    client::FilterControl::Ctx filterCtx;
-    filterCtx.fFont = &fFont;
-    filterCtx.fWidth = sw;
-    filterCtx.fHeight = sh;
-    filterCtx.fMouseX = fWin.fMouseX;
-    filterCtx.fMouseY = fWin.fMouseY;
-    filterCtx.fVisibleCount = fLibrary.visible().size();
-    filterCtx.fNowMs = wallMs();
-    fFilter.update(filterCtx);
-    fFrame.consume(fFilter.finishFrame());
-    if (!fFilter.text().empty()) {
-      fFrame.wakeAt(nextCaretFlip(wallMs()));
-    }
-
-    fSelectFooter.update({.fFont = &fFont,
-                          .fWidth = sw,
-                          .fHeight = sh,
-                          .fMouseX = fWin.fMouseX,
-                          .fMouseY = fWin.fMouseY,
-                          .fNowMs = wallMs()});
-    fFrame.consume(fSelectFooter.finishFrame());
-
-    if (!fLibrary.visible().empty()) {
-      const auto &infos = fLibrary.infosFor(fLibrary.selSet());
-      if (!infos.empty()) {
-        fInfoWedge.update(
-            {.fFont = &fFont,
-             .fWidth = sw,
-             .fHeight = sh,
-             .fSet = fLibrary.selSet(),
-             .fDifficulty = fLibrary.selDiff(),
-             .fRankedStars = fLibrary.ranked(),
-             .fInfos = std::span<const osu::BeatmapInfo>(infos)});
-        fFrame.consume(fInfoWedge.finishFrame());
-      }
-    }
-  }
-
-  void frameSongSelect() {
-    auto *canvas = fFrame.fSurface->getCanvas();
-#ifdef __EMSCRIPTEN__
-    if (!fLibraryLoaded) {
-      canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
-      this->drawTextCentered(canvas, "Syncing local storage...",
-                             static_cast<float>(fWin.fScreenW) * 0.5f,
-                             static_cast<float>(fWin.fScreenH) * 0.5f, 24.0f,
-                             skia::kWhite, 0.8f);
-      this->present();
-      return;
-    }
-#endif
-    this->drawScreenBackground(canvas);
-
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-
-    if (fLibrary.visible().empty()) {
-      const bool filtered = !fFilter.text().empty();
-      this->drawTextCentered(
-          canvas, filtered ? "No maps match the filter" : "No beatmaps yet",
-          sw * 0.5f, sh * 0.45f, 28.0f, skia::kWhite, 0.9f);
-      this->drawTextCentered(
-          canvas,
-          filtered ? "Backspace to edit, Esc to clear"
-                   : "Drag a .osz onto the window, or press F1 to browse",
-          sw * 0.5f, sh * 0.45f + 40.0f, 18.0f, kAccent);
-      this->drawFilterControl(canvas);
-      fSelectFooter.render(canvas);
-      this->drawScreenFadeIn(canvas);
-      this->present();
-      return;
-    }
-
-    // ---- Left: the info wedge (lazer's BeatmapTitleWedge area).
-    fInfoWedge.render(canvas);
-
-    // ---- Right: the carousel, which masks itself to its own viewport.
-    fCarousel.render(canvas);
-
-    this->drawFilterControl(canvas);
-    fSelectFooter.render(canvas);
-    this->drawScreenFadeIn(canvas);
-    this->present();
-  }
-
-  // ---- FilterControl ------------------------------------------------------
-  //
-  // The widget lives in client.filtercontrol; the app supplies the library
-  // view it filters and reacts when the criteria change.
-
-  void drawFilterControl(skia::SkCanvas *canvas) {
-    fFilter.render(canvas);
-  }
-
-  bool filterClick(float x, float y, bool pressed) {
-    if (!pressed) {
-      fFilter.endDrag();
-      return false;
-    }
-    const bool used = fFilter.click(x, y, pressed);
-    if (fFilter.takeDirty()) {
-      this->onFilterChanged();
-    }
-    return used;
-  }
-
-  void dragFilterRange(float x) {
-    fFilter.dragRange(x);
-    if (fFilter.takeDirty()) {
-      fLibrary.markDirty();
-    }
-  }
-
-  void cycleSortMode() {
-    fFilter.cycleSort();
-    this->onFilterChanged();
-  }
-
-  // Sorting and the visible set both depend on the criteria.
-  // Which ordering the widget is offering, in the library's own terms.
-  [[nodiscard]] client::library::Sort sortChoice() const {
-    switch (fFilter.sortMode()) {
-    case client::FilterControl::SortMode::kAuthor:
-      return client::library::Sort::kAuthor;
-    case client::FilterControl::SortMode::kArtist:
-      return client::library::Sort::kArtist;
-    case client::FilterControl::SortMode::kDifficulty:
-      return client::library::Sort::kDifficulty;
-    case client::FilterControl::SortMode::kLength:
-      return client::library::Sort::kLength;
-    case client::FilterControl::SortMode::kTitle:
-      break;
-    }
-    return client::library::Sort::kTitle;
-  }
-
-  // The ordering and the difficulty range live on the widget; the library is
-  // told them before it is asked to sort by them.
-  void resortLibrary() {
-    fLibrary.setSort(this->sortChoice());
-    fLibrary.setRange(fFilter.rangeMin(), fFilter.rangeMax());
-    fLibrary.sortLibrary();
-  }
-
-  void onFilterChanged() {
-    this->resortLibrary();
-    fLibrary.markDirty();
-    fLibrary.rebuildVisible(client::parseQuery(fFilter.text()));
-  }
-
-  // Set panels carry the beatmap's cover art behind the text, as lazer's
-  // PanelSetBackground does. The image is pulled from the archive the first
-  // time the panel is drawn and kept with the entry.
-  void drawSetPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
-                    int setIndex, const std::vector<osu::BeatmapInfo> &infos,
-                    bool expanded, bool hover, float corner) {
-    this->fillRounded(canvas, rect, corner,
-                      expanded ? skia::colorSetARGB(255, 66, 48, 74)
-                      : hover  ? skia::colorSetARGB(255, 52, 42, 60)
-                               : skia::colorSetARGB(255, 40, 33, 48));
-
-    if (auto art = fLibrary.panelArt(setIndex)) {
-      canvas->save();
-      canvas->clipRRect(skia::SkRRect::MakeRectXY(rect, corner, corner), true);
-      // Cover the panel preserving aspect (FillMode.Fill), cropping overflow.
-      const float iw = static_cast<float>(art->width());
-      const float ih = static_cast<float>(art->height());
-      if (iw > 0.0f && ih > 0.0f) {
-        const float scale = std::max(rect.width() / iw, rect.height() / ih);
-        const float dw = iw * scale;
-        const float dh = ih * scale;
-        canvas->drawImageRect(
-            art.get(),
-            skia::SkRect::MakeXYWH(rect.centerX() - dw * 0.5f,
-                                   rect.centerY() - dh * 0.5f, dw, dh),
-            skia::SkSamplingOptions(skia::SkFilterMode::kLinear), nullptr);
-      }
-      // PanelSetBackground's darkening: a sheared three-step black gradient,
-      // 0.5 alpha over the left 40%, easing to 0.2 by the right edge.
-      this->drawPanelVeil(canvas, rect);
-      canvas->restore();
-    }
-    // The hover tint above is the panel's own colour, which artwork covers
-    // completely -- so on any set with a cover, hovering changed nothing that
-    // could be seen while still costing the repaint. This sits over the
-    // artwork instead, so the highlight exists on every panel or on none.
-    if (hover && !expanded) {
-      this->fillRounded(canvas, rect, corner,
-                        skia::colorSetARGB(28, 255, 255, 255));
-    }
-    if (expanded) {
-      this->strokeRounded(canvas, rect, corner, kAccent, 2.0f);
-    }
-
-    const float pad = 18.0f;
-    const std::string title = infos.empty() ? "(empty)"
-                              : infos.front().fMeta.fTitleUnicode.empty()
-                                  ? infos.front().fMeta.fTitle
-                                  : infos.front().fMeta.fTitleUnicode;
-    const std::string artist = infos.empty() ? std::string{}
-                               : infos.front().fMeta.fArtistUnicode.empty()
-                                   ? infos.front().fMeta.fArtist
-                                   : infos.front().fMeta.fArtistUnicode;
-    this->drawTextClipped(canvas, title, rect.fLeft + pad,
-                          rect.fTop + rect.height() * 0.44f,
-                          rect.width() - pad * 2 - 90.0f, 19.0f, skia::kWhite);
-    this->drawTextClipped(
-        canvas, artist, rect.fLeft + pad, rect.fTop + rect.height() * 0.72f,
-        rect.width() - pad * 2 - 90.0f, 14.0f, skia::kWhite, 0.75f);
-
-    // Difficulty spread dots (PanelBeatmapSet.SpreadDisplay).
-    float dotX = rect.fRight - pad;
-    for (auto it = infos.rbegin(); it != infos.rend(); ++it) {
-      skia::SkPaint dot;
-      dot.setAntiAlias(true);
-      dot.setColor(starColor(fLibrary.shownStars(*it)));
-      canvas->drawCircle(dotX, rect.centerY(), 4.0f, dot);
-      dotX -= 12.0f;
-      if (dotX < rect.fRight - 120.0f) {
-        break;
-      }
-    }
-  }
-
-  // PanelSetBackground: a FillFlowContainer of three boxes sheared by 0.8 on
-  // X, giving a ~40-degree diagonal fade -- solid 50% black over the first
-  // 40% of the width, then 50%->30%, then 30%->20%.
-  void drawPanelVeil(skia::SkCanvas *canvas, const skia::SkRect &rect) {
-    const float w = rect.width();
-    const float h = rect.height();
-    const float shear = 0.8f * h; // horizontal displacement over the height
-    struct Step {
-      float fFrom, fTo; // fractions of width
-      float fAlphaL, fAlphaR;
-    };
-    const Step steps[] = {
-        {0.0f, 0.40f, 0.5f, 0.5f},
-        {0.40f, 0.60f, 0.5f, 0.3f},
-        {0.60f, 1.05f, 0.3f, 0.2f},
-    };
-    for (const auto &st : steps) {
-      const float x0 = rect.fLeft + st.fFrom * w;
-      const float x1 = rect.fLeft + st.fTo * w;
-      skia::SkPathBuilder quad;
-      quad.moveTo(x0 + shear * 0.5f, rect.fTop);
-      quad.lineTo(x1 + shear * 0.5f, rect.fTop);
-      quad.lineTo(x1 - shear * 0.5f, rect.fBottom);
-      quad.lineTo(x0 - shear * 0.5f, rect.fBottom);
-      quad.close();
-      skia::SkPaint p;
-      p.setAntiAlias(true);
-      // Approximate the per-box horizontal gradient with its mean alpha; the
-      // steps are narrow enough that the banding is not visible.
-      const float alpha = (st.fAlphaL + st.fAlphaR) * 0.5f;
-      p.setColor(skia::colorSetARGB(static_cast<std::uint8_t>(alpha * 255.0f),
-                                    0, 0, 0));
-      canvas->drawPath(quad.detach(), p);
-    }
-  }
-
-
-  void drawDiffPanel(skia::SkCanvas *canvas, const skia::SkRect &rect,
-                     const osu::BeatmapInfo &info, bool selected, bool hover,
-                     float corner) {
-    this->fillRounded(canvas, rect, corner,
-                      selected ? skia::colorSetARGB(255, 74, 56, 84)
-                      : hover  ? skia::colorSetARGB(255, 48, 39, 56)
-                               : skia::colorSetARGB(255, 34, 28, 42));
-    if (selected) {
-      this->strokeRounded(canvas, rect, corner, kAccent2, 2.0f);
-    }
-    const float pad = 16.0f;
-    const skia::SkRect badge = skia::SkRect::MakeXYWH(
-        rect.fLeft + pad, rect.centerY() - 11.0f, 62.0f, 22.0f);
-    this->fillRounded(canvas, badge, 11.0f,
-                      starColor(fLibrary.shownStars(info)));
-    this->drawTextCentered(canvas,
-                           std::format("{:.2f}", fLibrary.shownStars(info)),
-                           badge.centerX(), badge.centerY() + 5.0f, 13.0f,
-                           skia::colorSetARGB(255, 20, 16, 26));
-    this->drawTextClipped(canvas, info.fMeta.fVersion, badge.fRight + 14.0f,
-                          rect.centerY() + 5.0f,
-                          rect.width() - badge.width() - pad * 3, 15.0f,
-                          skia::kWhite, 0.95f);
-  }
-
-  bool selectFooterClick(float x, float y) {
-    using Action = client::songselect::Action;
-    switch (fSelectFooter.click(x, y)) {
-    case Action::kBack:
-      this->switchState(State::kMainMenu);
-      return true;
-    case Action::kMods:
-      this->toggleMods();
-      return true;
-    case Action::kRandom:
-      this->selectRandom();
-      return true;
-    case Action::kImport:
-      fLibraryRuntime.importOsz();
-      return true;
-    case Action::kBrowse:
-      fInput.openDownloads();
-      return true;
-    case Action::kReplays:
-      this->toggleReplayList();
-      return true;
-    case Action::kDelete:
-      this->askDeleteBeatmap();
-      return true;
-    case Action::kSettings:
-      this->toggleSettings();
-      return true;
-    case Action::kTaken:
-      return true;
-    case Action::kNone:
-      break;
-    }
-    return false;
-  }
-
-  // lazer never deletes a beatmap without asking, and neither does this.
-  void askDeleteBeatmap() {
-    if (fLibrary.selSet() < 0 ||
-        fLibrary.selSet() >= static_cast<int>(fLibrary.sets().size())) {
-      return;
-    }
-    const auto &infos = fLibrary.infosFor(fLibrary.selSet());
-    if (infos.empty()) {
-      return;
-    }
-    const auto &meta = infos.front().fMeta;
-    const std::string title = std::format(
-        "{} - {}",
-        meta.fArtistUnicode.empty() ? meta.fArtist : meta.fArtistUnicode,
-        meta.fTitleUnicode.empty() ? meta.fTitle : meta.fTitleUnicode);
-    fDeleteDialog.show(title, infos.size());
-  }
-
-  bool confirmDeleteClick(float x, float y) {
-    if (!fDeleteDialog.open()) {
-      return false;
-    }
-    if (fDeleteDialog.click(x, y) ==
-        client::DeleteDialog::Choice::kDelete) {
-      this->deleteSelectedBeatmap();
-    }
-    return true; // the dialog is modal either way
-  }
-
-  // Removes the archive and everything the client remembers about it.
-  void deleteSelectedBeatmap() {
-    if (fLibrary.selSet() < 0 ||
-        fLibrary.selSet() >= static_cast<int>(fLibrary.sets().size())) {
-      return;
-    }
-    const auto index = static_cast<std::size_t>(fLibrary.selSet());
-    // The track playing under the menu belongs to this set; let it go before
-    // the file does.
-    fLibraryRuntime.stopMenuMusic();
-    fMenuMusicForSet = -1;
-    fBackgroundForSet = -1;
-
-    const std::string name = fLibrary.deleteSet(index);
-    this->resortLibrary();
-    fLibrary.rebuildVisible(client::parseQuery(fFilter.text()));
-    fPlayingSet = -1;
-    fPlayingDiff = -1;
-    this->notify(name.empty() ? "beatmap deleted"
-                              : std::format("deleted {}", name));
-  }
-
-  void drawBottomBar(skia::SkCanvas *canvas, const std::string &hint) {
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-    this->fillRounded(canvas,
-                      skia::SkRect::MakeXYWH(0.0f, sh - 44.0f, sw, 44.0f), 0.0f,
-                      kPanelBg);
-    this->drawTextCentered(canvas, hint, sw * 0.5f, sh - 16.0f, 15.0f,
-                           skia::kWhite, 0.75f);
-  }
-
-  // ---- Download screen ---------------------------------------------------
-  //
-  // The whole listing -- header, filters, sort bar and cards -- is drawn by
-  // client.listing; here it only gets the data and the transfer state.
-
-  // Everything about this screen that is not drawing. It runs before the
-  // client has committed to a frame, so what it marks as damaged is the
-  // answer to "is this frame worth drawing".
-  void updateDownload() {
-    fMirrors.pollProgress();
-    // A card also draws its own state -- idle, fetching, done, failed -- out
-    // of the entry, and that is written from a dozen places: a transfer
-    // starting, one finishing, an import marking everything already owned.
-    // Comparing it here catches all of them, including the ones written after
-    // this was, which a call at each site would not.
-    fEntryStates.resize(fMirrors.results().size(), 0xFF);
-    for (std::size_t i = 0; i < fMirrors.results().size(); ++i) {
-      const auto state = static_cast<std::uint8_t>(fMirrors.results()[i].fSt);
-      if (fEntryStates[i] != state) {
-        fEntryStates[i] = state;
-        fListing.entryChanged(static_cast<int>(i));
-      }
-    }
-    client::listing::Listing::Ctx ctx;
-    ctx.fFont = &fFont;
-    ctx.fWidth = static_cast<float>(fWin.fScreenW);
-    ctx.fHeight = static_cast<float>(fWin.fScreenH);
-    ctx.fMouseX = fWin.fMouseX;
-    ctx.fMouseY = fWin.fMouseY;
-    ctx.fNowMs = wallMs();
-    ctx.fDtMs = fUiDt;
-    ctx.fEntries = fMirrors.results();
-    ctx.fLoading = fMirrors.searching();
-    fMirrors.pollPreview();
-    fListing.setPreview(fMirrors.previewId(), fMirrors.previewProgress());
-    fListing.update(ctx);
-    fFrame.consume(fListing.finishFrame());
-    if (fSetPage.open()) {
-      const std::size_t idx = fMirrors.indexOfSet(fSetPage.setId());
-      if (idx >= fMirrors.results().size()) {
-        fSetPage.close(); // the set fell out of the results
-        fFrame.damageAll("beatmap page closed");
-      }
-      client::setpage::SetPage::Ctx page;
-      page.fEntry =
-          idx < fMirrors.results().size() ? &fMirrors.results()[idx] : nullptr;
-      page.fFont = &fFont;
-      page.fWidth = ctx.fWidth;
-      page.fHeight = ctx.fHeight;
-      page.fMouseX = fWin.fMouseX;
-      page.fMouseY = fWin.fMouseY;
-      page.fNowMs = wallMs();
-      page.fPreviewPlaying = fMirrors.previewId() == fSetPage.setId();
-      page.fPreviewProgress = fMirrors.previewProgress();
-      fSetPage.update(page);
-      fFrame.consume(fSetPage.finishFrame());
-    }
-    // Covers are only fetched for what is on screen, which the listing knows
-    // and the client did not: this used to walk every result that passed the
-    // filters, on screen or four hundred cards below it.
-    for (const int idx : fListing.onScreen()) {
-      fMirrors.requestThumb(static_cast<std::size_t>(idx));
-    }
-    // Scrolling near the end pages the next batch in, as the overlay's
-    // scroll container asks for the next cursor.
-    if (fListing.wantsMore()) {
-      fMirrors.fetchPage();
-    }
-    // The caret blinks on a clock of its own. Rather than keeping frames
-    // coming so the moment is not missed, the screen says when the moment is
-    // -- and says nothing when there is no such moment: no caret on screen,
-    // or the beatmap page covering the listing it belongs to.
-    if (!fSetPage.open()) {
-      const double wake = fListing.nextChangeWall(wallMs());
-      if (wake > 0.0) {
-        fFrame.wakeAt(wake);
-      }
-    }
-  }
-
-  void frameDownload() {
-    auto *canvas = fFrame.fSurface->getCanvas();
-    fListing.render(canvas);
-    fSetPage.render(canvas);
-    this->drawScreenFadeIn(canvas);
-    this->present();
-  }
-
-  // ---- Pause ------------------------------------------------------------
-  //
-  // client.pause is lazer's GameplayMenuOverlay; here it only gets the play's
-  // numbers and says what was clicked.
-
-  void updatePause() {
-    client::pause::PauseMenu::Ctx ctx;
-    ctx.fFont = &fFont;
-    ctx.fWidth = static_cast<float>(fWin.fScreenW);
-    ctx.fHeight = static_cast<float>(fWin.fScreenH);
-    ctx.fMouseX = fWin.fMouseX;
-    ctx.fMouseY = fWin.fMouseY;
-    ctx.fNowMs = wallMs();
-    ctx.fDtMs = fUiDt;
-    ctx.fAnimateTriangles = fSettings.flag("pausetriangles");
-    ctx.fRetries = fPlay.fRetryCount;
-    ctx.fProgress = this->playProgress();
-    ctx.fAccuracy = fPlay.fEngine
-                        ? static_cast<float>(fPlay.fEngine->score().accuracy())
-                        : 1.0f;
-    fPauseMenu.update(ctx);
-    fFrame.consume(fPauseMenu.finishFrame());
-  }
-
-  // How far into the playable part of the map the pause happened, which is
-  // what GameplayMenuOverlay puts under the buttons.
-  [[nodiscard]] float playProgress() const {
-    if (!fPlay.fMap || fPlay.fMap->fObjects.empty()) {
-      return 0.0f;
-    }
-    const double first = osu::startTime(fPlay.fMap->fObjects.front());
-    const double last = osu::startTime(fPlay.fMap->fObjects.back());
-    if (last <= first) {
-      return 0.0f;
-    }
-    return static_cast<float>(
-        std::clamp((fPlay.fPausedNow - first) / (last - first), 0.0, 1.0));
-  }
-
-  void framePaused() {
-    // The frozen game underneath does not change while it is paused; what
-    // moves is the overlay, and the frame is clipped to what the overlay
-    // said. The scene is still redrawn, because a clipped repaint has to put
-    // back whatever was under the piece being repainted.
-    fView.invalidate();
-    fView.render(this->gameplayCtx(fFrame.fSurface->getCanvas()),
-                 fPlay.fPausedNow);
-    fPauseMenu.render(fFrame.fSurface->getCanvas());
-    this->present();
-  }
-
-  // ---- Results ----------------------------------------------------------
-
-  void updateResults() {
-    fReplayBrowser.updateResultActions(
-        {.fFont = &fFont,
-         .fWidth = static_cast<float>(fWin.fScreenW),
-         .fHeight = static_cast<float>(fWin.fScreenH),
-         .fMouseX = fWin.fMouseX,
-         .fMouseY = fWin.fMouseY,
-         .fNowMs = wallMs()});
-    fFrame.consume(fReplayBrowser.finishResultFrame());
-    const auto motion =
-        fReplayBrowser.updateMotion(fWin.fMouseX, fWin.fMouseY);
-    if (motion.fFullDamage) {
-      fFrame.damageAll("results strip moving");
-    } else if (motion.fDamage) {
-      fFrame.damage(*motion.fDamage);
-    }
-  }
-
-  void frameResults() {
-    fView.invalidate();
-    auto *canvas = fFrame.fSurface->getCanvas();
-    this->drawScreenBackground(canvas);
-    const skiff::paint::Painter p(canvas, fFont);
-
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
-    p.fillRect(skia::SkRect::MakeXYWH(0, 0, sw, sh),
-               skia::colorSetARGB(160, 10, 8, 14));
-
-    std::optional<client::ReplayBrowser::OwnScore> own;
-    if (fReplayPath.empty()) {
-      own = client::ReplayBrowser::OwnScore{.fScore = fResult.fScore,
-                                            .fGrade = fResult.fGrade,
-                                            .fPp = fResult.fPp,
-                                            .fMean = fResult.fMean,
-                                            .fUr = fResult.fUr};
-    }
-    fReplayBrowser.renderResults(canvas, this->panelCtx(bool(own)),
-                                 std::move(own), fPlay.fLastSavedReplay);
-
-    this->drawScreenFadeIn(canvas);
-    this->present();
-  }
-
   bool initSkia() {
     auto interface = skia::GrGLMakeNativeInterface();
     if (!interface) {
@@ -2938,12 +2181,12 @@ private:
                                 bool hovered, float corner) {
       const auto &infos = fLibrary.infosFor(row.fSet);
       if (row.fDiff < 0) {
-        this->drawSetPanel(canvas, rect, row.fSet, infos, selected, hovered,
-                           corner);
+        fScreens.drawSetPanel(canvas, rect, row.fSet, infos, selected, hovered,
+                              corner);
       } else if (row.fDiff < static_cast<int>(infos.size())) {
-        this->drawDiffPanel(canvas, rect,
-                            infos[static_cast<std::size_t>(row.fDiff)],
-                            selected, hovered, corner);
+        fScreens.drawDiffPanel(canvas, rect,
+                               infos[static_cast<std::size_t>(row.fDiff)],
+                               selected, hovered, corner);
       }
     });
     return static_cast<bool>(fContext);
