@@ -184,6 +184,7 @@ modules:
   - name: skia
     buildsystem: simple
     build-commands:
+      - test -f skia.pc
       - >-
         gn gen out/flatpak --args='is_official_build=true
         cc="clang" cxx="clang++"
@@ -209,7 +210,7 @@ modules:
       - cp -a include/. /app/include/skia/
       - cp -a include/. /app/include/skia/include/
       - cp -a modules/skcms /app/include/skia/modules/
-      - install -Dm644 ../skia.pc /app/lib/pkgconfig/skia.pc
+      - install -Dm644 skia.pc /app/lib/pkgconfig/skia.pc
     sources:
       - type: git
         url: https://skia.googlesource.com/skia.git
