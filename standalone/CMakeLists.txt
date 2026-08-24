@@ -149,6 +149,22 @@ else()
   )
 endif()
 
+# The desktop's own file dialog, over D-Bus. Detected rather than required:
+# without libsystemd the portal module compiles to "no portal here" and the
+# client falls back to whatever dialog binary is installed. Inside a Flatpak
+# there is no such binary and no such fallback, so this is what makes an
+# import work there at all.
+if(NOT EMSCRIPTEN_BUILD)
+  pkg_check_modules(SDBUS IMPORTED_TARGET libsystemd)
+  if(SDBUS_FOUND)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_HAVE_SDBUS=1)
+    target_link_libraries(${PROJECT_NAME} PkgConfig::SDBUS)
+    message(STATUS "file dialogs: xdg-desktop-portal via libsystemd")
+  else()
+    message(STATUS "file dialogs: no libsystemd, falling back to zenity/kdialog")
+  endif()
+endif()
+
 # Video export through libavcodec rather than through an ffmpeg process. Off
 # by default because it is a build dependency for a feature most builds do not
 # use; on, it is the only way to export from a build that cannot spawn one --

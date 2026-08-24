@@ -16,6 +16,7 @@ import client.library;
 import client.loader;
 import client.listing;
 import client.mirrors;
+import client.portal;
 import client.replaybrowser;
 import client.settings;
 import client.util;
@@ -302,6 +303,12 @@ public:
   // needs <stdio.h>, which mixes badly with `import std` on this toolchain).
   // The picker writes the chosen path to a temp file; we read it back.
   [[nodiscard]] std::filesystem::path runFilePicker() {
+    // The desktop's own dialog first. It is the only one that reaches outside
+    // a Flatpak sandbox, and on a plain desktop it is still the one that
+    // belongs there rather than whichever binary happens to be installed.
+    if (auto chosen = client::portal::openArchive("Import beatmap")) {
+      return *chosen;
+    }
     std::error_code ec;
     const auto tmp =
         std::filesystem::temp_directory_path(ec) / "osu_client_import.txt";
