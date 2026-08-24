@@ -186,6 +186,7 @@ modules:
     build-commands:
       - >-
         gn gen out/flatpak --args='is_official_build=true
+        cc="clang" cxx="clang++"
         skia_enable_ganesh=true skia_use_gl=true skia_use_egl=true
         skia_use_vulkan=false skia_use_x11=false
         skia_use_libpng_decode=true skia_use_libpng_encode=true
