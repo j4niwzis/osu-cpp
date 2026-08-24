@@ -127,7 +127,7 @@ public:
       if (fApp.fReplayBrowser.panelsDragging()) {
         fApp.fReplayBrowser.dragPanels(units.fX);
       }
-      if (fApp.fState == State::kSongSelect) {
+      if (fApp.fState == State::kSongSelect && fApp.fCarousel.dragging()) {
         fApp.fCarousel.drag(units.fY, ev.fWallMs);
       }
       if (fApp.fState == State::kPlaying && !fApp.fAutoplay) {
