@@ -49,6 +49,13 @@ public:
     return fFound;
   }
   [[nodiscard]] std::vector<listing::Entry> &results() { return fFound; }
+  // Which mirror to ask first. One that will not answer is still replaced by
+  // the next, so this sets where the chain starts rather than pinning it.
+  void setPreferred(std::size_t index) {
+    fMirror = index < kMirrors.size() ? index : 0;
+  }
+  [[nodiscard]] std::size_t preferred() const { return fMirror; }
+
   [[nodiscard]] const std::string &status() const { return fDownloadStatus; }
   [[nodiscard]] bool searching() const { return fSearchPending; }
   [[nodiscard]] bool previewPending() const { return fPreviewPending; }

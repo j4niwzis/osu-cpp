@@ -125,6 +125,8 @@ public:
   void applySettings() {
     this->applyStarOrder();
     this->applyAudioSettings();
+    fApp.fMirrors.setPreferred(
+        static_cast<std::size_t>(std::max(0, fApp.fSettings.choice("mirror"))));
     this->applyInterfaceScale();
     const float dim = fApp.fSettings.value("dim");
     if (std::abs(dim - fApp.fAppliedDim) > 1e-4f) {

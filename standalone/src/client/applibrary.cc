@@ -51,6 +51,8 @@ public:
     fApp.fReplayBrowser.initialize(
         fApp.fMapsDir.parent_path() / "replay-index.json", fApp.fReplayDir);
     fApp.fSettings.load(fApp.fMapsDir.parent_path() / "settings.json");
+    fApp.fMirrors.setPreferred(
+        static_cast<std::size_t>(std::max(0, fApp.fSettings.choice("mirror"))));
     // What the mirrors cannot do for themselves: the library they import
     // into, the corner they report to, and the music that steps aside for a
     // preview.
@@ -70,10 +72,7 @@ public:
                            [this](int entry) {
                              fApp.fListing.entryChanged(entry);
                            },
-                           [this] {
-                             fApp.fListing.resetSortForSearch();
-                             fApp.fListing.scrollToStart();
-                           },
+                           [this] { fApp.fListing.scrollToStart(); },
                            [this] { return fApp.fOverlays.musicGain(); },
                            [this] { return fApp.fAudio.playing(); },
                            [this] { fApp.fAudio.pause(); },

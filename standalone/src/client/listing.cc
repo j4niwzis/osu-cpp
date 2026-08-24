@@ -394,6 +394,9 @@ public:
     if (fSearchBox != nullptr) {
       fSearchBox->setText(fFilters.fQuery);
     }
+    // Typing is the other thing that picks the sort again: with a query
+    // there is relevance to sort by, and without one there is not.
+    this->resetSortForSearch();
   }
 
   void scroll(float ticks) { fScrollTicks += ticks; }
@@ -1403,6 +1406,11 @@ private:
       return;
     case Kind::kCategory:
       fFilters.fCategory = static_cast<Category>(value);
+      // A different category is about a different date, so the sort that
+      // suits it is picked again -- but only here, and where the query
+      // changes. It used to happen on every search, which meant choosing a
+      // sort set it and immediately searched, and the search put it back.
+      this->resetSortForSearch();
       fPending = {Action::kSearch}; // and by status
       return;
     case Kind::kGenre:

@@ -27,10 +27,10 @@ struct SettingDef {
 class Settings {
 public:
   // Sections, in lazer's order (the ones that map onto features here).
-  static constexpr std::array<const char *, 4> kSections = {
-      "Audio", "Graphics", "Gameplay", "Input"};
-  static constexpr std::array<const char *, 4> kSectionIcons = {"♪", "▣", "◎",
-                                                                "⌨"};
+  static constexpr std::array<const char *, 5> kSections = {
+      "Audio", "Graphics", "Gameplay", "Input", "Downloads"};
+  static constexpr std::array<const char *, 5> kSectionIcons = {"♪", "▣", "◎",
+                                                                "⌨", "↓"};
 
   Settings() {
     // Section 0: Audio
@@ -109,6 +109,14 @@ public:
                0.1f, 6.0f, 0.01f, 1.0f, "x"});
     this->add({3, "rawinput", "Raw input (bypass desktop acceleration)",
                SettingKind::kToggle, 0.0f, 1.0f, 0.0f, 0.0f, ""});
+    // Section 4: Downloads
+    // Which mirror to ask first. A mirror that will not answer is still
+    // replaced by the next one, so this is a preference and not a promise.
+    // The names are spelled out here rather than taken from client.mirrors:
+    // the settings know nothing about the network, and should not start.
+    this->add({4, "mirror", "Beatmap mirror", SettingKind::kChoice, 0.0f, 2.0f,
+               1.0f, 0.0f, "",
+               {"nerinyan", "osu.direct", "mino (catboy.best)"}});
   }
 
   [[nodiscard]] const std::vector<SettingDef> &defs() const noexcept {
