@@ -74,11 +74,6 @@ public:
   void close() {
 #ifdef OSU_WAYLAND_TOUCH
     this->releaseContact();
-    if (wl_callback *callback = fFrameCallback.exchange(nullptr);
-        callback != nullptr) {
-      wl_callback_destroy(callback);
-    }
-    fFrameReady.store(true, std::memory_order_release);
     if (fTouch != nullptr) {
       wl_touch_destroy(fTouch);
       fTouch = nullptr;
@@ -97,38 +92,11 @@ public:
 #endif
   }
 
-  // A frame callback is the Wayland compositor's native answer to whether a
-  // surface should produce another frame.  In particular, compositors stop
-  // completing it while a surface is hidden instead of exposing a portable
-  // "minimized" bit to clients.
-  [[nodiscard]] bool frameReady() const {
+  [[nodiscard]] bool nativeWayland() const {
 #ifdef OSU_WAYLAND_TOUCH
-    return fSurface == nullptr ||
-           fFrameReady.load(std::memory_order_acquire);
+    return fSurface != nullptr;
 #else
-    return true;
-#endif
-  }
-
-  // Attach the callback before the buffer swap: the swap's surface commit
-  // then asks the compositor when drawing the following frame is useful.
-  void armFrameCallback() {
-#ifdef OSU_WAYLAND_TOUCH
-    if (fSurface == nullptr ||
-        !fFrameReady.exchange(false, std::memory_order_acq_rel)) {
-      return;
-    }
-    wl_callback *callback = wl_surface_frame(fSurface);
-    if (callback == nullptr) {
-      fFrameReady.store(true, std::memory_order_release);
-      return;
-    }
-    fFrameCallback.store(callback, std::memory_order_release);
-    if (wl_callback_add_listener(callback, &kFrameListener, this) < 0) {
-      fFrameCallback.store(nullptr, std::memory_order_release);
-      wl_callback_destroy(callback);
-      fFrameReady.store(true, std::memory_order_release);
-    }
+    return false;
 #endif
   }
 
@@ -220,15 +188,6 @@ private:
   static void touchShape(void *, wl_touch *, int32_t, wl_fixed_t, wl_fixed_t) {}
   static void touchOrientation(void *, wl_touch *, int32_t, wl_fixed_t) {}
 
-  static void frameDone(void *data, wl_callback *callback, uint32_t) {
-    auto &self = *static_cast<WaylandTouch *>(data);
-    wl_callback *expected = callback;
-    (void)self.fFrameCallback.compare_exchange_strong(
-        expected, nullptr, std::memory_order_acq_rel);
-    wl_callback_destroy(callback);
-    self.fFrameReady.store(true, std::memory_order_release);
-  }
-
   inline static const wl_registry_listener kRegistryListener = {
       registryGlobal, registryRemove};
   inline static const wl_seat_listener kSeatListener = {seatCapabilities,
@@ -236,15 +195,12 @@ private:
   inline static const wl_touch_listener kTouchListener = {
       touchDown,   touchUp,    touchMotion, touchFrame,
       touchCancel, touchShape, touchOrientation};
-  inline static const wl_callback_listener kFrameListener = {frameDone};
 
   wl_display *fDisplay = nullptr;
   wl_registry *fRegistry = nullptr;
   wl_seat *fSeat = nullptr;
   wl_touch *fTouch = nullptr;
   wl_surface *fSurface = nullptr;
-  std::atomic<wl_callback *> fFrameCallback{nullptr};
-  std::atomic<bool> fFrameReady{true};
   std::function<void(const Event &)> fPush;
   int32_t fContact = -1;
   float fX = 0.0f;
@@ -356,6 +312,8 @@ public:
         this->push(event);
       }
     });
+    fSuspendWhenInactive =
+        fWaylandTouch.nativeWayland() && this->postmarketOS();
     this->notePlacement();
     return true;
   }
@@ -363,10 +321,13 @@ public:
   [[nodiscard]] glfw::GLFWwindow *window() const { return fWindow; }
   [[nodiscard]] WindowExtent initialExtent() const { return fInitial; }
   [[nodiscard]] int refreshHz() const { return fRefreshHz; }
-  [[nodiscard]] bool compositorFrameReady() const {
-    return fWaylandTouch.frameReady();
+  [[nodiscard]] bool windowMayRender() const {
+    if (fWindowIconified.load(std::memory_order_acquire)) {
+      return false;
+    }
+    return !fSuspendWhenInactive ||
+           fWindowActive.load(std::memory_order_acquire);
   }
-  void armCompositorFrame() { fWaylandTouch.armFrameCallback(); }
 
   [[nodiscard]] bool pop(Event &event) { return fInput.tryPop(event); }
   void push(const Event &event) { (void)fInput.tryPush(event); }
@@ -553,6 +514,19 @@ public:
   }
 
 private:
+  [[nodiscard]] static bool postmarketOS() {
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    std::ifstream in("/etc/os-release");
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line == "ID=postmarketos" || line == "ID=\"postmarketos\"") {
+        return true;
+      }
+    }
+#endif
+    return false;
+  }
+
   [[nodiscard]] static double wallMs() {
     return glfw::glfwGetTime() * 1000.0;
   }
@@ -604,7 +578,8 @@ private:
     glfw::glfwSetWindowIconifyCallback(
         fWindow, [](glfw::GLFWwindow *window, int iconified) {
           auto &self = from(window);
-          self.fWindowIconified = iconified != glfw::kFalse;
+          self.fWindowIconified.store(iconified != glfw::kFalse,
+                                      std::memory_order_release);
           self.pushWindowActivity();
         });
     glfw::glfwSetWindowFocusCallback(
@@ -674,19 +649,21 @@ private:
   }
 
   void pushWindowActivity() {
-    const bool active = fWindowFocused && !fWindowIconified;
-    if (active == fWindowActive) {
+    const bool active =
+        fWindowFocused && !fWindowIconified.load(std::memory_order_acquire);
+    if (active == fWindowActive.load(std::memory_order_acquire)) {
       return;
     }
-    fWindowActive = active;
+    fWindowActive.store(active, std::memory_order_release);
     this->push({wallMs(), EventType::kWindowVisible, active ? 1 : 0});
   }
 
   glfw::GLFWwindow *fWindow = nullptr;
   bool fGlfwInitialized = false;
   bool fWindowFocused = true;
-  bool fWindowIconified = false;
-  bool fWindowActive = true;
+  std::atomic<bool> fWindowIconified{false};
+  std::atomic<bool> fWindowActive{true};
+  bool fSuspendWhenInactive = false;
   WindowExtent fInitial{};
   int fRefreshHz = 60;
   std::function<void()> fToggleFullscreen;

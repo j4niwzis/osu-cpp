@@ -1076,12 +1076,11 @@ private:
     }
     fLibraryRuntime.drainDroppedFiles();
     fInput.drainInput();
-    if (!fWindowRuntime.compositorFrameReady()) {
-      // Wayland deliberately has no cross-compositor minimized-state query.
-      // Its frame callback is the authoritative signal: when the surface is
-      // hidden, no callback arrives and no new UI frame is produced. Focus is
-      // intentionally irrelevant, so an uncovered unfocused window keeps
-      // drawing normally.
+    if (!fWindowRuntime.windowMayRender()) {
+      // A normal minimized window is reported directly. Plasma Mobile keeps
+      // task-switcher thumbnails live instead, so native Wayland on
+      // postmarketOS additionally treats loss of activity as hidden. That
+      // exception is deliberately not applied to desktop systems.
 #ifndef __EMSCRIPTEN__
       std::this_thread::sleep_for(std::chrono::milliseconds(4));
 #endif
@@ -1394,7 +1393,6 @@ private:
         damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
       }
     }
-    fWindowRuntime.armCompositorFrame();
     if (damage.empty() || !present::swapWithDamage(fWin.fPixelH, damage)) {
       glfw::glfwSwapBuffers(fWindow);
     }
