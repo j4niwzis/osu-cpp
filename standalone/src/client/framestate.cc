@@ -338,7 +338,16 @@ public:
     paint.setStrokeWidth(2.0f);
     paint.setColor(skia::colorSetARGB(255, 255, 0, 255));
     for (const auto &rect : fComputedClip) {
-      skia::SkRect outline = skia::SkRect::Make(rect);
+      // The regions are kept in device pixels; this draws before the frame's
+      // transform is lifted, so they go back into units to land on what they
+      // are outlining. Drawn in pixels they were offset by the scale, which
+      // made the tool report the wrong thing -- the one thing a tool for
+      // finding wrong repaints must never do.
+      skia::SkRect outline = skia::SkRect::MakeLTRB(
+          static_cast<float>(rect.fLeft) / fUiScale,
+          static_cast<float>(rect.fTop) / fUiScale,
+          static_cast<float>(rect.fRight) / fUiScale,
+          static_cast<float>(rect.fBottom) / fUiScale);
       outline.inset(1.0f, 1.0f);
       if (!outline.isEmpty()) {
         canvas->drawRect(outline, paint);
