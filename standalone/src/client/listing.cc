@@ -463,22 +463,29 @@ public:
 
     // The tree is rebuilt when what it shows changes, and reused otherwise.
     const std::uint64_t shape = this->treeShape(ctx);
+    float restoreScroll = 0.0f;
+    bool restoreScrollAfterLayout = false;
     if (!fScene || shape != fShape) {
       // A page arriving changes the shape, but not where the reader is: the
       // offset is carried over to the tree that replaces this one.
-      const float offset = fScroll != nullptr ? fScroll->current() : 0.0f;
+      restoreScroll = fScroll != nullptr ? fScroll->current() : 0.0f;
       fShape = shape;
       fScene = this->build();
       fRebuilt = true;
-      if (fScroll != nullptr && offset > 0.0f && !fScrollToStart) {
-        fScroll->setCurrent(offset);
-      }
+      restoreScrollAfterLayout = restoreScroll > 0.0f && !fScrollToStart;
     }
 
     const skia::SkRect screen = skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
     fTicking = false; // nodes counting out a delay set this again below
     fScene->updateTree(ctx.fNowMs);
     fScene->layoutIfNeeded(screen);
+    // ScrollGesture clamps jumps to its current bounds.  A newly-built
+    // container has no extent until this first layout, so restoring before
+    // it silently became a jump to zero after skiff adopted ScrollGesture.
+    if (restoreScrollAfterLayout && fScroll != nullptr) {
+      fScroll->setCurrent(restoreScroll);
+      fScene->layoutIfNeeded(screen);
+    }
     if (fRebuilt) {
       // A tree that has just been built has drawn nothing yet, so nothing in
       // it has marked itself: after the first layout it knows how big it is,

@@ -132,6 +132,23 @@ private:
     return line;
   }
 
+  static std::string withoutAnsi(std::string_view text) {
+    std::string plain;
+    plain.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+      if (text[i] == '\x1b' && i + 1 < text.size() && text[i + 1] == '[') {
+        i += 2;
+        while (i < text.size() &&
+               !(text[i] >= '@' && text[i] <= '~')) {
+          ++i;
+        }
+        continue;
+      }
+      plain.push_back(text[i]);
+    }
+    return plain;
+  }
+
   static std::string kscreenRotation(std::string_view value) {
     value = trimmed(value);
     if (value == "1" || value == "None" || value == "normal") {
@@ -165,16 +182,20 @@ private:
     std::array<char, 1024> buffer{};
     while (::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) !=
            nullptr) {
-      std::string_view line(buffer.data());
-      const std::string_view text = trimmed(line);
+      const std::string plain = withoutAnsi(buffer.data());
+      const std::string_view text = trimmed(plain);
       if (text.starts_with("Output: ")) {
         finish();
         std::istringstream fields{std::string(text)};
         std::string label;
         fields >> label >> current.fName;
-      } else if (text == "enabled") {
+        // KScreen versions differ here: some print the state on following
+        // lines, while others keep it on the Output line.
+        current.fEnabled = text.find(" enabled") != std::string_view::npos;
+        current.fInternal = text.find(" Panel") != std::string_view::npos;
+      } else if (text == "enabled" || text.starts_with("enabled ")) {
         current.fEnabled = true;
-      } else if (text == "Panel") {
+      } else if (text == "Panel" || text.starts_with("Panel ")) {
         current.fInternal = true;
       } else if (text.starts_with("Rotation: ")) {
         current.fTransform = kscreenRotation(text.substr(10));
