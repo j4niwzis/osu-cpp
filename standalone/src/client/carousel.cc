@@ -118,21 +118,53 @@ public:
   // A wheel tick moves the view without moving the selection, as lazer's
   // carousel does.
   void scroll(float ticks) {
-    fTarget = std::clamp(fTarget - ticks * 90.0f, this->minScroll(),
-                         this->maxScroll());
+    fScroll.setBounds(this->minScroll(), this->maxScroll());
+    fScroll.wheel(ticks, 90.0f);
   }
+
+  // Dragging the list, the same gesture skiff's scrolling container has: the
+  // carousel positions its own panels and cannot be one, but a finger does
+  // not care about that. Called by the client, which owns the pointer.
+  //
+  // Returns true once this is a drag rather than a tap, so the press that
+  // started it does not also select a beatmap.
+  bool press(float y) {
+    fScroll.setBounds(this->minScroll(), this->maxScroll());
+    fTookDrag = false;
+    return fScroll.press(y);
+  }
+  bool drag(float y, double nowMs) {
+    if (!fScroll.drag(y, nowMs)) {
+      return false;
+    }
+    fFreeScroll = true; // the view is the reader's now, not the selection's
+    fTookDrag = true;
+    return true;
+  }
+
+  // Whether the gesture that just ended was a drag. A press that scrolled
+  // must not also pick a beatmap.
+  [[nodiscard]] bool tookDrag() { return std::exchange(fTookDrag, false); }
+  void release() { fScroll.release(); }
+  [[nodiscard]] bool dragging() const noexcept { return fScroll.dragging(); }
 
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     auto result = fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
     result.fWantsAnotherFrame =
-        result.fWantsAnotherFrame || fScrollAnim != fTarget || fPop < 1.0f;
+        result.fWantsAnotherFrame || fScroll.moving() || fPop < 1.0f;
     return result;
   }
   [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
-  [[nodiscard]] float scrollOffset() const noexcept { return fScrollAnim; }
+  [[nodiscard]] float scrollOffset() const noexcept {
+    return fScroll.offset();
+  }
 
 private:
+  skiff::scene::ScrollGesture fScroll;
+  // Set once the reader drags: the view stops chasing the selection.
+  bool fFreeScroll = false;
+  bool fTookDrag = false;
   // lazer's Carousel.offsetX: panels bow away from the centre of the screen.
   [[nodiscard]] static float offsetX(float dist, float halfHeight) {
     constexpr float kCircleRadius = 3.0f;
@@ -304,15 +336,15 @@ private:
         break;
       }
     }
-    if (centre >= 0.0f) {
-      fTarget = std::clamp(centre - fCtx.fHeight * 0.5f, this->minScroll(),
-                           this->maxScroll());
+    if (centre >= 0.0f && !fFreeScroll && !fScroll.dragging()) {
+      fScroll.setBounds(this->minScroll(), this->maxScroll());
+      fScroll.glideTo(centre - fCtx.fHeight * 0.5f);
     }
   }
 
   void ease(const Ctx &ctx) {
-    fTarget = std::clamp(fTarget, this->minScroll(), this->maxScroll());
-    fScrollAnim = skiff::paint::approach(fScrollAnim, fTarget, 120.0f, ctx.fDtMs);
+    fScroll.setBounds(this->minScroll(), this->maxScroll());
+    fScroll.advance(ctx.fDtMs, 120.0f);
     fPop = std::min(1.0f, fPop + static_cast<float>(ctx.fDtMs) / 400.0f);
   }
 
@@ -325,17 +357,17 @@ private:
     const float pop = skiff::paint::outQuint(fPop);
     std::size_t used = 0;
     const float lookBehind = 2.0f * std::max(fSetHeight, fDiffHeight);
-    const float contentBottom = fScrollAnim + viewBottom - viewTop;
+    const float contentBottom = fScroll.offset() + viewBottom - viewTop;
     const std::size_t first = static_cast<std::size_t>(std::distance(
         fOffsets.begin(),
-        std::ranges::lower_bound(fOffsets, fScrollAnim - lookBehind)));
+        std::ranges::lower_bound(fOffsets, fScroll.offset() - lookBehind)));
     const std::size_t last = static_cast<std::size_t>(std::distance(
         fOffsets.begin(),
         std::ranges::upper_bound(fOffsets, contentBottom)));
     for (std::size_t i = first; i < last; ++i) {
       const Row &row = fRows[i];
       const float height = this->rowHeight(row);
-      const float y = viewTop + fOffsets[i] - fScrollAnim;
+      const float y = viewTop + fOffsets[i] - fScroll.offset();
       if (y + height < viewTop - height || y > viewBottom) {
         continue;
       }
@@ -378,8 +410,6 @@ private:
   float fActiveX = 25.0f;
   float fPanelWidth = 680.0f;
   float fLeft = 0.0f;
-  float fTarget = 0.0f;
-  float fScrollAnim = 0.0f;
   float fPop = 1.0f;
   int fFollowedSet = -1;
   int fFollowedDiff = -1;

@@ -76,7 +76,7 @@ endif()
 CPMAddPackage(
   NAME skiff
   GITHUB_REPOSITORY j4niwzis/skiff
-  GIT_TAG 73f1b641c2dea634c34798617268b698661ea85f
+  GIT_TAG e542ddea63764a1b5774dec980e27726fac4c3ff
 )
 
 # The widgets that sit on it, one module each. Pulls skiff in behind it.

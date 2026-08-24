@@ -127,6 +127,9 @@ public:
       if (fApp.fReplayBrowser.panelsDragging()) {
         fApp.fReplayBrowser.dragPanels(units.fX);
       }
+      if (fApp.fState == State::kSongSelect) {
+        fApp.fCarousel.drag(units.fY, ev.fWallMs);
+      }
       if (fApp.fState == State::kPlaying && !fApp.fAutoplay) {
         fApp.fCursor = fApp.fPlayback.cursorFromEvent(units);
         const double at = this->eventGameTime(ev.fWallMs);
@@ -527,6 +530,7 @@ public:
         } else {
           this->routePointer(skiff::scene::PointerAction::kUp,
                              fApp.fWin.fMouseX, fApp.fWin.fMouseY);
+          this->releaseCarousel();
           fApp.fOverlays.settingsClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
                                        false);
           fApp.fScreens.filterClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
@@ -649,6 +653,33 @@ public:
     return fApp.fInputRouter.text(event);
   }
 
+  // A press that scrolled the list is a scroll and nothing else; one that
+  // stayed put picks what it landed on.
+  void releaseCarousel() {
+    if (fApp.fState != State::kSongSelect) {
+      return;
+    }
+    const bool dragged = fApp.fCarousel.dragging() || fApp.fCarousel.tookDrag();
+    fApp.fCarousel.release();
+    if (dragged) {
+      return;
+    }
+    const auto hit = fApp.fCarousel.click(fApp.fWin.fMouseX, fApp.fWin.fMouseY);
+    if (!hit.fHit) {
+      return;
+    }
+    if (hit.fDiff < 0) {
+      fApp.fLibrary.selSet() = hit.fSet;
+      fApp.fLibrary.selDiff() = 0;
+    } else if (fApp.fLibrary.selSet() == hit.fSet &&
+               fApp.fLibrary.selDiff() == hit.fDiff) {
+      fApp.startPlay(hit.fSet, hit.fDiff); // second click plays
+    } else {
+      fApp.fLibrary.selSet() = hit.fSet;
+      fApp.fLibrary.selDiff() = hit.fDiff;
+    }
+  }
+
   void clickAt(float x, float y) {
     if (fApp.fScreens.confirmDeleteClick(x, y)) {
       return;
@@ -693,20 +724,11 @@ public:
       if (fApp.fScreens.selectFooterClick(x, y)) {
         return;
       }
-      if (const auto hit = fApp.fCarousel.click(x, y); hit.fHit) {
-        if (hit.fDiff < 0) {
-          fApp.fLibrary.selSet() = hit.fSet;
-          fApp.fLibrary.selDiff() = 0;
-        } else if (fApp.fLibrary.selSet() == hit.fSet &&
-                   fApp.fLibrary.selDiff() == hit.fDiff) {
-          fApp.startPlay(hit.fSet, hit.fDiff); // second click plays
-        } else {
-          fApp.fLibrary.selSet() = hit.fSet;
-          fApp.fLibrary.selDiff() = hit.fDiff;
-        }
-        return;
-      }
-      break;
+      // The press only starts the gesture. Which beatmap it picked is
+      // decided when the finger comes up, and not at all if it scrolled --
+      // otherwise dragging the list changes the selection under you.
+      fApp.fCarousel.press(y);
+      return;
     case State::kDownload: {
       if (fApp.fSetPage.open()) {
         const auto page = fApp.fSetPage.click(x, y);
