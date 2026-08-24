@@ -545,6 +545,11 @@ private:
         fWindow, [](glfw::GLFWwindow *window, int, int) {
           from(window).notePlacement();
         });
+    glfw::glfwSetWindowIconifyCallback(
+        fWindow, [](glfw::GLFWwindow *window, int iconified) {
+          from(window).push({wallMs(), EventType::kWindowVisible,
+                             iconified == glfw::kFalse ? 1 : 0});
+        });
     glfw::glfwSetMouseButtonCallback(
         fWindow, [](glfw::GLFWwindow *window, int button, int action, int) {
           from(window).push(

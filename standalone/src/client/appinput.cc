@@ -99,6 +99,15 @@ public:
     case EventType::kResize:
       fApp.resize(ev.fA, ev.fB);
       break;
+    case EventType::kWindowVisible:
+      if (ev.fA == 0) {
+        (void)fApp.fDisplayOrientation.restore();
+      } else if (fApp.fDisplayOrientation.apply(
+                     fApp.fSettings.choice("orientation"))) {
+        fApp.fWindowRuntime.requestDisplayRefresh(
+            fApp.fSettings.choice("orientation") > 0);
+      }
+      break;
     case EventType::kCursorMove: {
       // The window reports device pixels. Everything above the frame -- the
       // trees, the playfield, every rectangle anything is tested against --
@@ -662,7 +671,10 @@ public:
   // A press that scrolled the list is a scroll and nothing else; one that
   // stayed put picks what it landed on.
   void releaseCarousel() {
-    if (fApp.fState != State::kSongSelect) {
+    // A release can arrive after another screen changed into song select --
+    // notably Quit in the pause menu -- or after an overlay consumed the
+    // press. Neither gesture belongs to the carousel underneath it.
+    if (fApp.fState != State::kSongSelect || !fApp.fCarousel.pressed()) {
       return;
     }
     const bool dragged = fApp.fCarousel.dragging() || fApp.fCarousel.tookDrag();
