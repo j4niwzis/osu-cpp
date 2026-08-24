@@ -71,12 +71,20 @@ endif()
 
 # skiff, the UI framework: Skia wrapper, painter, scene graph, drawables.
 # Everything the client draws with comes from here; nothing in there knows
-# what a beatmap is. Kept as its own project so it can be lifted out whole.
-CPMAddPackage(NAME skiff SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/../skiff)
+# what a beatmap is. It lives in a repository of its own now, pinned to a
+# commit -- moving to a newer skiff should be a visible change here.
+CPMAddPackage(
+  NAME skiff
+  GITHUB_REPOSITORY j4niwzis/skiff
+  GIT_TAG 9cd9487b0700eacffe33e9d60c1ee78a8df57f5d
+)
 
 # The widgets that sit on it, one module each. Pulls skiff in behind it.
-CPMAddPackage(NAME skiff_widgets
-  SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/../skiff-widgets)
+CPMAddPackage(
+  NAME skiff_widgets
+  GITHUB_REPOSITORY j4niwzis/skiff-widgets
+  GIT_TAG 2c1fe92e403023c8a4c1d3f4c74b4340e978bdb4
+)
 
 # ---- Create binary ----
 
