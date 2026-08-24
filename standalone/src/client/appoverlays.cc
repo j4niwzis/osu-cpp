@@ -128,7 +128,8 @@ public:
     fApp.setFullscreen(fApp.fSettings.flag("fullscreen"));
     if (fApp.fDisplayOrientation.apply(
             fApp.fSettings.choice("orientation"))) {
-      fApp.fWindowRuntime.requestDisplayRefresh();
+      fApp.fWindowRuntime.requestDisplayRefresh(
+          fApp.fSettings.choice("orientation") > 0);
     }
     fApp.fMirrors.setPreferred(
         static_cast<std::size_t>(std::max(0, fApp.fSettings.choice("mirror"))));
