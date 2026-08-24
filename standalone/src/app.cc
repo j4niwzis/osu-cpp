@@ -31,6 +31,7 @@ import client.filtercontrol;
 import client.library;
 import client.listing;
 import client.mirrors;
+import client.osk;
 import client.carousel;
 import client.songselect;
 import client.pause;
@@ -548,6 +549,12 @@ private:
     auto fonts = client::loadClientFonts(20.0f);
     fFont = std::move(fonts.fUi);
     skiff::nodes::Text::setFont(&fFont);
+    // A keyboard is raised when focus enters a text field and dropped when it
+    // leaves. Wired here rather than at every text box: which tree the focus
+    // is in is not something a text box knows either.
+    skiff::scene::Drawable::setTextFocusHook(
+        [](bool inText) { client::osk::setVisible(inText); });
+
     fDisplayFont = std::move(fonts.fDisplay);
     this->resize(fWin.fPixelW, fWin.fPixelH);
 
@@ -601,6 +608,8 @@ private:
     auto fonts = client::loadClientFonts(20.0f);
     fFont = std::move(fonts.fUi);
     skiff::nodes::Text::setFont(&fFont);
+    skiff::scene::Drawable::setTextFocusHook(
+        [](bool inText) { client::osk::setVisible(inText); });
     fDisplayFont = std::move(fonts.fDisplay);
     this->resize(fWin.fPixelW, fWin.fPixelH);
 
