@@ -335,18 +335,6 @@ public:
       }
       return;
     }
-    // Playing. The pause button in the corner belongs to the client, not to
-    // the game: it is answered before the press becomes a tap, and it works
-    // while a replay is being watched, where taps are ignored altogether.
-    if (fApp.fState == State::kPlaying && button == glfw::kMouseButtonLeft &&
-        action == glfw::kPress &&
-        client::GameplayView::pauseButtonBounds(
-            fApp.fWin.fScreenW, fApp.fWin.fScreenH, fApp.uiScale())
-            .contains(fApp.fWin.fMouseX, fApp.fWin.fMouseY)) {
-      fApp.pauseGame();
-      return;
-    }
-
     if (fApp.fAutoplay) {
       return;
     }
@@ -533,6 +521,18 @@ public:
                                     false);
         }
       }
+      return;
+    }
+
+    // Playing. The pause button in the corner belongs to the client, not to
+    // the game: it is answered before the press becomes a tap, and it works
+    // while a replay is being watched, where taps are ignored altogether.
+    if (fApp.fState == State::kPlaying && button == glfw::kMouseButtonLeft &&
+        action == glfw::kPress &&
+        client::GameplayView::pauseButtonBounds(
+            fApp.fWin.fScreenW, fApp.fWin.fScreenH, fApp.uiScale())
+            .contains(fApp.fWin.fMouseX, fApp.fWin.fMouseY)) {
+      fApp.pauseGame();
       return;
     }
 
