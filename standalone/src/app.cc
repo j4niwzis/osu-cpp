@@ -527,6 +527,25 @@ private:
   }
 
   [[nodiscard]] int runWindowed() {
+#ifndef __EMSCRIPTEN__
+    // Output orientation has to be settled before GLFW snapshots the primary
+    // monitor and creates its fullscreen surface. Resizing an Xwayland
+    // fullscreen window from portrait afterwards is compositor-dependent and
+    // can leave a landscape output presenting a portrait-sized framebuffer.
+    std::filesystem::path earlySettings = "settings.json";
+    if (const char *home = std::getenv("HOME"); home != nullptr) {
+      earlySettings = std::filesystem::path(home) / ".local" / "share" /
+                      "osu_client" / "settings.json";
+    }
+    fSettings.load(earlySettings);
+    if (fDisplayOrientation.apply(fSettings.choice("orientation"))) {
+      // kscreen-doctor has completed, but Xwayland publishes the compositor's
+      // new logical screen asynchronously. Give it a short startup window
+      // before glfwGetVideoMode takes the dimensions used to create the
+      // fullscreen window.
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+#endif
     if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); })) {
       return 1;
     }

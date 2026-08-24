@@ -547,8 +547,15 @@ private:
         });
     glfw::glfwSetWindowIconifyCallback(
         fWindow, [](glfw::GLFWwindow *window, int iconified) {
-          from(window).push({wallMs(), EventType::kWindowVisible,
-                             iconified == glfw::kFalse ? 1 : 0});
+          auto &self = from(window);
+          self.fWindowIconified = iconified != glfw::kFalse;
+          self.pushWindowActivity();
+        });
+    glfw::glfwSetWindowFocusCallback(
+        fWindow, [](glfw::GLFWwindow *window, int focused) {
+          auto &self = from(window);
+          self.fWindowFocused = focused != glfw::kFalse;
+          self.pushWindowActivity();
         });
     glfw::glfwSetMouseButtonCallback(
         fWindow, [](glfw::GLFWwindow *window, int button, int action, int) {
@@ -610,8 +617,20 @@ private:
                 static_cast<float>(y * scaleY)});
   }
 
+  void pushWindowActivity() {
+    const bool active = fWindowFocused && !fWindowIconified;
+    if (active == fWindowActive) {
+      return;
+    }
+    fWindowActive = active;
+    this->push({wallMs(), EventType::kWindowVisible, active ? 1 : 0});
+  }
+
   glfw::GLFWwindow *fWindow = nullptr;
   bool fGlfwInitialized = false;
+  bool fWindowFocused = true;
+  bool fWindowIconified = false;
+  bool fWindowActive = true;
   WindowExtent fInitial{};
   int fRefreshHz = 60;
   std::function<void()> fToggleFullscreen;
