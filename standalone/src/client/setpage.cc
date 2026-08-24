@@ -537,14 +537,8 @@ public:
   }
   [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
-  [[nodiscard]] Result click(float x, float y) {
-    if (!fOpen || !fScene) {
-      return {};
-    }
-    fPending = {};
-    fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
-    return fPending;
-  }
+  void beginPointer() { fPending = {}; }
+  [[nodiscard]] Result takePending() { return std::exchange(fPending, {}); }
 
 private:
   [[nodiscard]] std::string fingerprintFor(const Entry &e,

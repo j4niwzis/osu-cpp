@@ -534,22 +534,8 @@ public:
     }
   }
 
-  [[nodiscard]] Result click(float x, float y) {
-    fPending = {};
-    // Listing actions are consumed synchronously from this call on pointer
-    // down. Clickable completes its activation through the routed pointer
-    // sequence, after this Result has already been returned, so its callback
-    // cannot carry navigation back to AppInput. Keep the visible button as a
-    // scene node for drawing and hover, but answer its overlay bounds here.
-    if (skia::SkRect::MakeXYWH(kBackInset, kBackInset, kBackSize, kBackSize)
-            .contains(x, y)) {
-      return {Action::kBack, 0};
-    }
-    if (fScene) {
-      fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
-    }
-    return fPending;
-  }
+  void beginPointer() { fPending = {}; }
+  [[nodiscard]] Result takePending() { return std::exchange(fPending, {}); }
 
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
     auto result = fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};

@@ -116,6 +116,11 @@ public:
       units.fY = ev.fY / scale;
       fApp.fWin.fMouseX = units.fX;
       fApp.fWin.fMouseY = units.fY;
+      if (fDownloadPointerDown &&
+          std::hypot(units.fX - fDownloadPointerX,
+                     units.fY - fDownloadPointerY) > 10.0f) {
+        fDownloadPointerMoved = true;
+      }
       this->routePointer(skiff::scene::PointerAction::kMove, units.fX,
                          units.fY);
       if (fApp.fSettingsPanel.dragging()) {
@@ -530,6 +535,7 @@ public:
         } else {
           this->routePointer(skiff::scene::PointerAction::kUp,
                              fApp.fWin.fMouseX, fApp.fWin.fMouseY);
+          this->finishDownloadPointer();
           this->releaseCarousel();
           fApp.fOverlays.settingsClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
                                        false);
@@ -730,42 +736,18 @@ public:
       fApp.fCarousel.press(y);
       return;
     case State::kDownload: {
+      fDownloadPointerDown = true;
+      fDownloadPointerMoved = false;
+      fDownloadPointerX = x;
+      fDownloadPointerY = y;
+      fDownloadPointerOnPage = fApp.fSetPage.open();
       if (fApp.fSetPage.open()) {
-        const auto page = fApp.fSetPage.click(x, y);
-        using PageAction = client::setpage::SetPage::Action;
-        if (page.fAction == PageAction::kDownload) {
-          fApp.fMirrors.startDownloadForSet(fApp.fSetPage.setId());
-        } else if (page.fAction == PageAction::kPreview) {
-          fApp.fMirrors.togglePreviewForSet(fApp.fSetPage.setId());
-        } else if (page.fAction == PageAction::kClose) {
-          this->closeSetPage();
-        }
+        fApp.fSetPage.beginPointer();
+        this->routePointer(skiff::scene::PointerAction::kDown, x, y);
         return; // the page covers the listing underneath
       }
-      const auto result = fApp.fListing.click(x, y);
-      switch (result.fAction) {
-      case client::listing::Listing::Action::kSearch:
-        fApp.fMirrors.startSearch(fApp.fListing.filters());
-        break;
-      case client::listing::Listing::Action::kDownload:
-        fApp.fMirrors.startDownload(result.fIndex);
-        break;
-      case client::listing::Listing::Action::kOpen:
-        if (result.fIndex < fApp.fMirrors.results().size()) {
-          fApp.fSetPage.show(fApp.fMirrors.results()[result.fIndex]);
-          fApp.fMirrors.requestPageCover(result.fIndex);
-        }
-        break;
-      case client::listing::Listing::Action::kPreview:
-        fApp.fMirrors.togglePreview(result.fIndex);
-        break;
-      case client::listing::Listing::Action::kBack:
-        this->leaveDownload();
-        break;
-      case client::listing::Listing::Action::kRefilter:
-      case client::listing::Listing::Action::kNone:
-        break;
-      }
+      fApp.fListing.beginPointer();
+      this->routePointer(skiff::scene::PointerAction::kDown, x, y);
       return;
     }
     case State::kPaused:
@@ -775,6 +757,63 @@ public:
       this->applyResultAction(fApp.fReplayBrowser.clickResultAction(x, y));
       break;
     default:
+      break;
+    }
+  }
+
+  void finishDownloadPointer() {
+    if (!fDownloadPointerDown) {
+      return;
+    }
+    fDownloadPointerDown = false;
+    if (fDownloadPointerOnPage) {
+      const auto result = fApp.fSetPage.takePending();
+      if (fDownloadPointerMoved) {
+        return;
+      }
+      using Action = client::setpage::SetPage::Action;
+      switch (result.fAction) {
+      case Action::kDownload:
+        fApp.fMirrors.startDownloadForSet(fApp.fSetPage.setId());
+        break;
+      case Action::kPreview:
+        fApp.fMirrors.togglePreviewForSet(fApp.fSetPage.setId());
+        break;
+      case Action::kClose:
+        this->closeSetPage();
+        break;
+      case Action::kSelectDiff:
+      case Action::kNone:
+        break;
+      }
+      return;
+    }
+
+    const auto result = fApp.fListing.takePending();
+    if (fDownloadPointerMoved) {
+      return;
+    }
+    switch (result.fAction) {
+    case client::listing::Listing::Action::kSearch:
+      fApp.fMirrors.startSearch(fApp.fListing.filters());
+      break;
+    case client::listing::Listing::Action::kDownload:
+      fApp.fMirrors.startDownload(result.fIndex);
+      break;
+    case client::listing::Listing::Action::kOpen:
+      if (result.fIndex < fApp.fMirrors.results().size()) {
+        fApp.fSetPage.show(fApp.fMirrors.results()[result.fIndex]);
+        fApp.fMirrors.requestPageCover(result.fIndex);
+      }
+      break;
+    case client::listing::Listing::Action::kPreview:
+      fApp.fMirrors.togglePreview(result.fIndex);
+      break;
+    case client::listing::Listing::Action::kBack:
+      this->leaveDownload();
+      break;
+    case client::listing::Listing::Action::kRefilter:
+    case client::listing::Listing::Action::kNone:
       break;
     }
   }
@@ -886,6 +925,11 @@ public:
 private:
   using State = typename Host::State;
   Host &fApp;
+  bool fDownloadPointerDown = false;
+  bool fDownloadPointerMoved = false;
+  bool fDownloadPointerOnPage = false;
+  float fDownloadPointerX = 0.0f;
+  float fDownloadPointerY = 0.0f;
 };
 
 } // namespace client
