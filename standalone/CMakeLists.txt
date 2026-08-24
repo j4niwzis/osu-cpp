@@ -38,7 +38,13 @@ include(../cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 
-find_package(Boost REQUIRED) # header-only: asio, beast, json (bjson needed on wasm too)
+# Boost is header-only here. Prefer its CMake package when available, but also
+# support installations which contain only the assembled Boost include tree
+# (notably the Flatpak build and CMake versions without FindBoost).
+find_package(Boost QUIET)
+if(NOT Boost_FOUND)
+  find_path(Boost_INCLUDE_DIRS NAMES boost/asio.hpp REQUIRED)
+endif()
 
 if(EMSCRIPTEN_BUILD)
   pkg_check_modules(SKIA   REQUIRED skia)
