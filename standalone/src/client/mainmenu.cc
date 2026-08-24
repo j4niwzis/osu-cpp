@@ -624,13 +624,31 @@ public:
           return this->trigger(i);
         }
       }
-      return std::nullopt;
+      return this->clickedNothing();
     }
     if (piece >= 0 && piece < static_cast<int>(fBtns.size())) {
       const auto index = static_cast<std::size_t>(piece);
       if (fBtns[index].fVisible == fState && fMenu.buttonExpand(index) > 0.5f) {
         return this->trigger(index);
       }
+    }
+    return this->clickedNothing();
+  }
+
+  // A press that hit no button and no logo folds the menu back a level, the
+  // way pressing escape does. lazer does nothing here; this is a deliberate
+  // difference, so that the whole menu can be walked back out of with only a
+  // pointer -- there is no keyboard on a tablet.
+  [[nodiscard]] std::optional<Action> clickedNothing() {
+    switch (fState) {
+    case State::kPlay:
+      this->setState(State::kTopLevel);
+      return std::nullopt;
+    case State::kTopLevel:
+      this->setState(State::kInitial);
+      return std::nullopt;
+    case State::kInitial:
+      break; // already as far back as the menu goes
     }
     return std::nullopt;
   }

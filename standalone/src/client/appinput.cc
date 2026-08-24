@@ -618,10 +618,20 @@ public:
       }
       return;
     }
-    if (fApp.fOverlays.settingsClick(x, y, true)) {
+    // An overlay that is up takes the press whether or not something in it
+    // was hit. A click beside it means "close this", not "reach the screen
+    // underneath" -- which is what it used to mean, so a stray click next to
+    // the settings panel landed in the carousel behind it.
+    if (fApp.fSettingsPanel.open()) {
+      if (!fApp.fOverlays.settingsClick(x, y, true)) {
+        fApp.fOverlays.closeSettings();
+      }
       return;
     }
-    if (fApp.fModSelect.open() && fApp.fOverlays.modClick(x, y)) {
+    if (fApp.fModSelect.open()) {
+      if (!fApp.fOverlays.modClick(x, y)) {
+        fApp.fModSelect.close();
+      }
       return;
     }
     switch (fApp.fState) {
