@@ -1025,8 +1025,9 @@ private:
                                  onScreen.height() >= fWin.fPixelH)) {
         fFrame.damageAll("the window system asked for a repaint");
       } else {
-        // visiblePortion answers in pixels; damage() is told in units.
-        const float scale = this->pixelScale();
+        // visiblePortion answers in pixels; damage() is told in units, and
+        // in the units the frame is actually being drawn in.
+        const float scale = fFrame.uiScale();
         fFrame.damage(skia::SkRect::MakeLTRB(
             static_cast<float>(onScreen.fLeft) / scale,
             static_cast<float>(onScreen.fTop) / scale,

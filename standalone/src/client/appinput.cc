@@ -98,7 +98,14 @@ public:
       // The window reports device pixels. Everything above the frame -- the
       // trees, the playfield, every rectangle anything is tested against --
       // is in units, so the position is converted once, here.
-      const float scale = fApp.pixelScale();
+      //
+      // Asked of the frame, not of the settings: the setting is what has been
+      // chosen, the frame holds what has actually been applied. While those
+      // differ -- and they do, between moving the slider and letting go of it
+      // -- dividing by the chosen one puts the pointer in a space the trees
+      // were never laid out in, and every press lands beside what it is
+      // aimed at.
+      const float scale = fApp.fFrame.uiScale();
       Event units = ev;
       units.fX = ev.fX / scale;
       units.fY = ev.fY / scale;

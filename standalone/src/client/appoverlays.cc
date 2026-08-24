@@ -44,6 +44,25 @@ public:
     fApp.fSettingsPanel.render(canvas);
   }
 
+  // The interface scale decides how many pixels a unit is, and every surface,
+  // layout and pointer position is derived from it. Re-deriving them is
+  // exactly what a resize does, so it goes through that path -- and that path
+  // throws the surfaces away, clears the blit history and repaints the window
+  // whole. At the rate a mouse moves, that is a flickering crawl, so it is
+  // deferred until the handle is let go.
+  //
+  // Nothing else may read the chosen value: until this runs, the frame, the
+  // trees and the pointer are all still in the old one, and mixing the two
+  // puts presses beside what they are aimed at.
+  void applyInterfaceScale() {
+    if (fApp.fSettingsPanel.dragging()) {
+      return;
+    }
+    if (std::abs(fApp.pixelScale() - fApp.fFrame.uiScale()) > 1e-4f) {
+      fApp.resize(fApp.fWin.fPixelW, fApp.fWin.fPixelH);
+    }
+  }
+
   bool settingsClick(float x, float y, bool pressed) {
     // Whatever it hit, the panel draws it next frame.
     fApp.fSettingsPanel.touched();
@@ -53,6 +72,11 @@ public:
       if (!pressed || !fApp.fSettingsPanel.dragging()) {
         fApp.fSettings.save();
       }
+    }
+    if (!pressed) {
+      // Letting go is when a deferred change lands, whether or not the panel
+      // called this release a change.
+      this->applyInterfaceScale();
     }
     return hit != client::SettingsPanel::Hit::kNone;
   }
@@ -101,19 +125,7 @@ public:
   void applySettings() {
     this->applyStarOrder();
     this->applyAudioSettings();
-    // The interface scale decides how many pixels a unit is, which every
-    // surface, layout and pointer position is derived from. Re-deriving them
-    // is exactly what a resize does, so it goes through the same path -- and
-    // that path throws the surfaces away and repaints the window whole.
-    //
-    // Not while the slider is being dragged, therefore. Applied per pixel of
-    // mouse travel it rebuilt the surface dozens of times a second, which is
-    // the flickering and the crawling: the work of a window resize, at the
-    // rate of a mouse move. It lands when the handle is let go.
-    if (!fApp.fSettingsPanel.dragging() &&
-        std::abs(fApp.pixelScale() - fApp.fFrame.uiScale()) > 1e-4f) {
-      fApp.resize(fApp.fWin.fPixelW, fApp.fWin.fPixelH);
-    }
+    this->applyInterfaceScale();
     const float dim = fApp.fSettings.value("dim");
     if (std::abs(dim - fApp.fAppliedDim) > 1e-4f) {
       fApp.fAppliedDim = dim;
