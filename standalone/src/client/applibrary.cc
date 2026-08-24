@@ -276,11 +276,24 @@ public:
         Module.osuPickBeatmap();
     });
 #else
-    const std::filesystem::path chosen = this->runFilePicker();
-    if (chosen.empty()) {
-      return; // cancelled, or no dialog available (already reported)
+    // The picker is another process and the user takes as long as they take.
+    // Waited for here, on the thread that draws, it stops the frame loop for
+    // the whole of that: the window goes unresponsive and stays on whatever
+    // was last in the buffer. It runs on the loader instead, and the archive
+    // is adopted in the completion, which is back on the drawing thread.
+    if (fPickerOpen) {
+      return; // one dialog at a time; they share a temporary file
     }
-    this->importFrom(chosen);
+    fPickerOpen = true;
+    auto chosen = std::make_shared<std::filesystem::path>();
+    fApp.fLoader.submit(
+        kPickerKey, [this, chosen] { *chosen = this->runFilePicker(); },
+        [this, chosen] {
+          fPickerOpen = false;
+          if (!chosen->empty()) {
+            this->importFrom(*chosen);
+          }
+        });
 #endif
   }
 
@@ -344,6 +357,11 @@ public:
 private:
   using State = typename Host::State;
   Host &fApp;
+  // A file dialog is running on the loader. Nothing else may start one: they
+  // all write the chosen path to the same temporary file.
+  bool fPickerOpen = false;
+  // Distinct from the loader keys the library uses for sets, art and audio.
+  static constexpr std::uint64_t kPickerKey = 9ull << 32;
 };
 
 } // namespace client
