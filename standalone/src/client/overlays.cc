@@ -517,8 +517,7 @@ public:
     fCustomBox->setText(fCustom);
     fCustomBox->setSelected(usingCustom);
     fCustomBox->tickCaret(nowMs, !fCustom.empty());
-    fStatusText->setText(
-        fStatus.empty() ? "requires ffmpeg in PATH    Esc to cancel" : fStatus);
+    fStatusText->setText(fStatus.empty() ? "Esc to cancel" : fStatus);
 
     const skia::SkRect screen = skia::SkRect::MakeWH(
         static_cast<float>(screenW), static_cast<float>(screenH));

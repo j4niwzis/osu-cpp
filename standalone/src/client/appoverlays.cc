@@ -8,6 +8,7 @@ import skin;
 import client.audio;
 import client.hitsoundmix;
 import client.mods;
+import client.portal;
 import client.settingspanel;
 import client.util;
 import client.video;
@@ -183,7 +184,7 @@ public:
       return false;
     }
     if (fApp.fExportDialog.click(x, y)) {
-      this->exportReplayVideo();
+      this->exportReplayVideo({});
     }
     return true;
   }
@@ -196,7 +197,7 @@ public:
     fApp.fExportDialog.setStatus(std::move(reason));
   }
 
-  void exportReplayVideo() {
+  void exportReplayVideo(std::filesystem::path output) {
     if (fApp.fVideoExporter.active()) {
       return; // one at a time
     }
@@ -214,10 +215,8 @@ public:
     request.fOptions.fHeight = typedHeight > 0 ? typedHeight : preset.fHeight;
     request.fOptions.fFps = 60;
 
-    // Into the working directory, named for what it is: the replay it came
-    // from when there is one, the difficulty otherwise, and the size it was
-    // rendered at. Two exports of the same play at different sizes are two
-    // files rather than one overwriting the other.
+    // Suggest a name describing the replay and render size. The save portal
+    // decides the directory; two sizes naturally receive different names.
     const std::string stem =
         !fApp.fReplayPath.empty()
             ? fApp.fReplayPath.stem().string()
@@ -225,15 +224,41 @@ public:
     std::string safe;
     for (const char c : stem) {
       const bool awkward = static_cast<unsigned char>(c) < 0x20 || c == '/' ||
-                           c == '\\' || c == ':';
+                           c == '\\' || c == ':' || c == '\'';
       safe.push_back(awkward ? '_' : c);
     }
-    std::error_code cwdError;
-    const auto here = std::filesystem::current_path(cwdError);
-    request.fOptions.fOutput =
-        (cwdError ? fApp.fMapsDir.parent_path() : here) /
-        std::format("{}-{}x{}.mp4", safe, request.fOptions.fWidth,
-                    request.fOptions.fHeight);
+    const std::string suggested = std::format(
+        "{}-{}x{}.mp4", safe, request.fOptions.fWidth, request.fOptions.fHeight);
+    if (output.empty()) {
+#ifndef __EMSCRIPTEN__
+      if (fExportPickerOpen) {
+        return;
+      }
+      fExportPickerOpen = true;
+      fApp.fExportDialog.setStatus("choosing output file...");
+      auto chosen = std::make_shared<std::filesystem::path>();
+      fApp.fLoader.submit(
+          kExportPickerKey,
+          [chosen, suggested] {
+            *chosen = runExportPicker(suggested);
+          },
+          [this, chosen] {
+            fExportPickerOpen = false;
+            if (chosen->empty()) {
+              fApp.fExportDialog.setStatus("export cancelled");
+              return;
+            }
+            this->exportReplayVideo(*chosen);
+          });
+      return;
+#else
+      return;
+#endif
+    }
+    if (output.extension() != ".mp4") {
+      output += ".mp4";
+    }
+    request.fOptions.fOutput = std::move(output);
 
     // Written out before the encoder is started: it is told about its inputs
     // once, when it is launched, and an audio path handed over afterwards
@@ -346,7 +371,59 @@ public:
   }
 
 private:
+#ifndef __EMSCRIPTEN__
+  [[nodiscard]] static std::filesystem::path
+  runExportPicker(const std::string &suggested) {
+    const auto portal = client::portal::saveVideo("Export replay video",
+                                                   suggested);
+    if (portal.fPortalAvailable) {
+      return portal.fPath.value_or(std::filesystem::path{});
+    }
+
+    std::error_code ec;
+    const auto answer = std::filesystem::temp_directory_path(ec) /
+                        "osu_client_export.txt";
+    const std::string answerString = answer.string();
+    const std::string commands[] = {
+        std::format("zenity --file-selection --save --confirm-overwrite "
+                    "--file-filter='MP4 video | *.mp4' --filename='{}' "
+                    "--title='Export replay video'", suggested),
+        std::format("kdialog --getsavefilename '{}' '*.mp4|MP4 video'",
+                    suggested),
+        std::format("matedialog --file-selection --save --confirm-overwrite "
+                    "--filename='{}' --title='Export replay video'", suggested),
+        std::format("qarma --file-selection --save --confirm-overwrite "
+                    "--filename='{}' --title='Export replay video'", suggested),
+    };
+    for (const auto &pick : commands) {
+      const std::string bin = pick.substr(0, pick.find(' '));
+      if (std::system(("command -v " + bin + " > /dev/null 2>&1").c_str()) !=
+          0) {
+        continue;
+      }
+      std::filesystem::remove(answer, ec);
+      if (std::system((pick + " > '" + answerString + "' 2>/dev/null").c_str()) !=
+          0) {
+        return {};
+      }
+      std::ifstream in(answer);
+      std::string path;
+      std::getline(in, path);
+      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
+        path.pop_back();
+      }
+      return std::filesystem::path(path);
+    }
+    std::println(std::cerr,
+                 "[export] no save dialog available (portal, zenity, "
+                 "kdialog, matedialog or qarma)");
+    return {};
+  }
+#endif
+
   Host &fApp;
+  bool fExportPickerOpen = false;
+  static constexpr std::uint64_t kExportPickerKey = 10ull << 32;
 };
 
 } // namespace client
