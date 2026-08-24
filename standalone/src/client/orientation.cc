@@ -133,10 +133,10 @@ private:
         finish();
         const std::size_t end = line.find(' ');
         current.fName = std::string(line.substr(0, end));
-      } else if (line == "  Enabled: yes") {
+      } else if (line == " Enabled: yes") {
         current.fEnabled = true;
-      } else if (line.starts_with("  Transform: ")) {
-        current.fTransform = std::string(line.substr(13));
+      } else if (line.starts_with(" Transform: ")) {
+        current.fTransform = std::string(line.substr(12));
       }
     }
     finish();
@@ -171,6 +171,12 @@ private:
       }
     }
     if (selected == nullptr || selected->fTransform.empty()) {
+      if (!fWarned) {
+        std::println(std::cerr,
+                     "[display] landscape requested, but no enabled output "
+                     "with a reported transform was found");
+        fWarned = true;
+      }
       return false;
     }
     fOutput = selected->fName;
