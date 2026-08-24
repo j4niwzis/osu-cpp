@@ -120,6 +120,12 @@ modules:
 
   - name: mpg123
     buildsystem: autotools
+    make-args:
+      - ACLOCAL=aclocal
+      - AUTOMAKE=automake
+    make-install-args:
+      - ACLOCAL=aclocal
+      - AUTOMAKE=automake
     config-opts:
       - --disable-components
       - --enable-libmpg123
@@ -129,6 +135,13 @@ modules:
         url: https://github.com/libsdl-org/mpg123.git
         commit: c46daebce1a7628d24bde87ad1ec07d16e7c0019
         tag: v1.30.0
+      - type: shell
+        commands:
+          # Git normalises mtimes. Restore the generated autotools files as
+          # newer so make does not regenerate release artifacts unnecessarily.
+          - touch aclocal.m4
+          - find . -name Makefile.in -exec touch '{}' +
+          - touch configure
 
   - name: openal-soft
     buildsystem: cmake-ninja
