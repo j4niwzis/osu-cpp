@@ -382,7 +382,14 @@ public:
       // press that travelled is a scroll and nothing else.
       const bool travelled = std::abs(x - fPressX) > kTapSlop ||
                              std::abs(y - fPressY) > kTapSlop;
-      const Action action = std::exchange(fPending, {});
+      Action action = std::exchange(fPending, {});
+      // A plain Drawable inside ScrollContainer is now armed on down and
+      // activated on up, after the container has decided this was not a drag.
+      // The routed up immediately above writes fAction; controls that are not
+      // inside a scroll still use the action captured on down in fPending.
+      if (action.fKind == Action::kNone) {
+        action = std::exchange(fAction, {});
+      }
       if (!travelled && action.fKind != Action::kNone) {
         return this->applyAction(action, *fSettings, fPressX);
       }
