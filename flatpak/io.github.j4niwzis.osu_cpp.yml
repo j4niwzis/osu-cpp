@@ -106,6 +106,7 @@ modules:
   - name: libsndfile
     buildsystem: cmake-ninja
     config-opts:
+      - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
       - -DBUILD_EXAMPLES=OFF
       - -DBUILD_PROGRAMS=OFF
       - -DBUILD_REGTEST=OFF
