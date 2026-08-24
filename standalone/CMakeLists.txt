@@ -90,7 +90,7 @@ CPMAddPackage(
 CPMAddPackage(
   NAME skiff_widgets
   GITHUB_REPOSITORY j4niwzis/skiff-widgets
-  GIT_TAG 2c1fe92e403023c8a4c1d3f4c74b4340e978bdb4
+  GIT_TAG e44f0fc1683ef9ed80bc71092e4a759cd45bb403
 )
 
 # ---- Create binary ----
