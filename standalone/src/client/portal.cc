@@ -6,7 +6,16 @@ module;
 // back to whatever dialog binaries the machine has.
 #ifdef OSU_HAVE_SDBUS
 extern "C" {
+// sd-bus is an API, not one library. systemd ships it; basu is the same
+// interface unbundled, which is what a system without systemd has; elogind
+// carries it along for the same reason. The header differs, the calls do not.
+#if defined(OSU_SDBUS_BASU)
+#include <basu/sd-bus.h>
+#elif defined(OSU_SDBUS_ELOGIND)
+#include <elogind/sd-bus.h>
+#else
 #include <systemd/sd-bus.h>
+#endif
 }
 #endif
 

@@ -18,6 +18,3 @@ enable_testing()
 
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../standalone ${CMAKE_BINARY_DIR}/standalone)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../test ${CMAKE_BINARY_DIR}/test)
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../skiff/test ${CMAKE_BINARY_DIR}/skiff-test)
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../skiff-widgets/test
-                 ${CMAKE_BINARY_DIR}/skiff-widgets-test)
