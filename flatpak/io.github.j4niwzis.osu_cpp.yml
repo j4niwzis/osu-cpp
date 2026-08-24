@@ -205,11 +205,10 @@ modules:
         skia_enable_svg=false skia_enable_tools=false'
       - ninja -C out/flatpak -j${FLATPAK_BUILDER_N_JOBS} skia
       - install -Dm644 out/flatpak/libskia.a /app/lib/libskia.a
-      - mkdir -p /app/include/skia/include /app/include/skia/modules /app/include/skia/sksl /app/lib/pkgconfig
+      - mkdir -p /app/include/skia/include /app/include/skia/modules /app/lib/pkgconfig
       - cp -a include/. /app/include/skia/
       - cp -a include/. /app/include/skia/include/
       - cp -a modules/skcms /app/include/skia/modules/
-      - cp -a sksl/. /app/include/skia/sksl/
       - install -Dm644 ../skia.pc /app/lib/pkgconfig/skia.pc
     sources:
       - type: git
