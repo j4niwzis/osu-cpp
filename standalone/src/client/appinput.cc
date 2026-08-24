@@ -46,7 +46,12 @@ public:
       }
       this->applyEvent(ev);
     }
-    if (resized && (width != fApp.fWin.fScreenW || height != fApp.fWin.fScreenH)) {
+    // Both of these are device pixels, from the window system, and are
+    // compared against what the window actually is -- not against the screen
+    // in units, which is that divided by the interface scale and never equal
+    // to it once the scale is not one.
+    if (resized &&
+        (width != fApp.fWin.fPixelW || height != fApp.fWin.fPixelH)) {
       fApp.resize(width, height);
     }
 
@@ -63,7 +68,7 @@ public:
     int liveW = 0;
     int liveH = 0;
     if (present::surfaceSize(fApp.fWindow, &liveW, &liveH) &&
-        (liveW != fApp.fWin.fScreenW || liveH != fApp.fWin.fScreenH)) {
+        (liveW != fApp.fWin.fPixelW || liveH != fApp.fWin.fPixelH)) {
       fApp.resize(liveW, liveH);
     }
   }
