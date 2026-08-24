@@ -77,6 +77,8 @@ public:
                {"ask the driver", "1 (swap copies)", "2", "3"}});
     // The two things that draw whether or not anybody touched them. Off, the
     // menu and the pause screen stop asking for frames of their own.
+    this->add({1, "fullscreen", "Fullscreen", SettingKind::kToggle, 0.0f, 1.0f,
+               0.0f, 1.0f, ""});
     this->add({1, "uiscale", "Interface scale", SettingKind::kSlider, 0.5f,
                3.0f, 0.05f, 1.0f, "x"});
     this->add({1, "visualiser", "Logo visualiser", SettingKind::kToggle, 0.0f,

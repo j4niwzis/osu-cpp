@@ -309,6 +309,8 @@ private:
   // to be stretched by the blit -- so they are rebuilt, but not while the
   // window is still being dragged.
   float fSliderBodyScale = 0.0f;
+  // Set by F11 on the event thread, answered on the next frame.
+  std::atomic<bool> fFullscreenToggleRequest{false};
   bool fSliderBodiesStale = false;
   double fLastResizeWall = 0.0;
   // Set when a map is loaded and cleared by the frame that first shows it.
@@ -522,7 +524,7 @@ private:
   }
 
   [[nodiscard]] int runWindowed() {
-    if (!fWindowRuntime.open([this] { this->toggleFullscreen(); })) {
+    if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); })) {
       return 1;
     }
     fWindow = fWindowRuntime.window();
@@ -1035,6 +1037,7 @@ private:
             static_cast<float>(onScreen.fBottom) / scale));
       }
     }
+    this->pollFullscreenRequest();
     this->applySwapInterval();
     // Work finishing in the background changes what is on screen, so it is
     // as good a reason to draw as an event.
@@ -2039,21 +2042,36 @@ private:
     fView.preScaleBackground(this->gameplayCtx(nullptr));
   }
 
-  void toggleFullscreen() {
-    if (fWindow == nullptr)
+  // F11 and the toggle in the panel are two ways of saying the same thing, so
+  // the key goes through the setting rather than around it -- otherwise the
+  // panel claims the window is windowed while it is not.
+  //
+  // The key arrives on the event thread, which may not touch the settings the
+  // drawing thread is reading. So it only asks, and the ask is answered on
+  // the next frame.
+  void requestFullscreenToggle() {
+    fFullscreenToggleRequest.store(true, std::memory_order_release);
+  }
+
+  void pollFullscreenRequest() {
+    if (!fFullscreenToggleRequest.exchange(false, std::memory_order_acquire)) {
       return;
-#ifndef __EMSCRIPTEN__
-    fWin.fFullscreen = !fWin.fFullscreen;
-    if (fWin.fFullscreen) {
-      const auto monitor = glfw::glfwGetPrimaryMonitor();
-      const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-      glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
-                                 mode->height, mode->refreshRate);
-    } else {
-      glfw::glfwSetWindowMonitor(fWindow, nullptr, fWin.fWindowedX,
-                                 fWin.fWindowedY, fWin.fWindowedW,
-                                 fWin.fWindowedH, 0);
     }
+    const bool wanted = !fSettings.flag("fullscreen");
+    fSettings.set("fullscreen", wanted ? 1.0f : 0.0f);
+    fSettings.save();
+    this->setFullscreen(wanted);
+  }
+
+  void setFullscreen(bool wanted) {
+    if (wanted == fWin.fFullscreen) {
+      return;
+    }
+    fWin.fFullscreen = wanted;
+#ifndef __EMSCRIPTEN__
+    // The move itself is the window owner's: GLFW pins it to the thread that
+    // pumps events, and this is not that thread.
+    fWindowRuntime.requestFullscreen(wanted);
 #endif
   }
 

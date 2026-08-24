@@ -125,6 +125,7 @@ public:
   void applySettings() {
     this->applyStarOrder();
     this->applyAudioSettings();
+    fApp.setFullscreen(fApp.fSettings.flag("fullscreen"));
     fApp.fMirrors.setPreferred(
         static_cast<std::size_t>(std::max(0, fApp.fSettings.choice("mirror"))));
     this->applyInterfaceScale();

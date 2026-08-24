@@ -164,6 +164,14 @@ public:
     glfw::glfwPostEmptyEvent();
   }
 
+  // Moving a window between a monitor and the desktop is one of the calls
+  // GLFW pins to the thread that owns the window, so the drawing thread asks
+  // and the pump answers.
+  void requestFullscreen(bool wanted) {
+    fFullscreenRequest.store(wanted ? 1 : 0, std::memory_order_release);
+    glfw::glfwPostEmptyEvent();
+  }
+
   void requestQuit() {
     fQuit.store(true, std::memory_order_release);
     glfw::glfwPostEmptyEvent();
@@ -191,8 +199,33 @@ public:
       if (rawMotion != -1 && glfw::glfwRawMouseMotionSupported()) {
         glfw::glfwSetInputMode(fWindow, glfw::kRawMouseMotion, rawMotion);
       }
+      const int fullscreen = fFullscreenRequest.exchange(-1);
+      if (fullscreen != -1) {
+        this->applyFullscreen(fullscreen == 1);
+      }
     }
     fQuit.store(true, std::memory_order_release);
+  }
+#endif
+
+#ifndef __EMSCRIPTEN__
+  // Where the window was before it went fullscreen, so it can be put back.
+  void applyFullscreen(bool wanted) {
+    if (fWindow == nullptr || wanted == fFullscreen) {
+      return;
+    }
+    if (wanted) {
+      glfw::glfwGetWindowPos(fWindow, &fWindowedX, &fWindowedY);
+      glfw::glfwGetWindowSize(fWindow, &fWindowedW, &fWindowedH);
+      const auto monitor = glfw::glfwGetPrimaryMonitor();
+      const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
+      glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
+                                 mode->height, mode->refreshRate);
+    } else {
+      glfw::glfwSetWindowMonitor(fWindow, nullptr, fWindowedX, fWindowedY,
+                                 fWindowedW, fWindowedH, 0);
+    }
+    fFullscreen = wanted;
   }
 #endif
 
@@ -308,6 +341,10 @@ private:
   std::atomic<int> fExitCode{0};
   std::atomic<int> fCursorModeRequest{-1};
   std::atomic<int> fRawMotionRequest{-1};
+  std::atomic<int> fFullscreenRequest{-1};
+  bool fFullscreen = true; // the window is created on a monitor
+  int fWindowedX = 100, fWindowedY = 100;
+  int fWindowedW = 1280, fWindowedH = 960;
   std::atomic<std::uint64_t> fReportedSize{0};
   std::atomic<bool> fRefreshRequested{false};
   std::atomic<int> fWindowX{0}, fWindowY{0};
