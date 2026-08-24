@@ -103,8 +103,15 @@ public:
     this->applyAudioSettings();
     // The interface scale decides how many pixels a unit is, which every
     // surface, layout and pointer position is derived from. Re-deriving them
-    // is exactly what a resize does, so it goes through the same path.
-    if (std::abs(fApp.pixelScale() - fApp.fFrame.uiScale()) > 1e-4f) {
+    // is exactly what a resize does, so it goes through the same path -- and
+    // that path throws the surfaces away and repaints the window whole.
+    //
+    // Not while the slider is being dragged, therefore. Applied per pixel of
+    // mouse travel it rebuilt the surface dozens of times a second, which is
+    // the flickering and the crawling: the work of a window resize, at the
+    // rate of a mouse move. It lands when the handle is let go.
+    if (!fApp.fSettingsPanel.dragging() &&
+        std::abs(fApp.pixelScale() - fApp.fFrame.uiScale()) > 1e-4f) {
       fApp.resize(fApp.fWin.fPixelW, fApp.fWin.fPixelH);
     }
     const float dim = fApp.fSettings.value("dim");

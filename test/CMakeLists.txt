@@ -20,6 +20,11 @@ include(../cmake/CPM.cmake)
 
 CPMAddPackage(
   NAME googletest_modules
+  # Its install rules are unconditional -- upstream googletest guards them
+  # with INSTALL_GTEST and this fork lost the guard, so installing this client
+  # installed googletest alongside it. CMake ignores install rules from a
+  # subdirectory added EXCLUDE_FROM_ALL, which is what this asks CPM for.
+  EXCLUDE_FROM_ALL YES
   GITHUB_REPOSITORY j4niwzis/googletest-modules
   GIT_TAG 706920f1d230f0316d271466d8885735be3e300e
   OPTIONS
