@@ -28,6 +28,8 @@ public:
     float fDim = 0.7f;
     bool fNoGlow = false;
     bool fHitLighting = true;
+    bool fShowCursor = true;
+    bool fCursorTrail = true;
     osu::StarRating fAttributes;
   };
 
@@ -167,6 +169,8 @@ void ReplayVideoExporter::run(Job &job) {
   ctx.fDim = request.fDim;
   ctx.fNoGlow = request.fNoGlow;
   ctx.fHitLighting = request.fHitLighting;
+  ctx.fShowCursor = request.fShowCursor;
+  ctx.fCursorTrail = request.fCursorTrail;
   job.fView.preScaleBackground(ctx);
 
   osu::Engine engine(request.fMap, request.fMods, request.fRules);

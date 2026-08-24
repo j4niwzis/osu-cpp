@@ -266,6 +266,8 @@ public:
     request.fDim = fApp.fSettings.value("dim");
     request.fNoGlow = fApp.fNoGlow;
     request.fHitLighting = fApp.fSettings.flag("hitlighting");
+    request.fShowCursor = fApp.fSettings.flag("cursor");
+    request.fCursorTrail = fApp.fSettings.flag("cursortrail");
     request.fAttributes = fApp.fPlay.fPlayAttributes;
     for (const auto &info : fApp.fSet.fBeatmaps) {
       if (info.fMeta.fBackground.empty()) {

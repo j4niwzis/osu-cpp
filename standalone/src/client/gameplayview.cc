@@ -35,6 +35,10 @@ public:
     int fScreenH = 0;
     osu::Vec2 fCursor{};
     float fCursorSize = 1.0f;
+    // Whether the cursor is drawn at all, and whether it leaves a trail.
+    // A replay watched with the cursor off is the map playing itself.
+    bool fShowCursor = true;
+    bool fCursorTrail = true;
     // The HUD is written in pixels against a 1080-tall screen; this is how
     // much bigger the surface being drawn on is. One on a 1080p window, two
     // in a 4K render -- where the numbers in the corner were otherwise a
@@ -437,8 +441,12 @@ public:
     this->drawFadingObjects(c, canvas, now, ar, cs, od);
     this->drawHitBursts(c, canvas, now, cs);
     this->drawPopups(c, canvas, now, cs);
-    this->drawCursorTrail(c, canvas, now);
-    this->drawCursor(c, canvas);
+    if (c.fCursorTrail) {
+      this->drawCursorTrail(c, canvas, now);
+    }
+    if (c.fShowCursor) {
+      this->drawCursor(c, canvas);
+    }
     canvas->restore();
 
     auto rtd = clock::now();

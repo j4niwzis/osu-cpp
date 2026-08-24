@@ -1450,6 +1450,8 @@ private:
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
     c.fHitLighting = fSettings.flag("hitlighting");
+    c.fShowCursor = fSettings.flag("cursor");
+    c.fCursorTrail = fSettings.flag("cursortrail");
     c.fPp = fPlay.fEngine
                 ? client::pricePlay(fPlay.fPlayAttributes,
                                     fPlay.fEngine->score())
