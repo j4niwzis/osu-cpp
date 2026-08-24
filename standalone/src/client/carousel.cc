@@ -131,6 +131,7 @@ public:
   bool press(float y) {
     fScroll.setBounds(this->minScroll(), this->maxScroll());
     fTookDrag = false;
+    fPressed = true;
     return fScroll.press(y);
   }
   bool drag(float y, double nowMs) {
@@ -145,7 +146,11 @@ public:
   // Whether the gesture that just ended was a drag. A press that scrolled
   // must not also pick a beatmap.
   [[nodiscard]] bool tookDrag() { return std::exchange(fTookDrag, false); }
-  void release() { fScroll.release(); }
+  void release() {
+    fPressed = false;
+    fScroll.release();
+  }
+  [[nodiscard]] bool pressed() const noexcept { return fPressed; }
   [[nodiscard]] bool dragging() const noexcept { return fScroll.dragging(); }
 
   [[nodiscard]] skiff::scene::FrameResult finishFrame() {
@@ -164,6 +169,7 @@ private:
   skiff::scene::ScrollGesture fScroll;
   // Set once the reader drags: the view stops chasing the selection.
   bool fFreeScroll = false;
+  bool fPressed = false;
   bool fTookDrag = false;
   // lazer's Carousel.offsetX: panels bow away from the centre of the screen.
   [[nodiscard]] static float offsetX(float dist, float halfHeight) {
