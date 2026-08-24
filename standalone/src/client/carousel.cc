@@ -134,8 +134,10 @@ public:
     fPressed = true;
     return fScroll.press(y);
   }
-  bool drag(float y, double nowMs) {
-    if (!fScroll.drag(y, nowMs)) {
+  bool drag(float y) {
+    // Use the scene's frame clock, as ScrollContainer does. Sampling every
+    // raw pointer timestamp makes a gaming mouse produce an excessive fling.
+    if (!fScroll.drag(y, fCtx.fNowMs)) {
       return false;
     }
     fFreeScroll = true; // the view is the reader's now, not the selection's
