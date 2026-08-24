@@ -56,6 +56,13 @@ else()
   # has no other backend, so this is the whole of that decision.
   find_package(OpenSSL 3.0 REQUIRED)
   pkg_check_modules(GLFW    REQUIRED glfw3)
+  # GLFW has no touch API.  When Wayland development files are available a
+  # small native bridge turns the first contact into the pointer events the
+  # rest of the client already understands.  It stays optional so X11 and
+  # non-Linux builds retain exactly their existing dependency set.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pkg_check_modules(WAYLAND_CLIENT wayland-client)
+  endif()
   pkg_check_modules(OPENAL  REQUIRED openal)
   pkg_check_modules(SKIA    REQUIRED skia)
   pkg_check_modules(LIBZIP  REQUIRED libzip)
@@ -124,6 +131,13 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
   OSU_CLIENT_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets"
 )
 
+if(NOT EMSCRIPTEN_BUILD AND WAYLAND_CLIENT_FOUND)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_WAYLAND_TOUCH=1)
+  target_include_directories(${PROJECT_NAME} PRIVATE
+    ${WAYLAND_CLIENT_INCLUDE_DIRS}
+  )
+endif()
+
 # ---- Link ----
 
 if(EMSCRIPTEN_BUILD)
@@ -144,6 +158,7 @@ else()
     Threads::Threads
     OpenGL::GL
     ${GLFW_LDFLAGS} ${GLFW_LIBRARIES}
+    ${WAYLAND_CLIENT_LDFLAGS} ${WAYLAND_CLIENT_LIBRARIES}
     ${OPENAL_LDFLAGS} ${OPENAL_LIBRARIES}
     ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
     ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}

@@ -4,11 +4,203 @@ module;
 #include "emscripten_macro.h"
 #endif
 
+#ifdef OSU_WAYLAND_TOUCH
+#include <dlfcn.h>
+#include <wayland-client.h>
+#endif
+
 export module client.windowruntime;
 
 import std;
 import glfw;
 import client.input;
+
+namespace client {
+
+// GLFW deliberately exposes no touchscreen API.  On Wayland that means
+// wl_touch events disappear inside its event pump instead of reaching the
+// mouse callbacks below.  Bind the seat once more and translate the primary
+// contact into the same events as a left mouse button.  The bridge is absent
+// unless wayland-client was found at configure time, and init() is a no-op
+// when GLFW selected another platform (notably X11/XWayland).
+class WaylandTouch {
+public:
+  WaylandTouch() = default;
+  WaylandTouch(const WaylandTouch &) = delete;
+  WaylandTouch &operator=(const WaylandTouch &) = delete;
+  ~WaylandTouch() { this->close(); }
+
+  template <class Push>
+  void init(glfw::GLFWwindow *window, Push push) {
+#ifdef OSU_WAYLAND_TOUCH
+    // Resolve these instead of linking them directly.  A GLFW built only for
+    // X11 does not export its Wayland native-access entry points even when
+    // wayland-client happens to be installed on the machine.
+    using GetDisplay = wl_display *(*)();
+    using GetWindow = wl_surface *(*)(glfw::GLFWwindow *);
+    const auto getDisplay = reinterpret_cast<GetDisplay>(
+        dlsym(RTLD_DEFAULT, "glfwGetWaylandDisplay"));
+    const auto getWindow = reinterpret_cast<GetWindow>(
+        dlsym(RTLD_DEFAULT, "glfwGetWaylandWindow"));
+    if (getDisplay == nullptr || getWindow == nullptr) {
+      return;
+    }
+    fDisplay = getDisplay();
+    fSurface = getWindow(window);
+    if (fDisplay == nullptr || fSurface == nullptr) {
+      fDisplay = nullptr;
+      fSurface = nullptr;
+      return;
+    }
+    fPush = std::move(push);
+    fRegistry = wl_display_get_registry(fDisplay);
+    if (fRegistry == nullptr) {
+      this->close();
+      return;
+    }
+    wl_registry_add_listener(fRegistry, &kRegistryListener, this);
+    // Discover the seat before entering glfwWaitEvents().  This round trip
+    // uses GLFW's display and therefore also dispatches any harmless setup
+    // events already queued for its own objects.
+    if (wl_display_roundtrip(fDisplay) < 0) {
+      this->close();
+    }
+#else
+    (void)window;
+    (void)push;
+#endif
+  }
+
+  void close() {
+#ifdef OSU_WAYLAND_TOUCH
+    this->releaseContact();
+    if (fTouch != nullptr) {
+      wl_touch_destroy(fTouch);
+      fTouch = nullptr;
+    }
+    if (fSeat != nullptr) {
+      wl_seat_destroy(fSeat);
+      fSeat = nullptr;
+    }
+    if (fRegistry != nullptr) {
+      wl_registry_destroy(fRegistry);
+      fRegistry = nullptr;
+    }
+    fDisplay = nullptr;
+    fSurface = nullptr;
+    fPush = {};
+#endif
+  }
+
+private:
+#ifdef OSU_WAYLAND_TOUCH
+  static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
+
+  void move(wl_fixed_t x, wl_fixed_t y) {
+    fX = static_cast<float>(wl_fixed_to_double(x));
+    fY = static_cast<float>(wl_fixed_to_double(y));
+    fPush({wallMs(), EventType::kCursorMove, 0, 0, fX, fY});
+  }
+
+  void releaseContact() {
+    if (fContact < 0 || !fPush) {
+      fContact = -1;
+      return;
+    }
+    fPush({wallMs(), EventType::kMouseButton, glfw::kMouseButtonLeft,
+           glfw::kRelease});
+    fContact = -1;
+  }
+
+  static void registryGlobal(void *data, wl_registry *registry, uint32_t name,
+                             const char *interface, uint32_t version) {
+    auto &self = *static_cast<WaylandTouch *>(data);
+    if (self.fSeat != nullptr ||
+        std::string_view(interface) != wl_seat_interface.name) {
+      return;
+    }
+    const uint32_t supported = std::min(version, 7u);
+    self.fSeat = static_cast<wl_seat *>(
+        wl_registry_bind(registry, name, &wl_seat_interface, supported));
+    if (self.fSeat != nullptr) {
+      wl_seat_add_listener(self.fSeat, &kSeatListener, &self);
+    }
+  }
+
+  static void registryRemove(void *, wl_registry *, uint32_t) {}
+
+  static void seatCapabilities(void *data, wl_seat *, uint32_t capabilities) {
+    auto &self = *static_cast<WaylandTouch *>(data);
+    if ((capabilities & WL_SEAT_CAPABILITY_TOUCH) != 0) {
+      if (self.fTouch == nullptr) {
+        self.fTouch = wl_seat_get_touch(self.fSeat);
+        wl_touch_add_listener(self.fTouch, &kTouchListener, &self);
+      }
+    } else if (self.fTouch != nullptr) {
+      self.releaseContact();
+      wl_touch_destroy(self.fTouch);
+      self.fTouch = nullptr;
+    }
+  }
+
+  static void seatName(void *, wl_seat *, const char *) {}
+
+  static void touchDown(void *data, wl_touch *, uint32_t, uint32_t,
+                        wl_surface *surface, int32_t id, wl_fixed_t x,
+                        wl_fixed_t y) {
+    auto &self = *static_cast<WaylandTouch *>(data);
+    if (self.fContact >= 0 || surface != self.fSurface) {
+      return;
+    }
+    self.fContact = id;
+    self.move(x, y);
+    self.fPush({wallMs(), EventType::kMouseButton, glfw::kMouseButtonLeft,
+                glfw::kPress});
+  }
+
+  static void touchUp(void *data, wl_touch *, uint32_t, uint32_t, int32_t id) {
+    auto &self = *static_cast<WaylandTouch *>(data);
+    if (id == self.fContact) {
+      self.releaseContact();
+    }
+  }
+
+  static void touchMotion(void *data, wl_touch *, uint32_t, int32_t id,
+                          wl_fixed_t x, wl_fixed_t y) {
+    auto &self = *static_cast<WaylandTouch *>(data);
+    if (id == self.fContact) {
+      self.move(x, y);
+    }
+  }
+
+  static void touchFrame(void *, wl_touch *) {}
+  static void touchCancel(void *data, wl_touch *) {
+    static_cast<WaylandTouch *>(data)->releaseContact();
+  }
+  static void touchShape(void *, wl_touch *, int32_t, wl_fixed_t, wl_fixed_t) {}
+  static void touchOrientation(void *, wl_touch *, int32_t, wl_fixed_t) {}
+
+  inline static const wl_registry_listener kRegistryListener = {
+      registryGlobal, registryRemove};
+  inline static const wl_seat_listener kSeatListener = {seatCapabilities,
+                                                         seatName};
+  inline static const wl_touch_listener kTouchListener = {
+      touchDown,   touchUp,    touchMotion, touchFrame,
+      touchCancel, touchShape, touchOrientation};
+
+  wl_display *fDisplay = nullptr;
+  wl_registry *fRegistry = nullptr;
+  wl_seat *fSeat = nullptr;
+  wl_touch *fTouch = nullptr;
+  wl_surface *fSurface = nullptr;
+  std::function<void(const Event &)> fPush;
+  int32_t fContact = -1;
+  float fX = 0.0f;
+  float fY = 0.0f;
+#endif
+};
+
+} // namespace client
 
 export namespace client {
 
@@ -105,6 +297,13 @@ public:
     glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorNormal);
     glfw::glfwSetWindowUserPointer(fWindow, this);
     this->installCallbacks();
+    fWaylandTouch.init(fWindow, [this](const Event &event) {
+      if (event.fType == EventType::kCursorMove) {
+        this->pushCursor(event.fX, event.fY);
+      } else {
+        this->push(event);
+      }
+    });
     this->notePlacement();
     return true;
   }
@@ -230,6 +429,7 @@ public:
 #endif
 
   void close() {
+    fWaylandTouch.close();
     if (fWindow != nullptr) {
       glfw::glfwDestroyWindow(fWindow);
       fWindow = nullptr;
@@ -296,8 +496,7 @@ private:
         });
     glfw::glfwSetCursorPosCallback(
         fWindow, [](glfw::GLFWwindow *window, double x, double y) {
-          from(window).push({wallMs(), EventType::kCursorMove, 0, 0,
-                             static_cast<float>(x), static_cast<float>(y)});
+          from(window).pushCursor(x, y);
         });
     glfw::glfwSetScrollCallback(
         fWindow, [](glfw::GLFWwindow *window, double, double y) {
@@ -331,11 +530,31 @@ private:
         glfw::glfwGetWindowUserPointer(window));
   }
 
+  // GLFW cursor positions are in window coordinates while rendering uses
+  // framebuffer pixels.  They differ on scaled Wayland outputs (and on any
+  // other HiDPI platform), so normalize both mouse and synthesized touch
+  // before AppInput applies the client's own UI scale.
+  void pushCursor(double x, double y) {
+    int windowW = 0, windowH = 0, framebufferW = 0, framebufferH = 0;
+    glfw::glfwGetWindowSize(fWindow, &windowW, &windowH);
+    glfw::glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
+    const double scaleX = windowW > 0 ? static_cast<double>(framebufferW) /
+                                           static_cast<double>(windowW)
+                                     : 1.0;
+    const double scaleY = windowH > 0 ? static_cast<double>(framebufferH) /
+                                           static_cast<double>(windowH)
+                                     : 1.0;
+    this->push({wallMs(), EventType::kCursorMove, 0, 0,
+                static_cast<float>(x * scaleX),
+                static_cast<float>(y * scaleY)});
+  }
+
   glfw::GLFWwindow *fWindow = nullptr;
   bool fGlfwInitialized = false;
   WindowExtent fInitial{};
   int fRefreshHz = 60;
   std::function<void()> fToggleFullscreen;
+  WaylandTouch fWaylandTouch;
   SpscQueue<4096> fInput;
   std::atomic<bool> fQuit{false};
   std::atomic<int> fExitCode{0};
