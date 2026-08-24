@@ -101,6 +101,12 @@ public:
   void applySettings() {
     this->applyStarOrder();
     this->applyAudioSettings();
+    // The interface scale decides how many pixels a unit is, which every
+    // surface, layout and pointer position is derived from. Re-deriving them
+    // is exactly what a resize does, so it goes through the same path.
+    if (std::abs(fApp.pixelScale() - fApp.fFrame.uiScale()) > 1e-4f) {
+      fApp.resize(fApp.fWin.fPixelW, fApp.fWin.fPixelH);
+    }
     const float dim = fApp.fSettings.value("dim");
     if (std::abs(dim - fApp.fAppliedDim) > 1e-4f) {
       fApp.fAppliedDim = dim;

@@ -49,14 +49,34 @@ public:
     fDamage.clear();
   }
 
+  // How many device pixels one unit of the tree is. Everything above the
+  // frame -- screens, overlays, the pointer -- works in units; the surface,
+  // the clip and the blit work in pixels, and this is the only place that
+  // knows both.
+  void applyUiScale(skia::SkCanvas *canvas) {
+    if (fUiScale != 1.0f) {
+      canvas->scale(fUiScale, fUiScale);
+    }
+  }
+
+  void setUiScale(float scale) { fUiScale = scale > 0.0f ? scale : 1.0f; }
+  [[nodiscard]] float uiScale() const { return fUiScale; }
+
   void damage(const skia::SkRect &rect) {
     if (fFullDamage || rect.isEmpty()) {
       return;
     }
+    const skia::SkRect scaled =
+        fUiScale == 1.0f
+            ? rect
+            : skia::SkRect::MakeLTRB(rect.fLeft * fUiScale,
+                                     rect.fTop * fUiScale,
+                                     rect.fRight * fUiScale,
+                                     rect.fBottom * fUiScale);
     if (!fDrawing) {
       fDamageDrives = true;
     }
-    skia::SkIRect area = rect.roundOut();
+    skia::SkIRect area = scaled.roundOut();
     area.outset(2, 2);
     for (auto &existing : fDamage) {
       skia::SkIRect probe = existing;
@@ -188,16 +208,20 @@ public:
     }
     auto *canvas = fSurface->getCanvas();
     fFrameSave = canvas->save();
+    // Every path out of here below scales the canvas before drawing starts;
+    // the clip decisions above are all in pixels and must not be.
     if (fComputedClipFull &&
         (fFullRepaintsOwed > 0 ||
          opts.fNow - opts.fLastResize < kResizeSettleMs)) {
       canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
     }
     if (!opts.fPartial || this->historyShorterThan(this->drawReach())) {
+      this->applyUiScale(canvas);
       return;
     }
     const skia::SkIRect bounds = this->damageOver(this->drawReach());
     if (bounds.isEmpty()) {
+      this->applyUiScale(canvas);
       return;
     }
     const std::int64_t screenArea =
@@ -205,6 +229,7 @@ public:
     const std::int64_t boundsArea =
         static_cast<std::int64_t>(bounds.width()) * bounds.height();
     if (boundsArea * 2 > screenArea) {
+      this->applyUiScale(canvas);
       return;
     }
     canvas->clipIRect(bounds);
@@ -217,6 +242,7 @@ public:
     if (!opts.fPlaying) {
       canvas->clear(skia::colorSetARGB(255, 0, 0, 0));
     }
+    this->applyUiScale(canvas);
   }
 
   [[nodiscard]] bool because(double now, const char *reason) {
@@ -415,6 +441,7 @@ private:
   skia::Sp<skia::SkSurface> fWindowSurface;
   skia::Sp<skia::SkSurface> fRasterSurface;
   bool fDrewOnRaster = false;
+  float fUiScale = 1.0f; // device pixels per unit of the tree
   int fFrameSave = 0;
   bool fDrawing = false;
   std::vector<skia::SkIRect> fDamage;

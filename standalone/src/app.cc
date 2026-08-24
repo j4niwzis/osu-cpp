@@ -147,8 +147,15 @@ private:
   // The window and where the pointer is in it. What a resize changes and
   // what every screen measures itself against.
   struct WindowState {
+    // The screen in units of the tree, which is what every screen, overlay
+    // and pointer coordinate is in. Multiply by the pixel scale to get what
+    // the surface actually is.
     int fScreenW = 1280;
     int fScreenH = 960;
+    // What the window really is, in device pixels. Only the surface, the
+    // clip, the blit and the swap care.
+    int fPixelW = 1280;
+    int fPixelH = 960;
     float fMouseX = 0.0f;
     float fMouseY = 0.0f;
     bool fFullscreen = true;
@@ -520,8 +527,8 @@ private:
     }
     fWindow = fWindowRuntime.window();
     const auto initial = fWindowRuntime.initialExtent();
-    fWin.fScreenW = initial.fWidth;
-    fWin.fScreenH = initial.fHeight;
+    fWin.fPixelW = initial.fWidth;
+    fWin.fPixelH = initial.fHeight;
     fRefreshHz = fWindowRuntime.refreshHz();
 #ifdef __EMSCRIPTEN__
     EM_ASM(Module.setCursorVisible(true));
@@ -540,7 +547,7 @@ private:
     fFont = std::move(fonts.fUi);
     skiff::nodes::Text::setFont(&fFont);
     fDisplayFont = std::move(fonts.fDisplay);
-    this->resize(fWin.fScreenW, fWin.fScreenH);
+    this->resize(fWin.fPixelW, fWin.fPixelH);
 
     // Persistent library at /maps (IDBFS). The initial syncfs is async; the
     // library is scanned once the flag flips (see frameSongSelect).
@@ -566,7 +573,7 @@ private:
 #else
     // Snapshot the real framebuffer size on the main thread (that query is
     // main-thread-only in GLFW); the render thread must not call it.
-    glfw::glfwGetFramebufferSize(fWindow, &fWin.fScreenW, &fWin.fScreenH);
+    glfw::glfwGetFramebufferSize(fWindow, &fWin.fPixelW, &fWin.fPixelH);
 
     // The GL context is owned by the render thread from here on. The main
     // thread degrades into a pure event pump: it blocks in glfwWaitEvents,
@@ -593,7 +600,7 @@ private:
     fFont = std::move(fonts.fUi);
     skiff::nodes::Text::setFont(&fFont);
     fDisplayFont = std::move(fonts.fDisplay);
-    this->resize(fWin.fScreenW, fWin.fScreenH);
+    this->resize(fWin.fPixelW, fWin.fPixelH);
 
     fLibraryRuntime.initLibrary();
     // Launched with a beatmap on the command line => skip the main menu and
@@ -748,8 +755,8 @@ private:
     fFrame.begin({.fPartial = partial,
                   .fAssumedBufferAge = assumedAge,
                   .fReportedSize = fWindowRuntime.reportedSize(),
-                  .fWidth = fWin.fScreenW,
-                  .fHeight = fWin.fScreenH,
+                  .fWidth = fWin.fPixelW,
+                  .fHeight = fWin.fPixelH,
                   .fNow = wallMs(),
                   .fLastResize = fLastResizeWall,
                   .fShowDamage =
@@ -991,7 +998,7 @@ private:
   // own coordinates. Empty when nothing is known about the placement.
   [[nodiscard]] skia::SkIRect visiblePortion() const {
     const auto visible =
-        fWindowRuntime.visiblePortion(fWin.fScreenW, fWin.fScreenH);
+        fWindowRuntime.visiblePortion(fWin.fPixelW, fWin.fPixelH);
     if (!visible) {
       return skia::SkIRect::MakeEmpty();
     }
@@ -1014,11 +1021,17 @@ private:
       // window back in from off the edge then costs the strip that came back,
       // not the whole window, every frame of the drag.
       const skia::SkIRect onScreen = this->visiblePortion();
-      if (onScreen.isEmpty() || (onScreen.width() >= fWin.fScreenW &&
-                                 onScreen.height() >= fWin.fScreenH)) {
+      if (onScreen.isEmpty() || (onScreen.width() >= fWin.fPixelW &&
+                                 onScreen.height() >= fWin.fPixelH)) {
         fFrame.damageAll("the window system asked for a repaint");
       } else {
-        fFrame.damage(skia::SkRect::Make(onScreen));
+        // visiblePortion answers in pixels; damage() is told in units.
+        const float scale = this->pixelScale();
+        fFrame.damage(skia::SkRect::MakeLTRB(
+            static_cast<float>(onScreen.fLeft) / scale,
+            static_cast<float>(onScreen.fTop) / scale,
+            static_cast<float>(onScreen.fRight) / scale,
+            static_cast<float>(onScreen.fBottom) / scale));
       }
     }
     this->applySwapInterval();
@@ -1191,8 +1204,10 @@ private:
       return;
     }
     const skiff::paint::Painter p(canvas, fFont);
-    const float sw = static_cast<float>(fWin.fScreenW);
-    const float sh = static_cast<float>(fWin.fScreenH);
+    // In pixels: this is drawn after the frame's transform has been lifted,
+    // so it does not follow the interface scale.
+    const float sw = static_cast<float>(fWin.fPixelW);
+    const float sh = static_cast<float>(fWin.fPixelH);
     const skia::SkRect box =
         skia::SkRect::MakeXYWH(sw - 92.0f, sh - 52.0f, 80.0f, 42.0f);
     // Drawn after the clip is lifted, straight into a buffer that is several
@@ -1206,7 +1221,7 @@ private:
                    box.centerX(), box.fTop + 18.0f, 15.0f, skia::kWhite);
     p.textCentered(std::format("{:.1f} ms", fFpsFrameMs), box.centerX(),
                    box.fBottom - 8.0f, 12.0f, skia::kWhite, 0.7f);
-    fFrame.includeInBlit(box, fWin.fScreenW, fWin.fScreenH);
+    fFrame.includeInBlit(box, fWin.fPixelW, fWin.fPixelH);
   }
 
   void present() {
@@ -1334,13 +1349,13 @@ private:
         damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
       }
     }
-    if (damage.empty() || !present::swapWithDamage(fWin.fScreenH, damage)) {
+    if (damage.empty() || !present::swapWithDamage(fWin.fPixelH, damage)) {
       glfw::glfwSwapBuffers(fWindow);
     }
     fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - beforeSwap)
                       .count();
-    fFrame.reportCost(frameStart, beforeSwap, fWin.fScreenW, fWin.fScreenH,
+    fFrame.reportCost(frameStart, beforeSwap, fWin.fPixelW, fWin.fPixelH,
                       this->partialRedraw());
     fFrame.fDrawing = false;
   }
@@ -1432,6 +1447,14 @@ private:
   // The HUD is written in pixels against a 1080-tall screen; this says how
   // much bigger the surface is. Asked for in two places now -- the view draws
   // with it, and the client hit-tests the pause button against it.
+  // How many device pixels one unit is. One by default; the setting scales
+  // the whole interface, which is what a phone or a 4K panel needs and what
+  // every screen doing its own clamp(height / something) could never give.
+  [[nodiscard]] float pixelScale() const {
+    const float wanted = fSettings.value("uiscale");
+    return wanted > 0.05f ? wanted : 1.0f;
+  }
+
   [[nodiscard]] float uiScale() const {
     return std::clamp(static_cast<float>(fWin.fScreenH) / 1080.0f, 0.7f, 3.0f);
   }
@@ -1639,7 +1662,7 @@ private:
 
     int fw = 0, fh = 0;
     glfw::glfwGetFramebufferSize(fWindow, &fw, &fh);
-    if (fw != fWin.fScreenW || fh != fWin.fScreenH) {
+    if (fw != fWin.fPixelW || fh != fWin.fPixelH) {
       this->resize(fw, fh);
     }
 
@@ -1965,14 +1988,14 @@ private:
   // into a raster canvas would mean reading them back every frame.
   [[nodiscard]] bool ensureRasterSurface() {
     if (fFrame.fRasterSurface &&
-        fFrame.fRasterSurface->width() == fWin.fScreenW &&
-        fFrame.fRasterSurface->height() == fWin.fScreenH) {
+        fFrame.fRasterSurface->width() == fWin.fPixelW &&
+        fFrame.fRasterSurface->height() == fWin.fPixelH) {
       return true;
     }
     // Same colour space as the window, or the pixels get encoded twice on the
     // way over and the whole frame comes out lighter.
     fFrame.fRasterSurface = skia::Raster(skia::SkImageInfo::Make(
-        fWin.fScreenW, fWin.fScreenH, skia::kRGBA_8888_SkColorType,
+        fWin.fPixelW, fWin.fPixelH, skia::kRGBA_8888_SkColorType,
         skia::kPremul_SkAlphaType,
         fFrame.fWindowSurface
             ? fFrame.fWindowSurface->imageInfo().refColorSpace()
@@ -1984,15 +2007,19 @@ private:
     // Called on the render thread with framebuffer dimensions delivered by
     // the resize event (or the pre-thread snapshot); querying GLFW here is
     // not allowed off the main thread.
-    fWin.fScreenW = w;
-    fWin.fScreenH = h;
+    fWin.fPixelW = w;
+    fWin.fPixelH = h;
+    const float scale = this->pixelScale();
+    fFrame.setUiScale(scale);
+    fWin.fScreenW = std::max(1, static_cast<int>(std::lround(w / scale)));
+    fWin.fScreenH = std::max(1, static_cast<int>(std::lround(h / scale)));
     this->layoutForScreen();
 
     skia::GrGLFramebufferInfo info;
     info.fFBOID = 0;
     info.fFormat = skia::kGlRgba8;
     skia::GrBackendRenderTarget target =
-        skia::MakeGL(fWin.fScreenW, fWin.fScreenH, 0, 0, info);
+        skia::MakeGL(fWin.fPixelW, fWin.fPixelH, 0, 0, info);
     fFrame.fWindowSurface = skia::WrapBackendRenderTarget(
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);

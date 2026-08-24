@@ -94,21 +94,29 @@ public:
     case EventType::kResize:
       fApp.resize(ev.fA, ev.fB);
       break;
-    case EventType::kCursorMove:
-      fApp.fWin.fMouseX = ev.fX;
-      fApp.fWin.fMouseY = ev.fY;
-      this->routePointer(skiff::scene::PointerAction::kMove, ev.fX, ev.fY);
+    case EventType::kCursorMove: {
+      // The window reports device pixels. Everything above the frame -- the
+      // trees, the playfield, every rectangle anything is tested against --
+      // is in units, so the position is converted once, here.
+      const float scale = fApp.pixelScale();
+      Event units = ev;
+      units.fX = ev.fX / scale;
+      units.fY = ev.fY / scale;
+      fApp.fWin.fMouseX = units.fX;
+      fApp.fWin.fMouseY = units.fY;
+      this->routePointer(skiff::scene::PointerAction::kMove, units.fX,
+                         units.fY);
       if (fApp.fSettingsPanel.dragging()) {
-        fApp.fOverlays.dragSetting(ev.fX);
+        fApp.fOverlays.dragSetting(units.fX);
       }
       if (fApp.fFilter.dragging()) {
-        fApp.fScreens.dragFilterRange(ev.fX);
+        fApp.fScreens.dragFilterRange(units.fX);
       }
       if (fApp.fReplayBrowser.panelsDragging()) {
-        fApp.fReplayBrowser.dragPanels(ev.fX);
+        fApp.fReplayBrowser.dragPanels(units.fX);
       }
       if (fApp.fState == State::kPlaying && !fApp.fAutoplay) {
-        fApp.fCursor = fApp.fPlayback.cursorFromEvent(ev);
+        fApp.fCursor = fApp.fPlayback.cursorFromEvent(units);
         const double at = this->eventGameTime(ev.fWallMs);
         this->submitTimed({at, fApp.fCursor, osu::InputAction::kMove});
         // The trail is fed from the events, as it already is for a replay.
@@ -118,6 +126,7 @@ public:
         fApp.fView.addTrailPoint(fApp.fCursor, at);
       }
       break;
+    }
     case EventType::kScroll:
       if (fApp.fSettingsPanel.open()) {
         fApp.fOverlays.scrollSettings(ev.fX);
