@@ -352,13 +352,49 @@ public:
     if (!pressed) {
       const bool wasDragging = fDragging >= 0;
       fDragging = -1;
-      return wasDragging ? Hit::kChanged : Hit::kSwallowed;
+      // The release has to reach the tree as well: the scrolling container
+      // is in there, and without this it never learns the finger was lifted
+      // and stays stuck to a pointer that is no longer down.
+      fScene->dispatchPointer(scene::PointerAction::kUp, x, y);
+      if (wasDragging) {
+        return Hit::kChanged;
+      }
+      // What the press landed on is applied here rather than on the way
+      // down, so that dragging the list past a toggle does not flip it. A
+      // press that travelled is a scroll and nothing else.
+      const bool travelled = std::abs(x - fPressX) > kTapSlop ||
+                             std::abs(y - fPressY) > kTapSlop;
+      const Action action = std::exchange(fPending, {});
+      if (!travelled && action.fKind != Action::kNone) {
+        return this->applyAction(action, *fSettings, fPressX);
+      }
+      return Hit::kSwallowed;
     }
+    fPressX = x;
+    fPressY = y;
+    fSettings = &settings;
     fAction = {};
     fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
-    switch (fAction.fKind) {
+    // A slider follows the finger from the moment it is touched; everything
+    // else waits for the release.
+    if (fAction.fKind != Action::kSlider &&
+        fAction.fKind != Action::kSection) {
+      fPending = fAction;
+      return fAction.fKind == Action::kNone && fOpenChoice < 0 &&
+                     x >= (kSidebarWidth + kPanelWidth) * fSlide
+                 ? Hit::kNone
+                 : Hit::kSwallowed;
+    }
+    return this->applyAction(fAction, settings, x);
+  }
+
+  // What a press on a row means. Called on the way down for a slider, which
+  // has to follow the finger at once, and on the way up for everything else.
+  [[nodiscard]] Hit applyAction(const Action &action, Settings &settings,
+                                float x = 0.0f) {
+    switch (action.fKind) {
     case Action::kNone:
-      // A click anywhere else in the panel closes an open list, and is
+      // A press anywhere else in the panel closes an open list, and is
       // swallowed if it landed on the panel at all.
       if (fOpenChoice >= 0) {
         this->setOpenChoice(-1);
@@ -367,31 +403,31 @@ public:
       return x < (kSidebarWidth + kPanelWidth) * fSlide ? Hit::kSwallowed
                                                         : Hit::kNone;
     case Action::kRestore:
-      settings.restoreDefault(fAction.fIndex);
-      this->markRow(fAction.fIndex);
+      settings.restoreDefault(action.fIndex);
+      this->markRow(action.fIndex);
       return Hit::kChanged;
     case Action::kToggle:
-      settings.toggle(fAction.fIndex);
-      this->markRow(fAction.fIndex);
+      settings.toggle(action.fIndex);
+      this->markRow(action.fIndex);
       return Hit::kChanged;
     case Action::kChoiceOpen:
-      this->setOpenChoice(fOpenChoice == static_cast<int>(fAction.fIndex)
+      this->setOpenChoice(fOpenChoice == static_cast<int>(action.fIndex)
                               ? -1
-                              : static_cast<int>(fAction.fIndex));
+                              : static_cast<int>(action.fIndex));
       return Hit::kSwallowed;
     case Action::kChoiceSet:
-      settings.setChoice(fAction.fIndex, fAction.fOption);
+      settings.setChoice(action.fIndex, action.fOption);
       this->setOpenChoice(-1);
       return Hit::kChanged;
     case Action::kSlider:
       if (fOpenChoice >= 0) {
         this->setOpenChoice(-1);
       }
-      fDragging = static_cast<int>(fAction.fIndex);
+      fDragging = static_cast<int>(action.fIndex);
       this->drag(x, settings);
       return Hit::kChanged;
     case Action::kSection:
-      this->scrollToSection(fAction.fIndex);
+      this->scrollToSection(action.fIndex);
       return Hit::kSwallowed;
     }
     return Hit::kSwallowed;
@@ -903,6 +939,12 @@ private:
   float fMouseX = 0.0f, fMouseY = 0.0f;
   std::size_t fBuiltFor = 0;
   skia::SkFont *fFont = nullptr;
+  // Where the press went down, and what it landed on, so that a press which
+  // turned into a scroll changes nothing.
+  static constexpr float kTapSlop = 6.0f;
+  float fPressX = 0.0f;
+  float fPressY = 0.0f;
+  Action fPending;
   Settings *fSettings = nullptr;
   Action fAction;
 
