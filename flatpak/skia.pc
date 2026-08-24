@@ -1,0 +1,10 @@
+prefix=/app
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: skia
+Description: Skia built for osu-cpp
+Version: 148
+Cflags: -I${includedir} -I${includedir}/skia
+Libs: -L${libdir} -lskia
+Libs.private: -lfreetype -lfontconfig -lpng16 -ljpeg -lwebp -lwebpdemux -lz -lEGL -lGLESv2 -lm -ldl

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.1.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 4.3.4 FATAL_ERROR)
 
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/import-std.cmake)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -26,10 +26,17 @@ endif()
 # ---- Add dependencies via CPM ----
 # see https://github.com/TheLartians/CPM.cmake for more info
 
-include(cmake/CPM.cmake)
+option(OSU_INSTALL_LIBRARY_PACKAGE
+  "Generate and install the standalone osucpp CMake package" ON)
+
+if(OSU_INSTALL_LIBRARY_PACKAGE)
+  include(cmake/CPM.cmake)
+endif()
 
 # PackageProject.cmake will be used to make our target installable
-CPMAddPackage(NAME PackageProject.cmake GIT_REPOSITORY "https://github.com/j4niwzis/PackageProject.cmake" GIT_TAG master)
+if(OSU_INSTALL_LIBRARY_PACKAGE)
+  CPMAddPackage(NAME PackageProject.cmake GIT_REPOSITORY "https://github.com/j4niwzis/PackageProject.cmake" GIT_TAG master)
+endif()
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files
@@ -80,11 +87,18 @@ target_link_directories(${PROJECT_NAME} PUBLIC
 # the location where the project's version header will be placed should match the project's regular
 # header paths
 
-packageProject(
-  NAME ${PROJECT_NAME}
-  VERSION ${PROJECT_VERSION}
-  NAMESPACE ${PROJECT_NAME}
-  BINARY_DIR ${PROJECT_BINARY_DIR}
+if(OSU_INSTALL_LIBRARY_PACKAGE)
+  packageProject(
+    NAME ${PROJECT_NAME}
+    VERSION ${PROJECT_VERSION}
+    NAMESPACE ${PROJECT_NAME}
+    BINARY_DIR ${PROJECT_BINARY_DIR}
 
-  COMPATIBILITY SameMajorVersion
-)
+    COMPATIBILITY SameMajorVersion
+  )
+else()
+  # The standalone client links the namespaced target whether osucpp is being
+  # packaged or embedded. Flatpak embeds it and deliberately avoids fetching
+  # PackageProject.cmake during its network-isolated build.
+  add_library(osucpp::osucpp ALIAS osucpp)
+endif()

@@ -1,0 +1,201 @@
+id: io.github.j4niwzis.osu_cpp
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.llvm20
+command: osu_client
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - /share/aclocal
+  - /share/man
+  - '*.a'
+  - '*.la'
+
+build-options:
+  append-path: /usr/lib/sdk/llvm20/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm20/lib
+  env:
+    CC: clang
+    CXX: clang++
+
+modules:
+  # The SDK's CMake is deliberately not used: osu-cpp's named C++ modules and
+  # import-std setup require the 4.3.4 behaviour used by upstream.
+  - name: cmake
+    buildsystem: simple
+    build-commands:
+      - ./bootstrap --prefix=/app --parallel=${FLATPAK_BUILDER_N_JOBS} -- -DCMAKE_USE_OPENSSL=OFF
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    cleanup:
+      - '*'
+    sources:
+      - type: git
+        url: https://github.com/Kitware/CMake.git
+        commit: c14332b3d7a5866947ffe5dbbb4f9634ce9e8303
+        tag: v4.3.4
+
+  - name: gn
+    buildsystem: simple
+    build-commands:
+      - python3 build/gen.py --no-last-commit-position
+      - ninja -C out
+      - install -Dm755 out/gn /app/bin/gn
+    cleanup:
+      - '*'
+    sources:
+      - type: git
+        url: https://gn.googlesource.com/gn.git
+        commit: e0a6ab04a113b2dd039cab7c21c6f387e0d881ee
+
+  - name: glfw
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DGLFW_BUILD_DOCS=OFF
+      - -DGLFW_BUILD_EXAMPLES=OFF
+      - -DGLFW_BUILD_TESTS=OFF
+      - -DGLFW_BUILD_WAYLAND=ON
+      - -DGLFW_BUILD_X11=ON
+    sources:
+      - type: git
+        url: https://github.com/glfw/glfw.git
+        commit: a74efa0d5628b74adc0426af4c5710e287fa7c2c
+        tag: '3.4'
+
+  - name: boost
+    buildsystem: simple
+    build-commands:
+      - ./bootstrap.sh --with-libraries=json
+      - ./b2 headers
+      - mkdir -p /app/include
+      - cp -a boost /app/include/
+    sources:
+      - type: git
+        url: https://github.com/boostorg/boost.git
+        commit: ef7fea34711a189472893b88205b1dd3c275677b
+        tag: boost-1.89.0
+
+  - name: libzip
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_DOC=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_REGRESS=OFF
+      - -DBUILD_TOOLS=OFF
+    sources:
+      - type: git
+        url: https://github.com/nih-at/libzip.git
+        commit: 6f8a0cdd24a0dc6cce9dac4a7679da784ab124ea
+        tag: v1.11.4
+
+  - name: libsndfile
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_PROGRAMS=OFF
+      - -DBUILD_REGTEST=OFF
+      - -DBUILD_TESTING=OFF
+      - -DENABLE_EXTERNAL_LIBS=ON
+    sources:
+      - type: git
+        url: https://github.com/libsndfile/libsndfile.git
+        commit: 72f6af15e8f85157bd622ed45b979025828b7001
+        tag: 1.2.2
+
+  - name: mpg123
+    buildsystem: autotools
+    config-opts:
+      - --disable-components
+      - --enable-libmpg123
+      - --disable-programs
+    sources:
+      - type: git
+        url: https://github.com/libsdl-org/mpg123.git
+        commit: c46daebce1a7628d24bde87ad1ec07d16e7c0019
+        tag: v1.30.0
+
+  - name: openal-soft
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DALSOFT_EXAMPLES=OFF
+      - -DALSOFT_UTILS=OFF
+      - -DALSOFT_TESTS=OFF
+    sources:
+      - type: git
+        url: https://github.com/kcat/openal-soft.git
+        commit: dc7d7054a5b4f3bec1dc23a42fd616a0847af948
+        tag: 1.24.3
+
+  - name: skia
+    buildsystem: simple
+    build-commands:
+      - >-
+        gn gen out/flatpak --args='is_official_build=true
+        skia_enable_ganesh=true skia_use_gl=true skia_use_egl=true
+        skia_use_vulkan=false skia_use_x11=false
+        skia_use_libpng_decode=true skia_use_libpng_encode=true
+        skia_use_system_libpng=true
+        skia_use_libjpeg_turbo_decode=true
+        skia_use_system_libjpeg_turbo=true
+        skia_use_libwebp_decode=true skia_use_system_libwebp=true
+        skia_use_zlib=true skia_use_system_zlib=true
+        skia_use_freetype=true skia_use_system_freetype2=true
+        skia_use_fontconfig=true
+        skia_enable_fontmgr_custom_directory=true
+        skia_enable_fontmgr_custom_embedded=true
+        skia_use_icu=false skia_use_harfbuzz=false skia_use_expat=false
+        skia_use_dng_sdk=false skia_enable_skshaper=false
+        skia_enable_skottie=false skia_enable_pdf=false
+        skia_enable_svg=false skia_enable_tools=false'
+      - ninja -C out/flatpak -j${FLATPAK_BUILDER_N_JOBS} skia
+      - install -Dm644 out/flatpak/libskia.a /app/lib/libskia.a
+      - mkdir -p /app/include/skia/include /app/include/skia/modules /app/include/skia/sksl /app/lib/pkgconfig
+      - cp -a include/. /app/include/skia/
+      - cp -a include/. /app/include/skia/include/
+      - cp -a modules/skcms /app/include/skia/modules/
+      - cp -a sksl/. /app/include/skia/sksl/
+      - install -Dm644 ../skia.pc /app/lib/pkgconfig/skia.pc
+    sources:
+      - type: git
+        url: https://skia.googlesource.com/skia.git
+        commit: 13ffba253fc7854fd3b34f67c82dfb2418dc2944
+      - type: file
+        path: skia.pc
+
+  - name: osu-cpp
+    buildsystem: cmake-ninja
+    subdir: standalone
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_CXX_COMPILER=clang++
+      - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
+      - -DOSU_SKIFF_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff
+      - -DOSU_SKIFF_WIDGETS_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff-widgets
+      - -DCPM_DOWNLOAD_LOCATION=/run/build/osu-cpp/.flatpak-sources/cpm/CPM.cmake
+    sources:
+      - type: dir
+        path: ..
+      - type: git
+        url: https://github.com/j4niwzis/skiff.git
+        commit: 3ef9effb268ab924c3cb3510a5849db116d7c6f2
+        dest: .flatpak-sources/skiff
+      - type: git
+        url: https://github.com/j4niwzis/skiff-widgets.git
+        commit: 57392eb2456339910c21e6f701a7214c5615296d
+        dest: .flatpak-sources/skiff-widgets
+      - type: file
+        url: https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.1/CPM.cmake
+        sha256: f3a6dcc6a04ce9e7f51a127307fa4f699fb2bade357a8eb4c5b45df76e1dc6a5
+        dest: .flatpak-sources/cpm

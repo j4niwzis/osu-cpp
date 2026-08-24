@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=osu! cpp
+Comment=Play osu! beatmaps with a native C++ client
+Exec=osu_client %F
+Icon=io.github.j4niwzis.osu_cpp
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=osu;rhythm;music;beatmap;
+MimeType=application/x-osu-beatmap-archive;
+StartupNotify=true

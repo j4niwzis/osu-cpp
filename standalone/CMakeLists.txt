@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.1.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 4.3.4 FATAL_ERROR)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/import-std.cmake)
 set(CMAKE_CXX_STANDARD 23)
@@ -80,18 +80,31 @@ endif()
 # Everything the client draws with comes from here; nothing in there knows
 # what a beatmap is. It lives in a repository of its own now, pinned to a
 # commit -- moving to a newer skiff should be a visible change here.
-CPMAddPackage(
-  NAME skiff
-  GITHUB_REPOSITORY j4niwzis/skiff
-  GIT_TAG 3ef9effb268ab924c3cb3510a5849db116d7c6f2
-)
+set(OSU_SKIFF_SOURCE_DIR "" CACHE PATH
+  "Existing skiff checkout; avoids fetching it during offline builds")
+if(OSU_SKIFF_SOURCE_DIR)
+  CPMAddPackage(NAME skiff SOURCE_DIR "${OSU_SKIFF_SOURCE_DIR}")
+else()
+  CPMAddPackage(
+    NAME skiff
+    GITHUB_REPOSITORY j4niwzis/skiff
+    GIT_TAG 3ef9effb268ab924c3cb3510a5849db116d7c6f2
+  )
+endif()
 
 # The widgets that sit on it, one module each. Pulls skiff in behind it.
-CPMAddPackage(
-  NAME skiff_widgets
-  GITHUB_REPOSITORY j4niwzis/skiff-widgets
-  GIT_TAG 57392eb2456339910c21e6f701a7214c5615296d
-)
+set(OSU_SKIFF_WIDGETS_SOURCE_DIR "" CACHE PATH
+  "Existing skiff-widgets checkout; avoids fetching it during offline builds")
+if(OSU_SKIFF_WIDGETS_SOURCE_DIR)
+  CPMAddPackage(NAME skiff_widgets
+    SOURCE_DIR "${OSU_SKIFF_WIDGETS_SOURCE_DIR}")
+else()
+  CPMAddPackage(
+    NAME skiff_widgets
+    GITHUB_REPOSITORY j4niwzis/skiff-widgets
+    GIT_TAG 57392eb2456339910c21e6f701a7214c5615296d
+  )
+endif()
 
 # ---- Create binary ----
 
@@ -271,6 +284,25 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/
     PATTERN "*.ttf" PATTERN "*.otf" PATTERN "*.ttc"
     PATTERN "OFL*.txt" PATTERN "LICENSE*.txt"
 )
+
+if(NOT EMSCRIPTEN_BUILD)
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.desktop
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+  )
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.metainfo.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo
+  )
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.svg
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+  )
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages
+  )
+endif()
 
 # ---- Add osu_clientTests ----
 

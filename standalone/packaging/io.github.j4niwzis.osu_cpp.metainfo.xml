@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.j4niwzis.osu_cpp</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <name>osu! cpp</name>
+  <summary>A native C++ client for playing osu! beatmaps</summary>
+  <description>
+    <p>
+      osu! cpp is a native rhythm game client that imports and plays osu!
+      beatmaps. It supports mouse, keyboard and touchscreen input.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.j4niwzis.osu_cpp.desktop</launchable>
+  <developer id="io.github.j4niwzis">
+    <name>j4niwzis</name>
+  </developer>
+  <url type="homepage">https://github.com/j4niwzis/osu-cpp</url>
+  <url type="bugtracker">https://github.com/j4niwzis/osu-cpp/issues</url>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.0" date="2026-08-24" />
+  </releases>
+</component>
