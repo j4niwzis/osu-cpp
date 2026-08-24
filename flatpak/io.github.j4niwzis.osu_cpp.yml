@@ -50,7 +50,7 @@ modules:
   - name: gn
     buildsystem: simple
     build-commands:
-      - python3 build/gen.py --no-last-commit-position
+      - python3 build/gen.py
       - ninja -C out
       - install -Dm755 out/gn /app/bin/gn
     cleanup:
