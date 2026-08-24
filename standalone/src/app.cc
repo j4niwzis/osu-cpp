@@ -24,6 +24,7 @@ import client.loader;
 import skiff.paint;
 import client.palette;
 import client.settings;
+import client.orientation;
 import client.settingspanel;
 import client.overlays;
 import client.deletedialog;
@@ -327,6 +328,7 @@ private:
   // section the scroll is currently in.
   client::GameplayView fView;
   client::Settings fSettings;
+  client::DisplayOrientation fDisplayOrientation;
   client::SettingsPanel fSettingsPanel;
   float fAppliedDim = 0.7f;
 
@@ -2086,6 +2088,7 @@ private:
 
   void shutdown() {
     fAudio.stop();
+    fDisplayOrientation.restore();
     fFrame.fSurface.reset();
     fContext.reset();
     fWindowRuntime.close();

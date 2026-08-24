@@ -79,6 +79,12 @@ public:
     // menu and the pause screen stop asking for frames of their own.
     this->add({1, "fullscreen", "Fullscreen", SettingKind::kToggle, 0.0f, 1.0f,
                0.0f, 1.0f, ""});
+    // A Wayland window cannot rotate an output itself. On postmarketOS this
+    // is applied through wlr-randr; elsewhere it remains a harmless saved
+    // preference, unless OSU_LANDSCAPE_OUTPUT explicitly opts an output in.
+    this->add({1, "orientation", "Screen orientation", SettingKind::kChoice,
+               0.0f, 2.0f, 1.0f, 1.0f, "",
+               {"system", "landscape clockwise", "landscape counter-clockwise"}});
     this->add({1, "uiscale", "Interface scale", SettingKind::kSlider, 0.5f,
                3.0f, 0.05f, 1.0f, "x"});
     this->add({1, "visualiser", "Logo visualiser", SettingKind::kToggle, 0.0f,
