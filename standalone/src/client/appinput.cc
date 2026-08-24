@@ -5,6 +5,7 @@ import osu;
 import glfw;
 import present;
 import client.input;
+import client.gameplayview;
 import client.listing;
 import client.pause;
 import client.replaybrowser;
@@ -325,6 +326,18 @@ public:
       }
       return;
     }
+    // Playing. The pause button in the corner belongs to the client, not to
+    // the game: it is answered before the press becomes a tap, and it works
+    // while a replay is being watched, where taps are ignored altogether.
+    if (fApp.fState == State::kPlaying && button == glfw::kMouseButtonLeft &&
+        action == glfw::kPress &&
+        client::GameplayView::pauseButtonBounds(
+            fApp.fWin.fScreenW, fApp.fWin.fScreenH, fApp.uiScale())
+            .contains(fApp.fWin.fMouseX, fApp.fWin.fMouseY)) {
+      fApp.pauseGame();
+      return;
+    }
+
     if (fApp.fAutoplay) {
       return;
     }
@@ -434,18 +447,29 @@ public:
     }
   }
 
+  // Leaving the beatmap page, and leaving the download screen. Both have
+  // three ways in now -- escape, the arrow drawn on the screen, and a click
+  // beside the thing being left -- so neither lives inside a key handler.
+  void closeSetPage() {
+    // The page covered the listing; what it uncovers has to be repainted, and
+    // the listing has no way of knowing it was ever covered.
+    fApp.fSetPage.close(); // back to the listing, as the overlay stacks
+    fApp.fFrame.damageAll("beatmap page closed");
+  }
+
+  void leaveDownload() {
+    fApp.fMirrors.stopPreview();
+    fApp.fMirrors.restoreMusic();
+    fApp.switchState(State::kSongSelect);
+  }
+
   void keyDownload(int key) {
     if (key == glfw::kKeyEscape) {
       if (fApp.fSetPage.open()) {
-        // The page covered the listing; what it uncovers has to be repainted,
-        // and the listing has no way of knowing it was ever covered.
-        fApp.fSetPage.close(); // back to the listing, as the overlay stacks
-        fApp.fFrame.damageAll("beatmap page closed");
+        this->closeSetPage();
         return;
       }
-      fApp.fMirrors.stopPreview();
-      fApp.fMirrors.restoreMusic();
-      fApp.switchState(State::kSongSelect);
+      this->leaveDownload();
       return;
     }
     if (key == glfw::kKeyEnter) {
@@ -670,6 +694,8 @@ public:
           fApp.fMirrors.startDownloadForSet(fApp.fSetPage.setId());
         } else if (page.fAction == PageAction::kPreview) {
           fApp.fMirrors.togglePreviewForSet(fApp.fSetPage.setId());
+        } else if (page.fAction == PageAction::kClose) {
+          this->closeSetPage();
         }
         return; // the page covers the listing underneath
       }
@@ -689,6 +715,9 @@ public:
         break;
       case client::listing::Listing::Action::kPreview:
         fApp.fMirrors.togglePreview(result.fIndex);
+        break;
+      case client::listing::Listing::Action::kBack:
+        this->leaveDownload();
         break;
       case client::listing::Listing::Action::kRefilter:
       case client::listing::Listing::Action::kNone:

@@ -1429,6 +1429,13 @@ private:
 
   // The renderer holds no back-reference to the app; each frame it is handed
   // exactly what it needs.
+  // The HUD is written in pixels against a 1080-tall screen; this says how
+  // much bigger the surface is. Asked for in two places now -- the view draws
+  // with it, and the client hit-tests the pause button against it.
+  [[nodiscard]] float uiScale() const {
+    return std::clamp(static_cast<float>(fWin.fScreenH) / 1080.0f, 0.7f, 3.0f);
+  }
+
   [[nodiscard]] client::GameplayView::Ctx gameplayCtx(skia::SkCanvas *canvas) {
     client::GameplayView::Ctx c;
     c.fCanvas = canvas;
@@ -1445,8 +1452,7 @@ private:
     c.fScreenH = fWin.fScreenH;
     c.fCursor = fCursor;
     c.fCursorSize = fSettings.value("cursorsize");
-    c.fUiScale =
-        std::clamp(static_cast<float>(fWin.fScreenH) / 1080.0f, 0.7f, 3.0f);
+    c.fUiScale = this->uiScale();
     c.fDim = fSettings.value("dim");
     c.fNoGlow = fNoGlow;
     c.fHitLighting = fSettings.flag("hitlighting");

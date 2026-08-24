@@ -35,6 +35,8 @@ inline constexpr float kHeaderHeight = 250.0f;
 // error and lets the compiler specialise the whole cascade.
 namespace style {
 struct Root;
+struct Back;
+struct BackGlyph;
 struct Scroll;
 struct Column;
 struct Header;
@@ -158,6 +160,26 @@ struct SetPageTheme {
           .rule(scene::select<nodes::FillFlow, style::Buttons>(),
                 {.autoSize = scene::Axes::kBoth,
                  .margin = scene::Margin{10.0f, 0.0f, 0.0f, 0.0f}})
+          // Sits over the page rather than in the scrolling column, so it
+          // stays reachable however far down the page has been scrolled.
+          .rule(scene::select<nodes::Clickable, style::Back>(),
+                {.anchor = scene::Anchor::kTopLeft,
+                 .origin = scene::Anchor::kTopLeft,
+                 .width = 44.0f,
+                 .height = 44.0f,
+                 .margin = scene::Margin{12.0f, 0.0f, 0.0f, 12.0f}})
+          .rule(scene::select<nodes::Box, style::Back>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .cornerRadius = 22.0f,
+                 .backgroundColour = listing::kBackground4})
+          .rule(scene::select<nodes::Text, style::BackGlyph>(),
+                {.anchor = scene::Anchor::kCentre,
+                 .origin = scene::Anchor::kCentre,
+                 .colour = listing::kContent1,
+                 .fontSize = 20.0f,
+                 .fontBold = true})
           .rule(scene::select<nodes::Clickable, style::PlayButton>(),
                 {.width = kButtonsHeight, .height = kButtonsHeight})
           .rule(scene::select<nodes::Clickable, style::DownloadButton>(),
@@ -549,6 +571,14 @@ private:
 
     column->add(this->buildHeader(e));
     column->add(this->buildInfo(e));
+
+    auto *back = root->add<nodes::Clickable>(
+        {.roles = {scene::role<style::Back>}},
+        [this] { fPending = {Action::kClose, 0}; });
+    back->add<nodes::Box>({.roles = {scene::role<style::Back>}},
+                          listing::kBackground4);
+    back->add<nodes::Text>({.roles = {scene::role<style::BackGlyph>}}, "←",
+                           20.0f, listing::kContent1, true);
     root->setStyleSheet<SetPageTheme>();
     return root;
   }

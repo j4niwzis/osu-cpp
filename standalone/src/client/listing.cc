@@ -198,6 +198,8 @@ struct Root;
 struct Scroll;
 struct Column;
 struct Header;
+struct Back;
+struct BackGlyph;
 struct SearchPanel;
 struct SearchColumn;
 struct SearchBox;
@@ -225,6 +227,26 @@ struct ListingTheme {
                 {.width = 1.0f,
                  .relativeSize = scene::Axes::kX,
                  .autoSize = scene::Axes::kY})
+          // Over the listing rather than in the scrolling column: reachable
+          // however far down the results have been scrolled.
+          .rule(scene::select<nodes::Clickable, style::Back>(),
+                {.anchor = scene::Anchor::kTopLeft,
+                 .origin = scene::Anchor::kTopLeft,
+                 .width = 44.0f,
+                 .height = 44.0f,
+                 .margin = scene::Margin{12.0f, 0.0f, 0.0f, 12.0f}})
+          .rule(scene::select<nodes::Box, style::Back>(),
+                {.width = 1.0f,
+                 .height = 1.0f,
+                 .relativeSize = scene::Axes::kBoth,
+                 .cornerRadius = 22.0f,
+                 .backgroundColour = kBackground4})
+          .rule(scene::select<nodes::Text, style::BackGlyph>(),
+                {.anchor = scene::Anchor::kCentre,
+                 .origin = scene::Anchor::kCentre,
+                 .colour = kContent1,
+                 .fontSize = 20.0f,
+                 .fontBold = true})
           .rule(scene::selectAny<style::Header>(),
                 {.width = 1.0f,
                  .height = 55.0f,
@@ -302,7 +324,15 @@ public:
     std::span<Entry> fEntries;
     bool fLoading = false;
   };
-  enum class Action { kNone, kSearch, kRefilter, kDownload, kOpen, kPreview };
+  enum class Action {
+    kNone,
+    kSearch,
+    kRefilter,
+    kDownload,
+    kOpen,
+    kPreview,
+    kBack,
+  };
   struct Result {
     Action fAction = Action::kNone;
     std::size_t fIndex = 0; // entry index for kDownload, kOpen, kPreview
@@ -1299,6 +1329,13 @@ private:
     fExpansion = expansion.get();
     scroll->add(std::move(expansion));
     root->add(std::move(scroll));
+
+    auto *back = root->add<nodes::Clickable>(
+        {.roles = {scene::role<style::Back>}},
+        [this] { fPending = {Action::kBack, 0}; });
+    back->add<nodes::Box>({.roles = {scene::role<style::Back>}}, kBackground4);
+    back->add<nodes::Text>({.roles = {scene::role<style::BackGlyph>}}, "←",
+                           20.0f, kContent1, true);
     root->setStyleSheet<ListingTheme>();
     return root;
   }

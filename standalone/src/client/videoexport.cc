@@ -171,6 +171,7 @@ void ReplayVideoExporter::run(Job &job) {
   ctx.fHitLighting = request.fHitLighting;
   ctx.fShowCursor = request.fShowCursor;
   ctx.fCursorTrail = request.fCursorTrail;
+  ctx.fPauseButton = false; // nobody to press it, and it would be baked in
   job.fView.preScaleBackground(ctx);
 
   osu::Engine engine(request.fMap, request.fMods, request.fRules);

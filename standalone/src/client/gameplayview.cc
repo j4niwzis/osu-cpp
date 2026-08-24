@@ -39,6 +39,10 @@ public:
     // A replay watched with the cursor off is the map playing itself.
     bool fShowCursor = true;
     bool fCursorTrail = true;
+    // A pause button in the corner, for playing without a keyboard. Off for
+    // the video export, which has nobody to press it and would otherwise
+    // stamp it into every frame.
+    bool fPauseButton = true;
     // The HUD is written in pixels against a 1080-tall screen; this is how
     // much bigger the surface being drawn on is. One on a 1080p window, two
     // in a 4K render -- where the numbers in the corner were otherwise a
@@ -451,6 +455,9 @@ public:
 
     auto rtd = clock::now();
     this->drawHud(c, canvas, now);
+    if (c.fPauseButton) {
+      this->drawPauseButton(c, canvas);
+    }
     auto rte = clock::now();
 
     canvas->restore();
@@ -1288,6 +1295,44 @@ public:
             },
         },
         j);
+  }
+
+  // Bottom left, clear of the playfield: the field takes 80% of the smaller
+  // dimension and is centred, so this corner is always outside it.
+  [[nodiscard]] static skia::SkRect pauseButtonBounds(int screenW, int screenH,
+                                                      float uiScale) {
+    const float size = 44.0f * uiScale;
+    const float inset = 16.0f * uiScale;
+    static_cast<void>(screenW);
+    return skia::SkRect::MakeXYWH(inset,
+                                  static_cast<float>(screenH) - inset - size,
+                                  size, size);
+  }
+
+  void drawPauseButton(const Ctx &c, skia::SkCanvas *canvas) {
+    const skia::SkRect box =
+        pauseButtonBounds(c.fScreenW, c.fScreenH, c.fUiScale);
+    skia::SkPaint disc;
+    disc.setAntiAlias(true);
+    disc.setColor(skia::colorSetARGB(90, 0, 0, 0));
+    canvas->drawCircle(box.centerX(), box.centerY(), box.width() * 0.5f, disc);
+
+    // Two bars, the universal pause glyph, drawn rather than taken from the
+    // skin: a skin need not have one, and this has to exist either way.
+    skia::SkPaint bar;
+    bar.setAntiAlias(true);
+    bar.setColor(skia::colorSetARGB(200, 255, 255, 255));
+    const float barW = box.width() * 0.12f;
+    const float barH = box.height() * 0.36f;
+    const float gap = barW * 1.2f;
+    const float top = box.centerY() - barH * 0.5f;
+    canvas->drawRect(
+        skia::SkRect::MakeXYWH(box.centerX() - gap * 0.5f - barW, top, barW,
+                               barH),
+        bar);
+    canvas->drawRect(
+        skia::SkRect::MakeXYWH(box.centerX() + gap * 0.5f, top, barW, barH),
+        bar);
   }
 
   void drawHud(const Ctx &c, skia::SkCanvas *canvas, double now) {
