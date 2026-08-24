@@ -50,7 +50,8 @@ modules:
   - name: gn
     buildsystem: simple
     build-commands:
-      - python3 build/gen.py
+      - python3 build/gen.py --no-last-commit-position
+      - install -Dm644 flatpak-last_commit_position.h out/last_commit_position.h
       - ninja -C out
       - install -Dm755 out/gn /app/bin/gn
     cleanup:
@@ -59,6 +60,8 @@ modules:
       - type: git
         url: https://gn.googlesource.com/gn.git
         commit: e0a6ab04a113b2dd039cab7c21c6f387e0d881ee
+      - type: file
+        path: flatpak-last_commit_position.h
 
   - name: glfw
     buildsystem: cmake-ninja
@@ -77,15 +80,15 @@ modules:
   - name: boost
     buildsystem: simple
     build-commands:
-      - ./bootstrap.sh --with-libraries=json
-      - ./b2 headers
       - mkdir -p /app/include
       - cp -a boost /app/include/
     sources:
-      - type: git
-        url: https://github.com/boostorg/boost.git
-        commit: ef7fea34711a189472893b88205b1dd3c275677b
-        tag: boost-1.89.0
+      # The release archive is the assembled Boost tree. A clone of the
+      # superproject has more than a hundred submodules and is dramatically
+      # slower for flatpak-builder to download, especially on a phone.
+      - type: archive
+        url: https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.bz2
+        sha256: 85a33fa22621b4f314f8e85e1a5e2a9363d22e4f4992925d4bb3bc631b5a0c7a
 
   - name: libzip
     buildsystem: cmake-ninja
