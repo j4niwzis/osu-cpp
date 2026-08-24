@@ -345,6 +345,24 @@ public:
 
   // Returns kChanged when a value was touched (so the caller can apply and
   // persist), kSwallowed when the overlay consumed the click regardless.
+  // What a click in the tree asked for. The nodes do not touch the settings
+  // themselves: click() owns that, because its caller has to know whether a
+  // value changed in order to persist it.
+  struct Action {
+    enum Kind : std::uint8_t {
+      kNone,
+      kRestore,
+      kToggle,
+      kChoiceOpen,
+      kChoiceSet,
+      kSlider,
+      kSection
+    };
+    Kind fKind = kNone;
+    std::size_t fIndex = 0;
+    int fOption = 0;
+  };
+
   [[nodiscard]] Hit click(float x, float y, bool pressed, Settings &settings) {
     if (fSlide < 0.5f || !fScene) {
       return Hit::kNone;
@@ -453,24 +471,6 @@ public:
   [[nodiscard]] bool dragging() const noexcept { return fDragging >= 0; }
 
 private:
-  // What a click in the tree asked for. The nodes do not touch the settings
-  // themselves: click() owns that, because its caller has to know whether a
-  // value changed in order to persist it.
-  struct Action {
-    enum Kind : std::uint8_t {
-      kNone,
-      kRestore,
-      kToggle,
-      kChoiceOpen,
-      kChoiceSet,
-      kSlider,
-      kSection
-    };
-    Kind fKind = kNone;
-    std::size_t fIndex = 0;
-    int fOption = 0;
-  };
-
   // ---- rows ---------------------------------------------------------------
 
   // One setting. It draws its own kind -- slider, toggle or choice -- and
