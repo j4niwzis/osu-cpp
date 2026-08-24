@@ -126,7 +126,10 @@ public:
     this->applyStarOrder();
     this->applyAudioSettings();
     fApp.setFullscreen(fApp.fSettings.flag("fullscreen"));
-    fApp.fDisplayOrientation.apply(fApp.fSettings.choice("orientation"));
+    if (fApp.fDisplayOrientation.apply(
+            fApp.fSettings.choice("orientation"))) {
+      fApp.fWindowRuntime.requestDisplayRefresh();
+    }
     fApp.fMirrors.setPreferred(
         static_cast<std::size_t>(std::max(0, fApp.fSettings.choice("mirror"))));
     this->applyInterfaceScale();

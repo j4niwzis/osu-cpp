@@ -24,40 +24,46 @@ public:
   ~DisplayOrientation() { this->restore(); }
 
   // 0 follows the shell, 1 is clockwise landscape, 2 counter-clockwise.
-  void apply(int choice) {
+  bool apply(int choice) {
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
     if (!this->eligible()) {
-      return;
+      return false;
     }
     if (choice <= 0) {
-      this->restore();
-      return;
+      return this->restore();
     }
     if (!this->discover()) {
-      return;
+      return false;
     }
     const std::string wanted =
         fBackend == Backend::kKScreen ? (choice == 2 ? "right" : "left")
                                      : (choice == 2 ? "270" : "90");
     if (wanted == fCurrentTransform) {
-      return;
+      return false;
     }
     if (this->setTransform(wanted)) {
       fCurrentTransform = wanted;
       fChanged = fCurrentTransform != fOriginalTransform;
+      return true;
     }
+    return false;
 #else
     (void)choice;
+    return false;
 #endif
   }
 
-  void restore() {
+  bool restore() {
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    bool restored = false;
     if (fChanged && !fOutput.empty() && !fOriginalTransform.empty()) {
-      (void)this->setTransform(fOriginalTransform);
+      restored = this->setTransform(fOriginalTransform);
     }
     fChanged = false;
     fCurrentTransform = fOriginalTransform;
+    return restored;
+#else
+    return false;
 #endif
   }
 

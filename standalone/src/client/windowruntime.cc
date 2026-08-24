@@ -371,6 +371,14 @@ public:
     glfw::glfwPostEmptyEvent();
   }
 
+  // An external output rotation changes the monitor mode without changing
+  // the fact that this is a fullscreen window. Re-apply that same fullscreen
+  // state on GLFW's owner thread so Xwayland gives the window the new extent.
+  void requestDisplayRefresh() {
+    fDisplayRefreshRequest.store(true, std::memory_order_release);
+    glfw::glfwPostEmptyEvent();
+  }
+
   void requestQuit() {
     fQuit.store(true, std::memory_order_release);
     glfw::glfwPostEmptyEvent();
@@ -402,6 +410,10 @@ public:
       if (fullscreen != -1) {
         this->applyFullscreen(fullscreen == 1);
       }
+      if (fDisplayRefreshRequest.exchange(false,
+                                          std::memory_order_acquire)) {
+        this->refreshFullscreenExtent();
+      }
     }
     fQuit.store(true, std::memory_order_release);
   }
@@ -425,6 +437,23 @@ public:
                                  fWindowedW, fWindowedH, 0);
     }
     fFullscreen = wanted;
+  }
+
+  void refreshFullscreenExtent() {
+    if (fWindow == nullptr || !fFullscreen) {
+      return;
+    }
+    const auto monitor = glfw::glfwGetPrimaryMonitor();
+    if (monitor == nullptr) {
+      return;
+    }
+    const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
+    if (mode == nullptr) {
+      return;
+    }
+    glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
+                               mode->height, mode->refreshRate);
+    this->notePlacement();
   }
 #endif
 
@@ -561,6 +590,7 @@ private:
   std::atomic<int> fCursorModeRequest{-1};
   std::atomic<int> fRawMotionRequest{-1};
   std::atomic<int> fFullscreenRequest{-1};
+  std::atomic<bool> fDisplayRefreshRequest{false};
   bool fFullscreen = true; // the window is created on a monitor
   int fWindowedX = 100, fWindowedY = 100;
   int fWindowedW = 1280, fWindowedH = 960;
