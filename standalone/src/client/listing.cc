@@ -161,6 +161,8 @@ inline constexpr float kFilterLineHeight = 16.0f;
 inline constexpr float kSortBarHeight = 40.0f;
 inline constexpr float kExpandedMaxHeight = 200.0f; // ExpandedContentScrollContainer
 inline constexpr float kExpandDelayMs = 100.0f;     // BeatmapCardContent.ExpandAfterDelay
+inline constexpr float kBackInset = 12.0f;
+inline constexpr float kBackSize = 44.0f;
 
 namespace scene = skiff::scene;
 namespace nodes = skiff::nodes;
@@ -232,9 +234,10 @@ struct ListingTheme {
           .rule(scene::select<nodes::Clickable, style::Back>(),
                 {.anchor = scene::Anchor::kTopLeft,
                  .origin = scene::Anchor::kTopLeft,
-                 .width = 44.0f,
-                 .height = 44.0f,
-                 .margin = scene::Margin{12.0f, 0.0f, 0.0f, 12.0f}})
+                 .width = kBackSize,
+                 .height = kBackSize,
+                 .margin = scene::Margin{kBackInset, 0.0f, 0.0f,
+                                         kBackInset}})
           .rule(scene::select<nodes::Box, style::Back>(),
                 {.width = 1.0f,
                  .height = 1.0f,
@@ -526,6 +529,15 @@ public:
 
   [[nodiscard]] Result click(float x, float y) {
     fPending = {};
+    // Listing actions are consumed synchronously from this call on pointer
+    // down. Clickable completes its activation through the routed pointer
+    // sequence, after this Result has already been returned, so its callback
+    // cannot carry navigation back to AppInput. Keep the visible button as a
+    // scene node for drawing and hover, but answer its overlay bounds here.
+    if (skia::SkRect::MakeXYWH(kBackInset, kBackInset, kBackSize, kBackSize)
+            .contains(x, y)) {
+      return {Action::kBack, 0};
+    }
     if (fScene) {
       fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
