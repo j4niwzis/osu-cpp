@@ -77,7 +77,13 @@ public:
       return false;
     }
 
-    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+    // Prefer the software encoder packaged by the Flatpak. Generic lookup can
+    // return a hardware wrapper first; opening that fails on devices without
+    // the matching kernel codec even though libx264 is available beside it.
+    const AVCodec *codec = avcodec_find_encoder_by_name("libx264");
+    if (codec == nullptr) {
+      codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+    }
     if (codec == nullptr) {
       codec = avcodec_find_encoder(fFormat->oformat->video_codec);
     }

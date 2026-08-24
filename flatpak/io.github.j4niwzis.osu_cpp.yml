@@ -155,6 +155,32 @@ modules:
         commit: dc7d7054a5b4f3bec1dc23a42fd616a0847af948
         tag: 1.24.3
 
+  - name: x264
+    buildsystem: simple
+    build-commands:
+      - ./configure --prefix=/app --libdir=/app/lib --enable-shared --enable-pic --disable-cli
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    sources:
+      - type: git
+        url: https://code.videolan.org/videolan/x264.git
+        commit: b35605ace3ddf7c1a5d67a2eb553f034aef41d55
+
+  - name: ffmpeg
+    buildsystem: simple
+    build-commands:
+      - >-
+        ./configure --prefix=/app --libdir=/app/lib
+        --disable-static --enable-shared --disable-programs --disable-doc
+        --disable-debug --enable-gpl --enable-libx264
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    sources:
+      - type: git
+        url: https://git.ffmpeg.org/ffmpeg.git
+        commit: bf1b838f2ab88b4f8fd83443325c782ea0e0f7fa
+        tag: n9.0.1
+
   - name: skia
     buildsystem: simple
     build-commands:
@@ -188,6 +214,10 @@ modules:
       - type: git
         url: https://skia.googlesource.com/skia.git
         commit: 13ffba253fc7854fd3b34f67c82dfb2418dc2944
+      - type: git
+        url: https://skia.googlesource.com/external/github.com/google/wuffs-mirror-release-c.git
+        commit: e3f919ccfe3ef542cfc983a82146070258fb57f8
+        dest: third_party/externals/wuffs
       - type: file
         path: skia.pc
 
@@ -198,6 +228,7 @@ modules:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CXX_COMPILER=clang++
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
+      - -DOSU_VIDEO_LIBAV=ON
       - -DOSU_SKIFF_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff
       - -DOSU_SKIFF_WIDGETS_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff-widgets
       - -DCPM_DOWNLOAD_LOCATION=/run/build/osu-cpp/.flatpak-sources/cpm/CPM.cmake
