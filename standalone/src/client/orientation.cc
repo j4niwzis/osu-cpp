@@ -36,7 +36,9 @@ public:
     if (!this->discover()) {
       return;
     }
-    const std::string wanted = choice == 2 ? "270" : "90";
+    const std::string wanted =
+        fBackend == Backend::kKScreen ? (choice == 2 ? "right" : "left")
+                                     : (choice == 2 ? "270" : "90");
     if (wanted == fCurrentTransform) {
       return;
     }
@@ -65,7 +67,10 @@ private:
     std::string fName;
     std::string fTransform;
     bool fEnabled = false;
+    bool fInternal = false;
   };
+
+  enum class Backend : std::uint8_t { kNone, kKScreen, kWlrRandr };
 
   static bool postmarketOS() {
     // An explicit output opts other wlroots-based mobile systems in without
@@ -105,6 +110,104 @@ private:
     if (!fOutput.empty()) {
       return true;
     }
+    if (this->discoverKScreen()) {
+      fBackend = Backend::kKScreen;
+      return true;
+    }
+    if (this->discoverWlrRandr()) {
+      fBackend = Backend::kWlrRandr;
+      return true;
+    }
+    return false;
+  }
+
+  static std::string_view trimmed(std::string_view line) {
+    while (!line.empty() &&
+           std::isspace(static_cast<unsigned char>(line.front()))) {
+      line.remove_prefix(1);
+    }
+    while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
+      line.remove_suffix(1);
+    }
+    return line;
+  }
+
+  static std::string kscreenRotation(std::string_view value) {
+    value = trimmed(value);
+    if (value == "1" || value == "None" || value == "normal") {
+      return "normal";
+    }
+    if (value == "2" || value == "Left" || value == "left") {
+      return "left";
+    }
+    if (value == "4" || value == "Inverted" || value == "inverted") {
+      return "inverted";
+    }
+    if (value == "8" || value == "Right" || value == "right") {
+      return "right";
+    }
+    return {};
+  }
+
+  bool discoverKScreen() {
+    FILE *pipe = ::popen("kscreen-doctor -o 2>/dev/null", "r");
+    if (pipe == nullptr) {
+      return false;
+    }
+    std::vector<Output> outputs;
+    Output current;
+    const auto finish = [&] {
+      if (!current.fName.empty()) {
+        outputs.push_back(std::move(current));
+        current = {};
+      }
+    };
+    std::array<char, 1024> buffer{};
+    while (::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) !=
+           nullptr) {
+      std::string_view line(buffer.data());
+      const std::string_view text = trimmed(line);
+      if (text.starts_with("Output: ")) {
+        finish();
+        std::istringstream fields{std::string(text)};
+        std::string label;
+        fields >> label >> current.fName;
+      } else if (text == "enabled") {
+        current.fEnabled = true;
+      } else if (text == "Panel") {
+        current.fInternal = true;
+      } else if (text.starts_with("Rotation: ")) {
+        current.fTransform = kscreenRotation(text.substr(10));
+      }
+    }
+    finish();
+    if (::pclose(pipe) != 0) {
+      return false;
+    }
+
+    const Output *selected = nullptr;
+    for (const auto &output : outputs) {
+      if (!output.fEnabled || !safeName(output.fName) ||
+          output.fTransform.empty()) {
+        continue;
+      }
+      if (selected == nullptr || output.fInternal) {
+        selected = &output;
+      }
+      if (output.fInternal) {
+        break;
+      }
+    }
+    if (selected == nullptr) {
+      return false;
+    }
+    fOutput = selected->fName;
+    fOriginalTransform = selected->fTransform;
+    fCurrentTransform = fOriginalTransform;
+    return true;
+  }
+
+  bool discoverWlrRandr() {
     if (const char *chosen = std::getenv("OSU_LANDSCAPE_OUTPUT");
         chosen != nullptr && safeName(chosen)) {
       fOutput = chosen;
@@ -186,6 +289,17 @@ private:
   }
 
   bool setTransform(std::string_view transform) const {
+    if (fBackend == Backend::kKScreen) {
+      if (!safeName(fOutput) ||
+          (transform != "normal" && transform != "left" &&
+           transform != "right" && transform != "inverted")) {
+        return false;
+      }
+      const std::string command =
+          std::format("kscreen-doctor output.{}.rotation.{}", fOutput,
+                      transform);
+      return std::system(command.c_str()) == 0;
+    }
     if (!safeName(fOutput) ||
         (transform != "normal" && transform != "90" && transform != "180" &&
          transform != "270" && transform != "flipped" &&
@@ -201,6 +315,7 @@ private:
   std::string fOutput;
   std::string fOriginalTransform;
   std::string fCurrentTransform;
+  Backend fBackend = Backend::kNone;
   bool fChanged = false;
   bool fWarned = false;
 #endif
