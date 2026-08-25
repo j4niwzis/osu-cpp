@@ -64,7 +64,7 @@ struct SkinDialogTheme {
                  .fontSize = 14.0f})
           .rule(scene::select<nodes::ScrollContainer,
                               skin_dialog_style::Scroll>(),
-                {.x = 0.0f, .y = 115.0f, .width = 620.0f, .height = 165.0f})
+                {.x = 0.0f, .y = 140.0f, .width = 620.0f, .height = 140.0f})
           .rule(scene::select<nodes::FillFlow,
                               skin_dialog_style::LicenceColumn>(),
                 {.width = 1.0f,
@@ -75,16 +75,16 @@ struct SkinDialogTheme {
                 {.anchor = scene::Anchor::kTopRight,
                  .origin = scene::Anchor::kTopRight,
                  .x = 0.0f,
-                 .y = 115.0f,
+                 .y = 140.0f,
                  .width = 5.0f,
-                 .height = 165.0f,
+                 .height = 140.0f,
                  .cornerRadius = 2.5f,
                  .backgroundColour = skia::colorSetARGB(80, 255, 255, 255)})
           .rule(scene::select<nodes::Box, skin_dialog_style::ScrollThumb>(),
                 {.anchor = scene::Anchor::kTopRight,
                  .origin = scene::Anchor::kTopRight,
                  .x = 0.0f,
-                 .y = 115.0f,
+                 .y = 140.0f,
                  .width = 5.0f,
                  .height = 40.0f,
                  .cornerRadius = 2.5f,
@@ -183,6 +183,13 @@ private:
 
   [[nodiscard]] static std::string loadLicence() {
     std::vector<std::filesystem::path> candidates;
+    std::error_code ec;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec && !executable.empty()) {
+      const auto prefix = executable.parent_path().parent_path();
+      candidates.emplace_back(prefix / "share" / "osu_client" / "licenses" /
+                              "WebOsu-CC-BY-NC-4.0.md");
+    }
 #ifdef OSU_CLIENT_DATADIR
     candidates.emplace_back(std::filesystem::path(OSU_CLIENT_DATADIR) /
                             "licenses" / "WebOsu-CC-BY-NC-4.0.md");
@@ -235,14 +242,14 @@ private:
         "Install optional classic artwork?", 24.0f, skia::kWhite, true);
     auto *intro = panel->add<nodes::Text>(
         {.y = 38.0f, .roles = {scene::role<skin_dialog_style::Text>}},
-        "osu-cpp works without these optional files and uses fallback "
-        "graphics. The download is pinned to a WebOsu-2 revision. It contains "
-        "osu!/lazer resources from ppy and resources from other authors.",
+        "osu-cpp works without these optional files and uses fallback graphics.\n"
+        "The download is pinned to a WebOsu-2 revision. It contains osu!/lazer\n"
+        "resources from ppy and resources from other authors.",
         14.0f, skia::kWhite, false);
     intro->setWrapped(true);
     auto *sources = panel->add<nodes::Text>(
-        {.y = 78.0f, .roles = {scene::role<skin_dialog_style::Text>}},
-        "Sources: WebOsu-2, the original WebOsu, and ppy/osu-resources. "
+        {.y = 96.0f, .roles = {scene::role<skin_dialog_style::Text>}},
+        "Sources: WebOsu-2, the original WebOsu, and ppy/osu-resources.\n"
         "The exact licence supplied with the resources follows.",
         14.0f, skia::kWhite, false);
     sources->setWrapped(true);
@@ -276,8 +283,8 @@ private:
   void updateScrollThumb() {
     if (!fScroll || !fScrollThumb)
       return;
-    constexpr float trackTop = 115.0f;
-    constexpr float trackHeight = 165.0f;
+    constexpr float trackTop = 140.0f;
+    constexpr float trackHeight = 140.0f;
     const float extent = fScroll->extent();
     const float content = trackHeight + extent;
     const float thumbHeight =
