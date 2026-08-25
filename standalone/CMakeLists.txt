@@ -334,6 +334,12 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/
     PATTERN "OFL*.txt" PATTERN "LICENSE*.txt"
 )
 
+# Exact upstream legal text displayed before the optional artwork download.
+install(FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/licenses/WebOsu-CC-BY-NC-4.0.md
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/osu_client/licenses
+)
+
 if(NOT EMSCRIPTEN_BUILD)
   install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.desktop

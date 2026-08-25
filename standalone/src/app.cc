@@ -27,6 +27,7 @@ import client.settings;
 import client.settingspanel;
 import client.overlays;
 import client.deletedialog;
+import client.skindialog;
 import client.filtercontrol;
 import client.library;
 import client.listing;
@@ -82,10 +83,12 @@ export extern "C++" class App {
 public:
   App(std::optional<osu::BeatmapSet> set, osu::ModSet mods, bool headless,
       bool autoplay, std::filesystem::path replayPath = {}, bool record = false,
-      std::filesystem::path skinPath = {}, bool profile = false)
+      std::filesystem::path skinPath = {}, bool profile = false,
+      bool offerSkinDownload = false)
       : fMods(mods), fHeadless(headless), fAutoplay(autoplay),
         fReplayPath(std::move(replayPath)), fRecord(record),
-        fSkin(std::move(skinPath)), fShowProfile(profile) {
+        fSkin(std::move(skinPath)), fShowProfile(profile),
+        fSkinDialog(fSkin.root(), offerSkinDownload) {
     fCliAutoplay = autoplay;
     if (set) {
       fSet = std::move(*set);
@@ -265,6 +268,7 @@ private:
   std::filesystem::path fReplayDir;
   client::songselect::Footer fSelectFooter;
   client::DeleteDialog fDeleteDialog;
+  client::SkinDownloadDialog fSkinDialog;
 
   // Download screen (mirror search + .osz fetch).
   client::listing::Listing fListing;
@@ -614,6 +618,7 @@ private:
     this->resize(fWin.fPixelW, fWin.fPixelH);
 
     fLibraryRuntime.initLibrary();
+    fSkinDialog.showIfNeeded();
     // Launched with a beatmap on the command line => skip the main menu and
     // drop straight into song select on the imported set (it sorts to a known
     // index, so just point the selection at it).
@@ -852,13 +857,23 @@ private:
                            fWin.fMouseY, wallMs());
       fFrame.consume(fDeleteDialog.finishFrame());
     }
+    if (fSkinDialog.open()) {
+      fSkinDialog.update(fFont, fWin.fScreenW, fWin.fScreenH, fWin.fMouseX,
+                         fWin.fMouseY, wallMs());
+      fFrame.consume(fSkinDialog.finishFrame());
+    }
+    if (fSkinDialog.takeInstalled()) {
+      fSkin.load(fSkin.root());
+      fFrame.damageAll("optional skin installed");
+    }
 
     // Overlays are drawn after the screen, over most of it, so appearance and
     // disappearance repaint the underlying screen once. Retained overlays
     // report their own damage between those two transitions.
     const bool overlay = fSettingsPanel.visible() || fModSelect.visible() ||
                          fExportDialog.open() || fReplayBrowser.open() ||
-                         fDeleteDialog.open() || fSetPage.open();
+                         fDeleteDialog.open() || fSkinDialog.open() ||
+                         fSetPage.open();
     // Only while one is moving, or on the frame it appears or goes away: a
     // settled overlay is as static as the screen under it, and the screens do
     // mark what they change beneath it.
@@ -1266,6 +1281,7 @@ private:
       fOverlays.drawExportDialog(canvas);
     }
     fDeleteDialog.render(canvas);
+    fSkinDialog.render(canvas);
     this->drawToast(canvas);
     fFrame.showDamage(canvas, fWin.fScreenW, fWin.fScreenH, wallMs(),
                       fSettings.flag("damageoverlay"));

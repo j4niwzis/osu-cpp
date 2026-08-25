@@ -100,6 +100,16 @@ std::filesystem::path executablePath(const char *argv0) {
   return argPath;
 }
 
+std::filesystem::path userDataPath() {
+  if (const char *xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
+    return std::filesystem::path(xdg) / "osu-cpp";
+  }
+  if (const char *home = std::getenv("HOME"); home && *home) {
+    return std::filesystem::path(home) / ".local" / "share" / "osu-cpp";
+  }
+  return std::filesystem::path{"."} / ".osu-cpp";
+}
+
 void printUsage(std::string_view program) {
   std::cout
       << "Usage: " << program << " [options] <beatmap.osu>\n"
@@ -230,7 +240,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  bool offerSkinDownload = false;
   if (skinPath.empty()) {
+    const auto userSkin = userDataPath() / "skin";
+    const bool hasUserArtwork =
+        std::filesystem::exists(userSkin / "ring-glow.png") ||
+        std::filesystem::exists(userSkin / "cursor.png");
+    if (hasUserArtwork) {
+      skinPath = userSkin;
+      offerSkinDownload =
+          std::filesystem::exists(userSkin / ".download-in-progress");
+    }
     const auto exeDir =
         executablePath(argc > 0 ? argv[0] : "osu_client").parent_path();
     const std::vector<std::filesystem::path> candidates{
@@ -239,6 +259,8 @@ int main(int argc, char **argv) {
         exeDir / ".." / "share" / "osu_client" / "skin",
     };
     for (const auto &candidate : candidates) {
+      if (!skinPath.empty())
+        break;
       auto canonical = std::filesystem::weakly_canonical(candidate);
       if (std::filesystem::exists(canonical)) {
         skinPath = canonical.make_preferred();
@@ -246,7 +268,8 @@ int main(int argc, char **argv) {
       }
     }
     if (skinPath.empty()) {
-      skinPath = std::filesystem::path{"skin"};
+      skinPath = userSkin;
+      offerSkinDownload = true;
     }
   }
 
@@ -468,7 +491,7 @@ int main(int argc, char **argv) {
       set = client::loadBeatmapSet(beatmapPath);
     }
     client::App app(std::move(set), mods, headless, autoplay, replayPath,
-                    record, skinPath, profile);
+                    record, skinPath, profile, offerSkinDownload);
     return app.run();
   } catch (const osu::ParseError &e) {
     std::cerr << "Parse error: " << e.what() << '\n';

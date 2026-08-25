@@ -150,6 +150,10 @@ public:
       break;
     }
     case EventType::kScroll:
+      if (fApp.fSkinDialog.open()) {
+        fApp.fSkinDialog.scroll(ev.fX);
+        break;
+      }
       if (fApp.fSettingsPanel.open()) {
         fApp.fOverlays.scrollSettings(ev.fX);
         break;
@@ -623,6 +627,9 @@ public:
       if (fApp.fDeleteDialog.open()) {
         add(fApp.fDeleteDialog.sceneRoot(), true);
       }
+      if (fApp.fSkinDialog.open()) {
+        add(fApp.fSkinDialog.sceneRoot(), true);
+      }
     }
     fApp.fInputRouter.setLayers(layers);
   }
@@ -692,6 +699,10 @@ public:
   }
 
   void clickAt(float x, float y) {
+    if (fApp.fSkinDialog.open()) {
+      fApp.fSkinDialog.click(x, y);
+      return;
+    }
     if (fApp.fScreens.confirmDeleteClick(x, y)) {
       return;
     }
