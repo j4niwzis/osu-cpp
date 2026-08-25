@@ -86,6 +86,19 @@ if [ ! -f "$sources/cpm/CPM.cmake" ]; then
 fi
 
 app_build="$BUILD_DIR/osu-cpp"
+skia_link=$(pkg-config --libs skia)
+case " $skia_link " in
+  *" -lfreetype "*" -lwebpdemux "*) ;;
+  *)
+    echo "broken skia.pc dependency closure: $skia_link" >&2
+    exit 1
+    ;;
+esac
+
+# pkg_check_modules caches its result in CMakeCache.txt. Reconfigure from a
+# fresh cache so changes to the generated skia.pc actually reach the link
+# command; Ninja keeps the already compiled object files themselves.
+rm -f "$app_build/CMakeCache.txt"
 "$prefix/bin/cmake" -S "$ROOT/standalone" -B "$app_build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
