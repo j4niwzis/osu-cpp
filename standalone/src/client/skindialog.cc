@@ -58,13 +58,13 @@ struct SkinDialogTheme {
                  .fontSize = 14.0f})
           .rule(scene::select<nodes::Text, skin_dialog_style::Status>(),
                 {.x = 0.0f,
-                 .y = 338.0f,
+                 .y = 292.0f,
                  .maxWidth = 632.0f,
                  .colour = palette::kAccent2,
                  .fontSize = 14.0f})
           .rule(scene::select<nodes::ScrollContainer,
                               skin_dialog_style::Scroll>(),
-                {.x = 0.0f, .y = 122.0f, .width = 620.0f, .height = 205.0f})
+                {.x = 0.0f, .y = 115.0f, .width = 620.0f, .height = 165.0f})
           .rule(scene::select<nodes::FillFlow,
                               skin_dialog_style::LicenceColumn>(),
                 {.width = 1.0f,
@@ -75,16 +75,16 @@ struct SkinDialogTheme {
                 {.anchor = scene::Anchor::kTopRight,
                  .origin = scene::Anchor::kTopRight,
                  .x = 0.0f,
-                 .y = 122.0f,
+                 .y = 115.0f,
                  .width = 5.0f,
-                 .height = 205.0f,
+                 .height = 165.0f,
                  .cornerRadius = 2.5f,
                  .backgroundColour = skia::colorSetARGB(80, 255, 255, 255)})
           .rule(scene::select<nodes::Box, skin_dialog_style::ScrollThumb>(),
                 {.anchor = scene::Anchor::kTopRight,
                  .origin = scene::Anchor::kTopRight,
                  .x = 0.0f,
-                 .y = 122.0f,
+                 .y = 115.0f,
                  .width = 5.0f,
                  .height = 40.0f,
                  .cornerRadius = 2.5f,
@@ -233,28 +233,26 @@ private:
     panel->add<nodes::Text>(
         {.roles = {scene::role<skin_dialog_style::Title>}},
         "Install optional classic artwork?", 24.0f, skia::kWhite, true);
-    panel->add<nodes::Text>(
+    auto *intro = panel->add<nodes::Text>(
         {.y = 38.0f, .roles = {scene::role<skin_dialog_style::Text>}},
-        "osu-cpp works without these files, but uses simple fallback graphics. "
-        "The optional files are downloaded from a pinned WebOsu-2 revision. "
-        "The set contains osu!/lazer resources from ppy and resources from "
-        "other authors.",
+        "osu-cpp works without these optional files and uses fallback "
+        "graphics. The download is pinned to a WebOsu-2 revision. It contains "
+        "osu!/lazer resources from ppy and resources from other authors.",
         14.0f, skia::kWhite, false);
-    panel->add<nodes::Text>(
-        {.y = 82.0f, .roles = {scene::role<skin_dialog_style::Text>}},
-        "Sources: github.com/WebOsu-2/webosu-2.github.io, "
-        "github.com/111116/webosu and github.com/ppy/osu-resources. "
+    intro->setWrapped(true);
+    auto *sources = panel->add<nodes::Text>(
+        {.y = 78.0f, .roles = {scene::role<skin_dialog_style::Text>}},
+        "Sources: WebOsu-2, the original WebOsu, and ppy/osu-resources. "
         "The exact licence supplied with the resources follows.",
         14.0f, skia::kWhite, false);
+    sources->setWrapped(true);
     auto *scroll = panel->add<nodes::ScrollContainer>(
         {.roles = {scene::role<skin_dialog_style::Scroll>}});
     fScroll = scroll;
     auto *licenceColumn = scroll->add<nodes::FillFlow>(
         {.roles = {scene::role<skin_dialog_style::LicenceColumn>}},
         nodes::FillFlow::Direction::kVertical);
-    licenceColumn->add<nodes::Text>(
-        {.roles = {scene::role<skin_dialog_style::Text>}}, loadLicence(),
-        12.0f, skia::kWhite, false);
+    this->addLicenceText(licenceColumn, loadLicence());
     panel->add<nodes::Box>(
         {.roles = {scene::role<skin_dialog_style::ScrollTrack>}},
         skia::colorSetARGB(80, 255, 255, 255));
@@ -264,6 +262,7 @@ private:
     fStatusNode = panel->add<nodes::Text>(
         {.roles = {scene::role<skin_dialog_style::Status>}}, fStatus, 14.0f,
         palette::kAccent2, false);
+    fStatusNode->setWrapped(true);
     auto *buttons = panel->add<nodes::FillFlow>(
         {.roles = {scene::role<skin_dialog_style::Buttons>}},
         nodes::FillFlow::Direction::kHorizontal);
@@ -277,8 +276,8 @@ private:
   void updateScrollThumb() {
     if (!fScroll || !fScrollThumb)
       return;
-    constexpr float trackTop = 122.0f;
-    constexpr float trackHeight = 205.0f;
+    constexpr float trackTop = 115.0f;
+    constexpr float trackHeight = 165.0f;
     const float extent = fScroll->extent();
     const float content = trackHeight + extent;
     const float thumbHeight =
@@ -291,6 +290,25 @@ private:
             : 0.0f;
     fScrollThumb->resizeHeightTo(thumbHeight, 0.0);
     fScrollThumb->moveToY(trackTop + travel * progress, 0.0);
+  }
+
+  static void addLicenceText(nodes::FillFlow *column,
+                             const std::string &licence) {
+    std::istringstream input(licence);
+    std::string line;
+    while (std::getline(input, line)) {
+      if (line.empty()) {
+        column->add<nodes::Box>({.width = 1.0f,
+                                 .height = 8.0f,
+                                 .relativeSize = scene::Axes::kX},
+                                skia::colorSetARGB(0, 0, 0, 0));
+        continue;
+      }
+      auto *text = column->add<nodes::Text>(
+          {.roles = {scene::role<skin_dialog_style::Text>}}, std::move(line),
+          12.0f, skia::kWhite, false);
+      text->setWrapped(true);
+    }
   }
 
   void decline() {
