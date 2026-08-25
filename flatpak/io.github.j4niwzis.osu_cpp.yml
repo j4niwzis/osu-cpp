@@ -4,6 +4,7 @@ runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.llvm20
+  - org.freedesktop.Sdk.Extension.llvm22
 command: osu_client
 
 finish-args:
@@ -229,6 +230,8 @@ modules:
       # glibc's fortified Clang overloads have internal linkage and therefore
       # cannot be exported by libstdc++'s std module interface.
       cxxflags: -Wp,-U_FORTIFY_SOURCE
+      prepend-path: /usr/lib/sdk/llvm22/bin
+      prepend-ld-library-path: /usr/lib/sdk/llvm22/lib
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CXX_COMPILER=clang++

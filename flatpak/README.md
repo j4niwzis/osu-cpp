@@ -9,6 +9,7 @@ Install the SDK and builder:
 flatpak install flathub org.freedesktop.Platform//25.08 \
   org.freedesktop.Sdk//25.08 \
   org.freedesktop.Sdk.Extension.llvm20//25.08 \
+  org.freedesktop.Sdk.Extension.llvm22//25.08 \
   org.flatpak.Builder
 ```
 
