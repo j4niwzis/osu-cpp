@@ -1,0 +1,16 @@
+{
+  "name": "io.github.j4niwzis.osu_cpp",
+  "title": "osu!cpp",
+  "version": "1.0.0",
+  "description": "Native osu! client",
+  "maintainer": "j4niwzis",
+  "architecture": "$ENV{ARCH}",
+  "framework": "$ENV{CLICK_FRAMEWORK}",
+  "hooks": {
+    "osu-cpp": {
+      "apparmor": "osu-cpp.apparmor",
+      "desktop": "osu-cpp.desktop"
+    }
+  }
+}
+

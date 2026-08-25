@@ -1,0 +1,113 @@
+clickable_minimum_required: "8.9.0"
+framework: ubuntu-touch-24.04-2.x
+builder: custom
+restrict_arch: arm64
+build_dir: ${ROOT}/build/click/${ARCH_TRIPLET}
+install_dir: ${BUILD_DIR}/install
+make_jobs: 1
+
+# LLVM 22 is required by the Skia revision used by the project. Noble itself
+# carries an older LLVM, so use LLVM's signed Noble repository in Clickable's
+# disposable build image.
+image_setup:
+  run:
+    - mkdir -p /etc/apt/keyrings
+    - curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /etc/apt/keyrings/llvm-snapshot.gpg
+    - echo "deb [signed-by=/etc/apt/keyrings/llvm-snapshot.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" > /etc/apt/sources.list.d/llvm22.list
+
+dependencies_host:
+  - autoconf
+  - automake
+  - build-essential
+  - ca-certificates
+  - clang-22
+  - curl
+  - generate-ninja
+  - git
+  - gnupg
+  - libc++-22-dev
+  - libc++abi-22-dev
+  - libtool
+  - lld-22
+  - ninja-build
+  - pkg-config
+  - python3
+
+dependencies_target:
+  - libboost-dev
+  - libbz2-dev
+  - libegl1-mesa-dev
+  - libfontconfig1-dev
+  - libfreetype-dev
+  - libgl-dev
+  - libglfw3-dev
+  - libjpeg-turbo8-dev
+  - liblzma-dev
+  - libmpg123-dev
+  - libopenal-dev
+  - libopus-dev
+  - libpng-dev
+  - libsndfile1-dev
+  - libssl-dev
+  - libsystemd-dev
+  - libwayland-dev
+  - libwebp-dev
+  - libx264-dev
+  - libzip-dev
+  - zlib1g-dev
+  - libavcodec-dev
+  - libavformat-dev
+  - libavutil-dev
+  - libswresample-dev
+  - libswscale-dev
+
+env_vars:
+  CC: clang-22
+  CXX: clang++-22
+  AR: llvm-ar-22
+  NM: llvm-nm-22
+  RANLIB: llvm-ranlib-22
+  CFLAGS: -O3
+  CXXFLAGS: -O3 -stdlib=libc++
+  LDFLAGS: -fuse-ld=lld-22 -stdlib=libc++
+
+build: ${ROOT}/click/build.sh
+
+# Keep Ubuntu Touch's libc, Wayland, EGL and GL stack. These application-level
+# libraries are copied because Click packages cannot declare Debian runtime
+# dependencies.
+install_lib:
+  - libc++.so.1*
+  - libc++abi.so.1*
+  - libunwind.so.1*
+  - libglfw.so.3*
+  - libopenal.so.1*
+  - libzip.so.4*
+  - libsndfile.so.1*
+  - libmpg123.so.0*
+  - libssl.so.3*
+  - libcrypto.so.3*
+  - liblzma.so.5*
+  - libbz2.so.1*
+  - libopus.so.0*
+  - libFLAC.so.*
+  - libvorbis.so.*
+  - libvorbisenc.so.*
+  - libogg.so.*
+  - libavcodec.so.*
+  - libavformat.so.*
+  - libavutil.so.*
+  - libswresample.so.*
+  - libswscale.so.*
+  - libx264.so.*
+
+install_root_data:
+  - click/manifest.json
+  - click/osu-cpp.apparmor
+  - click/osu-cpp.desktop
+  - click/osu-cpp-launch
+  - standalone/packaging/io.github.j4niwzis.osu_cpp.svg
+
+kill: osu_client
+launch: lomiri-app-launch io.github.j4niwzis.osu_cpp_osu-cpp
+
