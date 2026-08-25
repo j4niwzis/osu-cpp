@@ -1,9 +1,9 @@
 {
-  "name": "io.github.j4niwzis.osu_cpp",
+  "name": "osu-cpp.j4niwzis",
   "title": "osu!cpp",
   "version": "1.0.0",
   "description": "Native osu! client",
-  "maintainer": "j4niwzis",
+  "maintainer": "j4niwzis <j4niwzis@proton.me>",
   "architecture": "$ENV{ARCH}",
   "framework": "$ENV{CLICK_FRAMEWORK}",
   "hooks": {
@@ -13,4 +13,3 @@
     }
   }
 }
-

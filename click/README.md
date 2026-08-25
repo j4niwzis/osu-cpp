@@ -1,6 +1,6 @@
 # Ubuntu Touch Click package
 
-This package targets Ubuntu Touch 24.04 on arm64. It is deliberately built
+This package targets Ubuntu Touch 24.04 (`ubuntu-touch-24.04-1.x`) on arm64. It is deliberately built
 against Noble rather than repacking the Flatpak runtime: libc, Wayland, EGL and
 OpenGL come from Ubuntu Touch, while Clickable copies application libraries
 that are not guaranteed to be installed on the device. The exact runtime
