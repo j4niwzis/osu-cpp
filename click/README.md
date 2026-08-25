@@ -1,6 +1,6 @@
 # Ubuntu Touch Click package
 
-This package targets Ubuntu Touch 24.04 (`ubuntu-touch-24.04-1.x`) on arm64. It is deliberately built
+This package targets Ubuntu Touch 24.04 (`ubuntu-touch-24.04-2.x`) on arm64. It is deliberately built
 against Noble rather than repacking the Flatpak runtime: libc, Wayland, EGL and
 OpenGL come from Ubuntu Touch, while Clickable copies application libraries
 that are not guaranteed to be installed on the device. The exact runtime
@@ -9,6 +9,11 @@ the wildcard and `+` characters needed to express it through `install_lib`.
 LLVM 22 is installed during Clickable's image-setup phase with apt.llvm.org's
 official installer; putting it in `dependencies_host` would make Clickable ask
 Noble for the packages before that repository exists.
+
+Automatic review is disabled because the reviewer bundled by the current
+Clickable Noble image does not yet know the `2404.2` policy database, although
+Clickable 8.9 itself supports the framework. Review the package once the image
+ships matching reviewer data.
 
 Install Clickable 8.9 or newer, then build with one job (the CMake and final
 link steps use substantial memory):
