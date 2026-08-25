@@ -2,9 +2,12 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+app_storage=osu-cpp.j4niwzis
+export XDG_DATA_HOME="$HOME/.local/share/$app_storage"
+export XDG_CONFIG_HOME="$HOME/.config/$app_storage"
+export XDG_CACHE_HOME="$HOME/.cache/$app_storage"
 export LD_LIBRARY_PATH="$root/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 
 exec "$root/bin/osu_client" "$@"
