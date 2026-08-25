@@ -48,7 +48,6 @@ dependencies_target:
   - libfontconfig1-dev
   - libfreetype-dev
   - libgl-dev
-  - libglfw3-dev
   - libjpeg-turbo8-dev
   - liblzma-dev
   - libmpg123-dev
@@ -59,7 +58,9 @@ dependencies_target:
   - libssl-dev
   - libsystemd-dev
   - libwayland-dev
+  - libwayland-bin
   - libwebp-dev
+  - libxkbcommon-dev
   - libx264-dev
   - libzip-dev
   - zlib1g-dev
@@ -68,6 +69,7 @@ dependencies_target:
   - libavutil-dev
   - libswresample-dev
   - libswscale-dev
+  - wayland-protocols
 
 env_vars:
   CC: clang-22

@@ -27,6 +27,33 @@ if [ ! -x "$prefix/bin/cmake" ]; then
   make install
 fi
 
+# Ubuntu Noble's GLFW package selects the X11 backend, which sends the Click
+# through Xwayland on Ubuntu Touch and can lose the device's accelerated EGL
+# path. Ship an explicitly Wayland-only GLFW 3.4 instead.
+if [ ! -f "$prefix/lib/libglfw.so.3" ]; then
+  if [ ! -d "$sources/glfw/.git" ]; then
+    git clone https://github.com/glfw/glfw.git "$sources/glfw"
+    git -C "$sources/glfw" checkout a74efa0d5628b74adc0426af4c5710e287fa7c2c
+  fi
+  glfw_build="$BUILD_DIR/glfw"
+  "$prefix/bin/cmake" -S "$sources/glfw" -B "$glfw_build" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$prefix" \
+    -DCMAKE_C_COMPILER=clang-22 \
+    -DBUILD_SHARED_LIBS=ON \
+    -DGLFW_BUILD_WAYLAND=ON \
+    -DGLFW_BUILD_X11=OFF \
+    -DGLFW_BUILD_DOCS=OFF \
+    -DGLFW_BUILD_EXAMPLES=OFF \
+    -DGLFW_BUILD_TESTS=OFF
+  "$prefix/bin/cmake" --build "$glfw_build" -j"$jobs"
+  "$prefix/bin/cmake" --install "$glfw_build"
+  # Keep the same system include path used by the previous Noble GLFW package.
+  # Only the linked shared object changes, so Ninja can retain client objects.
+  sed -i 's|^includedir=.*|includedir=/usr/include|' \
+    "$prefix/lib/pkgconfig/glfw3.pc"
+fi
+
 # Build the exact Skia revision used by the Flatpak, but against Noble's
 # graphics/image libraries. Only wuffs is a source dependency for this setup.
 if [ ! -f "$prefix/lib/libskia.a" ]; then
