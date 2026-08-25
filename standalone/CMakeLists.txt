@@ -8,15 +8,6 @@ project(osu_client LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
-# Clang cannot export glibc's _FORTIFY_SOURCE overloads from libstdc++'s
-# module interface.  Some distribution SDKs inject fortify globally, so let
-# their packaging configuration disable it for the generated std module only.
-option(OSU_IMPORT_STD_NO_FORTIFY
-  "Disable _FORTIFY_SOURCE only while compiling the C++ standard module" OFF)
-if(OSU_IMPORT_STD_NO_FORTIFY AND TARGET __cmake_cxx_std_23)
-  target_compile_options(__cmake_cxx_std_23 PRIVATE -U_FORTIFY_SOURCE)
-endif()
-
 # ---- Options ----
 
 option(ENABLE_TEST_COVERAGE "Enable test coverage" OFF)
