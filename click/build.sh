@@ -79,6 +79,7 @@ app_build="$BUILD_DIR/osu-cpp"
   -DCMAKE_CXX_FLAGS="-O3 -stdlib=libc++" \
   -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld-22 -stdlib=libc++" \
   -DOSU_INSTALL_LIBRARY_PACKAGE=OFF \
+  -DOSU_STATIC_DEPS=ON \
   -DOSU_VIDEO_LIBAV=ON \
   -DOSU_SKIFF_SOURCE_DIR="$sources/skiff" \
   -DOSU_SKIFF_WIDGETS_SOURCE_DIR="$sources/skiff-widgets" \
