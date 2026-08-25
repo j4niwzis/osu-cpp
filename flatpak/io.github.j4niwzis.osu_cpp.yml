@@ -90,6 +90,8 @@ modules:
   - name: glfw
     buildsystem: cmake-ninja
     config-opts:
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
       - -DGLFW_BUILD_DOCS=OFF
       - -DGLFW_BUILD_EXAMPLES=OFF
       - -DGLFW_BUILD_TESTS=OFF
@@ -117,6 +119,8 @@ modules:
   - name: libzip
     buildsystem: cmake-ninja
     config-opts:
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
       - -DBUILD_DOC=OFF
       - -DBUILD_EXAMPLES=OFF
       - -DBUILD_REGRESS=OFF
@@ -130,6 +134,8 @@ modules:
   - name: libsndfile
     buildsystem: cmake-ninja
     config-opts:
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
       - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
       - -DBUILD_EXAMPLES=OFF
       - -DBUILD_PROGRAMS=OFF
@@ -152,6 +158,8 @@ modules:
       - AUTOMAKE=automake
     config-opts:
       - --disable-components
+      - --disable-shared
+      - --enable-static
       - --enable-libmpg123
       - --disable-programs
     sources:
@@ -170,6 +178,8 @@ modules:
   - name: openal-soft
     buildsystem: cmake-ninja
     config-opts:
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DLIBTYPE=STATIC
       - -DALSOFT_EXAMPLES=OFF
       - -DALSOFT_UTILS=OFF
       - -DALSOFT_TESTS=OFF
@@ -182,7 +192,7 @@ modules:
   - name: x264
     buildsystem: simple
     build-commands:
-      - ./configure --prefix=/app --libdir=/app/lib --enable-shared --enable-pic --disable-cli
+      - ./configure --prefix=/app --libdir=/app/lib --disable-shared --enable-static --enable-pic --disable-cli
       - make -j${FLATPAK_BUILDER_N_JOBS}
       - make install
     sources:
@@ -195,7 +205,8 @@ modules:
     build-commands:
       - >-
         ./configure --prefix=/app --libdir=/app/lib
-        --disable-static --enable-shared --disable-programs --disable-doc
+        --enable-static --disable-shared --enable-pic
+        --disable-programs --disable-doc
         --disable-debug --enable-gpl --enable-libx264
       - make -j${FLATPAK_BUILDER_N_JOBS}
       - make install
@@ -259,6 +270,7 @@ modules:
       - -DCMAKE_CXX_COMPILER=clang++
       - -DCMAKE_CXX_STDLIB_MODULES_JSON=/run/build/osu-cpp/flatpak/libstdc++.modules.json
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
+      - -DOSU_STATIC_DEPS=ON
       - -DOSU_VIDEO_LIBAV=ON
       - -DOSU_SKIFF_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff
       - -DOSU_SKIFF_WIDGETS_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff-widgets

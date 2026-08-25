@@ -38,6 +38,11 @@ include(../cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 
+# Use pkg-config's private dependency closure when linking bundled static
+# libraries. This is opt-in so native distro builds retain their normal shared
+# dependency selection.
+option(OSU_STATIC_DEPS "Link pkg-config dependencies statically" OFF)
+
 # Boost is header-only here. Prefer its CMake package when available, but also
 # support installations which contain only the assembled Boost include tree
 # (notably the Flatpak build and CMake versions without FindBoost).
@@ -74,6 +79,16 @@ else()
   pkg_check_modules(LIBZIP  REQUIRED libzip)
   pkg_check_modules(SNDFILE REQUIRED sndfile)
   pkg_check_modules(MPG123  REQUIRED libmpg123)
+endif()
+
+if(OSU_STATIC_DEPS)
+  foreach(dependency GLFW OPENAL SKIA LIBZIP SNDFILE MPG123)
+    if(DEFINED ${dependency}_STATIC_LDFLAGS)
+      set(${dependency}_LDFLAGS ${${dependency}_STATIC_LDFLAGS})
+      set(${dependency}_LIBRARIES)
+      set(${dependency}_INCLUDE_DIRS ${${dependency}_STATIC_INCLUDE_DIRS})
+    endif()
+  endforeach()
 endif()
 
 if(TEST_INSTALLED_VERSION)
@@ -131,6 +146,17 @@ endif()
 add_executable(${PROJECT_NAME} ${module_sources} ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
+
+if(OSU_STATIC_DEPS)
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    ${GLFW_STATIC_CFLAGS_OTHER}
+    ${OPENAL_STATIC_CFLAGS_OTHER}
+    ${SKIA_STATIC_CFLAGS_OTHER}
+    ${LIBZIP_STATIC_CFLAGS_OTHER}
+    ${SNDFILE_STATIC_CFLAGS_OTHER}
+    ${MPG123_STATIC_CFLAGS_OTHER}
+  )
+endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -237,10 +263,20 @@ endif()
 # a browser, or anywhere ffmpeg is not installed.
 option(OSU_VIDEO_LIBAV "Encode exported video with libavcodec" OFF)
 if(OSU_VIDEO_LIBAV)
-  pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
-    libavcodec libavformat libavutil libswresample libswscale)
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_VIDEO_LIBAV=1)
-  target_link_libraries(${PROJECT_NAME} PkgConfig::LIBAV)
+  if(OSU_STATIC_DEPS)
+    pkg_check_modules(LIBAV REQUIRED
+      libavcodec libavformat libavutil libswresample libswscale)
+    target_include_directories(${PROJECT_NAME} PRIVATE
+      ${LIBAV_STATIC_INCLUDE_DIRS})
+    target_compile_options(${PROJECT_NAME} PRIVATE
+      ${LIBAV_STATIC_CFLAGS_OTHER})
+    target_link_libraries(${PROJECT_NAME} ${LIBAV_STATIC_LDFLAGS})
+  else()
+    pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
+      libavcodec libavformat libavutil libswresample libswscale)
+    target_link_libraries(${PROJECT_NAME} PkgConfig::LIBAV)
+  endif()
 endif()
 
 # ---- Emscripten-specific options ----

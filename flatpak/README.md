@@ -24,6 +24,10 @@ The manifest permits Wayland with an X11 fallback, audio, GPU acceleration and
 network access. Beatmap import uses the file chooser portal, so it deliberately
 does not grant broad access to the host filesystem.
 
+Bundled runtime dependencies are built as static LLVM LTO archives and linked
+into `osu_client`. The host-facing glibc, Wayland, D-Bus and graphics driver
+stack remain dynamic so the same Flatpak can run with different host GPUs.
+
 Before a Flathub submission, add at least one real Linux screenshot to the
 MetaInfo file using a stable, commit-pinned HTTPS URL. Flathub requires one,
 but the repository does not currently contain an authentic application
