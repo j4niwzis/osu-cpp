@@ -6,6 +6,9 @@ OpenGL come from Ubuntu Touch, while Clickable copies application libraries
 that are not guaranteed to be installed on the device. The exact runtime
 closure is collected from the finished executable because Clickable rejects
 the wildcard and `+` characters needed to express it through `install_lib`.
+LLVM 22 is installed during Clickable's image-setup phase with apt.llvm.org's
+official installer; putting it in `dependencies_host` would make Clickable ask
+Noble for the packages before that repository exists.
 
 Install Clickable 8.9 or newer, then build with one job (the CMake and final
 link steps use substantial memory):
