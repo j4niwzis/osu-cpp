@@ -3,7 +3,6 @@ runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.llvm20
   - org.freedesktop.Sdk.Extension.llvm22
 command: osu_client
 
@@ -25,11 +24,17 @@ cleanup:
   - '*.la'
 
 build-options:
-  append-path: /usr/lib/sdk/llvm20/bin
-  prepend-ld-library-path: /usr/lib/sdk/llvm20/lib
+  append-path: /usr/lib/sdk/llvm22/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm22/lib
+  cflags: -O3 -flto
+  cxxflags: -O3 -flto
+  ldflags: -flto -fuse-ld=lld
   env:
     CC: clang
     CXX: clang++
+    AR: llvm-ar
+    NM: llvm-nm
+    RANLIB: llvm-ranlib
 
 modules:
   # The SDK's CMake is deliberately not used: osu-cpp's named C++ modules and
@@ -188,7 +193,8 @@ modules:
       - test -f skia.pc
       - >-
         gn gen out/flatpak --args='is_official_build=true
-        cc="clang" cxx="clang++"
+        cc="clang" cxx="clang++" ar="llvm-ar"
+        extra_cflags=["-O3", "-flto"]
         skia_enable_ganesh=true skia_use_gl=true skia_use_egl=true
         skia_use_vulkan=false skia_use_x11=false
         skia_use_libpng_decode=true skia_use_libpng_encode=true
@@ -230,8 +236,6 @@ modules:
       # glibc's fortified Clang overloads have internal linkage and therefore
       # cannot be exported by libstdc++'s std module interface.
       cxxflags: -Wp,-U_FORTIFY_SOURCE
-      prepend-path: /usr/lib/sdk/llvm22/bin
-      prepend-ld-library-path: /usr/lib/sdk/llvm22/lib
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CXX_COMPILER=clang++
