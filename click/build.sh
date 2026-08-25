@@ -48,8 +48,23 @@ if [ ! -f "$prefix/lib/libskia.a" ]; then
   cp -a include/. "$prefix/include/skia/"
   cp -a include/. "$prefix/include/skia/include/"
   cp -a modules/skcms "$prefix/include/skia/modules/"
-  sed "s|^prefix=.*|prefix=$prefix|" "$ROOT/flatpak/skia.pc" > "$prefix/lib/pkgconfig/skia.pc"
 fi
+
+# libskia is static even though the rest of the Noble dependencies are shared.
+# Expose only Skia's private closure to ordinary pkg-config consumers. Turning
+# on OSU_STATIC_DEPS globally would instead request FFmpeg's enormous static
+# closure (vpx, dav1d, aom, rav1e, cairo, and many more development packages).
+sed "s|^prefix=.*|prefix=$prefix|" "$ROOT/flatpak/skia.pc" |
+awk '
+  /^Libs: / { public = $0; next }
+  /^Libs.private: / {
+    private = $0
+    sub(/^Libs.private:[[:space:]]*/, "", private)
+    print public " " private
+    next
+  }
+  { print }
+' > "$prefix/lib/pkgconfig/skia.pc"
 
 fetch_checkout() {
   name=$1 url=$2 commit=$3
@@ -79,7 +94,6 @@ app_build="$BUILD_DIR/osu-cpp"
   -DCMAKE_CXX_FLAGS="-O3 -stdlib=libc++" \
   -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld-22 -stdlib=libc++" \
   -DOSU_INSTALL_LIBRARY_PACKAGE=OFF \
-  -DOSU_STATIC_DEPS=ON \
   -DOSU_VIDEO_LIBAV=ON \
   -DOSU_SKIFF_SOURCE_DIR="$sources/skiff" \
   -DOSU_SKIFF_WIDGETS_SOURCE_DIR="$sources/skiff-widgets" \
