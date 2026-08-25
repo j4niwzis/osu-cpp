@@ -229,6 +229,7 @@ modules:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CXX_COMPILER=clang++
       - -DCMAKE_CXX_STDLIB_MODULES_JSON=/run/build/osu-cpp/flatpak/libstdc++.modules.json
+      - -DOSU_IMPORT_STD_NO_FORTIFY=ON
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
       - -DOSU_VIDEO_LIBAV=ON
       - -DOSU_SKIFF_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff
