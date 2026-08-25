@@ -116,6 +116,22 @@ modules:
         url: https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.bz2
         sha256: 85a33fa22621b4f314f8e85e1a5e2a9363d22e4f4992925d4bb3bc631b5a0c7a
 
+  - name: zstd
+    buildsystem: cmake-ninja
+    subdir: build/cmake
+    config-opts:
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DZSTD_BUILD_CONTRIB=OFF
+      - -DZSTD_BUILD_PROGRAMS=OFF
+      - -DZSTD_BUILD_SHARED=OFF
+      - -DZSTD_BUILD_STATIC=ON
+      - -DZSTD_BUILD_TESTS=OFF
+    sources:
+      - type: git
+        url: https://github.com/facebook/zstd.git
+        commit: f8745da6ff1ad1e7bab384bd1f9d742439278e99
+        tag: v1.5.7
+
   - name: libzip
     buildsystem: cmake-ninja
     config-opts:
