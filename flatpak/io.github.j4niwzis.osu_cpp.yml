@@ -41,6 +41,15 @@ modules:
   # import-std setup require the 4.3.4 behaviour used by upstream.
   - name: cmake
     buildsystem: simple
+    # CMake is only a build-time tool and is removed after this module. Full
+    # LTO here consumes several GiB while providing no benefit to osu-cpp.
+    build-options:
+      cflags: -O2
+      cflags-override: true
+      cxxflags: -O2
+      cxxflags-override: true
+      ldflags: -fuse-ld=lld
+      ldflags-override: true
     build-commands:
       - ./bootstrap --prefix=/app --parallel=${FLATPAK_BUILDER_N_JOBS} -- -DCMAKE_USE_OPENSSL=OFF
       - make -j${FLATPAK_BUILDER_N_JOBS}
@@ -55,6 +64,15 @@ modules:
 
   - name: gn
     buildsystem: simple
+    # GN is another temporary build-time tool; keep product libraries on LTO,
+    # but do not spend memory optimizing the generator itself.
+    build-options:
+      cflags: -O2
+      cflags-override: true
+      cxxflags: -O2
+      cxxflags-override: true
+      ldflags: -fuse-ld=lld
+      ldflags-override: true
     build-commands:
       - python3 build/gen.py --no-last-commit-position
       - install -Dm644 flatpak-last_commit_position.h out/last_commit_position.h
