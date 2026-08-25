@@ -388,19 +388,6 @@ public:
     glfw::glfwPostEmptyEvent();
   }
 
-  // An external output rotation changes the monitor mode without changing
-  // the fact that this is a fullscreen window. Re-apply that same fullscreen
-  // state on GLFW's owner thread so Xwayland gives the window the new extent.
-  void requestDisplayRefresh(bool expectLandscape) {
-    fDisplayLandscape.store(expectLandscape ? 1 : 0,
-                            std::memory_order_release);
-    // KScreen returns before Xwayland has necessarily published the new
-    // logical monitor geometry. Retry on the event thread for a short window
-    // instead of taking one stale portrait snapshot.
-    fDisplayRefreshAttempts.store(12, std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
-  }
-
   void requestQuit() {
     fQuit.store(true, std::memory_order_release);
     glfw::glfwPostEmptyEvent();
@@ -419,11 +406,7 @@ public:
 #ifndef __EMSCRIPTEN__
   void pumpEvents() {
     while (!this->quitting()) {
-      if (fDisplayRefreshAttempts.load(std::memory_order_acquire) > 0) {
-        glfw::glfwWaitEventsTimeout(0.1);
-      } else {
-        glfw::glfwWaitEvents();
-      }
+      glfw::glfwWaitEvents();
       const int cursorMode = fCursorModeRequest.exchange(-1);
       if (cursorMode != -1) {
         glfw::glfwSetInputMode(fWindow, glfw::kCursor, cursorMode);
@@ -435,14 +418,6 @@ public:
       const int fullscreen = fFullscreenRequest.exchange(-1);
       if (fullscreen != -1) {
         this->applyFullscreen(fullscreen == 1);
-      }
-      int attempts = fDisplayRefreshAttempts.load(std::memory_order_acquire);
-      if (attempts > 0) {
-        const bool landscape =
-            fDisplayLandscape.load(std::memory_order_acquire) == 1;
-        const bool settled = this->refreshFullscreenExtent(landscape);
-        fDisplayRefreshAttempts.store(settled ? 0 : attempts - 1,
-                                      std::memory_order_release);
       }
     }
     fQuit.store(true, std::memory_order_release);
@@ -469,36 +444,6 @@ public:
     fFullscreen = wanted;
   }
 
-  [[nodiscard]] bool refreshFullscreenExtent(bool expectLandscape) {
-    if (fWindow == nullptr || !fFullscreen) {
-      return true;
-    }
-    const auto monitor = glfw::glfwGetPrimaryMonitor();
-    if (monitor == nullptr) {
-      return false;
-    }
-    const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-    if (mode == nullptr) {
-      return false;
-    }
-    int x = 0, y = 0, width = mode->width, height = mode->height;
-    glfw::glfwGetMonitorWorkarea(monitor, &x, &y, &width, &height);
-    if (width <= 0 || height <= 0) {
-      width = mode->width;
-      height = mode->height;
-    }
-    // A transformed phone panel may keep advertising its physical portrait
-    // mode while its logical work area has already become landscape.
-    if (expectLandscape && width < height) {
-      std::swap(width, height);
-    }
-    glfw::glfwSetWindowMonitor(fWindow, monitor, x, y, width, height,
-                               mode->refreshRate);
-    this->notePlacement();
-    int framebufferW = 0, framebufferH = 0;
-    glfw::glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
-    return !expectLandscape || framebufferW > framebufferH;
-  }
 #endif
 
   void close() {
@@ -674,8 +619,6 @@ private:
   std::atomic<int> fCursorModeRequest{-1};
   std::atomic<int> fRawMotionRequest{-1};
   std::atomic<int> fFullscreenRequest{-1};
-  std::atomic<int> fDisplayRefreshAttempts{0};
-  std::atomic<int> fDisplayLandscape{0};
   bool fFullscreen = true; // the window is created on a monitor
   int fWindowedX = 100, fWindowedY = 100;
   int fWindowedW = 1280, fWindowedH = 960;

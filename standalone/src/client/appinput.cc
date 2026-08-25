@@ -100,13 +100,6 @@ public:
       fApp.resize(ev.fA, ev.fB);
       break;
     case EventType::kWindowVisible:
-      if (ev.fA == 0) {
-        (void)fApp.fDisplayOrientation.restore();
-      } else if (fApp.fDisplayOrientation.apply(
-                     fApp.fSettings.choice("orientation"))) {
-        fApp.fWindowRuntime.requestDisplayRefresh(
-            fApp.fSettings.choice("orientation") > 0);
-      }
       break;
     case EventType::kCursorMove: {
       // The window reports device pixels. Everything above the frame -- the
