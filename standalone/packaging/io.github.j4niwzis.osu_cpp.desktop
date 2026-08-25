@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=osu! cpp
+Name=osu!cpp
 Comment=Play osu! beatmaps with a native C++ client
 Exec=osu_client %F
 Icon=io.github.j4niwzis.osu_cpp

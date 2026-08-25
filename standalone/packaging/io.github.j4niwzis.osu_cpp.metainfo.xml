@@ -3,11 +3,11 @@
   <id>io.github.j4niwzis.osu_cpp</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
-  <name>osu! cpp</name>
+  <name>osu!cpp</name>
   <summary>A native C++ client for playing osu! beatmaps</summary>
   <description>
     <p>
-      osu! cpp is a native rhythm game client that imports and plays osu!
+      osu!cpp is a native rhythm game client that imports and plays osu!
       beatmaps. It supports mouse, keyboard and touchscreen input.
     </p>
   </description>
