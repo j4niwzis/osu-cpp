@@ -33,7 +33,15 @@ public:
 #ifdef __EMSCRIPTEN__
     fApp.fMapsDir = "/maps";
 #else
-    if (const char *home = std::getenv("HOME"); home != nullptr) {
+    if (const char *xdg = std::getenv("XDG_DATA_HOME");
+        xdg != nullptr && *xdg != '\0') {
+      // Flatpak exposes the application's persistent writable data directory
+      // here. Native desktops which set XDG_DATA_HOME get the same standard
+      // behaviour.
+      fApp.fMapsDir = std::filesystem::path(xdg) / "osu-cpp" / "maps";
+    } else if (const char *home = std::getenv("HOME"); home != nullptr) {
+      // Keep the historical native location when XDG_DATA_HOME is unset, so
+      // an update does not make an existing library appear to disappear.
       fApp.fMapsDir = std::filesystem::path(home) / ".local" / "share" /
                  "osu_client" / "maps";
     } else {
@@ -42,11 +50,27 @@ public:
 #endif
     std::error_code ec;
     std::filesystem::create_directories(fApp.fMapsDir, ec);
+    if (ec) {
+      throw std::runtime_error(std::format(
+          "cannot create persistent map directory {}: {}",
+          fApp.fMapsDir.string(), ec.message()));
+    }
     fApp.fThumbDir = fApp.fMapsDir / "thumbnails";
     fApp.fLibrary.configure(fApp.fLoader, fApp.fMapsDir, fApp.fThumbDir,
                        [this] { this->syncMapsDir(); });
     fApp.fReplayDir = fApp.fMapsDir.parent_path() / "replays";
+    std::filesystem::create_directories(fApp.fReplayDir, ec);
+    if (ec) {
+      throw std::runtime_error(std::format(
+          "cannot create replay directory {}: {}", fApp.fReplayDir.string(),
+          ec.message()));
+    }
     std::filesystem::create_directories(fApp.fThumbDir, ec);
+    if (ec) {
+      throw std::runtime_error(std::format(
+          "cannot create thumbnail directory {}: {}", fApp.fThumbDir.string(),
+          ec.message()));
+    }
     fApp.fLibrary.loadCache();
     fApp.fReplayBrowser.initialize(
         fApp.fMapsDir.parent_path() / "replay-index.json", fApp.fReplayDir);
