@@ -78,6 +78,16 @@ private:
 
   enum class Backend : std::uint8_t { kNone, kKScreen, kWlrRandr };
 
+  static bool flatpak() {
+    std::ifstream marker("/.flatpak-info");
+    return marker.good();
+  }
+
+  static std::string hostCommand(std::string_view command) {
+    return flatpak() ? std::format("flatpak-spawn --host {}", command)
+                     : std::string(command);
+  }
+
   static bool postmarketOS() {
     // An explicit output opts other wlroots-based mobile systems in without
     // making a default-on setting rotate arbitrary Linux workstations.
@@ -85,11 +95,14 @@ private:
         output != nullptr && *output != '\0') {
       return true;
     }
-    std::ifstream in("/etc/os-release");
-    std::string line;
-    while (std::getline(in, line)) {
-      if (line == "ID=postmarketos" || line == "ID=\"postmarketos\"") {
-        return true;
+    const std::array paths = {"/run/host/etc/os-release", "/etc/os-release"};
+    for (const char *path : paths) {
+      std::ifstream in(path);
+      std::string line;
+      while (std::getline(in, line)) {
+        if (line == "ID=postmarketos" || line == "ID=\"postmarketos\"") {
+          return true;
+        }
       }
     }
     return false;
@@ -173,7 +186,8 @@ private:
   }
 
   bool discoverKScreen() {
-    FILE *pipe = ::popen("kscreen-doctor -o 2>/dev/null", "r");
+    const std::string command = hostCommand("kscreen-doctor -o 2>/dev/null");
+    FILE *pipe = ::popen(command.c_str(), "r");
     if (pipe == nullptr) {
       return false;
     }
@@ -240,7 +254,8 @@ private:
       fOutput = chosen;
     }
 
-    FILE *pipe = ::popen("wlr-randr 2>/dev/null", "r");
+    const std::string command = hostCommand("wlr-randr 2>/dev/null");
+    FILE *pipe = ::popen(command.c_str(), "r");
     if (pipe == nullptr) {
       return false;
     }
@@ -323,8 +338,8 @@ private:
         return false;
       }
       const std::string command =
-          std::format("kscreen-doctor output.{}.rotation.{}", fOutput,
-                      transform);
+          hostCommand(std::format("kscreen-doctor output.{}.rotation.{}",
+                                  fOutput, transform));
       return std::system(command.c_str()) == 0;
     }
     if (!safeName(fOutput) ||
@@ -334,8 +349,8 @@ private:
          transform != "flipped-270")) {
       return false;
     }
-    const std::string command = std::format(
-        "wlr-randr --output {} --transform {}", fOutput, transform);
+    const std::string command = hostCommand(std::format(
+        "wlr-randr --output {} --transform {}", fOutput, transform));
     return std::system(command.c_str()) == 0;
   }
 

@@ -181,6 +181,13 @@ if(NOT EMSCRIPTEN_BUILD AND WAYLAND_CLIENT_FOUND)
   target_include_directories(${PROJECT_NAME} PRIVATE
     ${WAYLAND_CLIENT_INCLUDE_DIRS}
   )
+  # The touch bridge resolves GLFW's native Wayland accessors dynamically so
+  # X11-only builds remain valid. When GLFW is linked statically those two
+  # symbols need to be retained in the executable's dynamic symbol table.
+  target_link_options(${PROJECT_NAME} PRIVATE
+    "LINKER:--export-dynamic-symbol=glfwGetWaylandDisplay"
+    "LINKER:--export-dynamic-symbol=glfwGetWaylandWindow"
+  )
 endif()
 
 # ---- Link ----
