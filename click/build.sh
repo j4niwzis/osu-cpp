@@ -86,3 +86,23 @@ app_build="$BUILD_DIR/osu-cpp"
 "$prefix/bin/cmake" --build "$app_build" -j"$jobs"
 "$prefix/bin/cmake" --install "$app_build"
 
+# Clickable 8.9 rejects wildcards and '+' characters in install_lib entries.
+# Obtain the exact runtime closure from the linked executable instead. Keep
+# the host boundary on Ubuntu Touch: its loader, glibc, Wayland and graphics
+# libraries must not be replaced by copies from the build container.
+runtime_lib="$INSTALL_DIR/lib/aarch64-linux-gnu"
+mkdir -p "$runtime_lib"
+ldd "$INSTALL_DIR/bin/osu_client" | awk '$2 == "=>" && $3 ~ /^\// { print $3 }' |
+while IFS= read -r library; do
+  name=${library##*/}
+  case "$name" in
+    libc.so.*|libm.so.*|libmvec.so.*|libdl.so.*|libpthread.so.*|librt.so.*|\
+    libgcc_s.so.*|libwayland-*.so.*|libEGL.so.*|libGL.so.*|libGLES*.so.*|\
+    libOpenGL.so.*|libGLdispatch.so.*|libdrm.so.*|libgbm.so.*|libva.so.*|\
+    libsystemd.so.*|libffi.so.*|libcap.so.*|libglib-2.0.so.*|libpcre2-8.so.*|\
+    libdecor-0.so.*)
+      continue
+      ;;
+  esac
+  cp -L "$library" "$runtime_lib/$name"
+done

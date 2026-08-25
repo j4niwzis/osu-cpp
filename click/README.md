@@ -3,7 +3,9 @@
 This package targets Ubuntu Touch 24.04 on arm64. It is deliberately built
 against Noble rather than repacking the Flatpak runtime: libc, Wayland, EGL and
 OpenGL come from Ubuntu Touch, while Clickable copies application libraries
-that are not guaranteed to be installed on the device.
+that are not guaranteed to be installed on the device. The exact runtime
+closure is collected from the finished executable because Clickable rejects
+the wildcard and `+` characters needed to express it through `install_lib`.
 
 Install Clickable 8.9 or newer, then build with one job (the CMake and final
 link steps use substantial memory):

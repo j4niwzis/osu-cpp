@@ -73,34 +73,6 @@ env_vars:
 
 build: ${ROOT}/click/build.sh
 
-# Keep Ubuntu Touch's libc, Wayland, EGL and GL stack. These application-level
-# libraries are copied because Click packages cannot declare Debian runtime
-# dependencies.
-install_lib:
-  - libc++.so.1*
-  - libc++abi.so.1*
-  - libunwind.so.1*
-  - libglfw.so.3*
-  - libopenal.so.1*
-  - libzip.so.4*
-  - libsndfile.so.1*
-  - libmpg123.so.0*
-  - libssl.so.3*
-  - libcrypto.so.3*
-  - liblzma.so.5*
-  - libbz2.so.1*
-  - libopus.so.0*
-  - libFLAC.so.*
-  - libvorbis.so.*
-  - libvorbisenc.so.*
-  - libogg.so.*
-  - libavcodec.so.*
-  - libavformat.so.*
-  - libavutil.so.*
-  - libswresample.so.*
-  - libswscale.so.*
-  - libx264.so.*
-
 install_root_data:
   - click/manifest.json
   - click/osu-cpp.apparmor
@@ -110,4 +82,3 @@ install_root_data:
 
 kill: osu_client
 launch: lomiri-app-launch io.github.j4niwzis.osu_cpp_osu-cpp
-
