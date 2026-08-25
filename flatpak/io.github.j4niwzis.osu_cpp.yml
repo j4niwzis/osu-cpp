@@ -228,7 +228,7 @@ modules:
     build-options:
       # glibc's fortified Clang overloads have internal linkage and therefore
       # cannot be exported by libstdc++'s std module interface.
-      cxxflags: -U_FORTIFY_SOURCE
+      cxxflags: -Wp,-U_FORTIFY_SOURCE
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CXX_COMPILER=clang++
