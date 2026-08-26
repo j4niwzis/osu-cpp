@@ -234,7 +234,7 @@ public:
       }
       fExportPickerOpen = true;
       fApp.fExportDialog.setStatus("choosing output file...");
-      auto chosen = std::make_shared<std::filesystem::path>();
+      auto chosen = std::make_shared<platform::dialogs::SaveFileResult>();
       fApp.fLoader.submit(
           kExportPickerKey,
           [chosen, suggested] {
@@ -242,11 +242,12 @@ public:
           },
           [this, chosen] {
             fExportPickerOpen = false;
-            if (chosen->empty()) {
+            if (!chosen->fPath) {
               fApp.fExportDialog.setStatus("export cancelled");
               return;
             }
-            this->exportReplayVideo(*chosen);
+            fPendingSave = std::move(*chosen);
+            this->exportReplayVideo(*fPendingSave.fPath);
           });
       return;
     }
@@ -335,6 +336,7 @@ public:
 
     const std::string error = fApp.fVideoExporter.start(std::move(request));
     if (!error.empty()) {
+      fPendingSave = {};
       this->exportFailed(error);
       return;
     }
@@ -355,29 +357,31 @@ public:
       return;
     }
     if (status.fOk) {
-      fApp.fExportDialog.setStatus(std::format(
-          "saved {}",
-          std::filesystem::path(status.fMessage).filename().string()));
-      std::println(std::cerr, "[export] saved {}", status.fMessage);
+      if (!platform::dialogs::commitSave(fPendingSave)) {
+        this->exportFailed(
+            "rendered video could not be written to the selected document");
+      } else {
+        fApp.fExportDialog.setStatus(std::format(
+            "saved {}",
+            std::filesystem::path(status.fMessage).filename().string()));
+        std::println(std::cerr, "[export] saved {}", status.fMessage);
+      }
     } else {
       this->exportFailed(status.fMessage);
     }
+    fPendingSave = {};
     fApp.fVideoExporter.clearFinished();
   }
 
 private:
-  [[nodiscard]] static std::filesystem::path
+  [[nodiscard]] static platform::dialogs::SaveFileResult
   runExportPicker(const std::string &suggested) {
-    const auto portal =
-        platform::dialogs::saveVideo("Export replay video", suggested);
-    if (portal.fPortalAvailable) {
-      return portal.fPath.value_or(std::filesystem::path{});
-    }
-    return {};
+    return platform::dialogs::saveVideo("Export replay video", suggested);
   }
 
   Host &fApp;
   bool fExportPickerOpen = false;
+  platform::dialogs::SaveFileResult fPendingSave;
   static constexpr std::uint64_t kExportPickerKey = 10ull << 32;
 };
 

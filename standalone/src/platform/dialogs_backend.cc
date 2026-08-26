@@ -12,4 +12,5 @@ openArchive(const std::string &) {
                                               std::string_view) {
   return {};
 }
+[[nodiscard]] inline bool commitSave(const SaveFileResult &) { return true; }
 } // namespace platform::dialogs::backend
