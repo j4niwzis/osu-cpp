@@ -3,9 +3,11 @@ function(osu_add_android_apk target)
     message(FATAL_ERROR "osu_add_android_apk is only available for Android builds")
   endif()
 
-  set(OSU_ANDROID_API "27" CACHE STRING "Android target SDK API")
+  set(OSU_ANDROID_API "27" CACHE STRING "Android native API level")
   set(OSU_ANDROID_MIN_API "${OSU_ANDROID_API}" CACHE STRING
     "Minimum Android SDK API")
+  set(OSU_ANDROID_TARGET_API "35" CACHE STRING
+    "Android target SDK API")
   set(OSU_ANDROID_ABI "arm64-v8a" CACHE STRING "Android APK ABI")
   set(OSU_ANDROID_PLATFORM_JAR "" CACHE FILEPATH
     "Source-built Android platform android.jar")
@@ -86,7 +88,7 @@ function(osu_add_android_apk target)
       -I "${OSU_ANDROID_PLATFORM_JAR}"
       --manifest "${android_dir}/AndroidManifest.xml"
       --min-sdk-version "${OSU_ANDROID_MIN_API}"
-      --target-sdk-version "${OSU_ANDROID_API}"
+      --target-sdk-version "${OSU_ANDROID_TARGET_API}"
       -A "${CMAKE_CURRENT_SOURCE_DIR}/assets"
       "${compiled_resources}"
     COMMAND "${jar}" uf "${unsigned_apk}" -C "${stage_dir}" lib
