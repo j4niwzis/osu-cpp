@@ -172,7 +172,7 @@ file(GLOB_RECURSE all_cpp_sources CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
 set(common_cpp_sources ${all_cpp_sources})
 list(FILTER common_cpp_sources EXCLUDE REGEX
-  "_(${OSU_PLATFORM_VARIANT_PATTERN})\\.cc$")
+  "_(${OSU_PLATFORM_VARIANT_PATTERN})(_(${OSU_PLATFORM_VARIANT_PATTERN}))*\\.cc$")
 # Implementation pieces live below platform/<variant>/. They are not public
 # overlays and only the selected platform's directory enters the target.
 list(FILTER common_cpp_sources EXCLUDE REGEX
@@ -194,10 +194,13 @@ foreach(source IN LISTS common_cpp_sources)
   endif()
 endforeach()
 
-# Also admit platform-only implementation files without a common foo.cc.
+# Also admit platform-only implementation files without a common foo.cc. A
+# filename may list multiple alternatives, for example
+# foo_freedesktop_web.cc, and is selected when any suffix matches.
 foreach(source IN LISTS all_cpp_sources)
   if(OSU_PLATFORM_SUFFIX AND
-     source MATCHES "_${OSU_PLATFORM_SUFFIX}\\.cc$")
+     source MATCHES "_(${OSU_PLATFORM_VARIANT_PATTERN})(_(${OSU_PLATFORM_VARIANT_PATTERN}))*\\.cc$" AND
+     source MATCHES "(^|_)${OSU_PLATFORM_SUFFIX}(_|\\.cc$)")
     list(APPEND selected_cpp_sources "${source}")
   endif()
 endforeach()
@@ -208,6 +211,7 @@ if(OSU_PLATFORM_SUFFIX)
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${OSU_PLATFORM_SUFFIX}/*.cc")
   list(APPEND selected_cpp_sources ${platform_implementation_sources})
 endif()
+
 list(REMOVE_DUPLICATES selected_cpp_sources)
 
 set(module_sources ${selected_cpp_sources})
