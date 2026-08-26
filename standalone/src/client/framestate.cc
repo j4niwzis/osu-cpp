@@ -4,6 +4,7 @@ import std;
 import skia;
 import skiff.scene;
 import platform.presentation;
+import platform.configuration;
 
 export namespace client {
 
@@ -438,9 +439,10 @@ private:
     std::int64_t fCostClipArea = 0;
     int fCostFrames = 0;
     double fCostLogWall = 0.0;
-    const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-    const bool fTraceRepaint = std::getenv("OSU_TRACE_REPAINT") != nullptr ||
-                               std::getenv("OSU_TRACE_RESIZE") != nullptr;
+    const bool fForceShowDamage =
+        platform::runtimeConfiguration().fShowDamage;
+    const bool fTraceRepaint =
+        platform::runtimeConfiguration().fTraceRepaint;
     bool fTracedClipping = false;
     int fTracedAge = -2;
     std::size_t fTracedHistory = 0;

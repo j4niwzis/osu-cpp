@@ -17,6 +17,7 @@ import platform.clock;
 import platform.input;
 import client.input;
 import platform.presentation;
+import platform.configuration;
 
 namespace platform {
 
@@ -239,6 +240,7 @@ public:
   ~WindowRuntime() { this->close(); }
 
   [[nodiscard]] bool open(std::function<void()> toggleFullscreen) {
+    const auto configuration = platform::runtimeConfiguration();
     glfw::glfwSetErrorCallback([](int code, const char *message) {
       std::println(std::cerr, "[glfw] error {}: {}", code,
                    message != nullptr ? message : "unknown error");
@@ -269,7 +271,7 @@ public:
       if (mode->refreshRate > 0) {
         fRefreshHz = mode->refreshRate;
       }
-    } else if (std::getenv("OSU_GLES") != nullptr) {
+    } else if (configuration.fPreferGles) {
       // MirClient Click windows are placed and resized by Lomiri rather than
       // against a GLFW monitor. This is only the size of the first buffer;
       // the compositor's resize event supplies the real screen dimensions.
@@ -287,7 +289,7 @@ public:
       int fProfile;
       int fCreation;
     };
-    const int desktopCreation = std::getenv("OSU_EGL") != nullptr
+    const int desktopCreation = configuration.fForceEgl
                                     ? glfw::kEglContextApi
                                     : glfw::kNativeContextApi;
     const ContextChoice choices[] = {
@@ -300,7 +302,7 @@ public:
         {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,
          glfw::kEglContextApi},
     };
-    const bool preferGles = std::getenv("OSU_GLES") != nullptr;
+    const bool preferGles = configuration.fPreferGles;
     const std::array<int, 4> order = preferGles ? std::array{2, 3, 0, 1}
                                                 : std::array{0, 1, 2, 3};
     for (const int index : order) {

@@ -10,6 +10,7 @@ import std;
 import osu;
 import platform.clock;
 import platform.input;
+import platform.configuration;
 import skia;
 import platform.audio;
 import skin;
@@ -199,7 +200,10 @@ private:
   // into is missing exactly that.
   // The setting decides; the variable is there for a run before settings
   // exist, and to force it on while measuring.
-  const bool fForcePartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
+  const platform::RuntimeConfiguration fPlatformConfiguration =
+      platform::runtimeConfiguration();
+  const bool fForcePartialRedraw =
+      fPlatformConfiguration.fForcePartialRedraw;
   // OSU_TRACE_REPAINT=1 prints the numbers a frame's clip decision is made
   // from -- but only when one of them changes, so a session is a handful of
   // lines rather than one per frame. A screen going black but for the live
@@ -208,8 +212,7 @@ private:
   // could. OSU_TRACE_RESIZE is the old name and still works.
   // OSU_BUFFER_AGE=N overrides the setting of the same meaning, for measuring.
   const int fForcedBufferAge = [] {
-    const char *value = std::getenv("OSU_BUFFER_AGE");
-    return value != nullptr ? std::atoi(value) : 0;
+    return platform::runtimeConfiguration().fBufferAge.value_or(0);
   }();
 
   [[nodiscard]] bool partialRedraw() const {

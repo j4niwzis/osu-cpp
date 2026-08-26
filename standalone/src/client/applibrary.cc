@@ -34,20 +34,7 @@ public:
 #ifdef __EMSCRIPTEN__
     fApp.fMapsDir = "/maps";
 #else
-    if (const auto xdg = platform::system::environment("XDG_DATA_HOME");
-        xdg && !xdg->empty()) {
-      // Flatpak exposes the application's persistent writable data directory
-      // here. Native desktops which set XDG_DATA_HOME get the same standard
-      // behaviour.
-      fApp.fMapsDir = std::filesystem::path(*xdg) / "osu-cpp" / "maps";
-    } else if (const auto home = platform::system::environment("HOME")) {
-      // Keep the historical native location when XDG_DATA_HOME is unset, so
-      // an update does not make an existing library appear to disappear.
-      fApp.fMapsDir = std::filesystem::path(*home) / ".local" / "share" /
-                 "osu_client" / "maps";
-    } else {
-      fApp.fMapsDir = "maps";
-    }
+    fApp.fMapsDir = platform::system::mapsDirectory();
 #endif
     std::error_code ec;
     std::filesystem::create_directories(fApp.fMapsDir, ec);

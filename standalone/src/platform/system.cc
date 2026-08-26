@@ -6,7 +6,7 @@ export module platform.system;
 
 import std;
 
-export namespace platform::system {
+namespace {
 
 [[nodiscard]] std::optional<std::string> environment(std::string_view name) {
   const std::string key(name);
@@ -15,6 +15,10 @@ export namespace platform::system {
   }
   return std::nullopt;
 }
+
+} // namespace
+
+export namespace platform::system {
 
 [[nodiscard]] std::filesystem::path executablePath(std::string_view argv0) {
 #ifdef __linux__
@@ -52,14 +56,25 @@ export namespace platform::system {
   return argument;
 }
 
-[[nodiscard]] std::filesystem::path userDataPath(std::string_view appName) {
+[[nodiscard]] std::filesystem::path applicationDataPath() {
   if (const auto xdg = environment("XDG_DATA_HOME"); xdg && !xdg->empty()) {
-    return std::filesystem::path(*xdg) / appName;
+    return std::filesystem::path(*xdg) / "osu-cpp";
   }
   if (const auto home = environment("HOME"); home && !home->empty()) {
-    return std::filesystem::path(*home) / ".local" / "share" / appName;
+    return std::filesystem::path(*home) / ".local" / "share" / "osu-cpp";
   }
-  return std::filesystem::path{"."} / std::format(".{}", appName);
+  return std::filesystem::path{"."} / ".osu-cpp";
+}
+
+[[nodiscard]] std::filesystem::path mapsDirectory() {
+  if (const auto xdg = environment("XDG_DATA_HOME"); xdg && !xdg->empty()) {
+    return std::filesystem::path(*xdg) / "osu-cpp" / "maps";
+  }
+  if (const auto home = environment("HOME"); home && !home->empty()) {
+    return std::filesystem::path(*home) / ".local" / "share" / "osu_client" /
+           "maps";
+  }
+  return "maps";
 }
 
 } // namespace platform::system

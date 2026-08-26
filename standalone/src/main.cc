@@ -68,7 +68,7 @@ EMSCRIPTEN_KEEPALIVE int extractSkin() {
 namespace {
 
 std::filesystem::path userDataPath() {
-  return platform::system::userDataPath("osu-cpp");
+  return platform::system::applicationDataPath();
 }
 
 void printUsage(std::string_view program) {

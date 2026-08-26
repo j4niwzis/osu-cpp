@@ -4,6 +4,7 @@ import std;
 import skia;
 import skiff.paint;
 import platform.system;
+import platform.configuration;
 
 namespace client::font_detail {
 
@@ -127,7 +128,7 @@ struct ClientFonts {
 
 [[nodiscard]] ClientFonts loadClientFonts(float size) {
   auto &stack = skiff::paint::fonts();
-  if (std::getenv("OSU_SYSTEM_FONT") == nullptr) {
+  if (!platform::runtimeConfiguration().fUseSystemFont) {
     stack.setPrimary(font_detail::loadTypeface("Inter.ttf"));
     for (const char *name :
          {"NotoSansJP.ttf", "NotoSansKR.ttf", "FontAwesome-Solid.ttf"}) {

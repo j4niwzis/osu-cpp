@@ -2,6 +2,7 @@ module;
 
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -11,7 +12,6 @@ extern "C" char **environ;
 export module platform.external_video_encoder;
 
 import std;
-import platform.system;
 
 export namespace platform {
 
@@ -23,11 +23,11 @@ public:
   ~ExternalVideoEncoder() { this->abandon(); }
 
   [[nodiscard]] static bool available() {
-    const auto path = system::environment("PATH");
-    if (!path) {
+    const char *pathValue = std::getenv("PATH");
+    if (pathValue == nullptr) {
       return false;
     }
-    std::string_view remaining = *path;
+    std::string_view remaining = pathValue;
     for (;;) {
       const auto colon = remaining.find(':');
       const auto directory = remaining.substr(0, colon);
