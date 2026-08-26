@@ -5,9 +5,7 @@ import platform.android.api;
 import platform.android_runtime;
 import platform.keyboard.types;
 
-export namespace platform::keyboard::backend {
-
-namespace {
+namespace platform::keyboard::backend::detail {
 
 void forceShowWithJni(ANativeActivity *activity) {
   if (activity->vm == nullptr || activity->clazz == nullptr) {
@@ -64,7 +62,9 @@ void forceShowWithJni(ANativeActivity *activity) {
   }
 }
 
-} // namespace
+} // namespace platform::keyboard::backend::detail
+
+export namespace platform::keyboard::backend {
 
 inline void setVisible(bool visible) {
   android_app *app = platform::android::application();
@@ -72,7 +72,7 @@ inline void setVisible(bool visible) {
     return;
   }
   if (visible) {
-    forceShowWithJni(app->activity);
+    detail::forceShowWithJni(app->activity);
     ANativeActivity_showSoftInput(
         app->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
   } else {
