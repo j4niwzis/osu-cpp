@@ -8,6 +8,7 @@ export namespace platform::android {
 void attach(android_app *app);
 [[nodiscard]] android_app *application();
 [[nodiscard]] bool prepareAssets();
+[[nodiscard]] bool enterImmersiveMode();
 
 } // namespace platform::android
 
@@ -92,6 +93,71 @@ bool prepareAssets() {
   return copyDirectory(app->activity->assetManager, "fonts", root / "fonts") &&
          copyDirectory(app->activity->assetManager, "licenses",
                        root / "licenses");
+}
+
+bool enterImmersiveMode() {
+  android_app *app = application();
+  if (app == nullptr || app->activity == nullptr ||
+      app->activity->vm == nullptr || app->activity->clazz == nullptr) {
+    return false;
+  }
+  JavaVM *vm = app->activity->vm;
+  JNIEnv *env = nullptr;
+  bool attached = false;
+  void *raw = nullptr;
+  const jint state = vm->GetEnv(&raw, JNI_VERSION_1_6);
+  if (state == JNI_OK) {
+    env = static_cast<JNIEnv *>(raw);
+  } else if (state == JNI_EDETACHED &&
+             vm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
+    attached = true;
+  }
+  if (env == nullptr) {
+    return false;
+  }
+  jclass activityClass = env->GetObjectClass(app->activity->clazz);
+  jmethodID getWindow = activityClass != nullptr
+                            ? env->GetMethodID(activityClass, "getWindow",
+                                               "()Landroid/view/Window;")
+                            : nullptr;
+  jobject window = getWindow != nullptr
+                       ? env->CallObjectMethod(app->activity->clazz, getWindow)
+                       : nullptr;
+  jclass windowClass = window != nullptr ? env->GetObjectClass(window) : nullptr;
+  jmethodID getDecorView =
+      windowClass != nullptr
+          ? env->GetMethodID(windowClass, "getDecorView",
+                             "()Landroid/view/View;")
+          : nullptr;
+  jobject decor = getDecorView != nullptr
+                      ? env->CallObjectMethod(window, getDecorView)
+                      : nullptr;
+  jclass viewClass = decor != nullptr ? env->GetObjectClass(decor) : nullptr;
+  jmethodID setVisibility =
+      viewClass != nullptr
+          ? env->GetMethodID(viewClass, "setSystemUiVisibility", "(I)V")
+          : nullptr;
+  if (setVisibility != nullptr) {
+    constexpr jint kImmersiveFullscreen = 0x00000002 | 0x00000004 |
+                                          0x00000100 | 0x00000200 |
+                                          0x00000400 | 0x00001000;
+    env->CallVoidMethod(decor, setVisibility, kImmersiveFullscreen);
+  }
+  bool succeeded = setVisibility != nullptr && !env->ExceptionCheck();
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+  for (jobject reference : {static_cast<jobject>(viewClass), decor,
+                            static_cast<jobject>(windowClass), window,
+                            static_cast<jobject>(activityClass)}) {
+    if (reference != nullptr) {
+      env->DeleteLocalRef(reference);
+    }
+  }
+  if (attached) {
+    vm->DetachCurrentThread();
+  }
+  return succeeded;
 }
 
 } // namespace platform::android

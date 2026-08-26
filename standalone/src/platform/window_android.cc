@@ -43,8 +43,11 @@ public:
       this->close();
       return false;
     }
-    fInitial = {ANativeWindow_getWidth(fApp->window),
-                ANativeWindow_getHeight(fApp->window)};
+    if (!this->surfaceSize(fInitial.fWidth, fInitial.fHeight)) {
+      this->close();
+      return false;
+    }
+    fTouchSurfaceHeight = fInitial.fHeight;
     fReportedSize.store(packSize(fInitial.fWidth, fInitial.fHeight),
                         std::memory_order_release);
     fActive.store(true, std::memory_order_release);
@@ -235,6 +238,8 @@ private:
     }
     switch (command) {
     case APP_CMD_GAINED_FOCUS:
+      (void)android::enterImmersiveMode();
+      [[fallthrough]];
     case APP_CMD_RESUME:
       self->setActive(true);
       break;
@@ -312,7 +317,7 @@ private:
 
   void moveTouch(AInputEvent *event, std::size_t index) {
     const float x = AMotionEvent_getY(event, index);
-    const float y = static_cast<float>(fInitial.fHeight) -
+    const float y = static_cast<float>(fTouchSurfaceHeight) -
                     AMotionEvent_getX(event, index);
     fCursorX.store(x, std::memory_order_release);
     fCursorY.store(y, std::memory_order_release);
@@ -364,6 +369,11 @@ private:
     if (width <= 0 || height <= 0) {
       return;
     }
+    if (fDisplay != EGL_NO_DISPLAY && fSurface != EGL_NO_SURFACE) {
+      eglQuerySurface(fDisplay, fSurface, EGL_WIDTH, &width);
+      eglQuerySurface(fDisplay, fSurface, EGL_HEIGHT, &height);
+    }
+    fTouchSurfaceHeight = height;
     fInitial = {width, height};
     fReportedSize.store(packSize(width, height), std::memory_order_release);
     fRefreshRequested.store(true, std::memory_order_release);
@@ -383,6 +393,7 @@ private:
   std::atomic<bool> fRefreshRequested{false};
   std::atomic<float> fCursorX{0.0f};
   std::atomic<float> fCursorY{0.0f};
+  int fTouchSurfaceHeight = 1;
   std::int32_t fTouchId = -1;
 };
 
