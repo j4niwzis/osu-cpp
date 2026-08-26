@@ -374,44 +374,6 @@ private:
     if (portal.fPortalAvailable) {
       return portal.fPath.value_or(std::filesystem::path{});
     }
-
-    std::error_code ec;
-    const auto answer = std::filesystem::temp_directory_path(ec) /
-                        "osu_client_export.txt";
-    const std::string answerString = answer.string();
-    const std::string commands[] = {
-        std::format("zenity --file-selection --save --confirm-overwrite "
-                    "--file-filter='MP4 video | *.mp4' --filename='{}' "
-                    "--title='Export replay video'", suggested),
-        std::format("kdialog --getsavefilename '{}' '*.mp4|MP4 video'",
-                    suggested),
-        std::format("matedialog --file-selection --save --confirm-overwrite "
-                    "--filename='{}' --title='Export replay video'", suggested),
-        std::format("qarma --file-selection --save --confirm-overwrite "
-                    "--filename='{}' --title='Export replay video'", suggested),
-    };
-    for (const auto &pick : commands) {
-      const std::string bin = pick.substr(0, pick.find(' '));
-      if (std::system(("command -v " + bin + " > /dev/null 2>&1").c_str()) !=
-          0) {
-        continue;
-      }
-      std::filesystem::remove(answer, ec);
-      if (std::system((pick + " > '" + answerString + "' 2>/dev/null").c_str()) !=
-          0) {
-        return {};
-      }
-      std::ifstream in(answer);
-      std::string path;
-      std::getline(in, path);
-      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
-        path.pop_back();
-      }
-      return std::filesystem::path(path);
-    }
-    std::println(std::cerr,
-                 "[export] no save dialog available (portal, zenity, "
-                 "kdialog, matedialog or qarma)");
     return {};
   }
 #endif
