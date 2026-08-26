@@ -13,6 +13,8 @@ set(OSU_ANDROID_TRIPLE "aarch64-linux-android" CACHE STRING
 set(OSU_ANDROID_ABI "arm64-v8a" CACHE STRING "Android APK ABI")
 set(OSU_ANDROID_SYSROOT "${OSU_ANDROID_ROOT}/sysroot" CACHE PATH
   "Source-built Android sysroot")
+set(OSU_ANDROID_PREFIX "${OSU_ANDROID_ROOT}/prefix" CACHE PATH
+  "Prefix containing source-built Android dependencies")
 set(OSU_ANDROID_RESOURCE_DIR "${OSU_ANDROID_ROOT}/clang-resource" CACHE PATH
   "Clang resource directory containing Android compiler-rt")
 set(OSU_ANDROID_NATIVE_APP_GLUE_DIR
@@ -44,7 +46,9 @@ set(CMAKE_CXX_FLAGS_INIT
 set(CMAKE_SHARED_LINKER_FLAGS_INIT
   "${android_common_flags} -fuse-ld=lld -nostdlib")
 
-set(CMAKE_FIND_ROOT_PATH "${OSU_ANDROID_SYSROOT}")
+set(CMAKE_FIND_ROOT_PATH
+  "${OSU_ANDROID_SYSROOT}"
+  "${OSU_ANDROID_PREFIX}")
 set(CMAKE_LIBRARY_PATH "${OSU_ANDROID_LIBRARY_DIR}")
 set(CMAKE_INCLUDE_PATH
   "${OSU_ANDROID_SYSROOT}/usr/include"
