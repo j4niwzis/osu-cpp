@@ -215,7 +215,8 @@ public:
   }
   [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
-  // Applies the click to the mod set; the root swallows misses while open.
+  // Applies clicks on cards. A miss is reported to the overlay router, which
+  // closes this modal while still swallowing the press from the screen below.
   [[nodiscard]] bool click(float x, float y, osu::ModSet &mods) {
     if (!fOpen) {
       return false;
@@ -227,7 +228,7 @@ public:
     if (fChanged) {
       mods = fActive;
     }
-    return true;
+    return fChanged;
   }
 
 private:
@@ -270,7 +271,8 @@ private:
     }
     root->add<nodes::Text>(
         {.roles = {scene::role<mod_select_style::Footer>}},
-        "click a mod to toggle    Esc to close", 14.0f, skia::kWhite);
+        "click a mod to toggle    tap outside or Esc to close", 14.0f,
+        skia::kWhite);
     root->setStyleSheet<ModSelectTheme>();
     return root;
   }
