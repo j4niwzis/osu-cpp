@@ -8,11 +8,10 @@ export module app;
 
 import std;
 import osu;
-import glfw;
 import platform.clock;
 import platform.input;
 import skia;
-import audio;
+import platform.audio;
 import skin;
 import archive;
 import client.util;
@@ -40,7 +39,6 @@ import client.songselect;
 import client.pause;
 import client.results;
 import client.mainmenu;
-import present;
 import client.setpage;
 import skiff.scene;
 import skiff.nodes;
@@ -51,7 +49,7 @@ import client.videoexport;
 import client.framestate;
 import client.fonts;
 import client.judgements;
-import client.windowruntime;
+import platform.window;
 import client.playresult;
 import client.appinput;
 import client.applibrary;
@@ -145,9 +143,7 @@ private:
   bool fNoGlow = false;
 
   // Window / GL / Skia
-  client::WindowRuntime fWindowRuntime;
-  // Render APIs still take the native handle; ownership lives in the runtime.
-  glfw::GLFWwindow *fWindow = nullptr;
+  platform::WindowRuntime fWindowRuntime;
   skia::Sp<skia::GrDirectContext> fContext;
   client::FrameState fFrame;
   skiff::scene::InputRouter fInputRouter;
@@ -540,7 +536,6 @@ private:
     if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); })) {
       return 1;
     }
-    fWindow = fWindowRuntime.window();
     const auto initial = fWindowRuntime.initialExtent();
     fWin.fPixelW = initial.fWidth;
     fWin.fPixelH = initial.fHeight;
@@ -550,11 +545,10 @@ private:
 #endif
 
 #ifdef __EMSCRIPTEN__
-    glfw::glfwMakeContextCurrent(fWindow);
+    fWindowRuntime.makeContextCurrent();
 
     if (!this->initSkia()) {
       fWindowRuntime.close();
-      fWindow = nullptr;
       return 1;
     }
 
@@ -594,7 +588,7 @@ private:
 #else
     // Snapshot the real framebuffer size on the main thread (that query is
     // main-thread-only in GLFW); the render thread must not call it.
-    glfw::glfwGetFramebufferSize(fWindow, &fWin.fPixelW, &fWin.fPixelH);
+    fWindowRuntime.framebufferSize(fWin.fPixelW, fWin.fPixelH);
 
     // The GL context is owned by the render thread from here on. The main
     // thread degrades into a pure event pump: it blocks in glfwWaitEvents,
@@ -609,7 +603,7 @@ private:
 
 #ifndef __EMSCRIPTEN__
   void renderThreadMain() {
-    glfw::glfwMakeContextCurrent(fWindow);
+    fWindowRuntime.makeContextCurrent();
 
     if (!this->initSkia()) {
       fWindowRuntime.setExitCode(1);
@@ -650,7 +644,7 @@ private:
     }
     fWindowRuntime.setExitCode(0);
     this->requestQuit();
-    glfw::glfwMakeContextCurrent(nullptr);
+    fWindowRuntime.releaseContext();
   }
 
 #endif
@@ -724,7 +718,7 @@ private:
       return;
     }
     fSwapInterval = wanted;
-    glfw::glfwSwapInterval(wanted);
+    fWindowRuntime.setSwapInterval(wanted);
     fNextFrame = std::chrono::steady_clock::now();
     std::println(std::cerr, "[gfx] swap interval {} (monitor {} Hz)", wanted,
                  fRefreshHz);
@@ -1399,8 +1393,9 @@ private:
         damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
       }
     }
-    if (damage.empty() || !present::swapWithDamage(fWin.fPixelH, damage)) {
-      glfw::glfwSwapBuffers(fWindow);
+    if (damage.empty() ||
+        !fWindowRuntime.swapWithDamage(fWin.fPixelH, damage)) {
+      fWindowRuntime.swapBuffers();
     }
     fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - beforeSwap)
@@ -1659,12 +1654,15 @@ private:
     } else {
       EM_ASM(Module.setCursorVisible(false));
     }
-    glfw::glfwSetInputMode(fWindow, glfw::kCursor,
-                           visible ? glfw::kCursorNormal : glfw::kCursorHidden);
+    fWindowRuntime.setCursorMode(
+        visible ? platform::input::CursorMode::kNormal
+                : platform::input::CursorMode::kHidden);
 #else
-    const int hidden =
-        this->relativeCursor() ? glfw::kCursorDisabled : glfw::kCursorHidden;
-    fWindowRuntime.requestCursorMode(visible ? glfw::kCursorNormal : hidden);
+    const auto hidden = this->relativeCursor()
+                            ? platform::input::CursorMode::kDisabled
+                            : platform::input::CursorMode::kHidden;
+    fWindowRuntime.setCursorMode(
+        visible ? platform::input::CursorMode::kNormal : hidden);
 #endif
   }
 
@@ -1694,14 +1692,14 @@ private:
   }
 
   void emscriptenFrame() {
-    glfw::glfwPollEvents();
+    fWindowRuntime.pollEvents();
 
     {
       // Polled rather than delivered by a callback here, so it is only an
       // event when it actually moved: pushing the same position every frame
       // made every frame an event, and an event owes frames.
       double cx = 0, cy = 0;
-      glfw::glfwGetCursorPos(fWindow, &cx, &cy);
+      fWindowRuntime.cursorPosition(cx, cy);
       if (cx != fPolledCursorX || cy != fPolledCursorY) {
         fPolledCursorX = cx;
         fPolledCursorY = cy;
@@ -1711,7 +1709,7 @@ private:
     }
 
     int fw = 0, fh = 0;
-    glfw::glfwGetFramebufferSize(fWindow, &fw, &fh);
+    fWindowRuntime.framebufferSize(fw, fh);
     if (fw != fWin.fPixelW || fh != fWin.fPixelH) {
       this->resize(fw, fh);
     }
@@ -2126,7 +2124,6 @@ private:
     fFrame.fSurface.reset();
     fContext.reset();
     fWindowRuntime.close();
-    fWindow = nullptr;
   }
 };
 

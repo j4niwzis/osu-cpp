@@ -5,7 +5,7 @@ module;
 #include <mpg123.h>
 #include <sndfile.h>
 
-export module audio;
+export module platform.audio;
 
 import std;
 

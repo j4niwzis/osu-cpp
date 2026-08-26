@@ -9,15 +9,19 @@ module;
 #include <wayland-client.h>
 #endif
 
-export module client.windowruntime;
+export module platform.window;
 
 import std;
-import glfw;
+import platform.glfw;
 import platform.clock;
 import platform.input;
 import client.input;
+import platform.presentation;
 
-namespace client {
+namespace platform {
+
+using client::Event;
+using client::EventType;
 
 // GLFW deliberately exposes no touchscreen API.  On Wayland that means
 // wl_touch events disappear inside its event pump instead of reaching the
@@ -210,9 +214,13 @@ private:
 #endif
 };
 
-} // namespace client
+} // namespace platform
 
-export namespace client {
+export namespace platform {
+
+using client::Event;
+using client::EventType;
+using client::SpscQueue;
 
 struct WindowExtent {
   int fWidth = 0;
@@ -338,7 +346,6 @@ public:
     return true;
   }
 
-  [[nodiscard]] glfw::GLFWwindow *window() const { return fWindow; }
   [[nodiscard]] WindowExtent initialExtent() const { return fInitial; }
   [[nodiscard]] int refreshHz() const { return fRefreshHz; }
   [[nodiscard]] bool windowMayRender() const {
@@ -421,6 +428,39 @@ public:
   }
   [[nodiscard]] int exitCode() const {
     return fExitCode.load(std::memory_order_acquire);
+  }
+
+  // Graphics and input operations stay behind this boundary so application
+  // code never depends on a GLFW handle or its numeric cursor constants.
+  void makeContextCurrent() { glfw::glfwMakeContextCurrent(fWindow); }
+  void releaseContext() { glfw::glfwMakeContextCurrent(nullptr); }
+  void framebufferSize(int &width, int &height) const {
+    glfw::glfwGetFramebufferSize(fWindow, &width, &height);
+  }
+  [[nodiscard]] bool surfaceSize(int &width, int &height) const {
+    return presentation::surfaceSize(fWindow, &width, &height);
+  }
+  void setSwapInterval(int interval) { glfw::glfwSwapInterval(interval); }
+  void swapBuffers() { glfw::glfwSwapBuffers(fWindow); }
+  [[nodiscard]] bool swapWithDamage(
+      int height, std::span<const std::array<int, 4>> damage) {
+    return presentation::swapWithDamage(height, damage);
+  }
+  void pollEvents() { glfw::glfwPollEvents(); }
+  void cursorPosition(double &x, double &y) const {
+    glfw::glfwGetCursorPos(fWindow, &x, &y);
+  }
+  void setCursorMode(input::CursorMode mode) {
+    const int native = mode == input::CursorMode::kNormal
+                           ? glfw::kCursorNormal
+                           : mode == input::CursorMode::kHidden
+                                 ? glfw::kCursorHidden
+                                 : glfw::kCursorDisabled;
+#ifdef __EMSCRIPTEN__
+    glfw::glfwSetInputMode(fWindow, glfw::kCursor, native);
+#else
+    this->requestCursorMode(native);
+#endif
   }
 
 #ifndef __EMSCRIPTEN__
@@ -673,4 +713,4 @@ private:
   std::vector<std::string> fDroppedFiles;
 };
 
-} // namespace client
+} // namespace platform

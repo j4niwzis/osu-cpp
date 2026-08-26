@@ -16,6 +16,8 @@ inline constexpr int kModControl = 0x0002;
 inline constexpr int kMouseButtonLeft = 0;
 inline constexpr int kMouseButtonRight = 1;
 
+enum class CursorMode { kNormal, kHidden, kDisabled };
+
 inline constexpr int kKeySpace = 32;
 inline constexpr int kKeyA = 65;
 inline constexpr int kKeyB = 66;

@@ -3,15 +3,15 @@ export module client.fonts;
 import std;
 import skia;
 import skiff.paint;
+import platform.system;
 
 namespace client::font_detail {
 
 [[nodiscard]] std::vector<std::filesystem::path>
 assetCandidates(const std::string &name) {
   std::vector<std::filesystem::path> candidates;
-  std::error_code ec;
-  const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  if (!ec && !exe.empty()) {
+  const auto exe = platform::system::executablePath({});
+  if (!exe.empty()) {
     const auto prefix = exe.parent_path().parent_path();
     candidates.push_back(prefix / "share" / "osu_client" / "fonts" / name);
     candidates.push_back(exe.parent_path() / "fonts" / name);

@@ -1,4 +1,5 @@
 import std;
+import platform.system;
 import osu;
 import app;
 import archive;
@@ -66,48 +67,8 @@ EMSCRIPTEN_KEEPALIVE int extractSkin() {
 
 namespace {
 
-std::filesystem::path executablePath(const char *argv0) {
-#ifdef __linux__
-  std::error_code ec;
-  auto self = std::filesystem::read_symlink("/proc/self/exe", ec);
-  if (!ec && !self.empty()) {
-    return self;
-  }
-#endif
-  std::filesystem::path argPath = argv0 ? argv0 : "osu_client";
-  if (argPath.has_parent_path() || argPath.is_absolute()) {
-    return argPath;
-  }
-  const char *pathEnv = std::getenv("PATH");
-  if (pathEnv == nullptr) {
-    return argPath;
-  }
-  std::string_view remaining = pathEnv;
-  while (!remaining.empty()) {
-    const std::size_t colon = remaining.find(':');
-    const std::string_view dir = remaining.substr(0, colon);
-    if (!dir.empty()) {
-      std::filesystem::path candidate = std::filesystem::path(dir) / argPath;
-      if (std::filesystem::exists(candidate)) {
-        return candidate;
-      }
-    }
-    if (colon == std::string_view::npos) {
-      break;
-    }
-    remaining.remove_prefix(colon + 1);
-  }
-  return argPath;
-}
-
 std::filesystem::path userDataPath() {
-  if (const char *xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
-    return std::filesystem::path(xdg) / "osu-cpp";
-  }
-  if (const char *home = std::getenv("HOME"); home && *home) {
-    return std::filesystem::path(home) / ".local" / "share" / "osu-cpp";
-  }
-  return std::filesystem::path{"."} / ".osu-cpp";
+  return platform::system::userDataPath("osu-cpp");
 }
 
 void printUsage(std::string_view program) {
@@ -252,7 +213,8 @@ int main(int argc, char **argv) {
           std::filesystem::exists(userSkin / ".download-in-progress");
     }
     const auto exeDir =
-        executablePath(argc > 0 ? argv[0] : "osu_client").parent_path();
+        platform::system::executablePath(argc > 0 ? argv[0] : "osu_client")
+            .parent_path();
     const std::vector<std::filesystem::path> candidates{
         exeDir / "skin",
         exeDir / ".." / "skin",

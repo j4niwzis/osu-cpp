@@ -3,7 +3,6 @@ export module client.appinput;
 import std;
 import osu;
 import platform.input;
-import present;
 import client.input;
 import client.gameplayview;
 import client.listing;
@@ -67,7 +66,7 @@ public:
     // alternative was two days of this.
     int liveW = 0;
     int liveH = 0;
-    if (present::surfaceSize(fApp.fWindow, &liveW, &liveH) &&
+    if (fApp.fWindowRuntime.surfaceSize(liveW, liveH) &&
         (liveW != fApp.fWin.fPixelW || liveH != fApp.fWin.fPixelH)) {
       fApp.resize(liveW, liveH);
     }

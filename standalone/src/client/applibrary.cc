@@ -9,7 +9,8 @@ export module client.applibrary;
 import std;
 import osu;
 import skia;
-import audio;
+import platform.audio;
+import platform.system;
 import client.audio;
 import client.filter;
 import client.library;
@@ -33,16 +34,16 @@ public:
 #ifdef __EMSCRIPTEN__
     fApp.fMapsDir = "/maps";
 #else
-    if (const char *xdg = std::getenv("XDG_DATA_HOME");
-        xdg != nullptr && *xdg != '\0') {
+    if (const auto xdg = platform::system::environment("XDG_DATA_HOME");
+        xdg && !xdg->empty()) {
       // Flatpak exposes the application's persistent writable data directory
       // here. Native desktops which set XDG_DATA_HOME get the same standard
       // behaviour.
-      fApp.fMapsDir = std::filesystem::path(xdg) / "osu-cpp" / "maps";
-    } else if (const char *home = std::getenv("HOME"); home != nullptr) {
+      fApp.fMapsDir = std::filesystem::path(*xdg) / "osu-cpp" / "maps";
+    } else if (const auto home = platform::system::environment("HOME")) {
       // Keep the historical native location when XDG_DATA_HOME is unset, so
       // an update does not make an existing library appear to disappear.
-      fApp.fMapsDir = std::filesystem::path(home) / ".local" / "share" /
+      fApp.fMapsDir = std::filesystem::path(*home) / ".local" / "share" /
                  "osu_client" / "maps";
     } else {
       fApp.fMapsDir = "maps";

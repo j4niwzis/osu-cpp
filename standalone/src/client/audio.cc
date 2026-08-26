@@ -1,7 +1,7 @@
 export module client.audio;
 
 import std;
-import audio;
+import platform.audio;
 import client.util;
 
 export namespace client {
