@@ -11,5 +11,8 @@ export LD_LIBRARY_PATH="$root/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRA
 # makes some Ubuntu Touch vendor EGL stacks load unavailable GL compatibility
 # libraries and crash before the normal context fallback can run.
 export OSU_GLES=1
+# libEGL_libhybris is a GLVND vendor module, not a standalone EGL library.
+# Restrict GLVND to it so a legacy Mir native display is never offered to Mesa.
+export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_libhybris.json
 
 exec "$root/bin/osu_client" "$@"

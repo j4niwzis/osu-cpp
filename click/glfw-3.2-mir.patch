@@ -1,16 +1,3 @@
-diff --git a/src/egl_context.c b/src/egl_context.c
-index 643cfe6..9b08f86 100644
---- a/src/egl_context.c
-+++ b/src/egl_context.c
-@@ -291,6 +291,8 @@ GLFWbool _glfwInitEGL(void)
-         "EGL.dll",
- #elif defined(_GLFW_COCOA)
-         "libEGL.dylib",
-+#elif defined(_GLFW_MIR)
-+        "libEGL_libhybris.so.0",
- #else
-         "libEGL.so.1",
- #endif
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 32a87af..43861f8 100644
 --- a/src/CMakeLists.txt
