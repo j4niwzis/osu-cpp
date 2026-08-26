@@ -2,7 +2,7 @@ export module client.appoverlays;
 
 import std;
 import osu;
-import glfw;
+import platform.input;
 import skia;
 import skin;
 import client.audio;
@@ -150,13 +150,13 @@ public:
   [[nodiscard]] std::vector<client::ModEntry> modEntries() const {
     return {
         {"EZ", "Easy", "Larger circles, more forgiving HP drain.",
-         osu::mod::kEasy, 0, glfw::kKeyQ, 0.5},
+         osu::mod::kEasy, 0, platform::input::kKeyQ, 0.5},
         {"HT", "Half Time", "Less zoom... more time to react.",
-         osu::mod::kHalfTime, 0, glfw::kKeyW, 0.3},
+         osu::mod::kHalfTime, 0, platform::input::kKeyW, 0.3},
         {"HR", "Hard Rock", "Everything just got a bit harder...",
-         osu::mod::kHardRock, 1, glfw::kKeyA, 1.06},
+         osu::mod::kHardRock, 1, platform::input::kKeyA, 1.06},
         {"DT", "Double Time", "Zoooooooooom...", osu::mod::kDoubleTime, 1,
-         glfw::kKeyD, 1.12},
+         platform::input::kKeyD, 1.12},
     };
   }
 

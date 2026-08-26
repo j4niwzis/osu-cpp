@@ -5,7 +5,7 @@ import std;
 export namespace client {
 
 // Raw input event, timestamped on the event-pump (main) thread the moment
-// GLFW delivers it. Wall time is glfwGetTime()*1000; the render thread maps
+// The platform backend delivers it. Wall time is platform::clock::milliseconds(); the render thread maps
 // it onto the game timeline with client::AnchoredClock when consuming.
 enum class EventType : std::uint8_t {
   kKey,

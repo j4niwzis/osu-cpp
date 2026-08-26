@@ -2,7 +2,7 @@ export module client.appplayback;
 
 import std;
 import osu;
-import glfw;
+import platform.clock;
 import client.input;
 import client.playresult;
 
@@ -22,7 +22,7 @@ public:
 
   [[nodiscard]] double nowMs() {
 #ifdef __EMSCRIPTEN__
-    return glfw::glfwGetTime() * 1000.0 - fApp.fPlay.fStartMs +
+    return platform::clock::milliseconds() - fApp.fPlay.fStartMs +
            fApp.fPlay.fAudioOffsetMs;
 #else
     // Consult the audio device occasionally; extrapolate from the anchored

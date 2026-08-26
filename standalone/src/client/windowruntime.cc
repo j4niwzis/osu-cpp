@@ -13,6 +13,8 @@ export module client.windowruntime;
 
 import std;
 import glfw;
+import platform.clock;
+import platform.input;
 import client.input;
 
 namespace client {
@@ -102,7 +104,7 @@ public:
 
 private:
 #ifdef OSU_WAYLAND_TOUCH
-  static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
+  static double wallMs() { return platform::clock::milliseconds(); }
 
   void move(wl_fixed_t x, wl_fixed_t y) {
     fX = static_cast<float>(wl_fixed_to_double(x));
@@ -115,8 +117,8 @@ private:
       fContact = -1;
       return;
     }
-    fPush({wallMs(), EventType::kMouseButton, glfw::kMouseButtonLeft,
-           glfw::kRelease});
+    fPush({wallMs(), EventType::kMouseButton, platform::input::kMouseButtonLeft,
+           platform::input::kRelease});
     fContact = -1;
   }
 
@@ -162,8 +164,8 @@ private:
     }
     self.fContact = id;
     self.move(x, y);
-    self.fPush({wallMs(), EventType::kMouseButton, glfw::kMouseButtonLeft,
-                glfw::kPress});
+    self.fPush({wallMs(), EventType::kMouseButton, platform::input::kMouseButtonLeft,
+                platform::input::kPress});
   }
 
   static void touchUp(void *data, wl_touch *, uint32_t, uint32_t, int32_t id) {
@@ -495,7 +497,7 @@ private:
   }
 
   [[nodiscard]] static double wallMs() {
-    return glfw::glfwGetTime() * 1000.0;
+    return platform::clock::milliseconds();
   }
   [[nodiscard]] static std::uint64_t packSize(int width, int height) {
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(width))
@@ -523,7 +525,7 @@ private:
         fWindow, [](glfw::GLFWwindow *window, int key, int, int action,
                     int mods) {
           auto &self = from(window);
-          if (action == glfw::kPress && key == glfw::kKeyF11) {
+          if (action == platform::input::kPress && key == platform::input::kKeyF11) {
             if (self.fToggleFullscreen) {
               self.fToggleFullscreen();
             }

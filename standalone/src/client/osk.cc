@@ -17,7 +17,8 @@ extern "C" {
 export module client.osk;
 
 import std;
-import glfw;
+import platform.clock;
+import platform.input;
 import client.input;
 
 // The on-screen keyboard, asked for over D-Bus.
@@ -36,7 +37,7 @@ export namespace client::osk {
 
 namespace detail {
 
-inline double wallMs() { return glfw::glfwGetTime() * 1000.0; }
+inline double wallMs() { return platform::clock::milliseconds(); }
 
 inline void appendUtf8(std::vector<Event> &events, std::string_view text) {
   for (std::size_t i = 0; i < text.size();) {
@@ -171,37 +172,37 @@ private:
     int glfwKey = 0;
     switch (key) {
     case 0x01000000:
-      glfwKey = glfw::kKeyEscape;
+      glfwKey = platform::input::kKeyEscape;
       break;
     case 0x01000003:
-      glfwKey = glfw::kKeyBackspace;
+      glfwKey = platform::input::kKeyBackspace;
       break;
     case 0x01000004:
     case 0x01000005:
-      glfwKey = glfw::kKeyEnter;
+      glfwKey = platform::input::kKeyEnter;
       break;
     case 0x01000007:
-      glfwKey = glfw::kKeyDelete;
+      glfwKey = platform::input::kKeyDelete;
       break;
     case 0x01000012:
-      glfwKey = glfw::kKeyLeft;
+      glfwKey = platform::input::kKeyLeft;
       break;
     case 0x01000013:
-      glfwKey = glfw::kKeyUp;
+      glfwKey = platform::input::kKeyUp;
       break;
     case 0x01000014:
-      glfwKey = glfw::kKeyRight;
+      glfwKey = platform::input::kKeyRight;
       break;
     case 0x01000015:
-      glfwKey = glfw::kKeyDown;
+      glfwKey = platform::input::kKeyDown;
       break;
     default:
       break;
     }
     if (glfwKey != 0) {
-      const int action = type == 7 ? glfw::kRelease
-                                   : (autoRepeat != 0 ? glfw::kRepeat
-                                                      : glfw::kPress);
+      const int action = type == 7 ? platform::input::kRelease
+                                   : (autoRepeat != 0 ? platform::input::kRepeat
+                                                      : platform::input::kPress);
       static_cast<Maliit *>(userdata)->fEvents.push_back(
           {wallMs(), EventType::kKey, glfwKey, action});
     }

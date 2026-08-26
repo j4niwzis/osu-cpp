@@ -9,6 +9,8 @@ export module app;
 import std;
 import osu;
 import glfw;
+import platform.clock;
+import platform.input;
 import skia;
 import audio;
 import skin;
@@ -657,7 +659,7 @@ private:
     fWindowRuntime.requestQuit();
   }
 
-  [[nodiscard]] static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
+  [[nodiscard]] static double wallMs() { return platform::clock::milliseconds(); }
 
   void enqueue(const Event &ev) { fWindowRuntime.push(ev); }
 
@@ -1882,25 +1884,25 @@ private:
   [[nodiscard]] static client::mainmenu::Screen::Key menuKey(int key) {
     using Key = client::mainmenu::Screen::Key;
     switch (key) {
-    case glfw::kKeyEscape:
+    case platform::input::kKeyEscape:
       return Key::kEscape;
-    case glfw::kKeyEnter:
+    case platform::input::kKeyEnter:
       return Key::kEnter;
-    case glfw::kKeySpace:
+    case platform::input::kKeySpace:
       return Key::kSpace;
-    case glfw::kKeyP:
+    case platform::input::kKeyP:
       return Key::kP;
-    case glfw::kKeyB:
+    case platform::input::kKeyB:
       return Key::kB;
-    case glfw::kKeyD:
+    case platform::input::kKeyD:
       return Key::kD;
-    case glfw::kKeyI:
+    case platform::input::kKeyI:
       return Key::kI;
-    case glfw::kKeyQ:
+    case platform::input::kKeyQ:
       return Key::kQ;
-    case glfw::kKeyS:
+    case platform::input::kKeyS:
       return Key::kS;
-    case glfw::kKeyR:
+    case platform::input::kKeyR:
       return Key::kR;
     default:
       return Key::kOther;
