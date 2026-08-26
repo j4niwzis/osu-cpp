@@ -7,5 +7,9 @@ export XDG_DATA_HOME="$HOME/.local/share/$app_storage"
 export XDG_CONFIG_HOME="$HOME/.config/$app_storage"
 export XDG_CACHE_HOME="$HOME/.cache/$app_storage"
 export LD_LIBRARY_PATH="$root/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Lomiri's native Wayland path exposes EGL/GLES. Trying desktop OpenGL first
+# makes some Ubuntu Touch vendor EGL stacks load unavailable GL compatibility
+# libraries and crash before the normal context fallback can run.
+export OSU_GLES=1
 
 exec "$root/bin/osu_client" "$@"

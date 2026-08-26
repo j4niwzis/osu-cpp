@@ -278,7 +278,11 @@ public:
         {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,
          glfw::kEglContextApi},
     };
-    for (const auto &choice : choices) {
+    const bool preferGles = std::getenv("OSU_GLES") != nullptr;
+    const std::array<int, 4> order = preferGles ? std::array{2, 3, 0, 1}
+                                                : std::array{0, 1, 2, 3};
+    for (const int index : order) {
+      const auto &choice = choices[index];
       glfw::glfwWindowHint(glfw::kClientApi, choice.fApi);
       glfw::glfwWindowHint(glfw::kContextVersionMajor, choice.fMajor);
       glfw::glfwWindowHint(glfw::kContextVersionMinor, choice.fMinor);
