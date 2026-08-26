@@ -7,7 +7,7 @@ if(NOT IS_DIRECTORY "${OSU_ANDROID_ROOT}")
   message(FATAL_ERROR "Set ANDROID_FREE or OSU_ANDROID_ROOT")
 endif()
 
-set(OSU_ANDROID_API "26" CACHE STRING "Android API level")
+set(OSU_ANDROID_API "27" CACHE STRING "Android API level")
 set(OSU_ANDROID_TRIPLE "aarch64-linux-android" CACHE STRING
   "Android compiler target triple")
 set(OSU_ANDROID_ABI "arm64-v8a" CACHE STRING "Android APK ABI")
