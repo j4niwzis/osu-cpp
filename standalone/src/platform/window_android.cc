@@ -364,8 +364,8 @@ private:
     if (fApp == nullptr || fApp->window == nullptr) {
       return;
     }
-    const int width = ANativeWindow_getWidth(fApp->window);
-    const int height = ANativeWindow_getHeight(fApp->window);
+    EGLint width = ANativeWindow_getWidth(fApp->window);
+    EGLint height = ANativeWindow_getHeight(fApp->window);
     if (width <= 0 || height <= 0) {
       return;
     }
