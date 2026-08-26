@@ -9,7 +9,6 @@ extern "C" void android_main(android_app *state) {
   platform::android::attach(state);
 
   try {
-    (void)platform::android::requestLandscape();
     if (!platform::android::prepareAssets()) {
       throw std::runtime_error("unable to prepare bundled assets");
     }

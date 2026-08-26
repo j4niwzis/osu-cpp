@@ -12,14 +12,14 @@
         android:hasCode="false"
         android:icon="@drawable/osu_cpp_icon"
         android:label="osu!cpp"
-        android:resizeableActivity="true"
+        android:resizeableActivity="false"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <activity
             android:name="android.app.NativeActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
             android:exported="true"
             android:launchMode="singleTask"
-            android:resizeableActivity="true"
+            android:resizeableActivity="false"
             android:screenOrientation="sensorLandscape">
             <meta-data
                 android:name="android.app.lib_name"
