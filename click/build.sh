@@ -63,6 +63,7 @@ if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
   if [ ! -f "$sources/glfw-mir/.osu-mir-patch-v2" ]; then
     git -C "$sources/glfw-mir" checkout 999f3556fdd80983b10051746264489f2cb1ef16
     git -C "$sources/glfw-mir" reset --hard 999f3556fdd80983b10051746264489f2cb1ef16
+    rm -f "$sources/glfw-mir/src/compat.c"
     patch -d "$sources/glfw-mir" -p1 < "$ROOT/click/glfw-3.2-mir.patch"
     touch "$sources/glfw-mir/.osu-mir-patch-v2"
   fi
