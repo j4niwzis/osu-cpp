@@ -33,7 +33,9 @@ function(osu_add_android_apk target)
   set(unsigned_apk "${apk_dir}/osu-cpp-unsigned.apk")
   set(aligned_apk "${apk_dir}/osu-cpp-aligned.apk")
   set(signed_apk "${apk_dir}/osu-cpp.apk")
+  set(compiled_resources "${apk_dir}/resources.zip")
   set(native_dir "${stage_dir}/lib/${OSU_ANDROID_ABI}")
+  set(android_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../android")
 
   # Prefix libraries are optional: fully static dependency builds have none.
   set(prefix_libraries)
@@ -52,6 +54,8 @@ function(osu_add_android_apk target)
 
   file(GLOB_RECURSE packaged_assets CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*")
+  file(GLOB_RECURSE android_resources CONFIGURE_DEPENDS
+    "${android_dir}/res/*")
 
   add_custom_command(
     OUTPUT "${OSU_ANDROID_KEYSTORE}"
@@ -73,14 +77,18 @@ function(osu_add_android_apk target)
       "$<TARGET_FILE:${target}>" "${native_dir}/libosu_client.so"
     ${copy_libraries}
     COMMAND "${CMAKE_COMMAND}" -E rm -f
-      "${unsigned_apk}" "${aligned_apk}" "${signed_apk}"
+      "${compiled_resources}" "${unsigned_apk}" "${aligned_apk}" "${signed_apk}"
+    COMMAND "${aapt2}" compile
+      --dir "${android_dir}/res"
+      -o "${compiled_resources}"
     COMMAND "${aapt2}" link
       -o "${unsigned_apk}"
       -I "${OSU_ANDROID_PLATFORM_JAR}"
-      --manifest "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../android/AndroidManifest.xml"
+      --manifest "${android_dir}/AndroidManifest.xml"
       --min-sdk-version "${OSU_ANDROID_MIN_API}"
       --target-sdk-version "${OSU_ANDROID_API}"
       -A "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+      "${compiled_resources}"
     COMMAND "${jar}" uf "${unsigned_apk}" -C "${stage_dir}" lib
     COMMAND "${zipalign}" -f 4 "${unsigned_apk}" "${aligned_apk}"
     COMMAND "${java}" -jar "${OSU_ANDROID_APKSIGNER_JAR}" sign
@@ -90,8 +98,8 @@ function(osu_add_android_apk target)
       --key-pass "pass:${OSU_ANDROID_KEY_PASSWORD}"
       --out "${signed_apk}" "${aligned_apk}"
     DEPENDS ${target} "${OSU_ANDROID_KEYSTORE}"
-      "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../android/AndroidManifest.xml"
-      ${packaged_assets} ${prefix_libraries}
+      "${android_dir}/AndroidManifest.xml"
+      ${android_resources} ${packaged_assets} ${prefix_libraries}
     VERBATIM
     COMMENT "Packaging signed Android APK")
 

@@ -10,6 +10,7 @@
         android:allowBackup="true"
         android:extractNativeLibs="true"
         android:hasCode="false"
+        android:icon="@drawable/osu_cpp_icon"
         android:label="osu!cpp"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <activity
