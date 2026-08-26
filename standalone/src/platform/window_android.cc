@@ -329,14 +329,50 @@ private:
     if (action != AKEY_EVENT_ACTION_DOWN && action != AKEY_EVENT_ACTION_UP) {
       return false;
     }
-    const int mapped = mapKey(AKeyEvent_getKeyCode(event));
+    const std::int32_t keyCode = AKeyEvent_getKeyCode(event);
+    const std::int32_t character =
+        action == AKEY_EVENT_ACTION_DOWN
+            ? characterForKey(keyCode, AKeyEvent_getMetaState(event))
+            : 0;
+    if (character != 0) {
+      this->push({wallMs(), EventType::kChar, character});
+    }
+    const int mapped = mapKey(keyCode);
     if (mapped == 0) {
-      return false;
+      return character != 0;
     }
     this->push({wallMs(), EventType::kKey, mapped,
                 action == AKEY_EVENT_ACTION_DOWN ? input::kPress
                                                   : input::kRelease});
     return true;
+  }
+
+  [[nodiscard]] static std::int32_t characterForKey(std::int32_t key,
+                                                     std::int32_t meta) {
+    const bool shift = (meta & AMETA_SHIFT_ON) != 0;
+    if (key >= AKEYCODE_A && key <= AKEYCODE_Z) {
+      return (shift ? 'A' : 'a') + (key - AKEYCODE_A);
+    }
+    if (key >= AKEYCODE_0 && key <= AKEYCODE_9) {
+      static constexpr std::string_view shifted = ")!@#$%^&*(";
+      const std::size_t index = static_cast<std::size_t>(key - AKEYCODE_0);
+      return shift ? shifted[index] : '0' + static_cast<std::int32_t>(index);
+    }
+    switch (key) {
+    case AKEYCODE_SPACE: return ' ';
+    case AKEYCODE_COMMA: return shift ? '<' : ',';
+    case AKEYCODE_PERIOD: return shift ? '>' : '.';
+    case AKEYCODE_MINUS: return shift ? '_' : '-';
+    case AKEYCODE_EQUALS: return shift ? '+' : '=';
+    case AKEYCODE_LEFT_BRACKET: return shift ? '{' : '[';
+    case AKEYCODE_RIGHT_BRACKET: return shift ? '}' : ']';
+    case AKEYCODE_BACKSLASH: return shift ? '|' : '\\';
+    case AKEYCODE_SEMICOLON: return shift ? ':' : ';';
+    case AKEYCODE_APOSTROPHE: return shift ? '"' : '\'';
+    case AKEYCODE_SLASH: return shift ? '?' : '/';
+    case AKEYCODE_GRAVE: return shift ? '~' : '`';
+    default: return 0;
+    }
   }
 
   [[nodiscard]] static int mapKey(std::int32_t key) {
