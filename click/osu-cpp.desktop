@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=osu!cpp
+Comment=Native osu! client
+Exec=osu-cpp-launch
+Icon=io.github.j4niwzis.osu_cpp.svg
+Terminal=false
+Type=Application
+Categories=Game;
+X-Lomiri-Touch=true
+X-Ubuntu-Supported-Orientations=landscape

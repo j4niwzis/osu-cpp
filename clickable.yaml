@@ -1,0 +1,55 @@
+clickable_minimum_required: "8.9.0"
+framework: ubuntu-touch-24.04-2.x
+builder: custom
+restrict_arch: arm64
+skip_review: true
+build_dir: ${ROOT}/build/click/${ARCH_TRIPLET}
+install_dir: ${BUILD_DIR}/install
+make_jobs: 1
+
+# LLVM 22 is required by the Skia revision used by the project. Noble itself
+# carries an older LLVM, so use LLVM's signed Noble repository in Clickable's
+# disposable build image.
+image_setup:
+  run:
+    # Ubuntu mirrors can briefly disagree with the package indexes while a
+    # security update is being published (notably OpenSSL then returns 404).
+    # Refresh from an empty lists directory and retry the complete transaction.
+    - packages='autoconf automake build-essential ca-certificates curl generate-ninja git gnupg lsb-release libtool ninja-build pkg-config python3 software-properties-common wget libboost-dev libbz2-dev libegl1-mesa-dev libfontconfig1-dev libfreetype-dev libgl-dev libjpeg-turbo8-dev liblzma-dev libmirclient9 libmp3lame-dev libmpg123-dev libopenal-dev libopus-dev libpng-dev libsndfile1-dev libssl-dev libsystemd-dev libwayland-dev libwayland-bin libwebp-dev libxkbcommon-dev libx264-dev libzip-dev zlib1g-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev wayland-protocols'; rm -rf /var/lib/apt/lists/*; (apt-get update && apt-get install -y --no-install-recommends $packages) || (rm -rf /var/lib/apt/lists/* && sleep 5 && apt-get update && apt-get install -y --no-install-recommends $packages); apt-get clean
+    # LLVM cannot be installed with dependencies_host because its repository
+    # does not exist in the base image. This is the same installation sequence
+    # exercised by modulizer's Ubuntu modules CI.
+    - curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+    - chmod +x /tmp/llvm.sh
+    - /tmp/llvm.sh 22 all
+    - (apt-get update && apt-get install -y --no-install-recommends libc++-22-dev libc++abi-22-dev) || (rm -rf /var/lib/apt/lists/* && sleep 5 && apt-get update && apt-get install -y --no-install-recommends libc++-22-dev libc++abi-22-dev)
+    # apt.llvm.org's manifest names ../share/libc++/v1 relative to its multiarch
+    # directory, which resolves through /lib/share on Ubuntu. Point that path
+    # at the actual versioned module sources, as modulizer's CI does.
+    - mkdir -p /lib/share/libc++ && ln -sfn /usr/lib/llvm-22/share/libc++/v1 /lib/share/libc++/v1
+
+dependencies_host: []
+dependencies_target: []
+
+env_vars:
+  CC: clang-22
+  CXX: clang++-22
+  AR: llvm-ar-22
+  NM: llvm-nm-22
+  RANLIB: llvm-ranlib-22
+  STRIP: llvm-strip-22
+  CFLAGS: -O3 -flto=full
+  CXXFLAGS: -O3 -flto=full -stdlib=libc++ -Wp,-U_FORTIFY_SOURCE
+  LDFLAGS: -flto=full -fuse-ld=lld-22
+
+build: ${ROOT}/click/build.sh
+
+install_root_data:
+  - click/manifest.json
+  - click/osu-cpp.apparmor
+  - click/osu-cpp.desktop
+  - click/osu-cpp-launch
+  - standalone/packaging/io.github.j4niwzis.osu_cpp.svg
+
+kill: osu_client
+launch: lomiri-app-launch osu-cpp.j4niwzis_osu-cpp
