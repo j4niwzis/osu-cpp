@@ -254,11 +254,12 @@ Clang cannot export from `import std`. The project toolchain compiles C++ with
 `-D__BIONIC_CTYPE_INLINE=inline` to give those definitions compatible
 linkage.
 
-## Android platform resources and android.jar
+## Android platform resources
 
-The Alpine `aapt2` package does not include `android.jar`. Build a minimal
-platform resource package from `frameworks/base/core/res` using the matching
-AOSP sources, then produce the platform JAR used by `aapt2 link`.
+Build the framework resource package from `frameworks/base/core/res` using
+the matching AOSP sources. This build has always used that
+`framework-res.apk` directly as the `aapt2 link -I` input; it does not build
+or use `android.jar`.
 
 Modern platform resources use feature-flagged manifest attributes. A raw
 `aapt2 link` may report missing values for `android:featureFlag`; provide the
@@ -272,11 +273,14 @@ resources; otherwise `aapt2` rejects `<adaptive-icon>` as requiring API 26.
 link only accepts IDs in the `0x7f` to `0xff` range. Framework resources need
 the platform-specific aapt2 mode rather than those incompatible options.
 
-Set the final JAR path at project configuration time:
+Set the resulting resource APK at project configuration time:
 
 ```text
--DOSU_ANDROID_PLATFORM_JAR=/path/to/android.jar
+-DOSU_ANDROID_FRAMEWORK_RES_APK=$ANDROID_FREE/build/framework/framework-res.apk
 ```
+
+The former `OSU_ANDROID_PLATFORM_JAR` spelling is retained only as a
+deprecated cache alias for existing build directories.
 
 ## Building apksigner from source
 
@@ -299,6 +303,21 @@ java -jar "$HOME/.local/lib/apksigner/apksigner.jar" --version
 ```
 
 Pass it to CMake with `OSU_ANDROID_APKSIGNER_JAR`.
+
+## Optional system document picker
+
+`OSU_ANDROID_SYSTEM_FILE_PICKER=ON` builds a minimal DEX bridge around
+`NativeActivity`. It uses Android's own `ACTION_OPEN_DOCUMENT` UI for beatmap
+imports and `ACTION_CREATE_DOCUMENT` for exported videos. The selected
+`content://` stream is copied by the C++ platform backend; no application
+file handling lives in Java and Gradle is not used.
+
+This mode explicitly requires `javac` and `d8`. The bridge is compiled
+against small compile-only Android API declarations under
+`android/java-stubs`; only the bridge classes are passed to `d8`, so those
+declarations never enter the APK. Consequently no `android.jar` is needed.
+Set `OSU_ANDROID_SYSTEM_FILE_PICKER=OFF` to omit `classes.dex`, retain the
+plain `android.app.NativeActivity`, and avoid both bridge tools.
 
 ## Third-party libraries
 
@@ -401,7 +420,8 @@ The repository toolchain file centralizes the target, sysroot, Clang resource
 directory, libc++ modules, LLVM archive tools, search roots, and Android
 pthread behavior.
 
-Configure with paths adapted to the locally built platform JAR and signer:
+Configure with paths adapted to the locally built framework resources and
+signer:
 
 ```sh
 export ANDROID_FREE="$HOME/android-free"
@@ -410,8 +430,9 @@ cmake -S standalone -B build/android-free -G Ninja \
 -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/android-free.cmake" \
 -DCMAKE_BUILD_TYPE=Release \
 -DCMAKE_PREFIX_PATH="$ANDROID_FREE/prefix" \
--DOSU_ANDROID_PLATFORM_JAR="$ANDROID_FREE/platform/android.jar" \
--DOSU_ANDROID_APKSIGNER_JAR="$HOME/.local/lib/apksigner/apksigner.jar"
+-DOSU_ANDROID_FRAMEWORK_RES_APK="$ANDROID_FREE/build/framework/framework-res.apk" \
+-DOSU_ANDROID_APKSIGNER_JAR="$HOME/.local/lib/apksigner/apksigner.jar" \
+-DOSU_ANDROID_SYSTEM_FILE_PICKER=OFF
 ```
 
 Then build the shared native application and signed APK:
@@ -483,8 +504,8 @@ The manual environment proved that a fully source-built toolchain is viable,
 but it should eventually move to a separate reproducible toolchain-builder
 repository. That builder should pin every source commit, download only the
 required source closures, generate API maps and stubs, build compiler-rt and
-LLVM runtimes, build the static dependency graph, produce `android.jar` and
-`apksigner.jar`, and emit pkg-config metadata plus a manifest of hashes.
+LLVM runtimes, build the static dependency graph, produce `framework-res.apk`
+and `apksigner.jar`, and emit pkg-config metadata plus a manifest of hashes.
 
 CMake remains the application build system. The toolchain bootstrap itself
 can be a purpose-built program or conventional build orchestration; it does

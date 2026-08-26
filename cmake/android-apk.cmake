@@ -9,8 +9,15 @@ function(osu_add_android_apk target)
   set(OSU_ANDROID_TARGET_API "35" CACHE STRING
     "Android target SDK API")
   set(OSU_ANDROID_ABI "arm64-v8a" CACHE STRING "Android APK ABI")
+  set(OSU_ANDROID_FRAMEWORK_RES_APK "" CACHE FILEPATH
+    "Source-built Android framework resource APK")
   set(OSU_ANDROID_PLATFORM_JAR "" CACHE FILEPATH
-    "Source-built Android framework resource APK or android.jar")
+    "Deprecated alias for OSU_ANDROID_FRAMEWORK_RES_APK")
+  if(NOT OSU_ANDROID_FRAMEWORK_RES_APK AND OSU_ANDROID_PLATFORM_JAR)
+    set(OSU_ANDROID_FRAMEWORK_RES_APK "${OSU_ANDROID_PLATFORM_JAR}")
+    message(DEPRECATION
+      "OSU_ANDROID_PLATFORM_JAR is deprecated; use OSU_ANDROID_FRAMEWORK_RES_APK")
+  endif()
   set(OSU_ANDROID_APKSIGNER_JAR "" CACHE FILEPATH
     "Source-built apksigner executable jar")
   set(OSU_ANDROID_KEY_ALIAS "androiddebugkey" CACHE STRING "APK signing key alias")
@@ -25,8 +32,8 @@ function(osu_add_android_apk target)
   find_program(java NAMES java REQUIRED)
   find_program(jar NAMES jar REQUIRED)
   find_program(keytool NAMES keytool REQUIRED)
-  if(NOT EXISTS "${OSU_ANDROID_PLATFORM_JAR}")
-    message(FATAL_ERROR "Set OSU_ANDROID_PLATFORM_JAR")
+  if(NOT EXISTS "${OSU_ANDROID_FRAMEWORK_RES_APK}")
+    message(FATAL_ERROR "Set OSU_ANDROID_FRAMEWORK_RES_APK")
   endif()
   if(NOT EXISTS "${OSU_ANDROID_APKSIGNER_JAR}")
     message(FATAL_ERROR "Set OSU_ANDROID_APKSIGNER_JAR")
@@ -127,7 +134,7 @@ function(osu_add_android_apk target)
       -o "${compiled_resources}"
     COMMAND "${aapt2}" link
       -o "${unsigned_apk}"
-      -I "${OSU_ANDROID_PLATFORM_JAR}"
+      -I "${OSU_ANDROID_FRAMEWORK_RES_APK}"
       --manifest "${android_manifest}"
       --min-sdk-version "${OSU_ANDROID_MIN_API}"
       --target-sdk-version "${OSU_ANDROID_TARGET_API}"
