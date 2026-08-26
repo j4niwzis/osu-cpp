@@ -1,0 +1,9 @@
+{
+  "policy_version": "$ENV{APPARMOR_POLICY}",
+  "policy_groups": [
+    "audio",
+    "content_exchange",
+    "content_exchange_source",
+    "networking"
+  ]
+}
