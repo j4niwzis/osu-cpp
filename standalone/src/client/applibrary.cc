@@ -7,13 +7,14 @@ import skia;
 import platform.audio;
 import platform.system;
 import platform.web_runtime;
-import client.audio;
+import platform.capabilities;
+import platform.audio_engine;
 import client.filter;
 import client.library;
 import client.loader;
 import client.listing;
 import client.mirrors;
-import client.portal;
+import platform.dialogs;
 import client.replaybrowser;
 import client.settings;
 import client.util;
@@ -27,11 +28,9 @@ public:
   // ---- Library ----------------------------------------------------------
 
   void initLibrary() {
-#ifdef __EMSCRIPTEN__
-    fApp.fMapsDir = "/maps";
-#else
-    fApp.fMapsDir = platform::system::mapsDirectory();
-#endif
+    fApp.fMapsDir = platform::capabilities::kBrowser
+                        ? std::filesystem::path{"/maps"}
+                        : platform::system::mapsDirectory();
     std::error_code ec;
     std::filesystem::create_directories(fApp.fMapsDir, ec);
     if (ec) {
@@ -173,7 +172,7 @@ public:
     // when changing selection. Decode on the worker, upload to OpenAL here.
     const std::string ext = detail::fileExtension(audioName);
     std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
-    auto pcm = std::make_shared<audio_client::DecodedAudio>();
+    auto pcm = std::make_shared<platform::audio::DecodedAudio>();
     const int forSet = fApp.fLibrary.selSet();
     // The index alone is not identity: deleting a beatmap shifts everything
     // after it, so the path is checked too before this track is adopted.
@@ -184,7 +183,7 @@ public:
     fApp.fLoader.submit(
         static_cast<std::uint64_t>(fApp.fLibrary.selSet()) | (3ull << 32),
         [copy = std::move(copy), ext, pcm] {
-          *pcm = audio_client::decodeAudio(copy, ext);
+          *pcm = platform::audio::decodeAudio(copy, ext);
         },
         [this, forSet, forPath, pcm] {
           if (forSet != fApp.fLibrary.selSet() || pcm->fSamples.empty()) {
@@ -245,9 +244,7 @@ public:
   }
 
   void syncMapsDir() {
-#ifdef __EMSCRIPTEN__
     platform::web::syncMapStorage();
-#endif
   }
 
   // ---- Import an external .osz into the library -------------------------
@@ -275,9 +272,10 @@ public:
   }
 
   void importOsz() {
-#ifdef __EMSCRIPTEN__
-    platform::web::requestBeatmapArchive();
-#else
+    if constexpr (platform::capabilities::kBrowser) {
+      platform::web::requestBeatmapArchive();
+      return;
+    }
     // The picker is another process and the user takes as long as they take.
     // Waited for here, on the thread that draws, it stops the frame loop for
     // the whole of that: the window goes unresponsive and stays on whatever
@@ -296,17 +294,14 @@ public:
             this->importFrom(*chosen);
           }
         });
-#endif
   }
 
-#ifndef __EMSCRIPTEN__
   [[nodiscard]] std::filesystem::path runFilePicker() {
-    if (auto chosen = client::portal::openArchive("Import beatmap")) {
+    if (auto chosen = platform::dialogs::openArchive("Import beatmap")) {
       return *chosen;
     }
     return {};
   }
-#endif
 
   // ---- Download screen logic -------------------------------------------
 

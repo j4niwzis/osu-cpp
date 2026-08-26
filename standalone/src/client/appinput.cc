@@ -3,6 +3,7 @@ export module client.appinput;
 import std;
 import osu;
 import platform.input;
+import platform.capabilities;
 import client.input;
 import client.gameplayview;
 import client.listing;
@@ -82,11 +83,11 @@ public:
     if (fApp.fPlay.fAwaitingFirstFrame) {
       return 0.0;
     }
-#ifdef __EMSCRIPTEN__
-    return wallMs - fApp.fPlay.fStartMs + fApp.fPlay.fAudioOffsetMs;
-#else
-    return fApp.fPlay.fClock.sample(wallMs);
-#endif
+    if constexpr (platform::capabilities::kAudioProvidesTimeline) {
+      return fApp.fPlay.fClock.sample(wallMs);
+    } else {
+      return wallMs - fApp.fPlay.fStartMs + fApp.fPlay.fAudioOffsetMs;
+    }
   }
 
   void applyEvent(const Event &ev) {

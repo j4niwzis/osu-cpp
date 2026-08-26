@@ -482,6 +482,8 @@ public:
     }
     fQuit.store(true, std::memory_order_release);
   }
+#else
+  void pumpEvents() {}
 #endif
 
 #ifndef __EMSCRIPTEN__

@@ -3,12 +3,13 @@ export module client.appoverlays;
 import std;
 import osu;
 import platform.input;
+import platform.capabilities;
 import skia;
 import skin;
-import client.audio;
+import platform.audio_engine;
 import client.hitsoundmix;
 import client.mods;
-import client.portal;
+import platform.dialogs;
 import client.settingspanel;
 import client.util;
 import client.video;
@@ -101,11 +102,11 @@ public:
 
   [[nodiscard]] float musicGain() const {
     return fApp.fSettings.value("master") * fApp.fSettings.value("music") *
-           audio_client::kMusicHeadroom;
+           platform::audio::kMusicHeadroom;
   }
   [[nodiscard]] float effectGain() const {
     return fApp.fSettings.value("master") * fApp.fSettings.value("effect") *
-           audio_client::kEffectHeadroom;
+           platform::audio::kEffectHeadroom;
   }
 
   // Difficulties are ordered by the rating being shown, which means the
@@ -225,7 +226,9 @@ public:
     const std::string suggested = std::format(
         "{}-{}x{}.mp4", safe, request.fOptions.fWidth, request.fOptions.fHeight);
     if (output.empty()) {
-#ifndef __EMSCRIPTEN__
+      if constexpr (!platform::capabilities::kNativeFileDialogs) {
+        return;
+      }
       if (fExportPickerOpen) {
         return;
       }
@@ -246,9 +249,6 @@ public:
             this->exportReplayVideo(*chosen);
           });
       return;
-#else
-      return;
-#endif
     }
     if (output.extension() != ".mp4") {
       output += ".mp4";
@@ -366,17 +366,15 @@ public:
   }
 
 private:
-#ifndef __EMSCRIPTEN__
   [[nodiscard]] static std::filesystem::path
   runExportPicker(const std::string &suggested) {
-    const auto portal = client::portal::saveVideo("Export replay video",
-                                                   suggested);
+    const auto portal =
+        platform::dialogs::saveVideo("Export replay video", suggested);
     if (portal.fPortalAvailable) {
       return portal.fPath.value_or(std::filesystem::path{});
     }
     return {};
   }
-#endif
 
   Host &fApp;
   bool fExportPickerOpen = false;

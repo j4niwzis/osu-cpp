@@ -3,6 +3,7 @@ export module client.appplayback;
 import std;
 import osu;
 import platform.clock;
+import platform.capabilities;
 import client.input;
 import client.playresult;
 
@@ -21,10 +22,10 @@ public:
   }
 
   [[nodiscard]] double nowMs() {
-#ifdef __EMSCRIPTEN__
-    return platform::clock::milliseconds() - fApp.fPlay.fStartMs +
-           fApp.fPlay.fAudioOffsetMs;
-#else
+    if constexpr (!platform::capabilities::kAudioProvidesTimeline) {
+      return platform::clock::milliseconds() - fApp.fPlay.fStartMs +
+             fApp.fPlay.fAudioOffsetMs;
+    }
     // Consult the audio device occasionally; extrapolate from the anchored
     // clock between those potentially blocking device queries.
     const double wall = fApp.wallMs();
@@ -36,7 +37,6 @@ public:
       }
     }
     return fApp.fPlay.fClock.sample(wall);
-#endif
   }
 
   [[nodiscard]] bool shouldStop(double now) const {

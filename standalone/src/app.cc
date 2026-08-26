@@ -8,12 +8,13 @@ import platform.clock;
 import platform.input;
 import platform.configuration;
 import platform.web_runtime;
+import platform.capabilities;
 import skia;
 import platform.audio;
 import skin;
 import archive;
 import client.util;
-import client.audio;
+import platform.audio_engine;
 import client.input;
 import client.timing;
 import client.http;
@@ -58,11 +59,7 @@ import bjson;
 
 namespace client {
 
-using audio_client::alFormat;
-using audio_client::AudioContext;
-using audio_client::audioContext;
-using audio_client::AudioPlayer;
-using audio_client::SamplePlayer;
+using platform::audio::AudioPlayer;
 
 export extern "C++" class App {
 public:
@@ -200,14 +197,8 @@ private:
   }();
 
   [[nodiscard]] bool partialRedraw() const {
-#ifdef __EMSCRIPTEN__
-    // WebGL throws the drawing buffer away after compositing unless the
-    // context was made with preserveDrawingBuffer, so there is no older frame
-    // to repaint a piece of: in a browser every frame is a whole frame.
-    return false;
-#else
-    return fForcePartialRedraw || fSettings.flag("partial");
-#endif
+    return !platform::capabilities::kBrowser &&
+           (fForcePartialRedraw || fSettings.flag("partial"));
   }
   std::chrono::steady_clock::time_point fNextFrame{};
   std::int64_t fLastSwapUs = 0; // reported by the frame breakdown
@@ -527,11 +518,9 @@ private:
     fWin.fPixelW = initial.fWidth;
     fWin.fPixelH = initial.fHeight;
     fRefreshHz = fWindowRuntime.refreshHz();
-#ifdef __EMSCRIPTEN__
     platform::web::setCursorVisible(true);
-#endif
 
-#ifdef __EMSCRIPTEN__
+    if constexpr (!platform::capabilities::kThreadedWindowLoop) {
     fWindowRuntime.makeContextCurrent();
 
     if (!this->initSkia()) {
@@ -565,7 +554,7 @@ private:
     platform::web::setCursorVisible(true);
     platform::web::runMainLoop(emscriptenFrameProc, this);
     return 0;
-#else
+    } else {
     // Snapshot the real framebuffer size on the main thread (that query is
     // main-thread-only in GLFW); the render thread must not call it.
     fWindowRuntime.framebufferSize(fWin.fPixelW, fWin.fPixelH);
@@ -578,10 +567,9 @@ private:
     fWindowRuntime.pumpEvents();
     renderThread.join();
     return fWindowRuntime.exitCode();
-#endif
+    }
   }
 
-#ifndef __EMSCRIPTEN__
   void renderThreadMain() {
     fWindowRuntime.makeContextCurrent();
 
@@ -626,8 +614,6 @@ private:
     this->requestQuit();
     fWindowRuntime.releaseContext();
   }
-
-#endif
 
   void requestQuit() {
     fWindowRuntime.requestQuit();
@@ -692,7 +678,9 @@ private:
   // Applied here because glfwSwapInterval only affects the calling thread's
   // context, and this is the thread that owns it.
   void applySwapInterval() {
-#ifndef __EMSCRIPTEN__
+    if constexpr (!platform::capabilities::kThreadedWindowLoop) {
+      return;
+    }
     const int wanted = fSwapIntervalRequest.load(std::memory_order_acquire);
     if (wanted < 0 || wanted == fSwapInterval) {
       return;
@@ -702,7 +690,6 @@ private:
     fNextFrame = std::chrono::steady_clock::now();
     std::println(std::cerr, "[gfx] swap interval {} (monitor {} Hz)", wanted,
                  fRefreshHz);
-#endif
   }
 
   // Plenty of drivers and compositors ignore the swap interval outright, so
@@ -710,7 +697,9 @@ private:
   // monitor's refresh here. When the driver does honour the interval the swap
   // has already blocked and this sleeps for nothing.
   void limitFrameRate() {
-#ifndef __EMSCRIPTEN__
+    if constexpr (!platform::capabilities::kThreadedWindowLoop) {
+      return;
+    }
     if (fSwapInterval <= 0 || fRefreshHz <= 0) {
       return;
     }
@@ -735,7 +724,6 @@ private:
       std::this_thread::sleep_until(fNextFrame);
     }
     fNextFrame += period;
-#endif
   }
 
   // A text caret is shown for 600 ms of every 1000; this is when it next
@@ -1060,9 +1048,9 @@ private:
       // task-switcher thumbnails live instead, so native Wayland on
       // postmarketOS additionally treats loss of activity as hidden. That
       // exception is deliberately not applied to desktop systems.
-#ifndef __EMSCRIPTEN__
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
-#endif
+      if constexpr (platform::capabilities::kThreadedWindowLoop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      }
       return;
     }
     {
@@ -1091,9 +1079,9 @@ private:
     if (!this->needsFrame()) {
       // Nothing to show: no clear, no draw, no swap, so the front buffer
       // keeps what it already had.
-#ifndef __EMSCRIPTEN__
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
-#endif
+      if constexpr (platform::capabilities::kThreadedWindowLoop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      }
       // In a browser this is a callback on the main thread and the frame is
       // paced by requestAnimationFrame: sleeping here would block the page,
       // and emscripten implements the sleep as a spin, which is worse than
@@ -1118,9 +1106,9 @@ private:
       // The question the safety net exists to ask has just been asked and
       // answered, so the net does not need to fire.
       fFrame.fLastDrawWall = wallMs();
-#ifndef __EMSCRIPTEN__
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-#endif
+      if constexpr (platform::capabilities::kThreadedWindowLoop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
       return;
     }
     fFrame.fLastDrawWall = wallMs();
@@ -1628,22 +1616,12 @@ private:
   }
 
   void setCursorVisible(bool visible) {
-#ifdef __EMSCRIPTEN__
-    if (visible) {
-      platform::web::setCursorVisible(true);
-    } else {
-      platform::web::setCursorVisible(false);
-    }
-    fWindowRuntime.setCursorMode(
-        visible ? platform::input::CursorMode::kNormal
-                : platform::input::CursorMode::kHidden);
-#else
+    platform::web::setCursorVisible(visible);
     const auto hidden = this->relativeCursor()
                             ? platform::input::CursorMode::kDisabled
                             : platform::input::CursorMode::kHidden;
     fWindowRuntime.setCursorMode(
         visible ? platform::input::CursorMode::kNormal : hidden);
-#endif
   }
 
   // ---- Download screen logic -------------------------------------------
@@ -1666,7 +1644,6 @@ private:
 
 
 
-#ifdef __EMSCRIPTEN__
   static void emscriptenFrameProc(void *arg) {
     static_cast<App *>(arg)->emscriptenFrame();
   }
@@ -1707,8 +1684,6 @@ private:
 
     this->frame();
   }
-#endif
-
   // ---- Shared UI helpers ------------------------------------------------
 
   // Decode the background off-thread; the UI keeps the previous artwork
@@ -2092,11 +2067,9 @@ private:
       return;
     }
     fWin.fFullscreen = wanted;
-#ifndef __EMSCRIPTEN__
-    // The move itself is the window owner's: GLFW pins it to the thread that
-    // pumps events, and this is not that thread.
-    fWindowRuntime.requestFullscreen(wanted);
-#endif
+    if constexpr (platform::capabilities::kThreadedWindowLoop) {
+      fWindowRuntime.requestFullscreen(wanted);
+    }
   }
 
   void shutdown() {

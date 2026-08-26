@@ -1,11 +1,9 @@
-export module client.audio;
+export module platform.audio_engine;
 
 import std;
 import platform.audio;
-import client.util;
 
-export namespace client {
-namespace audio_client {
+export namespace platform::audio {
 
 // OpenAL Soft mixes every source into one buffer and runs an output limiter
 // over the sum. Sources at full gain add up past full scale in a hurry --
@@ -436,5 +434,4 @@ private:
   }
 };
 
-} // namespace audio_client
-} // namespace client
+} // namespace platform::audio
