@@ -1,12 +1,17 @@
 module;
 
 #include <android/native_activity.h>
+#include <android_native_app_glue.h>
 #include <jni.h>
 
 export module platform.android.http_transport;
 
 import std;
 import platform.android_runtime;
+
+namespace android_api {
+using ::android_app;
+}
 
 export namespace platform::android::http_transport {
 
@@ -179,7 +184,7 @@ inline FetchResult fetchImpl(JNIEnv *env, std::string_view url,
 export namespace platform::android::http_transport {
 
 inline FetchResult fetch(std::string_view url, const Progress &progress = {}) {
-  android_app *app = platform::android::application();
+  android_api::android_app *app = platform::android::application();
   if (app == nullptr || app->activity == nullptr || app->activity->vm == nullptr) {
     FetchResult result;
     result.fError = "Android activity is unavailable";
