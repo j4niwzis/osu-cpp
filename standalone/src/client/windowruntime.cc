@@ -229,7 +229,12 @@ public:
   ~WindowRuntime() { this->close(); }
 
   [[nodiscard]] bool open(std::function<void()> toggleFullscreen) {
+    glfw::glfwSetErrorCallback([](int code, const char *message) {
+      std::println(std::cerr, "[glfw] error {}: {}", code,
+                   message != nullptr ? message : "unknown error");
+    });
     if (!glfw::glfwInit()) {
+      std::println(std::cerr, "[glfw] initialization failed");
       return false;
     }
     fGlfwInitialized = true;
@@ -306,9 +311,11 @@ public:
         std::println(std::cerr, "[gfx] context: {}", choice.fName);
         break;
       }
+      std::println(std::cerr, "[gfx] context failed: {}", choice.fName);
     }
 #endif
     if (fWindow == nullptr) {
+      std::println(std::cerr, "[gfx] no usable graphics context");
       this->close();
       return false;
     }

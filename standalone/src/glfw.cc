@@ -23,6 +23,7 @@ export namespace glfw {
 using ::GLFWcharfun;
 using ::GLFWdropfun;
 using ::GLFWcursorposfun;
+using ::GLFWerrorfun;
 using ::GLFWframebuffersizefun;
 using ::GLFWwindowrefreshfun;
 using ::GLFWwindowposfun;
@@ -54,6 +55,7 @@ using ::glfwRawMouseMotionSupported;
 using ::glfwPostEmptyEvent;
 using ::glfwSetCharCallback;
 using ::glfwSetDropCallback;
+using ::glfwSetErrorCallback;
 using ::glfwSetCursorPosCallback;
 using ::glfwSetFramebufferSizeCallback;
 using ::glfwSetWindowRefreshCallback;
