@@ -652,10 +652,11 @@ private:
 
       if (event.fAction == scene::PointerAction::kDown) {
         // The scroll container defers ordinary clicks until release so a
-        // swipe across a control cannot activate it. A slider is the one
-        // exception: it must own the pointer immediately and relinquish it
-        // on up. The modified marker remains an ordinary deferred click so
-        // tapping it still restores the default instead of starting a drag.
+        // swipe across a control cannot activate it. A slider starts on down,
+        // but deliberately does not capture: once motion passes the scroll
+        // slop, the container captures the gesture and cancels this drag.
+        // The modified marker remains an ordinary deferred click so tapping
+        // it restores the default instead of starting a slider drag.
         const skia::SkRect content = this->contentBox();
         if (fOwner->fSettings->isModified(fIndex) &&
             event.fX < content.fLeft) {
@@ -663,11 +664,14 @@ private:
           return;
         }
         fOwner->fAction = {Action::kSlider, fIndex, 0};
-        event.capturePointer();
         event.requestFocus();
         event.handle();
-      } else if (event.fAction == scene::PointerAction::kUp ||
-                 event.fAction == scene::PointerAction::kCancel) {
+      } else if (event.fAction == scene::PointerAction::kCancel) {
+        fOwner->fDragging = -1;
+        fOwner->fAction = {};
+        event.releasePointer();
+        event.handle();
+      } else if (event.fAction == scene::PointerAction::kUp) {
         event.releasePointer();
         event.handle();
       }
