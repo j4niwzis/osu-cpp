@@ -131,21 +131,63 @@ endif()
 
 # ---- Create binary ----
 
-file(GLOB_RECURSE module_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
-
-if(NOT EMSCRIPTEN_BUILD)
-  list(FILTER module_sources EXCLUDE REGEX "emscripten\\.cc$")
+# Platform implementations are source overlays. For foo.cc, a matching
+# foo_android.cc, foo_web.cc or foo_desktop.cc replaces the common file on
+# that platform. A suffixed file may also stand alone when there is no common
+# fallback. Keeping the choice here avoids platform #ifdefs throughout the
+# client and avoids symlinks that packaging tools may copy incorrectly.
+if(ANDROID)
+  set(OSU_PLATFORM_SUFFIX android)
+elseif(EMSCRIPTEN_BUILD)
+  set(OSU_PLATFORM_SUFFIX web)
 else()
+  set(OSU_PLATFORM_SUFFIX desktop)
+endif()
+
+file(GLOB_RECURSE all_cpp_sources CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
+set(common_cpp_sources ${all_cpp_sources})
+list(FILTER common_cpp_sources EXCLUDE REGEX
+  "_(android|web|desktop)\\.cc$")
+
+set(selected_cpp_sources)
+foreach(source IN LISTS common_cpp_sources)
+  get_filename_component(source_dir "${source}" DIRECTORY)
+  get_filename_component(source_name "${source}" NAME_WE)
+  set(overlay "${source_dir}/${source_name}_${OSU_PLATFORM_SUFFIX}.cc")
+  if(EXISTS "${overlay}")
+    list(APPEND selected_cpp_sources "${overlay}")
+  else()
+    list(APPEND selected_cpp_sources "${source}")
+  endif()
+endforeach()
+
+# Also admit platform-only implementation files without a common foo.cc.
+foreach(source IN LISTS all_cpp_sources)
+  if(source MATCHES "_${OSU_PLATFORM_SUFFIX}\\.cc$")
+    list(APPEND selected_cpp_sources "${source}")
+  endif()
+endforeach()
+list(REMOVE_DUPLICATES selected_cpp_sources)
+
+set(module_sources ${selected_cpp_sources})
+if(EMSCRIPTEN_BUILD)
   # No sockets in the browser: the beast wrapper is native-only.
   list(FILTER module_sources EXCLUDE REGEX "beast\\.cc$")
 endif()
 
-list(REMOVE_ITEM module_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
+set(main_source "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
+set(main_overlay
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/main_${OSU_PLATFORM_SUFFIX}.cc")
+if(EXISTS "${main_overlay}")
+  set(main_source "${main_overlay}")
+endif()
+list(REMOVE_ITEM module_sources "${main_source}")
 
 if(EMSCRIPTEN_BUILD)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
-add_executable(${PROJECT_NAME} ${module_sources} ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
+add_executable(${PROJECT_NAME} ${module_sources} ${main_source})
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
 
