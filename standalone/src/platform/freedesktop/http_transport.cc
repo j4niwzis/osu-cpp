@@ -20,9 +20,9 @@ module;
 #include <string>
 #include <string_view>
 
-export module beast;
+export module platform.freedesktop.http_transport;
 
-export namespace beastnet {
+export namespace platform::freedesktop::http_transport {
 
 struct FetchResult {
   bool fOk = false;
@@ -34,9 +34,9 @@ struct FetchResult {
 // received / total (total == 0 when unknown)
 using Progress = std::function<void(std::size_t, std::size_t)>;
 
-} // namespace beastnet
+} // namespace platform::freedesktop::http_transport
 
-namespace beastnet::detail {
+namespace platform::freedesktop::http_transport::detail {
 
 namespace http = boost::beast::http;
 using tcp = boost::asio::ip::tcp;
@@ -169,9 +169,9 @@ inline FetchResult fetchOnce(const Url &url, const Progress &progress,
   return res;
 }
 
-} // namespace beastnet::detail
+} // namespace platform::freedesktop::http_transport::detail
 
-export namespace beastnet {
+export namespace platform::freedesktop::http_transport {
 
 // Blocking GET with redirects; call from a worker thread.
 inline FetchResult fetch(std::string url, const Progress &progress = {}) {
@@ -206,4 +206,4 @@ inline FetchResult fetch(std::string url, const Progress &progress = {}) {
   }
 }
 
-} // namespace beastnet
+} // namespace platform::freedesktop::http_transport

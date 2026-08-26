@@ -162,6 +162,10 @@ file(GLOB_RECURSE all_cpp_sources CONFIGURE_DEPENDS
 set(common_cpp_sources ${all_cpp_sources})
 list(FILTER common_cpp_sources EXCLUDE REGEX
   "_(${OSU_PLATFORM_VARIANT_PATTERN})\\.cc$")
+# Implementation pieces live below platform/<variant>/. They are not public
+# overlays and only the selected platform's directory enters the target.
+list(FILTER common_cpp_sources EXCLUDE REGEX
+  "/platform/(${OSU_PLATFORM_VARIANT_PATTERN})/")
 
 set(selected_cpp_sources)
 foreach(source IN LISTS common_cpp_sources)
@@ -186,6 +190,13 @@ foreach(source IN LISTS all_cpp_sources)
     list(APPEND selected_cpp_sources "${source}")
   endif()
 endforeach()
+list(REMOVE_DUPLICATES selected_cpp_sources)
+
+if(OSU_PLATFORM_SUFFIX)
+  file(GLOB_RECURSE platform_implementation_sources CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${OSU_PLATFORM_SUFFIX}/*.cc")
+  list(APPEND selected_cpp_sources ${platform_implementation_sources})
+endif()
 list(REMOVE_DUPLICATES selected_cpp_sources)
 
 set(module_sources ${selected_cpp_sources})

@@ -5,7 +5,7 @@ module;
 #include <emscripten/fetch.h>
 #endif
 
-export module platform.emscripten_api;
+export module platform.web.emscripten_fetch;
 
 export namespace platform::emscripten {
 

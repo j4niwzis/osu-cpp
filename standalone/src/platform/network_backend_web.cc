@@ -1,7 +1,7 @@
 export module platform.network.backend;
 
 import std;
-import platform.emscripten_api;
+import platform.web.emscripten_fetch;
 import platform.network.types;
 
 export namespace platform::network::backend {
