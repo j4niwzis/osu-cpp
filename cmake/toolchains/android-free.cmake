@@ -37,7 +37,7 @@ set(CMAKE_AR "${OSU_LLVM_AR}" CACHE FILEPATH "LLVM archiver" FORCE)
 set(CMAKE_RANLIB "${OSU_LLVM_RANLIB}" CACHE FILEPATH "LLVM ranlib" FORCE)
 
 set(android_common_flags
-  "--sysroot=${OSU_ANDROID_SYSROOT} -resource-dir=${OSU_ANDROID_RESOURCE_DIR}")
+  "--sysroot=${OSU_ANDROID_SYSROOT} -resource-dir=${OSU_ANDROID_RESOURCE_DIR} -D__ANDROID_NDK__")
 set(CMAKE_C_FLAGS_INIT "${android_common_flags} -fPIC")
 set(CMAKE_CXX_FLAGS_INIT
   "${android_common_flags} -fPIC -stdlib=libc++")
