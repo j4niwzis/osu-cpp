@@ -744,6 +744,7 @@ public:
       }
       break;
     case State::kSongSelect:
+      client::osk::setVisible(fApp.fFilter.textBoxHit(x, y));
       if (fApp.fScreens.filterClick(x, y, true)) {
         return;
       }

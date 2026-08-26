@@ -14,7 +14,7 @@ inline void setVisible(bool visible) {
   }
   if (visible) {
     ANativeActivity_showSoftInput(
-        app->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_IMPLICIT);
+        app->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
   } else {
     ANativeActivity_hideSoftInput(
         app->activity, ANATIVEACTIVITY_HIDE_SOFT_INPUT_NOT_ALWAYS);
