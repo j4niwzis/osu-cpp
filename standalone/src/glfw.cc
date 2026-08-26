@@ -3,6 +3,19 @@ module;
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+// The Ubuntu Touch build uses GLFW 3.2's retired Mir backend.  Its packaged
+// library carries these small 3.3 compatibility entry points, so declare the
+// matching public surface when compiling against the older header.
+#if GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR < 3
+#define GLFW_SCALE_TO_MONITOR 0x0002200C
+#define GLFW_RAW_MOUSE_MOTION 0x00033005
+extern "C" {
+GLFWAPI int glfwRawMouseMotionSupported(void);
+GLFWAPI void glfwGetMonitorWorkarea(GLFWmonitor *monitor, int *xpos, int *ypos,
+                                    int *width, int *height);
+}
+#endif
+
 export module glfw;
 
 export namespace glfw {
