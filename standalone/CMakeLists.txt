@@ -132,23 +132,35 @@ endif()
 # ---- Create binary ----
 
 # Platform implementations are source overlays. For foo.cc, a matching
-# foo_android.cc, foo_web.cc or foo_desktop.cc replaces the common file on
-# that platform. A suffixed file may also stand alone when there is no common
-# fallback. Keeping the choice here avoids platform #ifdefs throughout the
-# client and avoids symlinks that packaging tools may copy incorrectly.
+# foo_android.cc, foo_web.cc, foo_wasi.cc or foo_freedesktop.cc replaces the
+# common file on that platform. A suffixed file may also stand alone when
+# there is no common fallback. Keeping the choice here avoids platform ifdefs
+# throughout the client and symlinks that packagers may copy incorrectly.
+set(OSU_PLATFORM_VARIANT_PATTERN
+  "android|web|wasi|freedesktop|windows|macos|generic")
 if(ANDROID)
   set(OSU_PLATFORM_SUFFIX android)
 elseif(EMSCRIPTEN_BUILD)
   set(OSU_PLATFORM_SUFFIX web)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set(OSU_PLATFORM_SUFFIX wasi)
+elseif(UNIX AND NOT APPLE)
+  # The conventional Wayland/X11, D-Bus and xdg ecosystem. This includes
+  # glibc and musl desktops, Flatpak, Click and postmarketOS, not Android.
+  set(OSU_PLATFORM_SUFFIX freedesktop)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  set(OSU_PLATFORM_SUFFIX windows)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set(OSU_PLATFORM_SUFFIX macos)
 else()
-  set(OSU_PLATFORM_SUFFIX desktop)
+  set(OSU_PLATFORM_SUFFIX generic)
 endif()
 
 file(GLOB_RECURSE all_cpp_sources CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
 set(common_cpp_sources ${all_cpp_sources})
 list(FILTER common_cpp_sources EXCLUDE REGEX
-  "_(android|web|desktop)\\.cc$")
+  "_(${OSU_PLATFORM_VARIANT_PATTERN})\\.cc$")
 
 set(selected_cpp_sources)
 foreach(source IN LISTS common_cpp_sources)
@@ -171,8 +183,8 @@ endforeach()
 list(REMOVE_DUPLICATES selected_cpp_sources)
 
 set(module_sources ${selected_cpp_sources})
-if(EMSCRIPTEN_BUILD)
-  # No sockets in the browser: the beast wrapper is native-only.
+if(EMSCRIPTEN_BUILD OR OSU_PLATFORM_SUFFIX STREQUAL "wasi")
+  # Browser fetch and wasi:http replace the native Beast socket transport.
   list(FILTER module_sources EXCLUDE REGEX "beast\\.cc$")
 endif()
 
