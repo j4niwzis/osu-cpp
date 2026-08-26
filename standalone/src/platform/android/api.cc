@@ -80,6 +80,7 @@ export using ::eglTerminate;
 export using ::APP_CMD_CONFIG_CHANGED;
 export using ::APP_CMD_DESTROY;
 export using ::APP_CMD_GAINED_FOCUS;
+export using ::APP_CMD_INIT_WINDOW;
 export using ::APP_CMD_LOST_FOCUS;
 export using ::APP_CMD_PAUSE;
 export using ::APP_CMD_RESUME;
