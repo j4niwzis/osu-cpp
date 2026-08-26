@@ -229,7 +229,12 @@ public:
   ~WindowRuntime() { this->close(); }
 
   [[nodiscard]] bool open(std::function<void()> toggleFullscreen) {
+    glfw::glfwSetErrorCallback([](int code, const char *message) {
+      std::println(std::cerr, "[glfw] error {}: {}", code,
+                   message != nullptr ? message : "unknown error");
+    });
     if (!glfw::glfwInit()) {
+      std::println(std::cerr, "[glfw] initialization failed");
       return false;
     }
     fGlfwInitialized = true;
@@ -247,14 +252,21 @@ public:
                                      "osu_client", nullptr, nullptr);
 #else
     const auto monitor = glfw::glfwGetPrimaryMonitor();
-    const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-    if (mode == nullptr) {
+    const glfw::GLFWvidmode *mode =
+        monitor != nullptr ? glfw::glfwGetVideoMode(monitor) : nullptr;
+    if (mode != nullptr) {
+      fInitial = {mode->width, mode->height};
+      if (mode->refreshRate > 0) {
+        fRefreshHz = mode->refreshRate;
+      }
+    } else if (std::getenv("OSU_GLES") != nullptr) {
+      // MirClient Click windows are placed and resized by Lomiri rather than
+      // against a GLFW monitor. This is only the size of the first buffer;
+      // the compositor's resize event supplies the real screen dimensions.
+      fInitial = {1920, 1080};
+    } else {
       this->close();
       return false;
-    }
-    fInitial = {mode->width, mode->height};
-    if (mode->refreshRate > 0) {
-      fRefreshHz = mode->refreshRate;
     }
 
     struct ContextChoice {
@@ -278,7 +290,11 @@ public:
         {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,
          glfw::kEglContextApi},
     };
-    for (const auto &choice : choices) {
+    const bool preferGles = std::getenv("OSU_GLES") != nullptr;
+    const std::array<int, 4> order = preferGles ? std::array{2, 3, 0, 1}
+                                                : std::array{0, 1, 2, 3};
+    for (const int index : order) {
+      const auto &choice = choices[index];
       glfw::glfwWindowHint(glfw::kClientApi, choice.fApi);
       glfw::glfwWindowHint(glfw::kContextVersionMajor, choice.fMajor);
       glfw::glfwWindowHint(glfw::kContextVersionMinor, choice.fMinor);
@@ -295,9 +311,11 @@ public:
         std::println(std::cerr, "[gfx] context: {}", choice.fName);
         break;
       }
+      std::println(std::cerr, "[gfx] context failed: {}", choice.fName);
     }
 #endif
     if (fWindow == nullptr) {
+      std::println(std::cerr, "[gfx] no usable graphics context");
       this->close();
       return false;
     }
@@ -388,19 +406,6 @@ public:
     glfw::glfwPostEmptyEvent();
   }
 
-  // An external output rotation changes the monitor mode without changing
-  // the fact that this is a fullscreen window. Re-apply that same fullscreen
-  // state on GLFW's owner thread so Xwayland gives the window the new extent.
-  void requestDisplayRefresh(bool expectLandscape) {
-    fDisplayLandscape.store(expectLandscape ? 1 : 0,
-                            std::memory_order_release);
-    // KScreen returns before Xwayland has necessarily published the new
-    // logical monitor geometry. Retry on the event thread for a short window
-    // instead of taking one stale portrait snapshot.
-    fDisplayRefreshAttempts.store(12, std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
-  }
-
   void requestQuit() {
     fQuit.store(true, std::memory_order_release);
     glfw::glfwPostEmptyEvent();
@@ -419,11 +424,7 @@ public:
 #ifndef __EMSCRIPTEN__
   void pumpEvents() {
     while (!this->quitting()) {
-      if (fDisplayRefreshAttempts.load(std::memory_order_acquire) > 0) {
-        glfw::glfwWaitEventsTimeout(0.1);
-      } else {
-        glfw::glfwWaitEvents();
-      }
+      glfw::glfwWaitEvents();
       const int cursorMode = fCursorModeRequest.exchange(-1);
       if (cursorMode != -1) {
         glfw::glfwSetInputMode(fWindow, glfw::kCursor, cursorMode);
@@ -435,14 +436,6 @@ public:
       const int fullscreen = fFullscreenRequest.exchange(-1);
       if (fullscreen != -1) {
         this->applyFullscreen(fullscreen == 1);
-      }
-      int attempts = fDisplayRefreshAttempts.load(std::memory_order_acquire);
-      if (attempts > 0) {
-        const bool landscape =
-            fDisplayLandscape.load(std::memory_order_acquire) == 1;
-        const bool settled = this->refreshFullscreenExtent(landscape);
-        fDisplayRefreshAttempts.store(settled ? 0 : attempts - 1,
-                                      std::memory_order_release);
       }
     }
     fQuit.store(true, std::memory_order_release);
@@ -459,7 +452,11 @@ public:
       glfw::glfwGetWindowPos(fWindow, &fWindowedX, &fWindowedY);
       glfw::glfwGetWindowSize(fWindow, &fWindowedW, &fWindowedH);
       const auto monitor = glfw::glfwGetPrimaryMonitor();
-      const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
+      const glfw::GLFWvidmode *mode =
+          monitor != nullptr ? glfw::glfwGetVideoMode(monitor) : nullptr;
+      if (mode == nullptr) {
+        return;
+      }
       glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
                                  mode->height, mode->refreshRate);
     } else {
@@ -469,36 +466,6 @@ public:
     fFullscreen = wanted;
   }
 
-  [[nodiscard]] bool refreshFullscreenExtent(bool expectLandscape) {
-    if (fWindow == nullptr || !fFullscreen) {
-      return true;
-    }
-    const auto monitor = glfw::glfwGetPrimaryMonitor();
-    if (monitor == nullptr) {
-      return false;
-    }
-    const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-    if (mode == nullptr) {
-      return false;
-    }
-    int x = 0, y = 0, width = mode->width, height = mode->height;
-    glfw::glfwGetMonitorWorkarea(monitor, &x, &y, &width, &height);
-    if (width <= 0 || height <= 0) {
-      width = mode->width;
-      height = mode->height;
-    }
-    // A transformed phone panel may keep advertising its physical portrait
-    // mode while its logical work area has already become landscape.
-    if (expectLandscape && width < height) {
-      std::swap(width, height);
-    }
-    glfw::glfwSetWindowMonitor(fWindow, monitor, x, y, width, height,
-                               mode->refreshRate);
-    this->notePlacement();
-    int framebufferW = 0, framebufferH = 0;
-    glfw::glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
-    return !expectLandscape || framebufferW > framebufferH;
-  }
 #endif
 
   void close() {
@@ -637,12 +604,31 @@ private:
     int windowW = 0, windowH = 0, framebufferW = 0, framebufferH = 0;
     glfw::glfwGetWindowSize(fWindow, &windowW, &windowH);
     glfw::glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
-    const double scaleX = windowW > 0 ? static_cast<double>(framebufferW) /
-                                           static_cast<double>(windowW)
-                                     : 1.0;
-    const double scaleY = windowH > 0 ? static_cast<double>(framebufferH) /
-                                           static_cast<double>(windowH)
-                                     : 1.0;
+    double scaleX = windowW > 0 ? static_cast<double>(framebufferW) /
+                                      static_cast<double>(windowW)
+                                : 1.0;
+    double scaleY = windowH > 0 ? static_cast<double>(framebufferH) /
+                                      static_cast<double>(windowH)
+                                : 1.0;
+
+    // Lomiri can rotate a fullscreen Wayland surface before GLFW has swapped
+    // its logical width and height.  The framebuffer is already landscape in
+    // that interval (and can remain so for the lifetime of a Click window),
+    // which makes the two ratios above reciprocal distortions rather than
+    // content scales.  Pixel density is unchanged by a quarter turn, and its
+    // uniform value is preserved by the ratio of the two areas.  Only repair
+    // clearly inconsistent axes so genuinely anisotropic desktop scaling
+    // keeps the GLFW values it has always used.
+    const double smaller = std::min(scaleX, scaleY);
+    const double larger = std::max(scaleX, scaleY);
+    if (windowW > 0 && windowH > 0 && framebufferW > 0 && framebufferH > 0 &&
+        smaller > 0.0 && larger / smaller > 1.5) {
+      const double uniform =
+          std::sqrt(static_cast<double>(framebufferW) * framebufferH /
+                    (static_cast<double>(windowW) * windowH));
+      scaleX = uniform;
+      scaleY = uniform;
+    }
     this->push({wallMs(), EventType::kCursorMove, 0, 0,
                 static_cast<float>(x * scaleX),
                 static_cast<float>(y * scaleY)});
@@ -674,8 +660,6 @@ private:
   std::atomic<int> fCursorModeRequest{-1};
   std::atomic<int> fRawMotionRequest{-1};
   std::atomic<int> fFullscreenRequest{-1};
-  std::atomic<int> fDisplayRefreshAttempts{0};
-  std::atomic<int> fDisplayLandscape{0};
   bool fFullscreen = true; // the window is created on a monitor
   int fWindowedX = 100, fWindowedY = 100;
   int fWindowedW = 1280, fWindowedH = 960;

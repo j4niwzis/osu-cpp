@@ -1301,12 +1301,25 @@ public:
   // dimension and is centred, so this corner is always outside it.
   [[nodiscard]] static skia::SkRect pauseButtonBounds(int screenW, int screenH,
                                                       float uiScale) {
-    const float size = 44.0f * uiScale;
+    const float size = 48.0f * uiScale;
     const float inset = 16.0f * uiScale;
     static_cast<void>(screenW);
     return skia::SkRect::MakeXYWH(inset,
                                   static_cast<float>(screenH) - inset - size,
                                   size, size);
+  }
+
+  // Make the physical screen corner part of the touch target. The visible
+  // disc stays inset, but a thumb landing in the narrow space beside or below
+  // it should still pause the game.
+  [[nodiscard]] static skia::SkRect
+  pauseButtonHitBounds(int screenW, int screenH, float uiScale) {
+    const skia::SkRect visual = pauseButtonBounds(screenW, screenH, uiScale);
+    const float padding = 8.0f * uiScale;
+    return skia::SkRect::MakeLTRB(
+        0.0f, std::max(0.0f, visual.fTop - padding),
+        std::min(static_cast<float>(screenW), visual.fRight + padding),
+        static_cast<float>(screenH));
   }
 
   void drawPauseButton(const Ctx &c, skia::SkCanvas *canvas) {
