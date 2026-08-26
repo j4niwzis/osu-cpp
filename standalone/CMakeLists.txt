@@ -67,6 +67,7 @@ elseif(ANDROID)
   pkg_check_modules(SNDFILE REQUIRED sndfile)
   pkg_check_modules(MPG123  REQUIRED libmpg123)
   find_library(ANDROID_LIBRARY NAMES android REQUIRED)
+  find_library(NATIVEWINDOW_LIBRARY NAMES nativewindow REQUIRED)
   find_library(EGL_LIBRARY NAMES EGL REQUIRED)
   find_library(GLES_LIBRARY NAMES GLESv3 GLESv2 REQUIRED)
   find_library(LOG_LIBRARY NAMES log REQUIRED)
@@ -333,7 +334,8 @@ elseif(ANDROID)
     ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
     ${CXX_LIBRARY} ${CXXABI_LIBRARY} ${UNWIND_LIBRARY}
     ${COMPILER_RT_LIBRARY}
-    ${ANDROID_LIBRARY} ${EGL_LIBRARY} ${GLES_LIBRARY} ${LOG_LIBRARY}
+    ${ANDROID_LIBRARY} ${NATIVEWINDOW_LIBRARY}
+    ${EGL_LIBRARY} ${GLES_LIBRARY} ${LOG_LIBRARY}
     m dl c
   )
   include(../cmake/android-apk.cmake)
