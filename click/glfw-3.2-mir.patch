@@ -172,7 +172,7 @@ diff --git a/src/mir_monitor.c b/src/mir_monitor.c
 index 6ed03c4..30ffb42 100644
 --- a/src/mir_monitor.c
 +++ b/src/mir_monitor.c
-@@ -35,39 +35,43 @@
+@@ -35,39 +35,45 @@
 
  _GLFWmonitor** _glfwPlatformGetMonitors(int* count)
  {
@@ -182,9 +182,10 @@ index 6ed03c4..30ffb42 100644
      _GLFWmonitor** monitors = NULL;
 -    MirDisplayConfiguration* displayConfig =
 -        mir_connection_create_display_config(_glfw.mir.connection);
-+    MirDisplayConfig* displayConfig =
-+        mir_connection_create_display_configuration(_glfw.mir.connection);
-+    const int outputCount = mir_display_config_get_num_outputs(displayConfig);
++    // Lomiri owns output placement and resizes Click surfaces itself. Avoid
++    // querying a legacy display snapshot through libmir1client's bridge.
++    MirDisplayConfig* displayConfig = NULL;
++    const int outputCount = 0;
 
      *count = 0;
 
@@ -234,7 +235,8 @@ index 6ed03c4..30ffb42 100644
      }
 
 -    mir_display_config_destroy(displayConfig);
-+    mir_display_config_release(displayConfig);
++    if (displayConfig)
++        mir_display_config_release(displayConfig);
 
      *count = found;
      return monitors;

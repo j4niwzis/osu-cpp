@@ -247,14 +247,21 @@ public:
                                      "osu_client", nullptr, nullptr);
 #else
     const auto monitor = glfw::glfwGetPrimaryMonitor();
-    const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
-    if (mode == nullptr) {
+    const glfw::GLFWvidmode *mode =
+        monitor != nullptr ? glfw::glfwGetVideoMode(monitor) : nullptr;
+    if (mode != nullptr) {
+      fInitial = {mode->width, mode->height};
+      if (mode->refreshRate > 0) {
+        fRefreshHz = mode->refreshRate;
+      }
+    } else if (std::getenv("OSU_GLES") != nullptr) {
+      // MirClient Click windows are placed and resized by Lomiri rather than
+      // against a GLFW monitor. This is only the size of the first buffer;
+      // the compositor's resize event supplies the real screen dimensions.
+      fInitial = {1920, 1080};
+    } else {
       this->close();
       return false;
-    }
-    fInitial = {mode->width, mode->height};
-    if (mode->refreshRate > 0) {
-      fRefreshHz = mode->refreshRate;
     }
 
     struct ContextChoice {
@@ -438,7 +445,11 @@ public:
       glfw::glfwGetWindowPos(fWindow, &fWindowedX, &fWindowedY);
       glfw::glfwGetWindowSize(fWindow, &fWindowedW, &fWindowedH);
       const auto monitor = glfw::glfwGetPrimaryMonitor();
-      const glfw::GLFWvidmode *mode = glfw::glfwGetVideoMode(monitor);
+      const glfw::GLFWvidmode *mode =
+          monitor != nullptr ? glfw::glfwGetVideoMode(monitor) : nullptr;
+      if (mode == nullptr) {
+        return;
+      }
       glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
                                  mode->height, mode->refreshRate);
     } else {
