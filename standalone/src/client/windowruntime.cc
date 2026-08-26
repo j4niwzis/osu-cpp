@@ -582,12 +582,31 @@ private:
     int windowW = 0, windowH = 0, framebufferW = 0, framebufferH = 0;
     glfw::glfwGetWindowSize(fWindow, &windowW, &windowH);
     glfw::glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
-    const double scaleX = windowW > 0 ? static_cast<double>(framebufferW) /
-                                           static_cast<double>(windowW)
-                                     : 1.0;
-    const double scaleY = windowH > 0 ? static_cast<double>(framebufferH) /
-                                           static_cast<double>(windowH)
-                                     : 1.0;
+    double scaleX = windowW > 0 ? static_cast<double>(framebufferW) /
+                                      static_cast<double>(windowW)
+                                : 1.0;
+    double scaleY = windowH > 0 ? static_cast<double>(framebufferH) /
+                                      static_cast<double>(windowH)
+                                : 1.0;
+
+    // Lomiri can rotate a fullscreen Wayland surface before GLFW has swapped
+    // its logical width and height.  The framebuffer is already landscape in
+    // that interval (and can remain so for the lifetime of a Click window),
+    // which makes the two ratios above reciprocal distortions rather than
+    // content scales.  Pixel density is unchanged by a quarter turn, and its
+    // uniform value is preserved by the ratio of the two areas.  Only repair
+    // clearly inconsistent axes so genuinely anisotropic desktop scaling
+    // keeps the GLFW values it has always used.
+    const double smaller = std::min(scaleX, scaleY);
+    const double larger = std::max(scaleX, scaleY);
+    if (windowW > 0 && windowH > 0 && framebufferW > 0 && framebufferH > 0 &&
+        smaller > 0.0 && larger / smaller > 1.5) {
+      const double uniform =
+          std::sqrt(static_cast<double>(framebufferW) * framebufferH /
+                    (static_cast<double>(windowW) * windowH));
+      scaleX = uniform;
+      scaleY = uniform;
+    }
     this->push({wallMs(), EventType::kCursorMove, 0, 0,
                 static_cast<float>(x * scaleX),
                 static_cast<float>(y * scaleY)});
