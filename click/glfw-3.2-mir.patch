@@ -38,7 +38,7 @@ index 9a86a9d..2584027 100644
 @@ -242,6 +242,41 @@ static void handlePointerEvent(const MirPointerEvent* pointer_event,
      }
  }
- 
+
 +static void handleTouchEvent(const MirTouchEvent* touch_event,
 +                             _GLFWwindow* window)
 +{
@@ -109,3 +109,62 @@ index f774ad1..670bd13 100644
 +
 +project(GLFW C)
 +
+diff --git a/src/mir_init.c b/src/mir_init.c
+index d9f425d..2996a5c 100644
+--- a/src/mir_init.c
++++ b/src/mir_init.c
+@@ -29,6 +29,7 @@
+ #include <linux/input.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <stdio.h>
+
+
+ // Create key code translation tables
+@@ -164,7 +165,9 @@ int _glfwPlatformInit(void)
+ {
+     int error;
+
+-    _glfw.mir.connection = mir_connect_sync(NULL, __PRETTY_FUNCTION__);
++    fprintf(stderr, "[glfw-mir] connecting\n");
++    _glfw.mir.connection = mir_connect_sync(NULL, "osu!cpp");
++    fprintf(stderr, "[glfw-mir] connected\n");
+
+     if (!mir_connection_is_valid(_glfw.mir.connection))
+     {
+@@ -175,8 +178,10 @@ int _glfwPlatformInit(void)
+         return GLFW_FALSE;
+     }
+
++    fprintf(stderr, "[glfw-mir] requesting EGL display\n");
+     _glfw.mir.display =
+         mir_connection_get_egl_native_display(_glfw.mir.connection);
++    fprintf(stderr, "[glfw-mir] EGL display ready\n");
+
+     createKeyTables();
+
+@@ -203,6 +208,16 @@ int _glfwPlatformInit(void)
+         return GLFW_FALSE;
+     }
+
++    error = pthread_cond_init(&_glfw.mir.event_cond, NULL);
++    if (error)
++    {
++        _glfwInputError(GLFW_PLATFORM_ERROR,
++                        "Mir: Failed to create event condition: %s",
++                        strerror(error));
++        return GLFW_FALSE;
++    }
++
++    fprintf(stderr, "[glfw-mir] initialized\n");
+     return GLFW_TRUE;
+ }
+
+@@ -215,6 +230,7 @@ void _glfwPlatformTerminate(void)
+     _glfwDeleteEventQueueMir(_glfw.mir.event_queue);
+
+     pthread_mutex_destroy(&_glfw.mir.event_mutex);
++    pthread_cond_destroy(&_glfw.mir.event_cond);
+
+     mir_connection_release(_glfw.mir.connection);
+ }

@@ -31,7 +31,7 @@ fi
 # falls back to llvmpipe there, while EGL through the generic Wayland native
 # window can crash in the Android vendor driver. GLFW 3.2 still has the native
 # Mir backend that hands EGL the correct Mir buffer stream.
-if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
+if [ ! -f "$prefix/lib/glfw-mir-3.2-v2.ready" ]; then
   mir_sdk="$BUILD_DIR/mir-sdk"
   mkdir -p "$mir_sdk/debs" "$mir_sdk/usr/include" "$mir_sdk/pkgconfig"
   mir_debs='libmirclient-dev:95845ec4c094e923ae7c297a6ee88d8aac124195291fbec45441e3a9f812d8aa libmircommon-dev:a660d4bdf2b7be4ed767dafb2970cfa7269774a04af85dc8f41a5cd2097d4a1c libmircore-dev:c78c9521c2d4d4ccbbdd8df93e99a01c9b721db660a4dcc1f6b1e98c4a650dfa libmircookie-dev:dbe204baf3e5f25840d02993ec78db05d5e645c9cf74587f19c4db41c1e26e2d'
@@ -60,12 +60,12 @@ if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
   if [ ! -d "$sources/glfw-mir/.git" ]; then
     git clone https://github.com/glfw/glfw.git "$sources/glfw-mir"
   fi
-  if [ ! -f "$sources/glfw-mir/.osu-mir-patch-v2" ]; then
+  if [ ! -f "$sources/glfw-mir/.osu-mir-patch-v3" ]; then
     git -C "$sources/glfw-mir" checkout 999f3556fdd80983b10051746264489f2cb1ef16
     git -C "$sources/glfw-mir" reset --hard 999f3556fdd80983b10051746264489f2cb1ef16
     rm -f "$sources/glfw-mir/src/compat.c"
     patch -d "$sources/glfw-mir" -p1 < "$ROOT/click/glfw-3.2-mir.patch"
-    touch "$sources/glfw-mir/.osu-mir-patch-v2"
+    touch "$sources/glfw-mir/.osu-mir-patch-v3"
   fi
   glfw_build="$BUILD_DIR/glfw-mir"
   PKG_CONFIG_PATH="$mir_sdk/pkgconfig:$PKG_CONFIG_PATH" \
@@ -84,7 +84,7 @@ if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
   "$prefix/bin/cmake" --install "$glfw_build"
   sed -i 's|^includedir=.*|includedir=/usr/include|' \
     "$prefix/lib/pkgconfig/glfw3.pc"
-  touch "$prefix/lib/glfw-mir-3.2.ready"
+  touch "$prefix/lib/glfw-mir-3.2-v2.ready"
 fi
 # Private dependencies are already recorded in the shared GLFW object's
 # DT_NEEDED entries. Keeping MirClient in Requires.private makes pkg-config
