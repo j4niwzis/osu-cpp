@@ -27,31 +27,58 @@ if [ ! -x "$prefix/bin/cmake" ]; then
   make install
 fi
 
-# Ubuntu Noble's GLFW package selects the X11 backend, which sends the Click
-# through Xwayland on Ubuntu Touch and can lose the device's accelerated EGL
-# path. Ship an explicitly Wayland-only GLFW 3.4 instead.
-if [ ! -f "$prefix/lib/libglfw.so.3" ]; then
-  if [ ! -d "$sources/glfw/.git" ]; then
-    git clone https://github.com/glfw/glfw.git "$sources/glfw"
-    git -C "$sources/glfw" checkout a74efa0d5628b74adc0426af4c5710e287fa7c2c
+# Halium devices expose their GPU through MirClient/libhybris. Mesa Wayland
+# falls back to llvmpipe there, while EGL through the generic Wayland native
+# window can crash in the Android vendor driver. GLFW 3.2 still has the native
+# Mir backend that hands EGL the correct Mir buffer stream.
+if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
+  mir_sdk="$BUILD_DIR/mir-sdk"
+  mkdir -p "$mir_sdk/debs" "$mir_sdk/usr/include" "$mir_sdk/pkgconfig"
+  mir_debs='libmirclient-dev:95845ec4c094e923ae7c297a6ee88d8aac124195291fbec45441e3a9f812d8aa libmircommon-dev:a660d4bdf2b7be4ed767dafb2970cfa7269774a04af85dc8f41a5cd2097d4a1c libmircore-dev:c78c9521c2d4d4ccbbdd8df93e99a01c9b721db660a4dcc1f6b1e98c4a650dfa libmircookie-dev:dbe204baf3e5f25840d02993ec78db05d5e645c9cf74587f19c4db41c1e26e2d'
+  for item in $mir_debs; do
+    package=${item%%:*}
+    checksum=${item#*:}
+    archive="$mir_sdk/debs/$package.deb"
+    if [ ! -f "$archive" ]; then
+      curl --fail --location --output "$archive" \
+        "https://mirrors.edge.kernel.org/debian/pool/main/m/mir/${package}_1.8.0+dfsg1-18_arm64.deb"
+    fi
+    printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
+    dpkg-deb -x "$archive" "$mir_sdk"
+  done
+
+  ln -sfn /usr/lib/aarch64-linux-gnu/libmirclient.so.9 \
+    "$prefix/lib/libmirclient.so"
+  printf '%s\n' \
+    'Name: mirclient' \
+    'Description: Mir compatibility client' \
+    'Version: 1.8.0' \
+    "Libs: -L$prefix/lib -lmirclient" \
+    "Cflags: -I$mir_sdk/usr/include/mirclient -I$mir_sdk/usr/include/mircommon -I$mir_sdk/usr/include/mircore -I$mir_sdk/usr/include/mircookie" \
+    > "$mir_sdk/pkgconfig/mirclient.pc"
+
+  if [ ! -d "$sources/glfw-mir/.git" ]; then
+    git clone https://github.com/glfw/glfw.git "$sources/glfw-mir"
+    git -C "$sources/glfw-mir" checkout 999f3556fdd80983b10051746264489f2cb1ef16
+    patch -d "$sources/glfw-mir" -p1 < "$ROOT/click/glfw-3.2-mir.patch"
   fi
-  glfw_build="$BUILD_DIR/glfw"
-  "$prefix/bin/cmake" -S "$sources/glfw" -B "$glfw_build" -G Ninja \
+  glfw_build="$BUILD_DIR/glfw-mir"
+  PKG_CONFIG_PATH="$mir_sdk/pkgconfig:$PKG_CONFIG_PATH" \
+  "$prefix/bin/cmake" -S "$sources/glfw-mir" -B "$glfw_build" -G Ninja \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_C_COMPILER=clang-22 \
     -DBUILD_SHARED_LIBS=ON \
-    -DGLFW_BUILD_WAYLAND=ON \
-    -DGLFW_BUILD_X11=OFF \
+    -DGLFW_USE_MIR=ON \
     -DGLFW_BUILD_DOCS=OFF \
     -DGLFW_BUILD_EXAMPLES=OFF \
     -DGLFW_BUILD_TESTS=OFF
   "$prefix/bin/cmake" --build "$glfw_build" -j"$jobs"
   "$prefix/bin/cmake" --install "$glfw_build"
-  # Keep the same system include path used by the previous Noble GLFW package.
-  # Only the linked shared object changes, so Ninja can retain client objects.
   sed -i 's|^includedir=.*|includedir=/usr/include|' \
     "$prefix/lib/pkgconfig/glfw3.pc"
+  touch "$prefix/lib/glfw-mir-3.2.ready"
 fi
 
 # Build the exact Skia revision used by the Flatpak, but against Noble's
@@ -160,6 +187,8 @@ while IFS= read -r library; do
     libgcc_s.so.*|libwayland-*.so.*|libEGL.so.*|libGL.so.*|libGLES*.so.*|\
     libOpenGL.so.*|libGLdispatch.so.*|libdrm.so.*|libgbm.so.*|libva.so.*|\
     libsystemd.so.*|libffi.so.*|libcap.so.*|libglib-2.0.so.*|libpcre2-8.so.*|\
+    libmirclient.so.*|libmir1client.so.*|libmircommon.so.*|libmircore.so.*|\
+    libmircookie.so.*|\
     libdecor-0.so.*)
       continue
       ;;

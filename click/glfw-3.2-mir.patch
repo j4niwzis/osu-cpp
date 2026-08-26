@@ -1,0 +1,89 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 32a87af..43861f8 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -6 +6 @@
+-set(common_SOURCES context.c init.c input.c monitor.c vulkan.c window.c)
++set(common_SOURCES context.c init.c input.c monitor.c vulkan.c window.c compat.c)
+diff --git a/src/compat.c b/src/compat.c
+new file mode 100644
+index 0000000..f489593
+--- /dev/null
++++ b/src/compat.c
+@@ -0,0 +1,20 @@
++#include "internal.h"
++
++// GLFW 3.3 additions used by osu!cpp. Mir has no raw mouse motion API, and
++// its monitor work area is the full mode exposed by the shell.
++GLFWAPI int glfwRawMouseMotionSupported(void)
++{
++    return GLFW_FALSE;
++}
++
++GLFWAPI void glfwGetMonitorWorkarea(GLFWmonitor* handle,
++                                    int* xpos, int* ypos,
++                                    int* width, int* height)
++{
++    _GLFWmonitor* monitor = (_GLFWmonitor*) handle;
++    const GLFWvidmode* mode = glfwGetVideoMode(handle);
++    if (xpos) *xpos = monitor->mir.x;
++    if (ypos) *ypos = monitor->mir.y;
++    if (width) *width = mode ? mode->width : 0;
++    if (height) *height = mode ? mode->height : 0;
++}
+diff --git a/src/mir_window.c b/src/mir_window.c
+index 9a86a9d..2584027 100644
+--- a/src/mir_window.c
++++ b/src/mir_window.c
+@@ -242,6 +242,41 @@ static void handlePointerEvent(const MirPointerEvent* pointer_event,
+     }
+ }
+ 
++static void handleTouchEvent(const MirTouchEvent* touch_event,
++                             _GLFWwindow* window)
++{
++    static MirTouchId primary = -1;
++    const unsigned int count = mir_touch_event_point_count(touch_event);
++    unsigned int i;
++
++    for (i = 0; i < count; ++i)
++    {
++        const MirTouchId id = mir_touch_event_id(touch_event, i);
++        const MirTouchAction action = mir_touch_event_action(touch_event, i);
++
++        if (primary < 0 && action == mir_touch_action_down)
++            primary = id;
++        if (id != primary)
++            continue;
++
++        _glfwInputCursorPos(
++            window,
++            mir_touch_event_axis_value(touch_event, i, mir_touch_axis_x),
++            mir_touch_event_axis_value(touch_event, i, mir_touch_axis_y));
++
++        if (action == mir_touch_action_down)
++            _glfwInputMouseClick(window, GLFW_MOUSE_BUTTON_LEFT,
++                                 GLFW_PRESS, 0);
++        else if (action == mir_touch_action_up)
++        {
++            _glfwInputMouseClick(window, GLFW_MOUSE_BUTTON_LEFT,
++                                 GLFW_RELEASE, 0);
++            primary = -1;
++        }
++        break;
++    }
++}
++
+ static void handleInput(const MirInputEvent* input_event, _GLFWwindow* window)
+ {
+     int type = mir_input_event_get_type(input_event);
+@@ -254,6 +289,9 @@ static void handleInput(const MirInputEvent* input_event, _GLFWwindow* window)
+         case mir_input_event_type_pointer:
+             handlePointerEvent(mir_input_event_get_pointer_event(input_event), window);
+             break;
++        case mir_input_event_type_touch:
++            handleTouchEvent(mir_input_event_get_touch_event(input_event), window);
++            break;
+         default:
+             break;
+     }
