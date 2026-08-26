@@ -86,6 +86,9 @@ inline FetchResult fetchImpl(JNIEnv *env, std::string_view url,
       env->GetMethodID(connectionClass, "setReadTimeout", "(I)V");
   const jmethodID setFollowRedirects = env->GetMethodID(
       connectionClass, "setInstanceFollowRedirects", "(Z)V");
+  const jmethodID setRequestProperty = env->GetMethodID(
+      connectionClass, "setRequestProperty",
+      "(Ljava/lang/String;Ljava/lang/String;)V");
   const jmethodID responseCode =
       env->GetMethodID(connectionClass, "getResponseCode", "()I");
   const jmethodID contentLength =
@@ -116,6 +119,20 @@ inline FetchResult fetchImpl(JNIEnv *env, std::string_view url,
   env->CallVoidMethod(connection, setConnectTimeout, 30000);
   env->CallVoidMethod(connection, setReadTimeout, 30000);
   env->CallVoidMethod(connection, setFollowRedirects, JNI_TRUE);
+  const auto property = [&](const char *name, const char *value) {
+    jstring key = env->NewStringUTF(name);
+    jstring text = env->NewStringUTF(value);
+    env->CallVoidMethod(connection, setRequestProperty, key, text);
+    env->DeleteLocalRef(text);
+    env->DeleteLocalRef(key);
+  };
+  property("User-Agent", "osu-cpp/1.0");
+  property("Accept", "*/*");
+  // Keep the response bytes identical across the native Beast and Android
+  // transports. HttpURLConnection otherwise negotiates compression using
+  // implementation-dependent defaults, while the client parses the returned
+  // body directly as JSON or an archive.
+  property("Accept-Encoding", "identity");
   result.fStatus =
       static_cast<long>(env->CallIntMethod(connection, responseCode));
   if (clearException(env, result.fError, "connecting")) {
