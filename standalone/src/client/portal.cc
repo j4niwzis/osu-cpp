@@ -33,6 +33,11 @@ import std;
 // And it needs nothing linked but D-Bus itself.
 export namespace client::portal {
 
+struct SaveFileResult {
+  bool fPortalAvailable = false;
+  std::optional<std::filesystem::path> fPath;
+};
+
 #ifdef OSU_HAVE_SDBUS
 
 namespace detail {
@@ -152,20 +157,19 @@ struct Message {
 } // namespace detail
 
 // Blocks until the user answers, so it belongs on a worker rather than on the
-// thread that draws. Returns nothing when the user cancelled, and nothing
-// when there is no portal to ask -- the caller cannot tell those apart and
-// does not need to: falling back to a local dialog after a cancellation
-// simply asks again, and the second dialog is the one the user closes.
-[[nodiscard]] inline std::optional<std::filesystem::path>
-openArchive(const std::string &title) {
+// thread that draws. SaveFile callers also need to distinguish a cancellation
+// from an unavailable portal: only the latter should try a native fallback.
+[[nodiscard]] inline SaveFileResult chooseFile(const std::string &title,
+                                               bool save,
+                                               std::string_view currentName) {
   detail::Bus bus;
   if (sd_bus_open_user(&bus.fBus) < 0 || bus.fBus == nullptr) {
-    return std::nullopt;
+    return {};
   }
 
   const char *unique = nullptr;
   if (sd_bus_get_unique_name(bus.fBus, &unique) < 0 || unique == nullptr) {
-    return std::nullopt;
+    return {};
   }
   // The reply's object path is predictable: the caller's unique name with the
   // leading ':' removed and every '.' turned into '_', plus the token handed
@@ -186,34 +190,45 @@ openArchive(const std::string &title) {
                           "org.freedesktop.portal.Desktop", expected.c_str(),
                           "org.freedesktop.portal.Request", "Response",
                           detail::onResponse, &answer) < 0) {
-    return std::nullopt;
+    return {};
   }
 
   detail::Message call;
   if (sd_bus_message_new_method_call(
           bus.fBus, &call.fMessage, "org.freedesktop.portal.Desktop",
           "/org/freedesktop/portal/desktop",
-          "org.freedesktop.portal.FileChooser", "OpenFile") < 0) {
-    return std::nullopt;
+          "org.freedesktop.portal.FileChooser",
+          save ? "SaveFile" : "OpenFile") < 0) {
+    return {};
   }
   // parent_window is left empty: tying the dialog to this window means
   // exporting a handle for it (xdg-foreign on Wayland, the XID on X11), and
   // an unparented dialog is a smaller thing to be wrong about.
   if (sd_bus_message_append(call.fMessage, "ss", "", title.c_str()) < 0) {
-    return std::nullopt;
+    return {};
   }
 
   const auto fail = [](int r) { return r < 0; };
   int r = sd_bus_message_open_container(call.fMessage, 'a', "{sv}");
   if (fail(r)) {
-    return std::nullopt;
+    return {};
   }
   r = sd_bus_message_open_container(call.fMessage, 'e', "sv");
   if (fail(r) ||
       fail(sd_bus_message_append(call.fMessage, "s", "handle_token")) ||
       fail(sd_bus_message_append(call.fMessage, "v", "s", token.c_str())) ||
       fail(sd_bus_message_close_container(call.fMessage))) {
-    return std::nullopt;
+    return {};
+  }
+  if (save && !currentName.empty()) {
+    r = sd_bus_message_open_container(call.fMessage, 'e', "sv");
+    if (fail(r) ||
+        fail(sd_bus_message_append(call.fMessage, "s", "current_name")) ||
+        fail(sd_bus_message_append(call.fMessage, "v", "s",
+                                   std::string(currentName).c_str())) ||
+        fail(sd_bus_message_close_container(call.fMessage))) {
+      return {};
+    }
   }
   // filters is a(sa(us)): a named set of patterns, where 0 is a shell glob
   // and 1 would be a MIME type.
@@ -222,19 +237,22 @@ openArchive(const std::string &title) {
       fail(sd_bus_message_open_container(call.fMessage, 'v', "a(sa(us))")) ||
       fail(sd_bus_message_open_container(call.fMessage, 'a', "(sa(us))")) ||
       fail(sd_bus_message_open_container(call.fMessage, 'r', "sa(us)")) ||
-      fail(sd_bus_message_append(call.fMessage, "s", "osu! beatmap")) ||
+      fail(sd_bus_message_append(call.fMessage, "s",
+                                 save ? "MP4 video" : "osu! beatmap")) ||
       fail(sd_bus_message_open_container(call.fMessage, 'a', "(us)")) ||
-      fail(sd_bus_message_append(call.fMessage, "(us)", 0u, "*.osz")) ||
-      fail(sd_bus_message_append(call.fMessage, "(us)", 0u, "*.zip")) ||
+      fail(sd_bus_message_append(call.fMessage, "(us)", 0u,
+                                 save ? "*.mp4" : "*.osz")) ||
+      (!save &&
+       fail(sd_bus_message_append(call.fMessage, "(us)", 0u, "*.zip"))) ||
       fail(sd_bus_message_close_container(call.fMessage)) ||
       fail(sd_bus_message_close_container(call.fMessage)) ||
       fail(sd_bus_message_close_container(call.fMessage)) ||
       fail(sd_bus_message_close_container(call.fMessage)) ||
       fail(sd_bus_message_close_container(call.fMessage))) {
-    return std::nullopt;
+    return {};
   }
   if (fail(sd_bus_message_close_container(call.fMessage))) {
-    return std::nullopt;
+    return {};
   }
 
   detail::Message reply;
@@ -245,9 +263,10 @@ openArchive(const std::string &title) {
   sd_bus_error_free(&error);
   if (!called) {
     if (!message.empty()) {
-      std::println(std::cerr, "[portal] OpenFile refused: {}", message);
+      std::println(std::cerr, "[portal] {} refused: {}",
+                   save ? "SaveFile" : "OpenFile", message);
     }
-    return std::nullopt; // no portal on this machine, or it said no
+    return {}; // no portal on this machine
   }
 
   // Older portals ignored handle_token and made up their own path. Match on
@@ -266,16 +285,26 @@ openArchive(const std::string &title) {
   while (!answer.fArrived) {
     const int processed = sd_bus_process(bus.fBus, nullptr);
     if (processed < 0) {
-      return std::nullopt;
+      return {true, std::nullopt};
     }
     if (processed > 0) {
       continue; // there may be more queued
     }
     if (sd_bus_wait(bus.fBus, UINT64_MAX) < 0) {
-      return std::nullopt;
+      return {true, std::nullopt};
     }
   }
-  return answer.fPath;
+  return {true, answer.fPath};
+}
+
+[[nodiscard]] inline std::optional<std::filesystem::path>
+openArchive(const std::string &title) {
+  return chooseFile(title, false, {}).fPath;
+}
+
+[[nodiscard]] inline SaveFileResult saveVideo(const std::string &title,
+                                              std::string_view currentName) {
+  return chooseFile(title, true, currentName);
 }
 
 #else
@@ -283,6 +312,11 @@ openArchive(const std::string &title) {
 [[nodiscard]] inline std::optional<std::filesystem::path>
 openArchive(const std::string &) {
   return std::nullopt; // built without D-Bus
+}
+
+[[nodiscard]] inline SaveFileResult saveVideo(const std::string &,
+                                              std::string_view) {
+  return {};
 }
 
 #endif

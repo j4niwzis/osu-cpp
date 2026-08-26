@@ -215,7 +215,8 @@ public:
   }
   [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
 
-  // Applies the click to the mod set; the root swallows misses while open.
+  // Applies clicks on cards. A miss is reported to the overlay router, which
+  // closes this modal while still swallowing the press from the screen below.
   [[nodiscard]] bool click(float x, float y, osu::ModSet &mods) {
     if (!fOpen) {
       return false;
@@ -227,7 +228,7 @@ public:
     if (fChanged) {
       mods = fActive;
     }
-    return true;
+    return fChanged;
   }
 
 private:
@@ -270,7 +271,8 @@ private:
     }
     root->add<nodes::Text>(
         {.roles = {scene::role<mod_select_style::Footer>}},
-        "click a mod to toggle    Esc to close", 14.0f, skia::kWhite);
+        "click a mod to toggle    tap outside or Esc to close", 14.0f,
+        skia::kWhite);
     root->setStyleSheet<ModSelectTheme>();
     return root;
   }
@@ -517,8 +519,7 @@ public:
     fCustomBox->setText(fCustom);
     fCustomBox->setSelected(usingCustom);
     fCustomBox->tickCaret(nowMs, !fCustom.empty());
-    fStatusText->setText(
-        fStatus.empty() ? "requires ffmpeg in PATH    Esc to cancel" : fStatus);
+    fStatusText->setText(fStatus.empty() ? "Esc to cancel" : fStatus);
 
     const skia::SkRect screen = skia::SkRect::MakeWH(
         static_cast<float>(screenW), static_cast<float>(screenH));
@@ -547,6 +548,14 @@ public:
       return false;
     }
     fRenderRequested = false;
+    // The dimmed root is modal and consumes the press, but it is not part of
+    // the dialog itself. A press beside the panel dismisses the dialog just
+    // like a press beside Settings does; AppOverlays still consumes it, so it
+    // cannot activate the screen that has just been uncovered.
+    if (fPanel != nullptr && !fPanel->bounds().contains(x, y)) {
+      this->close();
+      return false;
+    }
     if (fScene) {
       fScene->dispatchPointer(scene::PointerAction::kDown, x, y);
     }
@@ -592,6 +601,7 @@ private:
         {.roles = {scene::role<export_dialog_style::Dim>}},
         skia::colorSetARGB(255, 8, 6, 12));
     auto *panel = root->add<export_dialog_detail::Panel>({});
+    fPanel = panel;
     panel->add<nodes::Text>(
         {.roles = {scene::role<export_dialog_style::Title>}},
         "export replay as video", 24.0f, skia::kWhite);
@@ -640,6 +650,7 @@ private:
   std::string fStatus;
   bool fRenderRequested = false;
   std::unique_ptr<scene::Drawable> fScene;
+  export_dialog_detail::Panel *fPanel = nullptr;
   std::vector<skiff::widgets::Button *> fPresetButtons;
   skiff::widgets::TextBox *fCustomBox = nullptr;
   nodes::Text *fStatusText = nullptr;
