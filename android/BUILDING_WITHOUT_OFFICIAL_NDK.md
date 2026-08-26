@@ -319,6 +319,16 @@ declarations never enter the APK. Consequently no `android.jar` is needed.
 Set `OSU_ANDROID_SYSTEM_FILE_PICKER=OFF` to omit `classes.dex`, retain the
 plain `android.app.NativeActivity`, and avoid both bridge tools.
 
+The dexer may be supplied either as a `d8` executable on `PATH` or as the R8
+build output:
+
+```text
+-DOSU_ANDROID_D8_JAR=$ANDROID_FREE/src/r8/build/libs/r8.jar
+```
+
+In the latter case CMake invokes `com.android.tools.r8.D8` with the configured
+host Java runtime.
+
 ## Third-party libraries
 
 Everything in `$ANDROID_FREE/prefix` is built for the Android target, normally

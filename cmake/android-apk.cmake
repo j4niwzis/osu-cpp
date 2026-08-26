@@ -26,6 +26,8 @@ function(osu_add_android_apk target)
     CACHE FILEPATH "APK signing keystore")
   option(OSU_ANDROID_SYSTEM_FILE_PICKER
     "Build the DEX bridge for Android's system document picker" ON)
+  set(OSU_ANDROID_D8_JAR "" CACHE FILEPATH
+    "R8 jar containing com.android.tools.r8.D8")
 
   find_program(aapt2 NAMES aapt2 REQUIRED)
   find_program(zipalign NAMES zipalign REQUIRED)
@@ -57,7 +59,17 @@ function(osu_add_android_apk target)
   set(dex_package_command)
   if(OSU_ANDROID_SYSTEM_FILE_PICKER)
     find_program(javac NAMES javac REQUIRED)
-    find_program(d8 NAMES d8 REQUIRED)
+    if(OSU_ANDROID_D8_JAR)
+      if(NOT EXISTS "${OSU_ANDROID_D8_JAR}")
+        message(FATAL_ERROR
+          "OSU_ANDROID_D8_JAR does not exist: ${OSU_ANDROID_D8_JAR}")
+      endif()
+      set(d8_command "${java}" -cp "${OSU_ANDROID_D8_JAR}"
+        com.android.tools.r8.D8)
+    else()
+      find_program(d8 NAMES d8 REQUIRED)
+      set(d8_command "${d8}")
+    endif()
     set(java_source
       "${android_dir}/java/io/github/j4niwzis/osu_cpp/OsuNativeActivity.java")
     file(GLOB_RECURSE java_stubs CONFIGURE_DEPENDS
@@ -73,7 +85,7 @@ function(osu_add_android_apk target)
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${java_classes}" "${dex_dir}"
       COMMAND "${javac}" -encoding UTF-8 -source 8 -target 8
         -d "${java_classes}" "${java_source}" ${java_stubs}
-      COMMAND "${d8}" --min-api "${OSU_ANDROID_MIN_API}"
+      COMMAND ${d8_command} --release --min-api "${OSU_ANDROID_MIN_API}"
         --output "${dex_dir}"
         "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity.class"
         "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity\$1.class"
