@@ -137,7 +137,7 @@ endif()
 # there is no common fallback. Keeping the choice here avoids platform ifdefs
 # throughout the client and symlinks that packagers may copy incorrectly.
 set(OSU_PLATFORM_VARIANT_PATTERN
-  "android|web|wasi|freedesktop|windows|macos|generic")
+  "android|web|wasi|freedesktop|windows|macos")
 if(ANDROID)
   set(OSU_PLATFORM_SUFFIX android)
 elseif(EMSCRIPTEN_BUILD)
@@ -153,7 +153,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   set(OSU_PLATFORM_SUFFIX macos)
 else()
-  set(OSU_PLATFORM_SUFFIX generic)
+  # The unsuffixed source is the generic implementation.
+  set(OSU_PLATFORM_SUFFIX "")
 endif()
 
 file(GLOB_RECURSE all_cpp_sources CONFIGURE_DEPENDS
@@ -166,8 +167,12 @@ set(selected_cpp_sources)
 foreach(source IN LISTS common_cpp_sources)
   get_filename_component(source_dir "${source}" DIRECTORY)
   get_filename_component(source_name "${source}" NAME_WE)
-  set(overlay "${source_dir}/${source_name}_${OSU_PLATFORM_SUFFIX}.cc")
-  if(EXISTS "${overlay}")
+  if(OSU_PLATFORM_SUFFIX)
+    set(overlay "${source_dir}/${source_name}_${OSU_PLATFORM_SUFFIX}.cc")
+  else()
+    set(overlay "")
+  endif()
+  if(overlay AND EXISTS "${overlay}")
     list(APPEND selected_cpp_sources "${overlay}")
   else()
     list(APPEND selected_cpp_sources "${source}")
@@ -176,7 +181,8 @@ endforeach()
 
 # Also admit platform-only implementation files without a common foo.cc.
 foreach(source IN LISTS all_cpp_sources)
-  if(source MATCHES "_${OSU_PLATFORM_SUFFIX}\\.cc$")
+  if(OSU_PLATFORM_SUFFIX AND
+     source MATCHES "_${OSU_PLATFORM_SUFFIX}\\.cc$")
     list(APPEND selected_cpp_sources "${source}")
   endif()
 endforeach()
@@ -189,9 +195,13 @@ if(EMSCRIPTEN_BUILD OR OSU_PLATFORM_SUFFIX STREQUAL "wasi")
 endif()
 
 set(main_source "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
-set(main_overlay
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/main_${OSU_PLATFORM_SUFFIX}.cc")
-if(EXISTS "${main_overlay}")
+if(OSU_PLATFORM_SUFFIX)
+  set(main_overlay
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main_${OSU_PLATFORM_SUFFIX}.cc")
+else()
+  set(main_overlay "")
+endif()
+if(main_overlay AND EXISTS "${main_overlay}")
   set(main_source "${main_overlay}")
 endif()
 list(REMOVE_ITEM module_sources "${main_source}")
