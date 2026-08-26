@@ -10,7 +10,7 @@ function(osu_add_android_apk target)
     "Android target SDK API")
   set(OSU_ANDROID_ABI "arm64-v8a" CACHE STRING "Android APK ABI")
   set(OSU_ANDROID_PLATFORM_JAR "" CACHE FILEPATH
-    "Source-built Android platform android.jar")
+    "Source-built Android framework resource APK or android.jar")
   set(OSU_ANDROID_APKSIGNER_JAR "" CACHE FILEPATH
     "Source-built apksigner executable jar")
   set(OSU_ANDROID_KEY_ALIAS "androiddebugkey" CACHE STRING "APK signing key alias")
@@ -53,6 +53,8 @@ function(osu_add_android_apk target)
     find_program(d8 NAMES d8 REQUIRED)
     set(java_source
       "${android_dir}/java/io/github/j4niwzis/osu_cpp/OsuNativeActivity.java")
+    file(GLOB_RECURSE java_stubs CONFIGURE_DEPENDS
+      "${android_dir}/java-stubs/*.java")
     set(java_classes "${apk_dir}/java-classes")
     set(dex_dir "${apk_dir}/dex")
     set(classes_dex "${dex_dir}/classes.dex")
@@ -63,14 +65,13 @@ function(osu_add_android_apk target)
       COMMAND "${CMAKE_COMMAND}" -E rm -rf "${java_classes}" "${dex_dir}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${java_classes}" "${dex_dir}"
       COMMAND "${javac}" -encoding UTF-8 -source 8 -target 8
-        -bootclasspath "${OSU_ANDROID_PLATFORM_JAR}"
-        -d "${java_classes}" "${java_source}"
+        -d "${java_classes}" "${java_source}" ${java_stubs}
       COMMAND "${d8}" --min-api "${OSU_ANDROID_MIN_API}"
         --output "${dex_dir}"
         "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity.class"
         "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity\$1.class"
         "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity\$2.class")
-    list(APPEND dex_dependencies "${java_source}")
+    list(APPEND dex_dependencies "${java_source}" ${java_stubs})
     set(dex_package_command
       COMMAND "${jar}" uf "${unsigned_apk}" -C "${dex_dir}" classes.dex)
   else()
