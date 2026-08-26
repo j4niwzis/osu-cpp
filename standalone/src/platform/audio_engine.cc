@@ -3,6 +3,29 @@ export module platform.audio_engine;
 import std;
 import platform.audio;
 
+namespace platform::sound::detail {
+
+[[nodiscard]] std::string
+lowerExtension(const std::filesystem::path &path) {
+  auto ext = path.extension().string();
+  std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return ext;
+}
+
+[[nodiscard]] std::vector<std::uint8_t>
+readFile(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return {};
+  }
+  return {std::istreambuf_iterator<char>(file),
+          std::istreambuf_iterator<char>()};
+}
+
+} // namespace platform::sound::detail
+
 export namespace platform::sound {
 
 // OpenAL Soft mixes every source into one buffer and runs an output limiter
