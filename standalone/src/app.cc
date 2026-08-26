@@ -1075,6 +1075,9 @@ private:
       fFrame.requestRedraw(wallMs(), 600.0);
     }
     fLibraryRuntime.drainDroppedFiles();
+    for (const auto &event : client::osk::poll()) {
+      fWindowRuntime.push(event);
+    }
     fInput.drainInput();
     if (!fWindowRuntime.windowMayRender()) {
       // A normal minimized window is reported directly. Plasma Mobile keeps
