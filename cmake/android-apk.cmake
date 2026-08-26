@@ -95,6 +95,6 @@ function(osu_add_android_apk target)
     VERBATIM
     COMMENT "Packaging signed Android APK")
 
-  add_custom_target(apk DEPENDS "${signed_apk}")
+  add_custom_target(apk ALL DEPENDS "${signed_apk}")
   message(STATUS "Android APK target: ${signed_apk}")
 endfunction()
