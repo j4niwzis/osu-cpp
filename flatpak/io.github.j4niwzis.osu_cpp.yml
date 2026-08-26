@@ -1,0 +1,314 @@
+id: io.github.j4niwzis.osu_cpp
+appstream-compose: false
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.llvm22
+command: osu_client
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - /share/aclocal
+  - /share/man
+  - '*.a'
+  - '*.la'
+
+build-options:
+  append-path: /usr/lib/sdk/llvm22/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm22/lib
+  cflags: -O3 -flto
+  cxxflags: -O3 -flto
+  ldflags: -flto -fuse-ld=lld
+  env:
+    CC: clang
+    CXX: clang++
+    AR: llvm-ar
+    NM: llvm-nm
+    RANLIB: llvm-ranlib
+
+modules:
+  # The SDK's CMake is deliberately not used: osu-cpp's named C++ modules and
+  # import-std setup require the 4.3.4 behaviour used by upstream.
+  - name: cmake
+    buildsystem: simple
+    # CMake is only a build-time tool and is removed after this module. Full
+    # LTO here consumes several GiB while providing no benefit to osu-cpp.
+    build-options:
+      cflags: -O2
+      cflags-override: true
+      cxxflags: -O2
+      cxxflags-override: true
+      ldflags: -fuse-ld=lld
+      ldflags-override: true
+    build-commands:
+      - ./bootstrap --prefix=/app --parallel=${FLATPAK_BUILDER_N_JOBS} -- -DCMAKE_USE_OPENSSL=OFF
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    cleanup:
+      - '*'
+    sources:
+      - type: git
+        url: https://github.com/Kitware/CMake.git
+        commit: c14332b3d7a5866947ffe5dbbb4f9634ce9e8303
+        tag: v4.3.4
+
+  - name: gn
+    buildsystem: simple
+    # GN is another temporary build-time tool; keep product libraries on LTO,
+    # but do not spend memory optimizing the generator itself.
+    build-options:
+      cflags: -O2
+      cflags-override: true
+      cxxflags: -O2
+      cxxflags-override: true
+      ldflags: -fuse-ld=lld
+      ldflags-override: true
+    build-commands:
+      - python3 build/gen.py --no-last-commit-position
+      - install -Dm644 flatpak-last_commit_position.h out/last_commit_position.h
+      - ninja -C out gn
+      - install -Dm755 out/gn /app/bin/gn
+    cleanup:
+      - '*'
+    sources:
+      - type: git
+        url: https://gn.googlesource.com/gn.git
+        commit: e0a6ab04a113b2dd039cab7c21c6f387e0d881ee
+      - type: file
+        path: flatpak-last_commit_position.h
+
+  - name: glfw
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DGLFW_BUILD_DOCS=OFF
+      - -DGLFW_BUILD_EXAMPLES=OFF
+      - -DGLFW_BUILD_TESTS=OFF
+      - -DGLFW_BUILD_WAYLAND=ON
+      - -DGLFW_BUILD_X11=ON
+    sources:
+      - type: git
+        url: https://github.com/glfw/glfw.git
+        commit: a74efa0d5628b74adc0426af4c5710e287fa7c2c
+        tag: '3.4'
+
+  - name: boost
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/include
+      - cp -a boost /app/include/
+    sources:
+      # The release archive is the assembled Boost tree. A clone of the
+      # superproject has more than a hundred submodules and is dramatically
+      # slower for flatpak-builder to download, especially on a phone.
+      - type: archive
+        url: https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.bz2
+        sha256: 85a33fa22621b4f314f8e85e1a5e2a9363d22e4f4992925d4bb3bc631b5a0c7a
+
+  - name: zstd
+    buildsystem: cmake-ninja
+    subdir: build/cmake
+    config-opts:
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DZSTD_BUILD_CONTRIB=OFF
+      - -DZSTD_BUILD_PROGRAMS=OFF
+      - -DZSTD_BUILD_SHARED=OFF
+      - -DZSTD_BUILD_STATIC=ON
+      - -DZSTD_BUILD_TESTS=OFF
+    sources:
+      - type: git
+        url: https://github.com/facebook/zstd.git
+        commit: f8745da6ff1ad1e7bab384bd1f9d742439278e99
+        tag: v1.5.7
+
+  - name: libzip
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DBUILD_DOC=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_REGRESS=OFF
+      - -DBUILD_TOOLS=OFF
+    sources:
+      - type: git
+        url: https://github.com/nih-at/libzip.git
+        commit: 6f8a0cdd24a0dc6cce9dac4a7679da784ab124ea
+        tag: v1.11.4
+
+  - name: libsndfile
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_PROGRAMS=OFF
+      - -DBUILD_REGTEST=OFF
+      - -DBUILD_TESTING=OFF
+      - -DENABLE_EXTERNAL_LIBS=ON
+    sources:
+      - type: git
+        url: https://github.com/libsndfile/libsndfile.git
+        commit: 72f6af15e8f85157bd622ed45b979025828b7001
+        tag: 1.2.2
+
+  - name: mpg123
+    buildsystem: autotools
+    make-args:
+      - ACLOCAL=aclocal
+      - AUTOMAKE=automake
+    make-install-args:
+      - ACLOCAL=aclocal
+      - AUTOMAKE=automake
+    config-opts:
+      - --disable-components
+      - --disable-shared
+      - --enable-static
+      - --enable-libmpg123
+      - --disable-programs
+    sources:
+      - type: git
+        url: https://github.com/libsdl-org/mpg123.git
+        commit: c46daebce1a7628d24bde87ad1ec07d16e7c0019
+        tag: v1.30.0
+      - type: shell
+        commands:
+          # Git normalises mtimes. Restore the generated autotools files as
+          # newer so make does not regenerate release artifacts unnecessarily.
+          - touch aclocal.m4
+          - find . -name Makefile.in -exec touch '{}' +
+          - touch configure
+
+  - name: openal-soft
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DLIBTYPE=STATIC
+      - -DALSOFT_EXAMPLES=OFF
+      - -DALSOFT_UTILS=OFF
+      - -DALSOFT_TESTS=OFF
+    sources:
+      - type: git
+        url: https://github.com/kcat/openal-soft.git
+        commit: dc7d7054a5b4f3bec1dc23a42fd616a0847af948
+        tag: 1.24.3
+
+  - name: x264
+    buildsystem: simple
+    build-commands:
+      - >-
+        CC=clang AR=llvm-ar RANLIB=llvm-ranlib
+        ./configure --prefix=/app --libdir=/app/lib
+        --disable-shared --enable-static --enable-pic --disable-cli
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    sources:
+      - type: git
+        url: https://code.videolan.org/videolan/x264.git
+        commit: b35605ace3ddf7c1a5d67a2eb553f034aef41d55
+
+  - name: ffmpeg
+    buildsystem: simple
+    build-commands:
+      - >-
+        ./configure --prefix=/app --libdir=/app/lib
+        --cc=clang --cxx=clang++ --ld=clang
+        --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip
+        --enable-static --disable-shared --enable-pic
+        --disable-programs --disable-doc
+        --disable-debug --enable-gpl --enable-libx264
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+    sources:
+      - type: git
+        url: https://git.ffmpeg.org/ffmpeg.git
+        commit: bf1b838f2ab88b4f8fd83443325c782ea0e0f7fa
+        tag: n9.0.1
+
+  - name: skia
+    buildsystem: simple
+    build-commands:
+      - test -f skia.pc
+      - >-
+        gn gen out/flatpak --args='is_official_build=true
+        cc="clang" cxx="clang++" ar="llvm-ar"
+        extra_cflags=["-O3", "-flto"]
+        skia_enable_ganesh=true skia_use_gl=true skia_use_egl=true
+        skia_use_vulkan=false skia_use_x11=false
+        skia_use_libpng_decode=true skia_use_libpng_encode=true
+        skia_use_system_libpng=true
+        skia_use_libjpeg_turbo_decode=true
+        skia_use_system_libjpeg_turbo=true
+        skia_use_libwebp_decode=true skia_use_system_libwebp=true
+        skia_use_zlib=true skia_use_system_zlib=true
+        skia_use_freetype=true skia_use_system_freetype2=true
+        skia_use_fontconfig=true
+        skia_enable_fontmgr_custom_directory=true
+        skia_enable_fontmgr_custom_embedded=true
+        skia_use_icu=false skia_use_harfbuzz=false skia_use_expat=false
+        skia_use_dng_sdk=false skia_enable_skshaper=false
+        skia_enable_skottie=false skia_enable_pdf=false
+        skia_enable_svg=false skia_enable_tools=false'
+      - ninja -C out/flatpak -j${FLATPAK_BUILDER_N_JOBS} skia
+      - install -Dm644 out/flatpak/libskia.a /app/lib/libskia.a
+      - mkdir -p /app/include/skia/include /app/include/skia/modules /app/lib/pkgconfig
+      - cp -a include/. /app/include/skia/
+      - cp -a include/. /app/include/skia/include/
+      - cp -a modules/skcms /app/include/skia/modules/
+      - install -Dm644 skia.pc /app/lib/pkgconfig/skia.pc
+    sources:
+      - type: git
+        url: https://skia.googlesource.com/skia.git
+        commit: 13ffba253fc7854fd3b34f67c82dfb2418dc2944
+      - type: git
+        url: https://skia.googlesource.com/external/github.com/google/wuffs-mirror-release-c.git
+        commit: e3f919ccfe3ef542cfc983a82146070258fb57f8
+        dest: third_party/externals/wuffs
+      - type: file
+        path: skia.pc
+
+  - name: osu-cpp
+    buildsystem: cmake-ninja
+    subdir: standalone
+    build-options:
+      # glibc's fortified Clang overloads have internal linkage and therefore
+      # cannot be exported by libstdc++'s std module interface.
+      cxxflags: -Wp,-U_FORTIFY_SOURCE
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_CXX_COMPILER=clang++
+      - -DCMAKE_CXX_STDLIB_MODULES_JSON=/run/build/osu-cpp/flatpak/libstdc++.modules.json
+      - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
+      - -DOSU_STATIC_DEPS=ON
+      - -DOSU_VIDEO_LIBAV=ON
+      - -DOSU_SKIFF_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff
+      - -DOSU_SKIFF_WIDGETS_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff-widgets
+      - -DCPM_DOWNLOAD_LOCATION=/run/build/osu-cpp/.flatpak-sources/cpm/CPM.cmake
+    sources:
+      - type: dir
+        path: ..
+      - type: git
+        url: https://github.com/j4niwzis/skiff.git
+        commit: 3ef9effb268ab924c3cb3510a5849db116d7c6f2
+        dest: .flatpak-sources/skiff
+      - type: git
+        url: https://github.com/j4niwzis/skiff-widgets.git
+        commit: 57392eb2456339910c21e6f701a7214c5615296d
+        dest: .flatpak-sources/skiff-widgets
+      - type: file
+        url: https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.1/CPM.cmake
+        sha256: f3a6dcc6a04ce9e7f51a127307fa4f699fb2bade357a8eb4c5b45df76e1dc6a5
+        dest: .flatpak-sources/cpm
