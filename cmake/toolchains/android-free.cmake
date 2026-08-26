@@ -62,3 +62,11 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+# Android's pthread API is part of libc. Cross-compilation probes are static
+# archives in this toolchain and therefore cannot reliably reject nonexistent
+# libraries such as libpthreads; seed FindThreads with the platform fact.
+set(CMAKE_HAVE_LIBC_PTHREAD TRUE CACHE INTERNAL
+  "Android provides pthread functions in libc" FORCE)
+set(CMAKE_THREAD_LIBS_INIT "" CACHE STRING
+  "No separate pthread library on Android" FORCE)
