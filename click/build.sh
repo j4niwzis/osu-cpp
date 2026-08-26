@@ -158,8 +158,8 @@ fetch_checkout() {
   git -C "$sources/$name" checkout "$commit"
 }
 
-fetch_checkout skiff https://github.com/j4niwzis/skiff.git 3ef9effb268ab924c3cb3510a5849db116d7c6f2
-fetch_checkout skiff-widgets https://github.com/j4niwzis/skiff-widgets.git 57392eb2456339910c21e6f701a7214c5615296d
+fetch_checkout skiff https://github.com/j4niwzis/skiff.git 9f65a1e2494ca6ec943211acda4a078da5ac4b6c
+fetch_checkout skiff-widgets https://github.com/j4niwzis/skiff-widgets.git 2870ba493b5de6ccb350924297abc0d6fc5797c3
 
 mkdir -p "$sources/cpm"
 if [ ! -f "$sources/cpm/CPM.cmake" ]; then
