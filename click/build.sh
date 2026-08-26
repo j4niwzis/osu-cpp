@@ -59,8 +59,12 @@ if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
 
   if [ ! -d "$sources/glfw-mir/.git" ]; then
     git clone https://github.com/glfw/glfw.git "$sources/glfw-mir"
+  fi
+  if [ ! -f "$sources/glfw-mir/.osu-mir-patch-v2" ]; then
     git -C "$sources/glfw-mir" checkout 999f3556fdd80983b10051746264489f2cb1ef16
+    git -C "$sources/glfw-mir" reset --hard 999f3556fdd80983b10051746264489f2cb1ef16
     patch -d "$sources/glfw-mir" -p1 < "$ROOT/click/glfw-3.2-mir.patch"
+    touch "$sources/glfw-mir/.osu-mir-patch-v2"
   fi
   glfw_build="$BUILD_DIR/glfw-mir"
   PKG_CONFIG_PATH="$mir_sdk/pkgconfig:$PKG_CONFIG_PATH" \
