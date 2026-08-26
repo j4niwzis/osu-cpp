@@ -41,8 +41,12 @@ set(CMAKE_RANLIB "${OSU_LLVM_RANLIB}" CACHE FILEPATH "LLVM ranlib" FORCE)
 set(android_common_flags
   "--sysroot=${OSU_ANDROID_SYSROOT} -resource-dir=${OSU_ANDROID_RESOURCE_DIR} -D__ANDROID_NDK__")
 set(CMAKE_C_FLAGS_INIT "${android_common_flags} -fPIC")
+# Bionic normally defines the tiny ctype functions as static inline. Such
+# declarations cannot be re-exported by libc++'s C++23 std module. Bionic
+# deliberately exposes this macro override (its own out-of-line definitions
+# use it too), so retain inline definitions with external linkage for C++.
 set(CMAKE_CXX_FLAGS_INIT
-  "${android_common_flags} -fPIC -stdlib=libc++")
+  "${android_common_flags} -D__BIONIC_CTYPE_INLINE=inline -fPIC -stdlib=libc++")
 set(CMAKE_SHARED_LINKER_FLAGS_INIT
   "${android_common_flags} -fuse-ld=lld -nostdlib")
 
