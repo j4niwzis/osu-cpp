@@ -3,7 +3,7 @@ export module platform.audio_engine;
 import std;
 import platform.audio;
 
-export namespace platform::audio {
+export namespace platform::sound {
 
 // OpenAL Soft mixes every source into one buffer and runs an output limiter
 // over the sum. Sources at full gain add up past full scale in a hurry --
@@ -434,4 +434,4 @@ private:
   }
 };
 
-} // namespace platform::audio
+} // namespace platform::sound

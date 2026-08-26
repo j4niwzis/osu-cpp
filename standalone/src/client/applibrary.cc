@@ -4,7 +4,6 @@ export module client.applibrary;
 import std;
 import osu;
 import skia;
-import platform.audio;
 import platform.system;
 import platform.web_runtime;
 import platform.capabilities;
@@ -172,7 +171,7 @@ public:
     // when changing selection. Decode on the worker, upload to OpenAL here.
     const std::string ext = detail::fileExtension(audioName);
     std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
-    auto pcm = std::make_shared<platform::audio::DecodedAudio>();
+    auto pcm = std::make_shared<platform::sound::DecodedAudio>();
     const int forSet = fApp.fLibrary.selSet();
     // The index alone is not identity: deleting a beatmap shifts everything
     // after it, so the path is checked too before this track is adopted.
@@ -183,7 +182,7 @@ public:
     fApp.fLoader.submit(
         static_cast<std::uint64_t>(fApp.fLibrary.selSet()) | (3ull << 32),
         [copy = std::move(copy), ext, pcm] {
-          *pcm = platform::audio::decodeAudio(copy, ext);
+          *pcm = platform::sound::decodeAudio(copy, ext);
         },
         [this, forSet, forPath, pcm] {
           if (forSet != fApp.fLibrary.selSet() || pcm->fSamples.empty()) {

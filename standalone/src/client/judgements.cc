@@ -138,7 +138,7 @@ private:
                map.fObjects[index]);
   }
 
-  std::unordered_map<std::string, platform::audio::SamplePlayer> fSamples;
+  std::unordered_map<std::string, platform::sound::SamplePlayer> fSamples;
   std::size_t fPlayedEvents = 0;
   int fCombo = 0;
   float fGain = 1.0f;

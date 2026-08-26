@@ -102,11 +102,11 @@ public:
 
   [[nodiscard]] float musicGain() const {
     return fApp.fSettings.value("master") * fApp.fSettings.value("music") *
-           platform::audio::kMusicHeadroom;
+           platform::sound::kMusicHeadroom;
   }
   [[nodiscard]] float effectGain() const {
     return fApp.fSettings.value("master") * fApp.fSettings.value("effect") *
-           platform::audio::kEffectHeadroom;
+           platform::sound::kEffectHeadroom;
   }
 
   // Difficulties are ordered by the rating being shown, which means the

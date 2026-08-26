@@ -10,7 +10,6 @@ import platform.configuration;
 import platform.web_runtime;
 import platform.capabilities;
 import skia;
-import platform.audio;
 import skin;
 import archive;
 import client.util;
@@ -59,7 +58,7 @@ import bjson;
 
 namespace client {
 
-using platform::audio::AudioPlayer;
+using platform::sound::AudioPlayer;
 
 export extern "C++" class App {
 public:
