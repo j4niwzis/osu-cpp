@@ -1,10 +1,7 @@
-module;
-
-#include <android_native_app_glue.h>
-
 export module platform.system;
 
 import std;
+import platform.android.api;
 import platform.android_runtime;
 
 namespace {

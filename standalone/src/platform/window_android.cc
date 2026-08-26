@@ -1,15 +1,7 @@
-module;
-
-#include <EGL/egl.h>
-#include <android/input.h>
-#include <android/keycodes.h>
-#include <android/log.h>
-#include <android/native_window.h>
-#include <android_native_app_glue.h>
-
 export module platform.window;
 
 import std;
+import platform.android.api;
 import platform.android_runtime;
 import platform.clock;
 import platform.input;

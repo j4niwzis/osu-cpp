@@ -1,8 +1,7 @@
-#include <android_native_app_glue.h>
-
 import std;
 import osu;
 import app;
+import platform.android.api;
 import platform.android_runtime;
 
 extern "C" void android_main(android_app *state) {

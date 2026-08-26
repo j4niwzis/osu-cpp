@@ -1,12 +1,7 @@
-module;
-
-#include <android/asset_manager.h>
-#include <android/native_activity.h>
-#include <android_native_app_glue.h>
-
 export module platform.android_runtime;
 
 import std;
+import platform.android.api;
 
 export namespace platform::android {
 
