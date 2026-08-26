@@ -642,6 +642,37 @@ private:
 
     bool acceptsInput() const override { return true; }
 
+    void onPointerEvent(scene::PointerEvent &event) override {
+      const auto &def = fOwner->fSettings->defs()[fIndex];
+      if (def.fKind != SettingKind::kSlider ||
+          event.fPhase != scene::EventPhase::kTarget) {
+        scene::Drawable::onPointerEvent(event);
+        return;
+      }
+
+      if (event.fAction == scene::PointerAction::kDown) {
+        // The scroll container defers ordinary clicks until release so a
+        // swipe across a control cannot activate it. A slider is the one
+        // exception: it must own the pointer immediately and relinquish it
+        // on up. The modified marker remains an ordinary deferred click so
+        // tapping it still restores the default instead of starting a drag.
+        const skia::SkRect content = this->contentBox();
+        if (fOwner->fSettings->isModified(fIndex) &&
+            event.fX < content.fLeft) {
+          scene::Drawable::onPointerEvent(event);
+          return;
+        }
+        fOwner->fAction = {Action::kSlider, fIndex, 0};
+        event.capturePointer();
+        event.requestFocus();
+        event.handle();
+      } else if (event.fAction == scene::PointerAction::kUp ||
+                 event.fAction == scene::PointerAction::kCancel) {
+        event.releasePointer();
+        event.handle();
+      }
+    }
+
     bool onClick(float x, float y) override {
       const auto &def = fOwner->fSettings->defs()[fIndex];
       const skia::SkRect content = this->contentBox();
