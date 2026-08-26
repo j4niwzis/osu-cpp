@@ -1,9 +1,5 @@
 module;
 
-#ifdef __EMSCRIPTEN__
-#include "emscripten_macro.h"
-#endif
-
 #ifdef OSU_WAYLAND_TOUCH
 #include <dlfcn.h>
 #include <wayland-client.h>
@@ -18,6 +14,7 @@ import platform.input;
 import client.input;
 import platform.presentation;
 import platform.configuration;
+import platform.web_runtime;
 
 namespace platform {
 
@@ -258,8 +255,9 @@ public:
     glfw::glfwWindowHint(glfw::kContextVersionMinor, 0);
     glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
     glfw::glfwWindowHint(glfw::kSamples, 0);
-    fInitial.fWidth = EM_ASM_INT({ return Module.canvas.width; });
-    fInitial.fHeight = EM_ASM_INT({ return Module.canvas.height; });
+    const auto canvas = platform::web::canvasExtent();
+    fInitial.fWidth = canvas.fWidth;
+    fInitial.fHeight = canvas.fHeight;
     fWindow = glfw::glfwCreateWindow(fInitial.fWidth, fInitial.fHeight,
                                      "osu_client", nullptr, nullptr);
 #else

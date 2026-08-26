@@ -1,6 +1,7 @@
 export module client.appscreens;
 
 import std;
+import platform.web_runtime;
 import osu;
 import skia;
 import client.carousel;
@@ -175,7 +176,7 @@ public:
   void updateSongSelect() {
 #ifdef __EMSCRIPTEN__
     if (!fApp.fLibraryLoaded) {
-      if (detail::gMapsSynced.load(std::memory_order_acquire)) {
+      if (platform::web::mapStorageReady()) {
         fApp.fLibraryRuntime.initLibrary();
       } else {
         fApp.fFrame.damageAll("waiting on local storage");

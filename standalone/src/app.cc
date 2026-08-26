@@ -1,9 +1,5 @@
 module;
 
-#ifdef __EMSCRIPTEN__
-#include "emscripten_macro.h"
-#endif
-
 export module app;
 
 import std;
@@ -11,6 +7,7 @@ import osu;
 import platform.clock;
 import platform.input;
 import platform.configuration;
+import platform.web_runtime;
 import skia;
 import platform.audio;
 import skin;
@@ -58,19 +55,6 @@ import client.appscreens;
 import client.appoverlays;
 import client.appplayback;
 import bjson;
-#ifdef __EMSCRIPTEN__
-import emscripten;
-#endif
-
-#ifdef __EMSCRIPTEN__
-namespace client::detail {
-inline std::atomic<bool> gMapsSynced{false};
-} // namespace client::detail
-
-extern "C" EMSCRIPTEN_KEEPALIVE void osu_maps_synced() {
-  client::detail::gMapsSynced.store(true, std::memory_order_release);
-}
-#endif
 
 namespace client {
 
@@ -544,7 +528,7 @@ private:
     fWin.fPixelH = initial.fHeight;
     fRefreshHz = fWindowRuntime.refreshHz();
 #ifdef __EMSCRIPTEN__
-    EM_ASM(Module.setCursorVisible(true));
+    platform::web::setCursorVisible(true);
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -569,14 +553,7 @@ private:
 
     // Persistent library at /maps (IDBFS). The initial syncfs is async; the
     // library is scanned once the flag flips (see frameSongSelect).
-    EM_ASM({
-      try {
-        FS.mkdir('/maps');
-      } catch (e) {
-      }
-      FS.mount(IDBFS, {}, '/maps');
-      FS.syncfs(true, function(err) { Module._osu_maps_synced(); });
-    });
+    platform::web::initializeMapStorage();
 
     fState = State::kMainMenu;
     fStateEnterWall = wallMs();
@@ -585,8 +562,8 @@ private:
       fLibrary.selectInitialSet();
       fState = State::kSongSelect;
     }
-    EM_ASM(Module.setCursorVisible(true));
-    emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
+    platform::web::setCursorVisible(true);
+    platform::web::runMainLoop(emscriptenFrameProc, this);
     return 0;
 #else
     // Snapshot the real framebuffer size on the main thread (that query is
@@ -1653,9 +1630,9 @@ private:
   void setCursorVisible(bool visible) {
 #ifdef __EMSCRIPTEN__
     if (visible) {
-      EM_ASM(Module.setCursorVisible(true));
+      platform::web::setCursorVisible(true);
     } else {
-      EM_ASM(Module.setCursorVisible(false));
+      platform::web::setCursorVisible(false);
     }
     fWindowRuntime.setCursorMode(
         visible ? platform::input::CursorMode::kNormal
@@ -1724,7 +1701,7 @@ private:
         if (fRecord)
           fPlayback.saveReplay();
       }
-      emscripten::emscripten_cancel_main_loop();
+      platform::web::cancelMainLoop();
       return;
     }
 

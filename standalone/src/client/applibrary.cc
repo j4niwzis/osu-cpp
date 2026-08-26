@@ -1,9 +1,4 @@
 module;
-
-#ifdef __EMSCRIPTEN__
-#include "emscripten_macro.h"
-#endif
-
 export module client.applibrary;
 
 import std;
@@ -11,6 +6,7 @@ import osu;
 import skia;
 import platform.audio;
 import platform.system;
+import platform.web_runtime;
 import client.audio;
 import client.filter;
 import client.library;
@@ -250,7 +246,7 @@ public:
 
   void syncMapsDir() {
 #ifdef __EMSCRIPTEN__
-    EM_ASM(FS.syncfs(false, function(err){}));
+    platform::web::syncMapStorage();
 #endif
   }
 
@@ -280,10 +276,7 @@ public:
 
   void importOsz() {
 #ifdef __EMSCRIPTEN__
-    EM_ASM({
-      if (Module.osuPickBeatmap)
-        Module.osuPickBeatmap();
-    });
+    platform::web::requestBeatmapArchive();
 #else
     // The picker is another process and the user takes as long as they take.
     // Waited for here, on the thread that draws, it stops the frame loop for

@@ -1,7 +1,7 @@
 export module platform.network.backend;
 
 import std;
-import emscripten;
+import platform.emscripten_api;
 import platform.network.types;
 
 export namespace platform::network::backend {
@@ -14,13 +14,13 @@ struct Fetch {
 
 inline void start(std::string url, std::shared_ptr<Handle> handle,
                   Callback complete) {
-  emscripten::emscripten_fetch_attr_t attributes;
-  emscripten::emscripten_fetch_attr_init(&attributes);
+  platform::emscripten::emscripten_fetch_attr_t attributes;
+  platform::emscripten::emscripten_fetch_attr_init(&attributes);
   std::strcpy(attributes.requestMethod, "GET");
-  attributes.attributes = emscripten::kFetchLoadToMemory;
+  attributes.attributes = platform::emscripten::kFetchLoadToMemory;
   auto *fetch = new detail::Fetch{std::move(complete), std::move(handle)};
   attributes.userData = fetch;
-  attributes.onsuccess = [](emscripten::emscripten_fetch_t *result) {
+  attributes.onsuccess = [](platform::emscripten::emscripten_fetch_t *result) {
     auto *state = static_cast<detail::Fetch *>(result->userData);
     Response response;
     response.fStatus = result->status;
@@ -32,9 +32,9 @@ inline void start(std::string url, std::shared_ptr<Handle> handle,
     state->fHandle->fDone.store(true, std::memory_order_release);
     state->fComplete(std::move(response));
     delete state;
-    emscripten::emscripten_fetch_close(result);
+    platform::emscripten::emscripten_fetch_close(result);
   };
-  attributes.onerror = [](emscripten::emscripten_fetch_t *result) {
+  attributes.onerror = [](platform::emscripten::emscripten_fetch_t *result) {
     auto *state = static_cast<detail::Fetch *>(result->userData);
     Response response;
     response.fStatus = result->status;
@@ -43,9 +43,9 @@ inline void start(std::string url, std::shared_ptr<Handle> handle,
     state->fHandle->fDone.store(true, std::memory_order_release);
     state->fComplete(std::move(response));
     delete state;
-    emscripten::emscripten_fetch_close(result);
+    platform::emscripten::emscripten_fetch_close(result);
   };
-  attributes.onprogress = [](emscripten::emscripten_fetch_t *result) {
+  attributes.onprogress = [](platform::emscripten::emscripten_fetch_t *result) {
     auto *state = static_cast<detail::Fetch *>(result->userData);
     if (result->totalBytes > 0) {
       state->fHandle->fProgress.store(
@@ -54,6 +54,6 @@ inline void start(std::string url, std::shared_ptr<Handle> handle,
           std::memory_order_relaxed);
     }
   };
-  emscripten::emscripten_fetch(&attributes, url.c_str());
+  platform::emscripten::emscripten_fetch(&attributes, url.c_str());
 }
 } // namespace platform::network::backend
