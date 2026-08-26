@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.1.1 FATAL_ERROR)
+cmake_minimum_required(VERSION 4.3.4 FATAL_ERROR)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/import-std.cmake)
 set(CMAKE_CXX_STANDARD 23)
@@ -38,7 +38,20 @@ include(../cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 
-find_package(Boost REQUIRED) # header-only: asio, beast, json (bjson needed on wasm too)
+# Use pkg-config's private dependency closure when linking bundled static
+# libraries. This is opt-in so native distro builds retain their normal shared
+# dependency selection.
+option(OSU_STATIC_DEPS "Link pkg-config dependencies statically" OFF)
+option(OSU_STATIC_VIDEO_DEPS
+  "Link libavcodec and its full codec closure statically" ${OSU_STATIC_DEPS})
+
+# Boost is header-only here. Prefer its CMake package when available, but also
+# support installations which contain only the assembled Boost include tree
+# (notably the Flatpak build and CMake versions without FindBoost).
+find_package(Boost QUIET)
+if(NOT Boost_FOUND)
+  find_path(Boost_INCLUDE_DIRS NAMES boost/asio.hpp REQUIRED)
+endif()
 
 if(EMSCRIPTEN_BUILD)
   pkg_check_modules(SKIA   REQUIRED skia)
@@ -70,6 +83,16 @@ else()
   pkg_check_modules(MPG123  REQUIRED libmpg123)
 endif()
 
+if(OSU_STATIC_DEPS)
+  foreach(dependency GLFW OPENAL SKIA LIBZIP SNDFILE MPG123)
+    if(DEFINED ${dependency}_STATIC_LDFLAGS)
+      set(${dependency}_LDFLAGS ${${dependency}_STATIC_LDFLAGS})
+      set(${dependency}_LIBRARIES)
+      set(${dependency}_INCLUDE_DIRS ${${dependency}_STATIC_INCLUDE_DIRS})
+    endif()
+  endforeach()
+endif()
+
 if(TEST_INSTALLED_VERSION)
   find_package(osucpp REQUIRED)
 else()
@@ -80,18 +103,31 @@ endif()
 # Everything the client draws with comes from here; nothing in there knows
 # what a beatmap is. It lives in a repository of its own now, pinned to a
 # commit -- moving to a newer skiff should be a visible change here.
-CPMAddPackage(
-  NAME skiff
-  GITHUB_REPOSITORY j4niwzis/skiff
-  GIT_TAG 3ef9effb268ab924c3cb3510a5849db116d7c6f2
-)
+set(OSU_SKIFF_SOURCE_DIR "" CACHE PATH
+  "Existing skiff checkout; avoids fetching it during offline builds")
+if(OSU_SKIFF_SOURCE_DIR)
+  CPMAddPackage(NAME skiff SOURCE_DIR "${OSU_SKIFF_SOURCE_DIR}")
+else()
+  CPMAddPackage(
+    NAME skiff
+    GITHUB_REPOSITORY j4niwzis/skiff
+    GIT_TAG 3ef9effb268ab924c3cb3510a5849db116d7c6f2
+  )
+endif()
 
 # The widgets that sit on it, one module each. Pulls skiff in behind it.
-CPMAddPackage(
-  NAME skiff_widgets
-  GITHUB_REPOSITORY j4niwzis/skiff-widgets
-  GIT_TAG 57392eb2456339910c21e6f701a7214c5615296d
-)
+set(OSU_SKIFF_WIDGETS_SOURCE_DIR "" CACHE PATH
+  "Existing skiff-widgets checkout; avoids fetching it during offline builds")
+if(OSU_SKIFF_WIDGETS_SOURCE_DIR)
+  CPMAddPackage(NAME skiff_widgets
+    SOURCE_DIR "${OSU_SKIFF_WIDGETS_SOURCE_DIR}")
+else()
+  CPMAddPackage(
+    NAME skiff_widgets
+    GITHUB_REPOSITORY j4niwzis/skiff-widgets
+    GIT_TAG 57392eb2456339910c21e6f701a7214c5615296d
+  )
+endif()
 
 # ---- Create binary ----
 
@@ -112,6 +148,17 @@ endif()
 add_executable(${PROJECT_NAME} ${module_sources} ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
+
+if(OSU_STATIC_DEPS)
+  target_compile_options(${PROJECT_NAME} PRIVATE
+    ${GLFW_STATIC_CFLAGS_OTHER}
+    ${OPENAL_STATIC_CFLAGS_OTHER}
+    ${SKIA_STATIC_CFLAGS_OTHER}
+    ${LIBZIP_STATIC_CFLAGS_OTHER}
+    ${SNDFILE_STATIC_CFLAGS_OTHER}
+    ${MPG123_STATIC_CFLAGS_OTHER}
+  )
+endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -135,6 +182,13 @@ if(NOT EMSCRIPTEN_BUILD AND WAYLAND_CLIENT_FOUND)
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_WAYLAND_TOUCH=1)
   target_include_directories(${PROJECT_NAME} PRIVATE
     ${WAYLAND_CLIENT_INCLUDE_DIRS}
+  )
+  # The touch bridge resolves GLFW's native Wayland accessors dynamically so
+  # X11-only builds remain valid. When GLFW is linked statically those two
+  # symbols need to be retained in the executable's dynamic symbol table.
+  target_link_options(${PROJECT_NAME} PRIVATE
+    "LINKER:--export-dynamic-symbol=glfwGetWaylandDisplay"
+    "LINKER:--export-dynamic-symbol=glfwGetWaylandWindow"
   )
 endif()
 
@@ -218,10 +272,20 @@ endif()
 # a browser, or anywhere ffmpeg is not installed.
 option(OSU_VIDEO_LIBAV "Encode exported video with libavcodec" OFF)
 if(OSU_VIDEO_LIBAV)
-  pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
-    libavcodec libavformat libavutil libswresample libswscale)
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_VIDEO_LIBAV=1)
-  target_link_libraries(${PROJECT_NAME} PkgConfig::LIBAV)
+  if(OSU_STATIC_VIDEO_DEPS)
+    pkg_check_modules(LIBAV REQUIRED
+      libavcodec libavformat libavutil libswresample libswscale)
+    target_include_directories(${PROJECT_NAME} PRIVATE
+      ${LIBAV_STATIC_INCLUDE_DIRS})
+    target_compile_options(${PROJECT_NAME} PRIVATE
+      ${LIBAV_STATIC_CFLAGS_OTHER})
+    target_link_libraries(${PROJECT_NAME} ${LIBAV_STATIC_LDFLAGS})
+  else()
+    pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
+      libavcodec libavformat libavutil libswresample libswscale)
+    target_link_libraries(${PROJECT_NAME} PkgConfig::LIBAV)
+  endif()
 endif()
 
 # ---- Emscripten-specific options ----
@@ -271,6 +335,31 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/
     PATTERN "*.ttf" PATTERN "*.otf" PATTERN "*.ttc"
     PATTERN "OFL*.txt" PATTERN "LICENSE*.txt"
 )
+
+# Exact upstream legal text displayed before the optional artwork download.
+install(FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/assets/licenses/WebOsu-CC-BY-NC-4.0.md
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/osu_client/licenses
+)
+
+if(NOT EMSCRIPTEN_BUILD)
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.desktop
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+  )
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.metainfo.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo
+  )
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.svg
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+  )
+  install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages
+  )
+endif()
 
 # ---- Add osu_clientTests ----
 
