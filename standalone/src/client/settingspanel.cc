@@ -448,6 +448,7 @@ public:
       if (fOpenChoice >= 0) {
         this->setOpenChoice(-1);
       }
+      fDragOriginal = settings.valueAt(action.fIndex);
       fDragging = static_cast<int>(action.fIndex);
       this->drag(x, settings);
       return Hit::kChanged;
@@ -476,6 +477,10 @@ public:
   }
 
   [[nodiscard]] bool dragging() const noexcept { return fDragging >= 0; }
+
+  [[nodiscard]] bool takeSliderCancellation() noexcept {
+    return std::exchange(fSliderCancelled, false);
+  }
 
 private:
   // ---- rows ---------------------------------------------------------------
@@ -667,6 +672,12 @@ private:
         event.requestFocus();
         event.handle();
       } else if (event.fAction == scene::PointerAction::kCancel) {
+        if (fOwner->fDragging == static_cast<int>(fIndex)) {
+          const auto &setting = fOwner->fSettings->defs()[fIndex];
+          fOwner->fSettings->set(setting.fKey, fOwner->fDragOriginal);
+          fOwner->markRow(fIndex);
+          fOwner->fSliderCancelled = true;
+        }
         fOwner->fDragging = -1;
         fOwner->fAction = {};
         event.releasePointer();
@@ -975,6 +986,8 @@ private:
   double fEnterWall = 0.0;
   float fScrollTicks = 0.0f;
   int fDragging = -1;
+  float fDragOriginal = 0.0f;
+  bool fSliderCancelled = false;
   int fOpenChoice = -1; // which choice has its list open
   int fActiveSection = 0;
   bool fTouched = true;

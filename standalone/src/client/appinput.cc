@@ -125,6 +125,9 @@ public:
       }
       this->routePointer(skiff::scene::PointerAction::kMove, units.fX,
                          units.fY);
+      if (fApp.fSettingsPanel.takeSliderCancellation()) {
+        fApp.fOverlays.applySettings();
+      }
       if (fApp.fSettingsPanel.dragging()) {
         fApp.fOverlays.dragSetting(units.fX);
       }
