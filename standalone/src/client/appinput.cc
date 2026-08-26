@@ -7,6 +7,7 @@ import platform.capabilities;
 import client.input;
 import client.gameplayview;
 import client.listing;
+import client.osk;
 import client.pause;
 import client.replaybrowser;
 import client.results;
@@ -761,10 +762,12 @@ public:
       fDownloadPointerY = y;
       fDownloadPointerOnPage = fApp.fSetPage.open();
       if (fApp.fSetPage.open()) {
+        client::osk::setVisible(false);
         fApp.fSetPage.beginPointer();
         this->routePointer(skiff::scene::PointerAction::kDown, x, y);
         return; // the page covers the listing underneath
       }
+      client::osk::setVisible(fApp.fListing.textBoxHit(x, y));
       fApp.fListing.beginPointer();
       this->routePointer(skiff::scene::PointerAction::kDown, x, y);
       return;
