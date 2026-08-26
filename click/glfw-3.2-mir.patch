@@ -168,3 +168,124 @@ index d9f425d..2996a5c 100644
 
      mir_connection_release(_glfw.mir.connection);
  }
+diff --git a/src/mir_monitor.c b/src/mir_monitor.c
+index 6ed03c4..30ffb42 100644
+--- a/src/mir_monitor.c
++++ b/src/mir_monitor.c
+@@ -35,39 +35,43 @@
+
+ _GLFWmonitor** _glfwPlatformGetMonitors(int* count)
+ {
+-    int i, found = 0;
++    int i;
++    int found = 0;
+     _GLFWmonitor** monitors = NULL;
+-    MirDisplayConfiguration* displayConfig =
+-        mir_connection_create_display_config(_glfw.mir.connection);
++    MirDisplayConfig* displayConfig =
++        mir_connection_create_display_configuration(_glfw.mir.connection);
++    const int outputCount = mir_display_config_get_num_outputs(displayConfig);
+
+     *count = 0;
+
+-    for (i = 0;  i < displayConfig->num_outputs;  i++)
++    for (i = 0; i < outputCount; i++)
+     {
+-        const MirDisplayOutput* out = displayConfig->outputs + i;
++        const MirOutput* out = mir_display_config_get_output(displayConfig, i);
++        const int modeCount = mir_output_get_num_modes(out);
++        const MirOutputMode* current = mir_output_get_current_mode(out);
+
+-        if (out->used &&
+-            out->connected &&
+-            out->num_modes &&
+-            out->current_mode < out->num_modes)
++        if (mir_output_is_enabled(out) &&
++            mir_output_get_connection_state(out) ==
++                mir_output_connection_state_connected &&
++            modeCount > 0 && current)
+         {
++            _GLFWmonitor* monitor;
+             found++;
+-            monitors        = realloc(monitors, sizeof(_GLFWmonitor*) * found);
+-            monitors[i]     = _glfwAllocMonitor("Unknown",
+-                                                out->physical_width_mm,
+-                                                out->physical_height_mm);
+-
+-            monitors[i]->mir.x         = out->position_x;
+-            monitors[i]->mir.y         = out->position_y;
+-            monitors[i]->mir.output_id = out->output_id;
+-            monitors[i]->mir.cur_mode  = out->current_mode;
+-
+-            monitors[i]->modes = _glfwPlatformGetVideoModes(monitors[i],
+-                                                            &monitors[i]->modeCount);
++            monitors = realloc(monitors, sizeof(_GLFWmonitor*) * found);
++            monitor = _glfwAllocMonitor(mir_output_get_model(out),
++                                        mir_output_get_physical_width_mm(out),
++                                        mir_output_get_physical_height_mm(out));
++            monitors[found - 1] = monitor;
++            monitor->mir.x = mir_output_get_position_x(out);
++            monitor->mir.y = mir_output_get_position_y(out);
++            monitor->mir.output_id = mir_output_get_id(out);
++            monitor->mir.cur_mode = mir_output_get_current_mode_index(out);
++            monitor->modes = _glfwPlatformGetVideoModes(
++                monitor, &monitor->modeCount);
+         }
+     }
+
+-    mir_display_config_destroy(displayConfig);
++    mir_display_config_release(displayConfig);
+
+     *count = found;
+     return monitors;
+@@ -122,31 +126,37 @@ GLFWvidmode* _glfwPlatformGetVideoModes(_GLFWmonitor* monitor, int* found)
+ GLFWvidmode* _glfwPlatformGetVideoModes(_GLFWmonitor* monitor, int* found)
+ {
+     int i;
+     GLFWvidmode* modes = NULL;
+-    MirDisplayConfiguration* displayConfig =
+-        mir_connection_create_display_config(_glfw.mir.connection);
++    MirDisplayConfig* displayConfig =
++        mir_connection_create_display_configuration(_glfw.mir.connection);
++    const int outputCount = mir_display_config_get_num_outputs(displayConfig);
+
+-    for (i = 0;  i < displayConfig->num_outputs;  i++)
++    *found = 0;
++    for (i = 0; i < outputCount; i++)
+     {
+-        const MirDisplayOutput* out = displayConfig->outputs + i;
+-        if (out->output_id != monitor->mir.output_id)
++        const MirOutput* out = mir_display_config_get_output(displayConfig, i);
++        int modeIndex;
++        const int modeCount = mir_output_get_num_modes(out);
++        const MirPixelFormat format = mir_output_get_current_pixel_format(out);
++        if (mir_output_get_id(out) != monitor->mir.output_id)
+             continue;
+
+-        modes = calloc(out->num_modes, sizeof(GLFWvidmode));
++        modes = calloc(modeCount, sizeof(GLFWvidmode));
+
+-        for (*found = 0;  *found < out->num_modes;  (*found)++)
++        for (modeIndex = 0; modeIndex < modeCount; modeIndex++)
+         {
+-            modes[*found].width  = out->modes[*found].horizontal_resolution;
+-            modes[*found].height = out->modes[*found].vertical_resolution;
+-            modes[*found].refreshRate = out->modes[*found].refresh_rate;
+-
+-            FillInRGBBitsFromPixelFormat(&modes[*found], out->output_formats[*found]);
++            const MirOutputMode* mode = mir_output_get_mode(out, modeIndex);
++            modes[modeIndex].width = mir_output_mode_get_width(mode);
++            modes[modeIndex].height = mir_output_mode_get_height(mode);
++            modes[modeIndex].refreshRate = mir_output_mode_get_refresh_rate(mode);
++            FillInRGBBitsFromPixelFormat(&modes[modeIndex], format);
+         }
++        *found = modeCount;
+
+         break;
+     }
+
+-    mir_display_config_destroy(displayConfig);
++    mir_display_config_release(displayConfig);
+
+     return modes;
+ }
