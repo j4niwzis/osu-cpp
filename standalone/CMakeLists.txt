@@ -122,7 +122,7 @@ else()
   CPMAddPackage(
     NAME skiff
     GITHUB_REPOSITORY j4niwzis/skiff
-    GIT_TAG 9f65a1e2494ca6ec943211acda4a078da5ac4b6c
+    GIT_TAG a60a2a8e35bf44268367d5857706d33d771b911a
   )
 endif()
 
@@ -136,7 +136,7 @@ else()
   CPMAddPackage(
     NAME skiff_widgets
     GITHUB_REPOSITORY j4niwzis/skiff-widgets
-    GIT_TAG 2870ba493b5de6ccb350924297abc0d6fc5797c3
+    GIT_TAG 31c702286ad318928079613f2276fa31a1d85745
   )
 endif()
 
@@ -232,17 +232,21 @@ if(EMSCRIPTEN_BUILD)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
 if(ANDROID)
+  set(OSU_ANDROID_NATIVE_APP_GLUE_DIR "" CACHE PATH
+    "Directory containing android_native_app_glue.c")
   set(native_app_glue
-    "${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c")
+    "${OSU_ANDROID_NATIVE_APP_GLUE_DIR}/android_native_app_glue.c")
   if(NOT EXISTS "${native_app_glue}")
-    message(FATAL_ERROR "Android NDK native_app_glue not found: ${native_app_glue}")
+    message(FATAL_ERROR
+      "Set OSU_ANDROID_NATIVE_APP_GLUE_DIR to the native_app_glue sources")
   endif()
   add_library(${PROJECT_NAME} SHARED
     ${module_sources} ${main_source} "${native_app_glue}")
   target_include_directories(${PROJECT_NAME} PRIVATE
-    "${ANDROID_NDK}/sources/android/native_app_glue")
+    "${OSU_ANDROID_NATIVE_APP_GLUE_DIR}")
   target_link_options(${PROJECT_NAME} PRIVATE
-    "LINKER:-u,ANativeActivity_onCreate")
+    "LINKER:-u,ANativeActivity_onCreate"
+    "LINKER:--no-undefined")
 else()
   add_executable(${PROJECT_NAME} ${module_sources} ${main_source})
 endif()
@@ -307,6 +311,13 @@ if(EMSCRIPTEN_BUILD)
     openal
   )
 elseif(ANDROID)
+  find_library(CXX_LIBRARY NAMES c++ REQUIRED)
+  find_library(CXXABI_LIBRARY NAMES c++abi REQUIRED)
+  find_library(UNWIND_LIBRARY NAMES unwind REQUIRED)
+  set(COMPILER_RT_LIBRARY "${OSU_ANDROID_RESOURCE_DIR}/lib/linux/libclang_rt.builtins-aarch64-android.a")
+  if(NOT EXISTS "${COMPILER_RT_LIBRARY}")
+    message(FATAL_ERROR "Android compiler-rt not found: ${COMPILER_RT_LIBRARY}")
+  endif()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
     skiff::widgets
@@ -316,8 +327,10 @@ elseif(ANDROID)
     ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
     ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
     ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
+    ${CXX_LIBRARY} ${CXXABI_LIBRARY} ${UNWIND_LIBRARY}
+    ${COMPILER_RT_LIBRARY}
     ${ANDROID_LIBRARY} ${EGL_LIBRARY} ${GLES_LIBRARY} ${LOG_LIBRARY}
-    ${CMAKE_DL_LIBS}
+    m dl c
   )
   include(../cmake/android-apk.cmake)
   osu_add_android_apk(${PROJECT_NAME})

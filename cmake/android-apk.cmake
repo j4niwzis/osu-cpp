@@ -3,59 +3,27 @@ function(osu_add_android_apk target)
     message(FATAL_ERROR "osu_add_android_apk is only available for Android builds")
   endif()
 
-  set(OSU_ANDROID_SDK "$ENV{ANDROID_HOME}" CACHE PATH "Android SDK root")
-  if(NOT OSU_ANDROID_SDK)
-    set(OSU_ANDROID_SDK "$ENV{ANDROID_SDK_ROOT}" CACHE PATH "Android SDK root" FORCE)
-  endif()
-  if(NOT IS_DIRECTORY "${OSU_ANDROID_SDK}")
-    message(FATAL_ERROR "Set ANDROID_HOME or OSU_ANDROID_SDK to the Android SDK")
-  endif()
-
-  set(OSU_ANDROID_API "35" CACHE STRING "Android target SDK API")
+  set(OSU_ANDROID_API "26" CACHE STRING "Android target SDK API")
+  set(OSU_ANDROID_ABI "arm64-v8a" CACHE STRING "Android APK ABI")
+  set(OSU_ANDROID_PLATFORM_JAR "" CACHE FILEPATH
+    "Source-built Android platform android.jar")
+  set(OSU_ANDROID_APKSIGNER_JAR "" CACHE FILEPATH
+    "Source-built apksigner executable jar")
   set(OSU_ANDROID_KEY_ALIAS "androiddebugkey" CACHE STRING "APK signing key alias")
   set(OSU_ANDROID_KEY_PASSWORD "android" CACHE STRING "APK signing key password")
   set(OSU_ANDROID_KEYSTORE "${CMAKE_BINARY_DIR}/apk/debug.keystore"
     CACHE FILEPATH "APK signing keystore")
 
-  file(GLOB build_tools LIST_DIRECTORIES TRUE
-    "${OSU_ANDROID_SDK}/build-tools/*")
-  if(NOT build_tools)
-    message(FATAL_ERROR "No Android SDK build-tools are installed")
-  endif()
-  list(SORT build_tools COMPARE NATURAL ORDER DESCENDING)
-  list(GET build_tools 0 build_tools_dir)
-
-  find_program(aapt2 NAMES aapt2 HINTS "${build_tools_dir}"
-    NO_DEFAULT_PATH REQUIRED)
-  find_program(zipalign NAMES zipalign HINTS "${build_tools_dir}"
-    NO_DEFAULT_PATH REQUIRED)
-  find_program(apksigner NAMES apksigner HINTS "${build_tools_dir}"
-    NO_DEFAULT_PATH REQUIRED)
+  find_program(aapt2 NAMES aapt2 REQUIRED)
+  find_program(zipalign NAMES zipalign REQUIRED)
+  find_program(java NAMES java REQUIRED)
   find_program(jar NAMES jar REQUIRED)
   find_program(keytool NAMES keytool REQUIRED)
-
-  set(platform_jar
-    "${OSU_ANDROID_SDK}/platforms/android-${OSU_ANDROID_API}/android.jar")
-  if(NOT EXISTS "${platform_jar}")
-    message(FATAL_ERROR "Android platform ${OSU_ANDROID_API} is not installed")
+  if(NOT EXISTS "${OSU_ANDROID_PLATFORM_JAR}")
+    message(FATAL_ERROR "Set OSU_ANDROID_PLATFORM_JAR")
   endif()
-
-  if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-    set(android_triple aarch64-linux-android)
-  elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
-    set(android_triple arm-linux-androideabi)
-  elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86")
-    set(android_triple i686-linux-android)
-  elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
-    set(android_triple x86_64-linux-android)
-  else()
-    message(FATAL_ERROR "Unsupported Android ABI: ${CMAKE_ANDROID_ARCH_ABI}")
-  endif()
-  file(GLOB cxx_shared
-    "${CMAKE_ANDROID_NDK}/toolchains/llvm/prebuilt/*/sysroot/usr/lib/${android_triple}/libc++_shared.so")
-  list(LENGTH cxx_shared cxx_shared_count)
-  if(NOT cxx_shared_count EQUAL 1)
-    message(FATAL_ERROR "Cannot locate the NDK libc++_shared.so")
+  if(NOT EXISTS "${OSU_ANDROID_APKSIGNER_JAR}")
+    message(FATAL_ERROR "Set OSU_ANDROID_APKSIGNER_JAR")
   endif()
 
   set(apk_dir "${CMAKE_BINARY_DIR}/apk")
@@ -63,7 +31,7 @@ function(osu_add_android_apk target)
   set(unsigned_apk "${apk_dir}/osu-cpp-unsigned.apk")
   set(aligned_apk "${apk_dir}/osu-cpp-aligned.apk")
   set(signed_apk "${apk_dir}/osu-cpp.apk")
-  set(native_dir "${stage_dir}/lib/${CMAKE_ANDROID_ARCH_ABI}")
+  set(native_dir "${stage_dir}/lib/${OSU_ANDROID_ABI}")
 
   # Prefix libraries are optional: fully static dependency builds have none.
   set(prefix_libraries)
@@ -101,21 +69,19 @@ function(osu_add_android_apk target)
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${native_dir}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "$<TARGET_FILE:${target}>" "${native_dir}/libosu_client.so"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-      "${cxx_shared}" "${native_dir}/libc++_shared.so"
     ${copy_libraries}
     COMMAND "${CMAKE_COMMAND}" -E rm -f
       "${unsigned_apk}" "${aligned_apk}" "${signed_apk}"
     COMMAND "${aapt2}" link
       -o "${unsigned_apk}"
-      -I "${platform_jar}"
+      -I "${OSU_ANDROID_PLATFORM_JAR}"
       --manifest "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../android/AndroidManifest.xml"
       --min-sdk-version 26
       --target-sdk-version "${OSU_ANDROID_API}"
       -A "${CMAKE_CURRENT_SOURCE_DIR}/assets"
     COMMAND "${jar}" uf "${unsigned_apk}" -C "${stage_dir}" lib
     COMMAND "${zipalign}" -f 4 "${unsigned_apk}" "${aligned_apk}"
-    COMMAND "${apksigner}" sign
+    COMMAND "${java}" -jar "${OSU_ANDROID_APKSIGNER_JAR}" sign
       --ks "${OSU_ANDROID_KEYSTORE}"
       --ks-key-alias "${OSU_ANDROID_KEY_ALIAS}"
       --ks-pass "pass:${OSU_ANDROID_KEY_PASSWORD}"
