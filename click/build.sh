@@ -148,6 +148,10 @@ rm -f "$app_build/CMakeCache.txt"
 # libraries must not be replaced by copies from the build container.
 runtime_lib="$INSTALL_DIR/lib/aarch64-linux-gnu"
 mkdir -p "$runtime_lib"
+# This GLFW is built in our private prefix rather than installed in the image's
+# default loader path, so ldd reports it as "not found" and cannot collect it
+# through the generic loop below.
+cp -L "$prefix/lib/libglfw.so.3" "$runtime_lib/libglfw.so.3"
 ldd "$INSTALL_DIR/bin/osu_client" | awk '$2 == "=>" && $3 ~ /^\// { print $3 }' |
 while IFS= read -r library; do
   name=${library##*/}
