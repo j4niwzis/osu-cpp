@@ -1,5 +1,3 @@
-module;
-
 #include <android_native_app_glue.h>
 
 import std;
@@ -8,7 +6,6 @@ import app;
 import platform.android_runtime;
 
 extern "C" void android_main(android_app *state) {
-  app_dummy();
   platform::android::attach(state);
 
   try {
