@@ -8,6 +8,7 @@ export namespace platform::android {
 void attach(android_app *app);
 [[nodiscard]] android_app *application();
 [[nodiscard]] bool prepareAssets();
+[[nodiscard]] bool requestLandscape();
 
 } // namespace platform::android
 
@@ -92,6 +93,50 @@ bool prepareAssets() {
   return copyDirectory(app->activity->assetManager, "fonts", root / "fonts") &&
          copyDirectory(app->activity->assetManager, "licenses",
                        root / "licenses");
+}
+
+bool requestLandscape() {
+  android_app *app = application();
+  if (app == nullptr || app->activity == nullptr ||
+      app->activity->vm == nullptr || app->activity->clazz == nullptr) {
+    return false;
+  }
+  JavaVM *vm = app->activity->vm;
+  JNIEnv *env = nullptr;
+  bool attached = false;
+  void *raw = nullptr;
+  const jint state = vm->GetEnv(&raw, JNI_VERSION_1_6);
+  if (state == JNI_OK) {
+    env = static_cast<JNIEnv *>(raw);
+  } else if (state == JNI_EDETACHED &&
+             vm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
+    attached = true;
+  }
+  if (env == nullptr) {
+    return false;
+  }
+  jclass activityClass = env->GetObjectClass(app->activity->clazz);
+  jmethodID setRequestedOrientation =
+      activityClass != nullptr
+          ? env->GetMethodID(activityClass, "setRequestedOrientation", "(I)V")
+          : nullptr;
+  bool succeeded = setRequestedOrientation != nullptr;
+  if (succeeded) {
+    constexpr jint kSensorLandscape = 6;
+    env->CallVoidMethod(app->activity->clazz, setRequestedOrientation,
+                        kSensorLandscape);
+    succeeded = !env->ExceptionCheck();
+  }
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+  if (activityClass != nullptr) {
+    env->DeleteLocalRef(activityClass);
+  }
+  if (attached) {
+    vm->DetachCurrentThread();
+  }
+  return succeeded;
 }
 
 } // namespace platform::android
