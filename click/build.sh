@@ -74,6 +74,7 @@ if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_C_COMPILER=clang-22 \
+    -DCMAKE_SHARED_LINKER_FLAGS="-L$prefix/lib" \
     -DBUILD_SHARED_LIBS=ON \
     -DGLFW_USE_MIR=ON \
     -DGLFW_BUILD_DOCS=OFF \
