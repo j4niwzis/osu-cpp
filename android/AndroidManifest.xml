@@ -19,8 +19,7 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
             android:exported="true"
             android:launchMode="singleTask"
-            android:resizeableActivity="false"
-            android:screenOrientation="sensorLandscape">
+            android:resizeableActivity="false">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="osu_client" />

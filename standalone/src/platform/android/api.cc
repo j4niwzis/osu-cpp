@@ -58,6 +58,7 @@ export using ::ANativeActivity_finish;
 export using ::ANativeWindow_getHeight;
 export using ::ANativeWindow_getWidth;
 export using ::ANativeWindow_setBuffersGeometry;
+export using ::ANativeWindow_setBuffersTransform;
 export using ::__android_log_write;
 export using ::eglChooseConfig;
 export using ::eglCreateContext;
@@ -103,6 +104,7 @@ export using ::AMOTION_EVENT_ACTION_POINTER_INDEX_MASK;
 export using ::AMOTION_EVENT_ACTION_POINTER_UP;
 export using ::AMOTION_EVENT_ACTION_UP;
 export using ::ANDROID_LOG_ERROR;
+export using ::ANATIVEWINDOW_TRANSFORM_ROTATE_90;
 
 #define OSU_CAPTURE_ANDROID_CONSTANT(name) \
   inline const auto captured_##name = name

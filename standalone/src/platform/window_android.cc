@@ -182,6 +182,13 @@ private:
   }
 
   [[nodiscard]] bool createEgl(ANativeWindow *window) {
+    const int windowWidth = ANativeWindow_getWidth(window);
+    const int windowHeight = ANativeWindow_getHeight(window);
+    if (windowWidth <= 0 || windowHeight <= 0 ||
+        ANativeWindow_setBuffersTransform(
+            window, ANATIVEWINDOW_TRANSFORM_ROTATE_90) != 0) {
+      return false;
+    }
     fDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (fDisplay == EGL_NO_DISPLAY || eglInitialize(fDisplay, nullptr, nullptr) != EGL_TRUE) {
       return false;
@@ -200,7 +207,10 @@ private:
     }
     EGLint format = 0;
     eglGetConfigAttrib(fDisplay, config, EGL_NATIVE_VISUAL_ID, &format);
-    ANativeWindow_setBuffersGeometry(window, 0, 0, format);
+    if (ANativeWindow_setBuffersGeometry(window, windowHeight, windowWidth,
+                                         format) != 0) {
+      return false;
+    }
     fSurface = eglCreateWindowSurface(fDisplay, config, window, nullptr);
     const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
     fContext = eglCreateContext(fDisplay, config, EGL_NO_CONTEXT,
@@ -301,8 +311,9 @@ private:
   }
 
   void moveTouch(AInputEvent *event, std::size_t index) {
-    const float x = AMotionEvent_getX(event, index);
-    const float y = AMotionEvent_getY(event, index);
+    const float x = AMotionEvent_getY(event, index);
+    const float y = static_cast<float>(fInitial.fHeight) -
+                    AMotionEvent_getX(event, index);
     fCursorX.store(x, std::memory_order_release);
     fCursorY.store(y, std::memory_order_release);
     this->push({wallMs(), EventType::kCursorMove, 0, 0, x, y});
