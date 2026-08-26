@@ -86,6 +86,10 @@ if [ ! -f "$prefix/lib/glfw-mir-3.2.ready" ]; then
     "$prefix/lib/pkgconfig/glfw3.pc"
   touch "$prefix/lib/glfw-mir-3.2.ready"
 fi
+# Private dependencies are already recorded in the shared GLFW object's
+# DT_NEEDED entries. Keeping MirClient in Requires.private makes pkg-config
+# reject glfw3 outside the temporary Mir header SDK used above.
+sed -i '/^Requires\.private:/d' "$prefix/lib/pkgconfig/glfw3.pc"
 
 # Build the exact Skia revision used by the Flatpak, but against Noble's
 # graphics/image libraries. Only wuffs is a source dependency for this setup.
