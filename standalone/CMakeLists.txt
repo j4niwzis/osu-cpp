@@ -189,8 +189,8 @@ endforeach()
 list(REMOVE_DUPLICATES selected_cpp_sources)
 
 set(module_sources ${selected_cpp_sources})
-if(EMSCRIPTEN_BUILD OR OSU_PLATFORM_SUFFIX STREQUAL "wasi")
-  # Browser fetch and wasi:http replace the native Beast socket transport.
+if(EMSCRIPTEN_BUILD)
+  # Browser fetch replaces the native Beast socket transport.
   list(FILTER module_sources EXCLUDE REGEX "beast\\.cc$")
 endif()
 
