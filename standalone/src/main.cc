@@ -2,6 +2,7 @@ import std;
 import platform.system;
 import osu;
 import app;
+import archive;
 
 namespace {
 
