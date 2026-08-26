@@ -22,7 +22,8 @@ public:
 
   [[nodiscard]] double nowMs() {
 #ifdef __EMSCRIPTEN__
-    return glfw::glfwGetTime() * 1000.0 - fApp.fPlay.fStartMs;
+    return glfw::glfwGetTime() * 1000.0 - fApp.fPlay.fStartMs +
+           fApp.fPlay.fAudioOffsetMs;
 #else
     // Consult the audio device occasionally; extrapolate from the anchored
     // clock between those potentially blocking device queries.
@@ -30,7 +31,8 @@ public:
     if (wall - fLastClockSyncWall >= kClockSyncIntervalMs) {
       fLastClockSyncWall = wall;
       if (fApp.fAudio.playing()) {
-        fApp.fPlay.fClock.sync(wall, fApp.fAudio.positionSec() * 1000.0);
+        fApp.fPlay.fClock.sync(wall, fApp.fAudio.positionSec() * 1000.0 +
+                                        fApp.fPlay.fAudioOffsetMs);
       }
     }
     return fApp.fPlay.fClock.sample(wall);

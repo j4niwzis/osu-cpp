@@ -84,7 +84,7 @@ public:
       return 0.0;
     }
 #ifdef __EMSCRIPTEN__
-    return wallMs - fApp.fPlay.fStartMs;
+    return wallMs - fApp.fPlay.fStartMs + fApp.fPlay.fAudioOffsetMs;
 #else
     return fApp.fPlay.fClock.sample(wallMs);
 #endif

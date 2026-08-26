@@ -120,6 +120,7 @@ private:
     std::optional<osu::Engine> fEngine;
     AnchoredClock fClock;
     double fStartMs = 0.0;
+    double fAudioOffsetMs = 0.0;
     double fPausedNow = 0.0; // frozen game time while paused
     int fRetryCount = 0;     // plays of this map since it was chosen
     bool fAwaitingFirstFrame = false;
@@ -393,6 +394,11 @@ private:
   void startGameplay(const osu::BeatmapInfo &info) {
     fPlay.fMap.emplace(client::loadBeatmap(fSet, info));
     fBeatmapFilename = info.fFilename;
+    // Universal offset shifts gameplay relative to the audio. Matching osu!'s
+    // convention, a positive value advances the gameplay timeline and makes
+    // objects appear earlier; a negative value delays them. Snapshot it for
+    // the whole attempt so a replay and its input events share one clock.
+    fPlay.fAudioOffsetMs = fSettings.value("offset");
 
     // Which rules to play by. A fresh play takes the setting. A replay takes
     // the toggle beside its panel, which starts on whatever the index says it
@@ -513,7 +519,7 @@ private:
   void startGameplayClock() {
     fPlay.fAwaitingFirstFrame = false;
     fPlay.fStartMs = wallMs();
-    fPlay.fClock.reset(fPlay.fStartMs, 0.0);
+    fPlay.fClock.reset(fPlay.fStartMs, fPlay.fAudioOffsetMs);
     fPlayback.resetClockSync();
     fAudio.play();
   }
