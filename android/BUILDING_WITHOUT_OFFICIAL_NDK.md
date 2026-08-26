@@ -2,10 +2,10 @@
 
 This document records the source-built Android toolchain used for the
 `android` branch on an AArch64 Alpine/postmarketOS host. It deliberately does
-not use Gradle, the proprietary Android SDK command-line tools package, or the
-official NDK binary archive. The Android and LLVM sources are open source; the
-host compiler, CMake, Ninja, `aapt2`, Java, and `zipalign` come from the Linux
-distribution.
+not use Gradle, the Android SDK command-line tools package, or the NDK binary
+archive. Those are not proprietary software; they are somebody else's build of
+open source, and this is the build instead. The host compiler, CMake, Ninja,
+`aapt2`, Java, and `zipalign` come from the Linux distribution.
 
 This is a description of the working development environment, not a generic
 replacement for the NDK. It targets one ABI (`arm64-v8a`) and API 27, and only
