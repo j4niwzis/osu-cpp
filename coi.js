@@ -9,13 +9,36 @@
 // The first visit registers it and reloads once; every load after that is
 // isolated. This file is both the page script and the worker, told apart by
 // whether there is a window.
+// And what it has already fetched, it keeps.
+//
+// The client is thirty megabytes -- the module, and the fonts it draws with
+// -- and a browser that revalidates all of it on every reload is a wait
+// before every visit. These files are named after the build that made them
+// only in the sense that they change together, so the cache is emptied
+// whenever this worker's own version changes.
+var CACHE = "osu-cpp-v1";
+var KEPT = /\.(?:wasm|data|js|html)$|\/$/;
+
 if (typeof window === "undefined") {
   self.addEventListener("install", function () {
     self.skipWaiting();
   });
 
   self.addEventListener("activate", function (event) {
-    event.waitUntil(self.clients.claim());
+    event.waitUntil(
+      caches
+        .keys()
+        .then(function (names) {
+          return Promise.all(
+            names.map(function (name) {
+              return name === CACHE ? null : caches.delete(name);
+            })
+          );
+        })
+        .then(function () {
+          return self.clients.claim();
+        })
+    );
   });
 
   self.addEventListener("fetch", function (event) {
@@ -25,25 +48,54 @@ if (typeof window === "undefined") {
     if (request.cache === "only-if-cached" && request.mode !== "same-origin") {
       return;
     }
+
+    // The two headers, added to whatever the response was.
+    var isolate = function (response) {
+      if (response.status === 0) {
+        // An opaque response has no headers to copy and no body to read.
+        return response;
+      }
+      var headers = new Headers(response.headers);
+      headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+      headers.set("Cross-Origin-Opener-Policy", "same-origin");
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headers,
+      });
+    };
+
+    var url = new URL(request.url);
+    var keepable =
+      request.method === "GET" &&
+      url.origin === self.location.origin &&
+      KEPT.test(url.pathname);
+
+    if (!keepable) {
+      event.respondWith(
+        fetch(request)
+          .then(isolate)
+          .catch(function (error) {
+            console.error("cross-origin isolation:", error);
+          })
+      );
+      return;
+    }
+
     event.respondWith(
-      fetch(request)
-        .then(function (response) {
-          // An opaque response has no headers to copy and no body to read.
-          if (response.status === 0) {
-            return response;
+      caches.open(CACHE).then(function (cache) {
+        return cache.match(request).then(function (kept) {
+          if (kept) {
+            return isolate(kept);
           }
-          var headers = new Headers(response.headers);
-          headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-          headers.set("Cross-Origin-Opener-Policy", "same-origin");
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: headers,
+          return fetch(request).then(function (response) {
+            if (response.status === 200) {
+              cache.put(request, response.clone());
+            }
+            return isolate(response);
           });
-        })
-        .catch(function (error) {
-          console.error("cross-origin isolation:", error);
-        })
+        });
+      })
     );
   });
 } else if (!window.crossOriginIsolated) {
