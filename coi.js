@@ -16,7 +16,7 @@
 // before every visit. These files are named after the build that made them
 // only in the sense that they change together, so the cache is emptied
 // whenever this worker's own version changes.
-var CACHE = "osu-cpp-v1";
+var CACHE = "osu-cpp-v2";
 var KEPT = /\.(?:wasm|data|js|html)$|\/$/;
 
 if (typeof window === "undefined") {
@@ -56,7 +56,15 @@ if (typeof window === "undefined") {
         return response;
       }
       var headers = new Headers(response.headers);
-      headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+      // credentialless rather than require-corp.
+      //
+      // Both give the page a SharedArrayBuffer. require-corp additionally
+      // demands a Cross-Origin-Resource-Policy header on every cross-origin
+      // resource, which the beatmap mirrors do not send -- so artwork and
+      // previews were blocked with no status at all to explain it.
+      // credentialless asks instead that such requests carry no credentials,
+      // which these do not.
+      headers.set("Cross-Origin-Embedder-Policy", "credentialless");
       headers.set("Cross-Origin-Opener-Policy", "same-origin");
       return new Response(response.body, {
         status: response.status,
@@ -66,6 +74,20 @@ if (typeof window === "undefined") {
     };
 
     var url = new URL(request.url);
+
+    // Another origin is not this worker's business.
+    //
+    // It used to fetch those too, to put the isolation headers on the
+    // answer. A service worker registered from an isolated page is isolated
+    // itself, so that fetch was the one being refused -- a beatmap mirror
+    // that answers a page perfectly well returned nothing here, and the page
+    // saw a request that failed with no status. Left alone, the browser
+    // fetches it the ordinary way, with CORS, which is what these hosts
+    // support.
+    if (url.origin !== self.location.origin) {
+      return;
+    }
+
     var keepable =
       request.method === "GET" &&
       url.origin === self.location.origin &&
