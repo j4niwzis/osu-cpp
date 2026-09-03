@@ -30,6 +30,35 @@ if(NOT COMMAND cme_provider)
     "root, and not a subdirectory of either.")
 endif()
 
+# Where the standard library's module metadata is, as a path.
+#
+# CMake asks the compiler for libc++.modules.json when it works out what the
+# compiler can do, and records the answer -- which for a cross toolchain is
+# the bare name, because that question was asked without this build's
+# sysroot and target. The generator then cannot open it, and says so at the
+# end of the configuration, about a file rather than about the question.
+#
+# The compiler answers correctly when it is asked properly, so it is.
+if(CMAKE_CXX_STDLIB_MODULES_JSON
+   AND NOT IS_ABSOLUTE "${CMAKE_CXX_STDLIB_MODULES_JSON}")
+  set(osu_modules_json_flags "")
+  if(CMAKE_CXX_COMPILER_TARGET)
+    list(APPEND osu_modules_json_flags "--target=${CMAKE_CXX_COMPILER_TARGET}")
+  endif()
+  if(CMAKE_SYSROOT)
+    list(APPEND osu_modules_json_flags "--sysroot=${CMAKE_SYSROOT}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" ${osu_modules_json_flags}
+            "-print-file-name=${CMAKE_CXX_STDLIB_MODULES_JSON}"
+    OUTPUT_VARIABLE osu_modules_json OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(EXISTS "${osu_modules_json}")
+    set(CMAKE_CXX_STDLIB_MODULES_JSON "${osu_modules_json}")
+    message(STATUS "import std: ${CMAKE_CXX_STDLIB_MODULES_JSON}")
+  endif()
+endif()
+
 include(GNUInstallDirs)
 
 # ---- Options ----
@@ -309,9 +338,42 @@ elseif(ANDROID)
   find_library(CXX_LIBRARY NAMES c++ REQUIRED)
   find_library(CXXABI_LIBRARY NAMES c++abi REQUIRED)
   find_library(UNWIND_LIBRARY NAMES unwind REQUIRED)
-  set(COMPILER_RT_LIBRARY "${OSU_ANDROID_RESOURCE_DIR}/lib/linux/libclang_rt.builtins-aarch64-android.a")
+  # Which file clang would link its builtins from, asked of clang with the
+  # flags this build compiles with. Not -print-resource-dir: that answers
+  # about the clang installation -- /usr/lib/llvm22 -- and the runtime for
+  # this target was built and put somewhere else entirely by whoever made
+  # the toolchain. -print-libgcc-file-name answers about this target.
+  if(NOT COMPILER_RT_LIBRARY)
+    separate_arguments(OSU_ANDROID_RT_FLAGS UNIX_COMMAND "${CMAKE_C_FLAGS}")
+    execute_process(
+      COMMAND "${CMAKE_C_COMPILER}" ${OSU_ANDROID_RT_FLAGS}
+              --target=${CMAKE_C_COMPILER_TARGET}
+              --sysroot=${CMAKE_SYSROOT} -print-libgcc-file-name
+      OUTPUT_VARIABLE COMPILER_RT_LIBRARY
+      OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  endif()
+  # The architecture is the one being built for, not the one this was
+  # written on.
+  set(OSU_ANDROID_RT_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+  if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    set(OSU_ANDROID_RT_ARCH aarch64)
+  elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+    set(OSU_ANDROID_RT_ARCH arm)
+  elseif(CMAKE_ANDROID_ARCH_ABI)
+    set(OSU_ANDROID_RT_ARCH "${CMAKE_ANDROID_ARCH_ABI}")
+  endif()
+  # And the old way, for a toolchain whose clang answers with something
+  # that is not there: a resource directory and the name inside it.
+  if(NOT COMPILER_RT_LIBRARY OR NOT EXISTS "${COMPILER_RT_LIBRARY}")
+    set(COMPILER_RT_LIBRARY
+      "${OSU_ANDROID_RESOURCE_DIR}/lib/linux/libclang_rt.builtins-${OSU_ANDROID_RT_ARCH}-android.a")
+  endif()
   if(NOT EXISTS "${COMPILER_RT_LIBRARY}")
-    message(FATAL_ERROR "Android compiler-rt not found: ${COMPILER_RT_LIBRARY}")
+    message(FATAL_ERROR
+      "Android compiler-rt not found: ${COMPILER_RT_LIBRARY}. That path is "
+      "what ${CMAKE_C_COMPILER} answers -print-libgcc-file-name with, for "
+      "this target and sysroot. Pass COMPILER_RT_LIBRARY, or "
+      "OSU_ANDROID_RESOURCE_DIR to build the name the old way.")
   endif()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
@@ -391,6 +453,24 @@ if(OSU_VIDEO_LIBAV)
   target_link_libraries(${PROJECT_NAME}
     FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
     FFmpeg::swscale FFmpeg::swresample)
+endif()
+
+# Debug information for the module libraries, which clang 22 cannot always
+# produce.
+#
+# Compiling skiff's text node with -g crashes the frontend outright --
+# "clang frontend command failed with exit code 139", inside a module
+# interface unit. The information is worth having when it can be had, so
+# this is a switch rather than a removal, and it names what it is for.
+option(OSU_MODULE_DEBUG_INFO
+  "Compile this project's module libraries with debug information" OFF)
+if(NOT OSU_MODULE_DEBUG_INFO)
+  foreach(osu_module_target skiff skiff-widgets osucpp ${PROJECT_NAME})
+    if(TARGET ${osu_module_target})
+      target_compile_options(${osu_module_target} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-g0>)
+    endif()
+  endforeach()
 endif()
 
 # ---- Emscripten-specific options ----

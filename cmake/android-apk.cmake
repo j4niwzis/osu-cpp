@@ -34,12 +34,18 @@ function(osu_add_android_apk target)
   find_program(java NAMES java REQUIRED)
   find_program(jar NAMES jar REQUIRED)
   find_program(keytool NAMES keytool REQUIRED)
-  if(NOT EXISTS "${OSU_ANDROID_FRAMEWORK_RES_APK}")
-    message(FATAL_ERROR "Set OSU_ANDROID_FRAMEWORK_RES_APK")
-  endif()
-  if(NOT EXISTS "${OSU_ANDROID_APKSIGNER_JAR}")
-    message(FATAL_ERROR "Set OSU_ANDROID_APKSIGNER_JAR")
-  endif()
+  # Said with the path in it: the check is whether the file is there, and a
+  # message that only says "set this" is wrong every time it is set to
+  # something that is not there -- which is the more common way to get it
+  # wrong.
+  foreach(needed OSU_ANDROID_FRAMEWORK_RES_APK OSU_ANDROID_APKSIGNER_JAR)
+    if(NOT ${needed})
+      message(FATAL_ERROR "Set ${needed}")
+    elseif(NOT EXISTS "${${needed}}")
+      message(FATAL_ERROR
+        "${needed} is ${${needed}}, and there is no such file")
+    endif()
+  endforeach()
 
   set(apk_dir "${CMAKE_BINARY_DIR}/apk")
   set(stage_dir "${apk_dir}/stage")
