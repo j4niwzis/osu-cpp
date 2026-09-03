@@ -20,6 +20,35 @@ std::condition_variable gPickerChanged;
 bool gPickerFinished = false;
 std::string gPickerUri;
 
+// What this path did and did not manage, in the system log.
+//
+// Every step of it can fail in a way that leaves the screen exactly as it
+// was -- no window, no error, no crash -- and until now none of them said
+// so. A user pressing the button and getting nothing had nothing to read,
+// and neither did anyone asked to find out why.
+void say(std::string_view message) {
+  const std::string owned(message);
+  __android_log_write(ANDROID_LOG_INFO, "osu!cpp", owned.c_str());
+}
+
+// Whether Java threw, and clearing it if it did.
+//
+// JNI does not forgive: a call made while an exception is pending is not an
+// error return, it is the runtime stopping the process -- "JNI DETECTED
+// ERROR IN APPLICATION: ... called with pending exception". Everything below
+// that can throw is followed by this, because the things that throw here are
+// ordinary: a document provider that will not open what was chosen, a
+// permission that was not persisted, a stream that ends badly.
+bool threw(JNIEnv *env, std::string_view what) {
+  if (!env->ExceptionCheck()) {
+    return false;
+  }
+  say(std::string("java objected while ") + std::string(what));
+  env->ExceptionDescribe();
+  env->ExceptionClear();
+  return true;
+}
+
 struct Environment {
   JavaVM *fVm = nullptr;
   JNIEnv *fEnv = nullptr;
@@ -50,6 +79,7 @@ bool requestPicker(ANativeActivity *activity) {
   Environment attached(activity);
   JNIEnv *env = attached.fEnv;
   if (env == nullptr) {
+    say("the picker cannot be opened: this thread has no JNI environment");
     return false;
   }
   jclass activityClass = env->GetObjectClass(activity->clazz);
@@ -57,11 +87,23 @@ bool requestPicker(ANativeActivity *activity) {
                        ? env->GetMethodID(activityClass, "openBeatmapPicker",
                                           "()V")
                        : nullptr;
+  if (activityClass == nullptr) {
+    say("the picker cannot be opened: the activity has no class");
+  } else if (open == nullptr) {
+    // Which is what happens when the activity is android.app.NativeActivity
+    // rather than this project's subclass of it -- a package built without
+    // the picker, or a manifest naming the other one.
+    say("the picker cannot be opened: this activity has no "
+        "openBeatmapPicker method");
+    env->ExceptionClear();
+  }
   if (open != nullptr) {
     env->CallVoidMethod(activity->clazz, open);
   }
   const bool succeeded = open != nullptr && !env->ExceptionCheck();
   if (env->ExceptionCheck()) {
+    say("the picker was asked for and Java objected");
+    env->ExceptionDescribe();
     env->ExceptionClear();
   }
   if (activityClass != nullptr) {
@@ -106,6 +148,8 @@ std::optional<std::filesystem::path> copyUri(ANativeActivity *activity,
   Environment attached(activity);
   JNIEnv *env = attached.fEnv;
   if (env == nullptr || activity->internalDataPath == nullptr) {
+    say("the chosen document cannot be copied: no JNI environment or no "
+        "private directory to copy it into");
     return std::nullopt;
   }
   jclass uriClass = env->FindClass("android/net/Uri");
@@ -118,6 +162,9 @@ std::optional<std::filesystem::path> copyUri(ANativeActivity *activity,
   jobject uri = parse != nullptr && text != nullptr
                     ? env->CallStaticObjectMethod(uriClass, parse, text)
                     : nullptr;
+  if (threw(env, "reading the chosen address")) {
+    uri = nullptr;
+  }
   jclass activityClass = env->GetObjectClass(activity->clazz);
   jmethodID getResolver =
       activityClass != nullptr
@@ -127,6 +174,9 @@ std::optional<std::filesystem::path> copyUri(ANativeActivity *activity,
   jobject resolver = getResolver != nullptr
                          ? env->CallObjectMethod(activity->clazz, getResolver)
                          : nullptr;
+  if (threw(env, "asking the activity for its content resolver")) {
+    resolver = nullptr;
+  }
   jclass resolverClass =
       resolver != nullptr ? env->GetObjectClass(resolver) : nullptr;
   jmethodID openStream =
@@ -137,6 +187,12 @@ std::optional<std::filesystem::path> copyUri(ANativeActivity *activity,
   jobject stream = openStream != nullptr && uri != nullptr
                        ? env->CallObjectMethod(resolver, openStream, uri)
                        : nullptr;
+  // These throw in the ordinary course of things: a provider that has gone
+  // away, a permission that did not persist, a document that is not there
+  // any more. Left pending, the next call takes the process with it.
+  if (threw(env, "opening the chosen document")) {
+    stream = nullptr;
+  }
   jclass streamClass = stream != nullptr ? env->GetObjectClass(stream) : nullptr;
   jmethodID read = streamClass != nullptr
                        ? env->GetMethodID(streamClass, "read", "([B)I")
@@ -150,6 +206,9 @@ std::optional<std::filesystem::path> copyUri(ANativeActivity *activity,
   std::ofstream output(destination, std::ios::binary | std::ios::trunc);
   constexpr jsize kBufferSize = 64 * 1024;
   jbyteArray bytes = env->NewByteArray(kBufferSize);
+  if (threw(env, "making room to copy the document")) {
+    bytes = nullptr;
+  }
   std::vector<jbyte> buffer(static_cast<std::size_t>(kBufferSize));
   bool copied = output.good() && bytes != nullptr && read != nullptr;
   while (copied) {
@@ -173,9 +232,11 @@ std::optional<std::filesystem::path> copyUri(ANativeActivity *activity,
   if (close != nullptr && stream != nullptr) {
     env->CallVoidMethod(stream, close);
   }
-  if (env->ExceptionCheck()) {
-    env->ExceptionClear();
+  if (threw(env, "closing the document")) {
     copied = false;
+  }
+  if (!copied) {
+    say("the document was not copied");
   }
   for (jobject reference : {
            static_cast<jobject>(bytes), static_cast<jobject>(streamClass),
@@ -212,6 +273,9 @@ bool copyFileToUri(ANativeActivity *activity,
   jobject uri = parse != nullptr && text != nullptr
                     ? env->CallStaticObjectMethod(uriClass, parse, text)
                     : nullptr;
+  if (threw(env, "reading the chosen address")) {
+    uri = nullptr;
+  }
   jclass activityClass = env->GetObjectClass(activity->clazz);
   jmethodID getResolver =
       activityClass != nullptr
@@ -221,6 +285,9 @@ bool copyFileToUri(ANativeActivity *activity,
   jobject resolver = getResolver != nullptr
                          ? env->CallObjectMethod(activity->clazz, getResolver)
                          : nullptr;
+  if (threw(env, "asking the activity for its content resolver")) {
+    resolver = nullptr;
+  }
   jclass resolverClass =
       resolver != nullptr ? env->GetObjectClass(resolver) : nullptr;
   jmethodID openStream =
@@ -231,6 +298,12 @@ bool copyFileToUri(ANativeActivity *activity,
   jobject stream = openStream != nullptr && uri != nullptr
                        ? env->CallObjectMethod(resolver, openStream, uri)
                        : nullptr;
+  // These throw in the ordinary course of things: a provider that has gone
+  // away, a permission that did not persist, a document that is not there
+  // any more. Left pending, the next call takes the process with it.
+  if (threw(env, "opening the chosen document")) {
+    stream = nullptr;
+  }
   jclass streamClass = stream != nullptr ? env->GetObjectClass(stream) : nullptr;
   jmethodID write = streamClass != nullptr
                         ? env->GetMethodID(streamClass, "write", "([BII)V")
@@ -264,9 +337,11 @@ bool copyFileToUri(ANativeActivity *activity,
   if (close != nullptr && stream != nullptr) {
     env->CallVoidMethod(stream, close);
   }
-  if (env->ExceptionCheck()) {
-    env->ExceptionClear();
+  if (threw(env, "closing the document")) {
     copied = false;
+  }
+  if (!copied) {
+    say("the document was not copied");
   }
   for (jobject reference : {
            static_cast<jobject>(bytes), static_cast<jobject>(streamClass),
@@ -336,8 +411,10 @@ openArchive(const std::string &) {
 #if OSU_ANDROID_SYSTEM_FILE_PICKER
   android_app *app = platform::android::application();
   if (app == nullptr || app->activity == nullptr) {
+    detail::say("import: there is no activity to ask");
     return std::nullopt;
   }
+  detail::say("import: asking for the document picker");
   {
     std::lock_guard lock(detail::gPickerMutex);
     detail::gPickerFinished = false;
@@ -348,12 +425,32 @@ openArchive(const std::string &) {
   }
   std::string uri;
   {
+    // Waited for, but not for ever.
+    //
+    // This runs on the loader rather than on the thread that draws, so a
+    // wait that never ends is not a window that freezes -- it is a thread
+    // parked for the life of the process and a button that does nothing
+    // from then on, because the client will not open a second dialog while
+    // it believes one is open. Every way this can happen is on the far side
+    // of a process boundary: an intent nothing answers, a result delivered
+    // to an activity that has been recreated, a picker the user left by a
+    // route that reports nothing. Ten minutes is longer than any of those
+    // and shorter than for ever.
     std::unique_lock lock(detail::gPickerMutex);
-    detail::gPickerChanged.wait(lock,
-                                [] { return detail::gPickerFinished; });
+    if (!detail::gPickerChanged.wait_for(
+            lock, std::chrono::minutes(10),
+            [] { return detail::gPickerFinished; })) {
+      detail::say("nothing came back from the document picker; giving up");
+      return std::nullopt;
+    }
     uri = detail::gPickerUri;
   }
-  return uri.empty() ? std::nullopt : detail::copyUri(app->activity, uri);
+  if (uri.empty()) {
+    detail::say("the document picker was closed without choosing anything");
+    return std::nullopt;
+  }
+  detail::say("a document was chosen; copying it in");
+  return detail::copyUri(app->activity, uri);
 #else
   return detail::fallbackArchive();
 #endif
@@ -378,8 +475,12 @@ openArchive(const std::string &) {
   std::string uri;
   {
     std::unique_lock lock(detail::gPickerMutex);
-    detail::gPickerChanged.wait(lock,
-                                [] { return detail::gPickerFinished; });
+    if (!detail::gPickerChanged.wait_for(
+            lock, std::chrono::minutes(10),
+            [] { return detail::gPickerFinished; })) {
+      detail::say("nothing came back from the file creator; giving up");
+      return {true, std::nullopt, {}};
+    }
     uri = detail::gPickerUri;
   }
   if (uri.empty()) {

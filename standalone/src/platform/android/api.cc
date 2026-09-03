@@ -9,6 +9,11 @@ module;
 #include <android/native_window.h>
 #include <android_native_app_glue.h>
 #include <jni.h>
+// What it takes to put this program's own output where a phone can be asked
+// to show it: a pipe, the two standard streams pointed into it, and a thread
+// reading it back out.
+#include <cstdio>
+#include <unistd.h>
 
 export module platform.android.api;
 
@@ -127,6 +132,17 @@ export using ::AMOTION_EVENT_ACTION_POINTER_INDEX_MASK;
 export using ::AMOTION_EVENT_ACTION_POINTER_UP;
 export using ::AMOTION_EVENT_ACTION_UP;
 export using ::ANDROID_LOG_ERROR;
+export using ::ANDROID_LOG_INFO;
+export using ::pipe;
+export using ::dup2;
+export using ::read;
+export using ::close;
+export using ::fflush;
+export using ::setvbuf;
+export inline constexpr int kLineBuffered = _IOLBF;
+export inline constexpr int kUnbuffered = _IONBF;
+export using ::stdout;
+export using ::stderr;
 export using ::ANATIVEWINDOW_TRANSFORM_ROTATE_90;
 export using ::ANATIVEACTIVITY_HIDE_SOFT_INPUT_NOT_ALWAYS;
 export using ::ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED;
