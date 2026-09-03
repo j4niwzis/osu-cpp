@@ -185,8 +185,17 @@ public:
 
   [[nodiscard]] bool open() const noexcept { return fOpen; }
   [[nodiscard]] float slide() const noexcept { return fSlide; }
+  // How wide the shell is drawn, which is what it was written as unless the
+  // screen is narrower than that.
+  //
+  // The sidebar and the panel are 170 and 400 points, and a window narrower
+  // than their sum has them hanging over its edge -- a portrait window is
+  // routinely narrower. Both are then given the share of the screen they
+  // have of the 570, and everything inside them follows: the rows are laid
+  // out relative to the panel and the text is clipped to the row.
+  [[nodiscard]] float shellWidth() const noexcept { return fShellWidth; }
   [[nodiscard]] float occupiedWidth() const noexcept {
-    return (kSidebarWidth + kPanelWidth) * fSlide;
+    return fShellWidth * fSlide;
   }
 
   // A retained overlay is one composited surface even while it is settled.
@@ -273,10 +282,35 @@ public:
       fTouched = true;
     }
 
+    // What there is room for, before anything is placed against it.
+    const float wanted = kSidebarWidth + kPanelWidth;
+    const float room = std::max(1.0f, sw);
+    const float width = std::min(wanted, room);
+    if (width != fShellWidth) {
+      fShellWidth = width;
+      fTouched = true;
+    }
+    const float share = fShellWidth / wanted;
+    // Only the width. The height of all three is the screen's, taken from
+    // the parent by the layout, and saying a number for it turns that off:
+    // the layout then wrote its own height back over ours every pass, every
+    // pass counted as a change, and a scroll that is invalidated every frame
+    // is a list that will not move.
+    if (fShell != nullptr) {
+      fShell->setSize(fShellWidth, fShell->height());
+    }
+    if (fSidebar != nullptr) {
+      fSidebar->setSize(kSidebarWidth * share, fSidebar->height());
+    }
+    if (fPanel != nullptr) {
+      fPanel->setPosition(kSidebarWidth * share, fPanel->y());
+      fPanel->setSize(kPanelWidth * share, fPanel->height());
+    }
+
     // The slide is a position rather than a transform: it is driven by the
     // same clock the client asks about, so there is one answer to "is this
     // still moving".
-    const float shellX = -(kSidebarWidth + kPanelWidth) * (1.0f - fSlide);
+    const float shellX = -fShellWidth * (1.0f - fSlide);
     const float fade = std::min(1.0f, fSlide * 2.0f);
     if (fShell != nullptr && fShell->x() != shellX) {
       fShell->setPosition(shellX, fShell->y());
@@ -328,7 +362,7 @@ public:
       damage = sliding ? screen : damage;
       if (fTouched && !sliding) {
         damage.join(skia::SkRect::MakeXYWH(
-            std::max(0.0f, shellX), 0.0f, kSidebarWidth + kPanelWidth, sh));
+            std::max(0.0f, shellX), 0.0f, fShellWidth, sh));
       }
     }
     fTouched = false;
@@ -406,7 +440,7 @@ public:
         fAction.fKind != Action::kSection) {
       fPending = fAction;
       return fAction.fKind == Action::kNone && fOpenChoice < 0 &&
-                     x >= (kSidebarWidth + kPanelWidth) * fSlide
+                     x >= this->occupiedWidth()
                  ? Hit::kNone
                  : Hit::kSwallowed;
     }
@@ -425,8 +459,7 @@ public:
         this->setOpenChoice(-1);
         return Hit::kSwallowed;
       }
-      return x < (kSidebarWidth + kPanelWidth) * fSlide ? Hit::kSwallowed
-                                                        : Hit::kNone;
+      return x < this->occupiedWidth() ? Hit::kSwallowed : Hit::kNone;
     case Action::kRestore:
       settings.restoreDefault(action.fIndex);
       this->markRow(action.fIndex);
@@ -835,6 +868,8 @@ private:
 
   [[nodiscard]] std::unique_ptr<scene::Drawable> build() {
     fShell = nullptr;
+    fSidebar = nullptr;
+    fPanel = nullptr;
     fDim = nullptr;
     fScroll = nullptr;
     fColumn = nullptr;
@@ -861,6 +896,7 @@ private:
     auto sidebar = scene::make<nodes::Box>(
         {.roles = {scene::role<settings_style::Sidebar>}},
         skia::colorSetARGB(255, 23, 19, 30));
+    fSidebar = sidebar.get();
     auto sections = scene::make<nodes::FillFlow>(
         {.roles = {scene::role<settings_style::Sections>}},
         nodes::FillFlow::Direction::kVertical);
@@ -875,6 +911,8 @@ private:
     auto panel = scene::make<nodes::Box>(
         {.roles = {scene::role<settings_style::Panel>}},
         skia::colorSetARGB(255, 31, 25, 40));
+
+    fPanel = panel.get();
 
     // Text draws its baseline at the top of its box plus the size, so these
     // are placed by where the baseline used to be: 56 and 78.
@@ -1005,7 +1043,12 @@ private:
 
   std::unique_ptr<scene::Drawable> fScene;
   scene::Drawable *fShell = nullptr;
+  nodes::Box *fSidebar = nullptr;
+  nodes::Box *fPanel = nullptr;
   nodes::Box *fDim = nullptr;
+  // What the shell is drawn at now, which is what it was written as until a
+  // screen narrower than that says otherwise.
+  float fShellWidth = kSidebarWidth + kPanelWidth;
   nodes::ScrollContainer *fScroll = nullptr;
   nodes::FillFlow *fColumn = nullptr;
   ChoiceListNode *fChoiceList = nullptr;
