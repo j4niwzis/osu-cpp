@@ -35,13 +35,13 @@ public:
   ~WaylandTouch() { this->close(); }
 
   template <class Push>
-  void init(glfw::GLFWwindow *window, Push push) {
+  void init(GLFWwindow *window, Push push) {
 #ifdef OSU_WAYLAND_TOUCH
     // Resolve these instead of linking them directly.  A GLFW built only for
     // X11 does not export its Wayland native-access entry points even when
     // wayland-client happens to be installed on the machine.
     using GetDisplay = wl_display *(*)();
-    using GetWindow = wl_surface *(*)(glfw::GLFWwindow *);
+    using GetWindow = wl_surface *(*)(GLFWwindow *);
     const auto getDisplay = reinterpret_cast<GetDisplay>(
         dlsym(RTLD_DEFAULT, "glfwGetWaylandDisplay"));
     const auto getWindow = reinterpret_cast<GetWindow>(
@@ -238,11 +238,11 @@ public:
 
   [[nodiscard]] bool open(std::function<void()> toggleFullscreen) {
     const auto configuration = platform::runtimeConfiguration();
-    glfw::glfwSetErrorCallback([](int code, const char *message) {
+    glfwSetErrorCallback([](int code, const char *message) {
       std::println(std::cerr, "[glfw] error {}: {}", code,
                    message != nullptr ? message : "unknown error");
     });
-    if (!glfw::glfwInit()) {
+    if (!glfwInit()) {
       std::println(std::cerr, "[glfw] initialization failed");
       return false;
     }
@@ -250,20 +250,20 @@ public:
     fToggleFullscreen = std::move(toggleFullscreen);
 
 #ifdef __EMSCRIPTEN__
-    glfw::glfwWindowHint(glfw::kClientApi, glfw::kOpenGLApi);
-    glfw::glfwWindowHint(glfw::kContextVersionMajor, 3);
-    glfw::glfwWindowHint(glfw::kContextVersionMinor, 0);
-    glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
-    glfw::glfwWindowHint(glfw::kSamples, 0);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_SAMPLES, 0);
     const auto canvas = platform::web::canvasExtent();
     fInitial.fWidth = canvas.fWidth;
     fInitial.fHeight = canvas.fHeight;
-    fWindow = glfw::glfwCreateWindow(fInitial.fWidth, fInitial.fHeight,
+    fWindow = glfwCreateWindow(fInitial.fWidth, fInitial.fHeight,
                                      "osu_client", nullptr, nullptr);
 #else
-    const auto monitor = glfw::glfwGetPrimaryMonitor();
-    const glfw::GLFWvidmode *mode =
-        monitor != nullptr ? glfw::glfwGetVideoMode(monitor) : nullptr;
+    const auto monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode *mode =
+        monitor != nullptr ? glfwGetVideoMode(monitor) : nullptr;
     if (mode != nullptr) {
       fInitial = {mode->width, mode->height};
       if (mode->refreshRate > 0) {
@@ -288,34 +288,34 @@ public:
       int fCreation;
     };
     const int desktopCreation = configuration.fForceEgl
-                                    ? glfw::kEglContextApi
-                                    : glfw::kNativeContextApi;
+                                    ? GLFW_EGL_CONTEXT_API
+                                    : GLFW_NATIVE_CONTEXT_API;
     const ContextChoice choices[] = {
-        {"gl 4.1 core", glfw::kOpenGLApi, 4, 1, glfw::kOpenGLCoreProfile,
+        {"gl 4.1 core", GLFW_OPENGL_API, 4, 1, GLFW_OPENGL_CORE_PROFILE,
          desktopCreation},
-        {"gl 3.0", glfw::kOpenGLApi, 3, 0, glfw::kOpenGLAnyProfile,
+        {"gl 3.0", GLFW_OPENGL_API, 3, 0, GLFW_OPENGL_ANY_PROFILE,
          desktopCreation},
-        {"gles 3.0", glfw::kOpenGLEsApi, 3, 0, glfw::kOpenGLAnyProfile,
-         glfw::kEglContextApi},
-        {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,
-         glfw::kEglContextApi},
+        {"gles 3.0", GLFW_OPENGL_ES_API, 3, 0, GLFW_OPENGL_ANY_PROFILE,
+         GLFW_EGL_CONTEXT_API},
+        {"gles 2.0", GLFW_OPENGL_ES_API, 2, 0, GLFW_OPENGL_ANY_PROFILE,
+         GLFW_EGL_CONTEXT_API},
     };
     const bool preferGles = configuration.fPreferGles;
     const std::array<int, 4> order = preferGles ? std::array{2, 3, 0, 1}
                                                 : std::array{0, 1, 2, 3};
     for (const int index : order) {
       const auto &choice = choices[index];
-      glfw::glfwWindowHint(glfw::kClientApi, choice.fApi);
-      glfw::glfwWindowHint(glfw::kContextVersionMajor, choice.fMajor);
-      glfw::glfwWindowHint(glfw::kContextVersionMinor, choice.fMinor);
-      glfw::glfwWindowHint(glfw::kOpenGLProfile, choice.fProfile);
-      glfw::glfwWindowHint(glfw::kOpenGLForwardCompat,
-                           choice.fApi == glfw::kOpenGLApi && choice.fMajor >= 3
-                               ? glfw::kTrue
-                               : glfw::kFalse);
-      glfw::glfwWindowHint(glfw::kContextCreationApi, choice.fCreation);
-      glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
-      fWindow = glfw::glfwCreateWindow(fInitial.fWidth, fInitial.fHeight,
+      glfwWindowHint(GLFW_CLIENT_API, choice.fApi);
+      glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, choice.fMajor);
+      glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, choice.fMinor);
+      glfwWindowHint(GLFW_OPENGL_PROFILE, choice.fProfile);
+      glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT,
+                           choice.fApi == GLFW_OPENGL_API && choice.fMajor >= 3
+                               ? GLFW_TRUE
+                               : GLFW_FALSE);
+      glfwWindowHint(GLFW_CONTEXT_CREATION_API, choice.fCreation);
+      glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+      fWindow = glfwCreateWindow(fInitial.fWidth, fInitial.fHeight,
                                        "osu_client", monitor, nullptr);
       if (fWindow != nullptr) {
         std::println(std::cerr, "[gfx] context: {}", choice.fName);
@@ -330,8 +330,8 @@ public:
       return false;
     }
 
-    glfw::glfwSetInputMode(fWindow, glfw::kCursor, glfw::kCursorNormal);
-    glfw::glfwSetWindowUserPointer(fWindow, this);
+    glfwSetInputMode(fWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    glfwSetWindowUserPointer(fWindow, this);
     this->installCallbacks();
     fWaylandTouch.init(fWindow, [this](const Event &event) {
       if (event.fType == EventType::kCursorMove) {
@@ -399,12 +399,12 @@ public:
 
   void requestCursorMode(int mode) {
     fCursorModeRequest.store(mode, std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
+    glfwPostEmptyEvent();
   }
   void requestRawMotion(bool enabled) {
-    fRawMotionRequest.store(enabled ? glfw::kTrue : glfw::kFalse,
+    fRawMotionRequest.store(enabled ? GLFW_TRUE : GLFW_FALSE,
                             std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
+    glfwPostEmptyEvent();
   }
 
   // Moving a window between a monitor and the desktop is one of the calls
@@ -412,16 +412,16 @@ public:
   // and the pump answers.
   void requestFullscreen(bool wanted) {
     fFullscreenRequest.store(wanted ? 1 : 0, std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
+    glfwPostEmptyEvent();
   }
 
   void requestQuit() {
     fQuit.store(true, std::memory_order_release);
-    glfw::glfwPostEmptyEvent();
+    glfwPostEmptyEvent();
   }
   [[nodiscard]] bool quitting() const {
     return fQuit.load(std::memory_order_acquire) ||
-           (fWindow != nullptr && glfw::glfwWindowShouldClose(fWindow));
+           (fWindow != nullptr && glfwWindowShouldClose(fWindow));
   }
   void setExitCode(int code) {
     fExitCode.store(code, std::memory_order_release);
@@ -432,32 +432,32 @@ public:
 
   // Graphics and input operations stay behind this boundary so application
   // code never depends on a GLFW handle or its numeric cursor constants.
-  void makeContextCurrent() { glfw::glfwMakeContextCurrent(fWindow); }
-  void releaseContext() { glfw::glfwMakeContextCurrent(nullptr); }
+  void makeContextCurrent() { glfwMakeContextCurrent(fWindow); }
+  void releaseContext() { glfwMakeContextCurrent(nullptr); }
   void framebufferSize(int &width, int &height) const {
-    glfw::glfwGetFramebufferSize(fWindow, &width, &height);
+    glfwGetFramebufferSize(fWindow, &width, &height);
   }
   [[nodiscard]] bool surfaceSize(int &width, int &height) const {
     return presentation::surfaceSize(fWindow, &width, &height);
   }
-  void setSwapInterval(int interval) { glfw::glfwSwapInterval(interval); }
-  void swapBuffers() { glfw::glfwSwapBuffers(fWindow); }
+  void setSwapInterval(int interval) { glfwSwapInterval(interval); }
+  void swapBuffers() { glfwSwapBuffers(fWindow); }
   [[nodiscard]] bool swapWithDamage(
       int height, std::span<const std::array<int, 4>> damage) {
     return presentation::swapWithDamage(height, damage);
   }
-  void pollEvents() { glfw::glfwPollEvents(); }
+  void pollEvents() { glfwPollEvents(); }
   void cursorPosition(double &x, double &y) const {
-    glfw::glfwGetCursorPos(fWindow, &x, &y);
+    glfwGetCursorPos(fWindow, &x, &y);
   }
   void setCursorMode(input::CursorMode mode) {
     const int native = mode == input::CursorMode::kNormal
-                           ? glfw::kCursorNormal
+                           ? GLFW_CURSOR_NORMAL
                            : mode == input::CursorMode::kHidden
-                                 ? glfw::kCursorHidden
-                                 : glfw::kCursorDisabled;
+                                 ? GLFW_CURSOR_HIDDEN
+                                 : GLFW_CURSOR_DISABLED;
 #ifdef __EMSCRIPTEN__
-    glfw::glfwSetInputMode(fWindow, glfw::kCursor, native);
+    glfwSetInputMode(fWindow, GLFW_CURSOR, native);
 #else
     this->requestCursorMode(native);
 #endif
@@ -466,14 +466,14 @@ public:
 #ifndef __EMSCRIPTEN__
   void pumpEvents() {
     while (!this->quitting()) {
-      glfw::glfwWaitEvents();
+      glfwWaitEvents();
       const int cursorMode = fCursorModeRequest.exchange(-1);
       if (cursorMode != -1) {
-        glfw::glfwSetInputMode(fWindow, glfw::kCursor, cursorMode);
+        glfwSetInputMode(fWindow, GLFW_CURSOR, cursorMode);
       }
       const int rawMotion = fRawMotionRequest.exchange(-1);
-      if (rawMotion != -1 && glfw::glfwRawMouseMotionSupported()) {
-        glfw::glfwSetInputMode(fWindow, glfw::kRawMouseMotion, rawMotion);
+      if (rawMotion != -1 && glfwRawMouseMotionSupported()) {
+        glfwSetInputMode(fWindow, GLFW_RAW_MOUSE_MOTION, rawMotion);
       }
       const int fullscreen = fFullscreenRequest.exchange(-1);
       if (fullscreen != -1) {
@@ -493,18 +493,18 @@ public:
       return;
     }
     if (wanted) {
-      glfw::glfwGetWindowPos(fWindow, &fWindowedX, &fWindowedY);
-      glfw::glfwGetWindowSize(fWindow, &fWindowedW, &fWindowedH);
-      const auto monitor = glfw::glfwGetPrimaryMonitor();
-      const glfw::GLFWvidmode *mode =
-          monitor != nullptr ? glfw::glfwGetVideoMode(monitor) : nullptr;
+      glfwGetWindowPos(fWindow, &fWindowedX, &fWindowedY);
+      glfwGetWindowSize(fWindow, &fWindowedW, &fWindowedH);
+      const auto monitor = glfwGetPrimaryMonitor();
+      const GLFWvidmode *mode =
+          monitor != nullptr ? glfwGetVideoMode(monitor) : nullptr;
       if (mode == nullptr) {
         return;
       }
-      glfw::glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
+      glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width,
                                  mode->height, mode->refreshRate);
     } else {
-      glfw::glfwSetWindowMonitor(fWindow, nullptr, fWindowedX, fWindowedY,
+      glfwSetWindowMonitor(fWindow, nullptr, fWindowedX, fWindowedY,
                                  fWindowedW, fWindowedH, 0);
     }
     fFullscreen = wanted;
@@ -515,11 +515,11 @@ public:
   void close() {
     fWaylandTouch.close();
     if (fWindow != nullptr) {
-      glfw::glfwDestroyWindow(fWindow);
+      glfwDestroyWindow(fWindow);
       fWindow = nullptr;
     }
     if (fGlfwInitialized) {
-      glfw::glfwTerminate();
+      glfwTerminate();
       fGlfwInitialized = false;
     }
   }
@@ -549,12 +549,12 @@ private:
 
   void notePlacement() {
     int x = 0, y = 0;
-    glfw::glfwGetWindowPos(fWindow, &x, &y);
+    glfwGetWindowPos(fWindow, &x, &y);
     fWindowX.store(x, std::memory_order_release);
     fWindowY.store(y, std::memory_order_release);
-    if (const auto monitor = glfw::glfwGetPrimaryMonitor(); monitor != nullptr) {
+    if (const auto monitor = glfwGetPrimaryMonitor(); monitor != nullptr) {
       int ax = 0, ay = 0, aw = 0, ah = 0;
-      glfw::glfwGetMonitorWorkarea(monitor, &ax, &ay, &aw, &ah);
+      glfwGetMonitorWorkarea(monitor, &ax, &ay, &aw, &ah);
       fWorkAreaX.store(ax, std::memory_order_release);
       fWorkAreaY.store(ay, std::memory_order_release);
       fWorkAreaW.store(aw, std::memory_order_release);
@@ -563,8 +563,8 @@ private:
   }
 
   void installCallbacks() {
-    glfw::glfwSetKeyCallback(
-        fWindow, [](glfw::GLFWwindow *window, int key, int, int action,
+    glfwSetKeyCallback(
+        fWindow, [](GLFWwindow *window, int key, int, int action,
                     int mods) {
           auto &self = from(window);
           if (action == platform::input::kPress && key == platform::input::kKeyF11) {
@@ -576,58 +576,58 @@ private:
           self.push({wallMs(), EventType::kKey, key, action,
                      static_cast<float>(mods)});
         });
-    glfw::glfwSetWindowRefreshCallback(
-        fWindow, [](glfw::GLFWwindow *window) {
+    glfwSetWindowRefreshCallback(
+        fWindow, [](GLFWwindow *window) {
           auto &self = from(window);
           self.notePlacement();
           self.fRefreshRequested.store(true, std::memory_order_release);
         });
-    glfw::glfwSetWindowPosCallback(
-        fWindow, [](glfw::GLFWwindow *window, int, int) {
+    glfwSetWindowPosCallback(
+        fWindow, [](GLFWwindow *window, int, int) {
           from(window).notePlacement();
         });
-    glfw::glfwSetWindowIconifyCallback(
-        fWindow, [](glfw::GLFWwindow *window, int iconified) {
+    glfwSetWindowIconifyCallback(
+        fWindow, [](GLFWwindow *window, int iconified) {
           auto &self = from(window);
-          self.fWindowIconified.store(iconified != glfw::kFalse,
+          self.fWindowIconified.store(iconified != GLFW_FALSE,
                                       std::memory_order_release);
           self.pushWindowActivity();
         });
-    glfw::glfwSetWindowFocusCallback(
-        fWindow, [](glfw::GLFWwindow *window, int focused) {
+    glfwSetWindowFocusCallback(
+        fWindow, [](GLFWwindow *window, int focused) {
           auto &self = from(window);
-          self.fWindowFocused = focused != glfw::kFalse;
+          self.fWindowFocused = focused != GLFW_FALSE;
           self.pushWindowActivity();
         });
-    glfw::glfwSetMouseButtonCallback(
-        fWindow, [](glfw::GLFWwindow *window, int button, int action, int) {
+    glfwSetMouseButtonCallback(
+        fWindow, [](GLFWwindow *window, int button, int action, int) {
           from(window).push(
               {wallMs(), EventType::kMouseButton, button, action});
         });
-    glfw::glfwSetCursorPosCallback(
-        fWindow, [](glfw::GLFWwindow *window, double x, double y) {
+    glfwSetCursorPosCallback(
+        fWindow, [](GLFWwindow *window, double x, double y) {
           from(window).pushCursor(x, y);
         });
-    glfw::glfwSetScrollCallback(
-        fWindow, [](glfw::GLFWwindow *window, double, double y) {
+    glfwSetScrollCallback(
+        fWindow, [](GLFWwindow *window, double, double y) {
           from(window).push({wallMs(), EventType::kScroll, 0, 0,
                              static_cast<float>(y)});
         });
-    glfw::glfwSetDropCallback(
-        fWindow, [](glfw::GLFWwindow *window, int count, const char **paths) {
+    glfwSetDropCallback(
+        fWindow, [](GLFWwindow *window, int count, const char **paths) {
           auto &self = from(window);
           const std::scoped_lock lock(self.fDropMutex);
           for (int i = 0; i < count; ++i) {
             self.fDroppedFiles.emplace_back(paths[i]);
           }
         });
-    glfw::glfwSetCharCallback(
-        fWindow, [](glfw::GLFWwindow *window, unsigned int codepoint) {
+    glfwSetCharCallback(
+        fWindow, [](GLFWwindow *window, unsigned int codepoint) {
           from(window).push({wallMs(), EventType::kChar,
                              static_cast<std::int32_t>(codepoint), 0});
         });
-    glfw::glfwSetFramebufferSizeCallback(
-        fWindow, [](glfw::GLFWwindow *window, int width, int height) {
+    glfwSetFramebufferSizeCallback(
+        fWindow, [](GLFWwindow *window, int width, int height) {
           auto &self = from(window);
           self.fReportedSize.store(packSize(width, height),
                                    std::memory_order_release);
@@ -635,9 +635,9 @@ private:
         });
   }
 
-  [[nodiscard]] static WindowRuntime &from(glfw::GLFWwindow *window) {
+  [[nodiscard]] static WindowRuntime &from(GLFWwindow *window) {
     return *static_cast<WindowRuntime *>(
-        glfw::glfwGetWindowUserPointer(window));
+        glfwGetWindowUserPointer(window));
   }
 
   // GLFW cursor positions are in window coordinates while rendering uses
@@ -646,8 +646,8 @@ private:
   // before AppInput applies the client's own UI scale.
   void pushCursor(double x, double y) {
     int windowW = 0, windowH = 0, framebufferW = 0, framebufferH = 0;
-    glfw::glfwGetWindowSize(fWindow, &windowW, &windowH);
-    glfw::glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
+    glfwGetWindowSize(fWindow, &windowW, &windowH);
+    glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
     double scaleX = windowW > 0 ? static_cast<double>(framebufferW) /
                                       static_cast<double>(windowW)
                                 : 1.0;
@@ -688,7 +688,7 @@ private:
     this->push({wallMs(), EventType::kWindowVisible, active ? 1 : 0});
   }
 
-  glfw::GLFWwindow *fWindow = nullptr;
+  GLFWwindow *fWindow = nullptr;
   bool fGlfwInitialized = false;
   bool fWindowFocused = true;
   std::atomic<bool> fWindowIconified{false};
