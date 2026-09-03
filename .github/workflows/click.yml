@@ -68,7 +68,13 @@ jobs:
           # dependencies rather than as a conflict. Neither is needed here --
           # sound goes through ALSA, and sd-bus comes from basu, which this
           # build compiles.
-          sudo apt-get install -y --no-install-recommends \
+          # --allow-downgrades, because a package that is Multi-Arch: same
+          # must be the same version on every architecture, and this image
+          # carries amd64 packages newer than the archive it is built from.
+          # Aligning them moves libc6 and libstdc++6 back to what the archive
+          # has for both -- which is the version this build compiles against
+          # anyway, and the compiler it uses comes from apt.llvm.org.
+          sudo apt-get install -y --no-install-recommends --allow-downgrades \
             libc6-dev:arm64 libstdc++-15-dev:arm64 \
             libgl-dev:arm64 libegl-dev:arm64 libgles-dev:arm64 \
             libopengl-dev:arm64 libglx-dev:arm64 libglvnd-dev:arm64 \
