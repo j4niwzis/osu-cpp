@@ -7,6 +7,7 @@ import bjson;
 import platform.audio_engine;
 import platform.capabilities;
 import client.http;
+import platform.clock;
 import client.listing;
 import client.palette;
 
@@ -144,6 +145,14 @@ public:
              "https://osu.direct/api/d/{}"},
       Mirror{"mino", MirrorStyle::kMino, "https://catboy.best/d/{}"}};
   std::size_t fMirror = 0;
+  // How many of them this search has already been refused by, so that a
+  // search gives up once rather than walking the ring for ever.
+  std::size_t fMirrorsTried = 0;
+  // Until when each of them is taken to be down. A mirror that did not
+  // answer a moment ago is not asked again straight away: the point of
+  // having three is to reach one that works, and waiting out a host that is
+  // not there is the opposite of that.
+  std::array<double, kMirrors.size()> fMirrorSilentUntil{};
   static constexpr int kSearchPageSize = 50;
 
   // "2020-04-24T18:08:56+02:00" -> a number that sorts by date. Only the
@@ -296,6 +305,12 @@ public:
   // same question with a larger offset.
   void startSearch(const listing::Filters &filters) {
     fFilters = filters;
+    fMirrorsTried = 0;
+    // A search begun now does not start on a host that was silent a moment
+    // ago, whichever one the setting prefers.
+    if (fMirrorSilentUntil[fMirror] > platform::clock::milliseconds()) {
+      fMirror = this->nextLikelyMirror(fMirror);
+    }
     fSearchOffset = 0;
     fMoreAvailable = true;
     // Pages already in flight belong to the previous query; without this they
@@ -317,25 +332,50 @@ public:
     const int offset = fSearchOffset;
     const std::uint32_t generation = fSearchGeneration;
     auto handle = std::make_shared<http::Handle>();
+    // Once. A page of results is a choice between hosts, and a host that is
+    // not answering should cost one request rather than three with waits
+    // between them.
     http::get(this->searchUrl(offset), std::move(handle),
               [this, offset, generation](http::Response r) {
                 if (generation != fSearchGeneration) {
                   return; // the query moved on while this was in flight
                 }
                 this->onSearchDone(offset, std::move(r));
-              });
+              },
+              /*attempts=*/1);
+  }
+
+  // The one after this that has answered something in the last minute, or
+  // simply the one after this when none of them has.
+  [[nodiscard]] std::size_t nextLikelyMirror(std::size_t from) const {
+    const double now = platform::clock::milliseconds();
+    for (std::size_t step = 1; step <= kMirrors.size(); ++step) {
+      const std::size_t at = (from + step) % kMirrors.size();
+      if (fMirrorSilentUntil[at] <= now) {
+        return at;
+      }
+    }
+    return (from + 1) % kMirrors.size();
   }
 
   void onSearchDone(int offset, http::Response r) {
     fSearchPending = false;
     if (!r.fOk) {
-      // A mirror that will not answer is replaced by the next one; the same
-      // page is then asked of it.
-      if (fMirror + 1 < kMirrors.size()) {
-        ++fMirror;
+      // A mirror that will not answer is replaced by the next one, round the
+      // list rather than along it, and the same page is asked of that one.
+      //
+      // Along it meant the mirror at the end of the list had no fallback at
+      // all -- and which one is at the end is an accident of how they are
+      // written down, while which one a build starts on is a preference. A
+      // browser starts on the last of them, so a search there failed outright
+      // the moment that host had a bad minute.
+      if (fMirrorsTried + 1 < kMirrors.size()) {
+        ++fMirrorsTried;
+        const std::size_t failed = fMirror;
+        fMirrorSilentUntil[failed] = platform::clock::milliseconds() + 60000.0;
+        fMirror = this->nextLikelyMirror(fMirror);
         std::println(std::cerr, "[listing] {} failed ({}), falling back to {}",
-                     kMirrors[fMirror - 1].fName, r.fError,
-                     kMirrors[fMirror].fName);
+                     kMirrors[failed].fName, r.fError, kMirrors[fMirror].fName);
         this->fetchPage();
         return;
       }
@@ -345,6 +385,8 @@ public:
                      skia::colorSetARGB(255, 255, 110, 110));
       return;
     }
+    // It answered, so it is not down.
+    fMirrorSilentUntil[fMirror] = 0.0;
     const auto parsed = bjson::tryParse(r.fBody);
     if (!parsed) {
       fDownloadStatus = "Search failed: malformed JSON";
@@ -517,6 +559,16 @@ public:
       return;
     }
     const long id = fFound[idx].fSetId;
+    // In a browser the only host that will serve a preview to a page is
+    // asked for a beatmap; a set the search gave no beatmap ids for has
+    // nothing to ask with.
+    if constexpr (platform::capabilities::kBrowser) {
+      if (fFound[idx].fMapId < 0) {
+        fHooks.fNotify("preview unavailable",
+                       skia::colorSetARGB(255, 255, 110, 110));
+        return;
+      }
+    }
     if (fPreviewId == id) {
       fPreview.stop();
       fPreviewId = -1;
@@ -535,15 +587,13 @@ public:
       fMusicDucked = true;
     }
     // Same story as the artwork: b.ppy.sh sends no header a page may read
-    // by, so in a browser this is asked of a mirror -- osu.direct by beatmap
-    // when the search said which one, and mino by set otherwise.
+    // by, so in a browser this is asked of a mirror, and a mirror is asked
+    // for a beatmap rather than for a set.
     const std::string url =
         !platform::capabilities::kBrowser
             ? std::format("https://b.ppy.sh/preview/{}.mp3", id)
-            : (fFound[idx].fMapId >= 0
-                   ? std::format("https://osu.direct/api/media/preview/{}",
-                                 fFound[idx].fMapId)
-                   : std::format("https://catboy.best/preview/audio/{}", id));
+            : std::format("https://osu.direct/api/media/preview/{}",
+                          fFound[idx].fMapId);
     std::println(std::cerr, "[preview] fetching {}", url);
     auto handle = std::make_shared<http::Handle>();
     http::get(url, std::move(handle), [this, id, generation](http::Response r) {
@@ -647,18 +697,20 @@ public:
     if constexpr (!platform::capabilities::kBrowser) {
       return host == 0 ? given : std::string{};
     }
+    // Both of them are asked for a beatmap, not for a set: checked by hand,
+    // one address of each kind against each host. A set whose beatmap ids
+    // the search did not carry has nothing to ask with, and asking anyway is
+    // a request that could never have been answered.
+    if (entry.fMapId < 0) {
+      return {};
+    }
     switch (host) {
     case 0:
-      // osu.direct serves the background of a beatmap, not of a set.
-      return entry.fMapId >= 0
-                 ? std::format("https://osu.direct/api/media/background/{}",
-                               entry.fMapId)
-                 : std::string{};
+      return std::format("https://osu.direct/api/media/background/{}",
+                         entry.fMapId);
     case 1:
       return std::format("https://catboy.best/preview/background/{}",
-                         entry.fSetId);
-    case 2:
-      return std::format("https://api.nerinyan.moe/bg/{}", entry.fSetId);
+                         entry.fMapId);
     default:
       return {};
     }
@@ -668,15 +720,11 @@ public:
   [[nodiscard]] static bool nextCoverHost(const listing::Entry &entry,
                                           const std::string &given,
                                           std::uint8_t &host) {
-    for (int step = 0; step < 8; ++step) {
+    while (host < 4) {
       ++host;
-      if (coverUrl(entry, given, host).empty()) {
-        if (host > 3) {
-          return false;
-        }
-        continue;
+      if (!coverUrl(entry, given, host).empty()) {
+        return true;
       }
-      return true;
     }
     return false;
   }
@@ -732,6 +780,14 @@ public:
       return;
     }
     auto &d = fFound[idx];
+    // Every host refused this one; after a while they are asked again. Two
+    // more rounds, ten seconds apart, and then the panel stays as it is.
+    if (d.fThumbSt == listing::Entry::Thumb::kFailed && d.fThumbRounds < 2 &&
+        platform::clock::milliseconds() >= d.fThumbAgainAt) {
+      ++d.fThumbRounds;
+      d.fThumbHost = 0;
+      d.fThumbSt = listing::Entry::Thumb::kNone;
+    }
     if (d.fThumbSt != listing::Entry::Thumb::kNone) {
       return;
     }
@@ -744,11 +800,14 @@ public:
       return;
     }
 
-    // How many are asked for at once. Four was chosen for a client holding
-    // its own sockets, and a browser will happily have more in flight than
-    // it has connections -- but not so many that the host has nothing left
-    // for anything else.
-    constexpr int kAtOnce = platform::capabilities::kBrowser ? 6 : 8;
+    // How many are asked for at once.
+    //
+    // Few, in a browser, because the artwork and the search go to the same
+    // few hosts and one of them answers a burst with 502 from its front end
+    // -- including for addresses it would have answered 404 for, which is a
+    // request that never reached the application behind it. The same address
+    // asked for on its own comes back fine.
+    constexpr int kAtOnce = platform::capabilities::kBrowser ? 3 : 8;
     int inflight = 0;
     for (const auto &e : fFound) {
       if (e.fThumbSt == listing::Entry::Thumb::kFetching) {
@@ -790,6 +849,7 @@ public:
           e.fThumbSt = listing::Entry::Thumb::kNone; // asked of the next host
         } else {
           e.fThumbSt = listing::Entry::Thumb::kFailed;
+          e.fThumbAgainAt = platform::clock::milliseconds() + 10000.0;
         }
         // The card draws the image out of the entry, so it cannot notice
         // this by itself: one card is marked, rather than the screen.

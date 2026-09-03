@@ -147,6 +147,11 @@ struct Entry {
   enum class Thumb : std::uint8_t { kNone, kFetching, kReady, kFailed };
   Thumb fThumbSt = Thumb::kNone;
   std::uint8_t fThumbHost = 0;
+  // When every host has refused, when to walk them again, and how many times
+  // that has been done. A mirror turning requests away is a moment, not a
+  // verdict about the set.
+  double fThumbAgainAt = 0.0;
+  std::uint8_t fThumbRounds = 0;
   skia::Sp<skia::SkImage> fThumb;
 };
 
