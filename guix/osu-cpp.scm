@@ -56,6 +56,11 @@
           (base32 "1nmd67lrk14pq6bqlrr5yc6l9qdpdvf1wawzadjdfjgbp6bzivzx"))))
       (arguments
        (substitute-keyword-arguments (package-arguments base)
+         ;; This is a bootstrapping build tool, not the program under test.
+         ;; The inherited suite has hundreds of upstream CMake tests and its
+         ;; time-sensitive CTestTestStopTime test is flaky on shared runners.
+         ;; Testing osu-cpp below must not depend on that runner's clock load.
+         ((#:tests? _ #t) #f)
          ;; Guix's recipe deletes the help documentation by a path it spells
          ;; out with the version of another package -- cmake-bootstrap, which
          ;; is 3.31.10 -- so with the sources changed the phase looked for

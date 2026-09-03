@@ -104,6 +104,33 @@ jobs:
           ls -l /etc/gitconfig || echo "there is none"
           sudo mv /etc/gitconfig /etc/gitconfig.not-for-this-run || true
 
+      # A Guix archive carries the store database metadata and is signed by
+      # the daemon that exported it. Restoring one through `guix archive` is
+      # therefore safe in a way that copying /gnu/store with a file cache is
+      # not. Only our expensive custom outputs are archived; ordinary Guix
+      # packages continue to come from the project's substitute servers.
+      - name: restore cached Guix packages
+        id: guix-package-cache
+        if: steps.sources.outputs.have == 'yes'
+        uses: actions/cache/restore@v5
+        with:
+          path: .guix-package-cache
+          key: guix-packages-${{ runner.os }}-${{ hashFiles('guix/channels.scm', 'guix/osu-cpp.scm', 'guix/sources.scm', 'cmake/get_cme.cmake') }}
+          restore-keys: |
+            guix-packages-${{ runner.os }}-
+
+      - name: import cached Guix packages
+        if: steps.sources.outputs.have == 'yes'
+        run: |
+          archive=.guix-package-cache/packages.nar.gz
+          public_key=.guix-package-cache/signing-key.pub
+          if [ ! -s "$archive" ] || [ ! -s "$public_key" ]; then
+            echo "there is no completed Guix package archive to restore"
+            exit 0
+          fi
+          sudo "$(command -v guix)" archive --authorize < "$public_key"
+          gzip -dc "$archive" | guix archive --import
+
       - name: build
         if: steps.sources.outputs.have == 'yes'
         run: |
@@ -126,3 +153,37 @@ jobs:
           out=$(guix time-machine -C guix/channels.scm -- \
             build -f guix/osu-cpp.scm --no-grafts)
           ls -la "$out"/bin || true
+
+      # Save completed custom outputs even when a later derivation fails.
+      # The recursive archive includes everything those outputs reference,
+      # so a rerun can use the built CMake (and, after success, osu-cpp)
+      # without rebuilding their closures.
+      - name: prepare Guix package cache
+        id: prepare-guix-package-cache
+        if: steps.sources.outputs.have == 'yes' && always()
+        run: |
+          mapfile -t roots < <(
+            find /gnu/store -maxdepth 1 -type d \
+              \( -name '*-cmake-minimal-4.3.4' \
+                 -o -name '*-osu-cpp-1.0.0' \) \
+              -print | sort
+          )
+          if [ "${#roots[@]}" -eq 0 ]; then
+            echo "no completed custom Guix packages to cache"
+            echo "have=no" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p .guix-package-cache
+          sudo cat /etc/guix/signing-key.pub \
+            > .guix-package-cache/signing-key.pub
+          guix archive --export --recursive "${roots[@]}" \
+            | gzip -1 > .guix-package-cache/packages.nar.gz
+          echo "have=yes" >> "$GITHUB_OUTPUT"
+          ls -lh .guix-package-cache
+
+      - name: save Guix package cache
+        if: steps.prepare-guix-package-cache.outputs.have == 'yes' && always()
+        uses: actions/cache/save@v5
+        with:
+          path: .guix-package-cache
+          key: guix-packages-${{ runner.os }}-${{ hashFiles('guix/channels.scm', 'guix/osu-cpp.scm', 'guix/sources.scm', 'cmake/get_cme.cmake') }}
