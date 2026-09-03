@@ -250,7 +250,10 @@ jobs:
         run: |
           for log in $(sudo find /var/log/guix/drvs -name '*.gz' -newermt '-30 minutes'); do
             echo "=== $log"
-            sudo zcat "$log" | tail -60
+            # Enough of it to include what the phases before the failure
+            # printed: which standard library was chosen, and where each
+            # header came from.
+            sudo zcat "$log" | tail -200
           done
 
       - name: what it produced
