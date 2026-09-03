@@ -4,7 +4,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/import-std.cmake)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-project(osu_client LANGUAGES CXX)
+project(osu_client LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
@@ -59,6 +59,18 @@ if(EMSCRIPTEN_BUILD)
   pkg_check_modules(SNDFILE REQUIRED sndfile)
   pkg_check_modules(MPG123  REQUIRED libmpg123)
   pkg_check_modules(LIBLZMA REQUIRED liblzma)
+elseif(ANDROID)
+  find_package(Threads REQUIRED)
+  pkg_check_modules(OPENAL  REQUIRED openal)
+  pkg_check_modules(SKIA    REQUIRED skia)
+  pkg_check_modules(LIBZIP  REQUIRED libzip)
+  pkg_check_modules(SNDFILE REQUIRED sndfile)
+  pkg_check_modules(MPG123  REQUIRED libmpg123)
+  find_library(ANDROID_LIBRARY NAMES android REQUIRED)
+  find_library(NATIVEWINDOW_LIBRARY NAMES nativewindow REQUIRED)
+  find_library(EGL_LIBRARY NAMES EGL REQUIRED)
+  find_library(GLES_LIBRARY NAMES GLESv3 GLESv2 REQUIRED)
+  find_library(LOG_LIBRARY NAMES log REQUIRED)
 else()
   find_package(OpenGL REQUIRED)
   find_package(Threads REQUIRED)
@@ -111,7 +123,7 @@ else()
   CPMAddPackage(
     NAME skiff
     GITHUB_REPOSITORY j4niwzis/skiff
-    GIT_TAG 9f65a1e2494ca6ec943211acda4a078da5ac4b6c
+    GIT_TAG 803df544257974d72428bd2b09cce444e53a17a0
   )
 endif()
 
@@ -125,7 +137,7 @@ else()
   CPMAddPackage(
     NAME skiff_widgets
     GITHUB_REPOSITORY j4niwzis/skiff-widgets
-    GIT_TAG 2870ba493b5de6ccb350924297abc0d6fc5797c3
+    GIT_TAG 065ff975ef99fe197b9b2b5d2762c060e91c5af2
   )
 endif()
 
@@ -161,7 +173,7 @@ file(GLOB_RECURSE all_cpp_sources CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
 set(common_cpp_sources ${all_cpp_sources})
 list(FILTER common_cpp_sources EXCLUDE REGEX
-  "_(${OSU_PLATFORM_VARIANT_PATTERN})\\.cc$")
+  "_(${OSU_PLATFORM_VARIANT_PATTERN})(_(${OSU_PLATFORM_VARIANT_PATTERN}))*\\.cc$")
 # Implementation pieces live below platform/<variant>/. They are not public
 # overlays and only the selected platform's directory enters the target.
 list(FILTER common_cpp_sources EXCLUDE REGEX
@@ -183,10 +195,13 @@ foreach(source IN LISTS common_cpp_sources)
   endif()
 endforeach()
 
-# Also admit platform-only implementation files without a common foo.cc.
+# Also admit platform-only implementation files without a common foo.cc. A
+# filename may list multiple alternatives, for example
+# foo_freedesktop_web.cc, and is selected when any suffix matches.
 foreach(source IN LISTS all_cpp_sources)
   if(OSU_PLATFORM_SUFFIX AND
-     source MATCHES "_${OSU_PLATFORM_SUFFIX}\\.cc$")
+     source MATCHES "_(${OSU_PLATFORM_VARIANT_PATTERN})(_(${OSU_PLATFORM_VARIANT_PATTERN}))*\\.cc$" AND
+     source MATCHES "(^|_)${OSU_PLATFORM_SUFFIX}(_|\\.cc$)")
     list(APPEND selected_cpp_sources "${source}")
   endif()
 endforeach()
@@ -197,6 +212,7 @@ if(OSU_PLATFORM_SUFFIX)
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${OSU_PLATFORM_SUFFIX}/*.cc")
   list(APPEND selected_cpp_sources ${platform_implementation_sources})
 endif()
+
 list(REMOVE_DUPLICATES selected_cpp_sources)
 
 set(module_sources ${selected_cpp_sources})
@@ -220,7 +236,25 @@ list(REMOVE_ITEM module_sources "${main_source}")
 if(EMSCRIPTEN_BUILD)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
-add_executable(${PROJECT_NAME} ${module_sources} ${main_source})
+if(ANDROID)
+  set(OSU_ANDROID_NATIVE_APP_GLUE_DIR "" CACHE PATH
+    "Directory containing android_native_app_glue.c")
+  set(native_app_glue
+    "${OSU_ANDROID_NATIVE_APP_GLUE_DIR}/android_native_app_glue.c")
+  if(NOT EXISTS "${native_app_glue}")
+    message(FATAL_ERROR
+      "Set OSU_ANDROID_NATIVE_APP_GLUE_DIR to the native_app_glue sources")
+  endif()
+  add_library(${PROJECT_NAME} SHARED
+    ${module_sources} ${main_source} "${native_app_glue}")
+  target_include_directories(${PROJECT_NAME} PRIVATE
+    "${OSU_ANDROID_NATIVE_APP_GLUE_DIR}")
+  target_link_options(${PROJECT_NAME} PRIVATE
+    "LINKER:-u,ANativeActivity_onCreate"
+    "LINKER:--no-undefined")
+else()
+  add_executable(${PROJECT_NAME} ${module_sources} ${main_source})
+endif()
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
 
@@ -237,6 +271,7 @@ endif()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${OPENAL_INCLUDE_DIRS}
   ${SKIA_INCLUDE_DIRS}
   ${Boost_INCLUDE_DIRS}
   ${LIBZIP_INCLUDE_DIRS}
@@ -280,6 +315,31 @@ if(EMSCRIPTEN_BUILD)
     ${LIBLZMA_LDFLAGS} ${LIBLZMA_LIBRARIES}
     openal
   )
+elseif(ANDROID)
+  find_library(CXX_LIBRARY NAMES c++ REQUIRED)
+  find_library(CXXABI_LIBRARY NAMES c++abi REQUIRED)
+  find_library(UNWIND_LIBRARY NAMES unwind REQUIRED)
+  set(COMPILER_RT_LIBRARY "${OSU_ANDROID_RESOURCE_DIR}/lib/linux/libclang_rt.builtins-aarch64-android.a")
+  if(NOT EXISTS "${COMPILER_RT_LIBRARY}")
+    message(FATAL_ERROR "Android compiler-rt not found: ${COMPILER_RT_LIBRARY}")
+  endif()
+  target_link_libraries(${PROJECT_NAME}
+    osucpp::osucpp
+    skiff::widgets
+    Threads::Threads
+    ${OPENAL_LDFLAGS} ${OPENAL_LIBRARIES}
+    ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
+    ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
+    ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
+    ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
+    ${CXX_LIBRARY} ${CXXABI_LIBRARY} ${UNWIND_LIBRARY}
+    ${COMPILER_RT_LIBRARY}
+    ${ANDROID_LIBRARY} ${NATIVEWINDOW_LIBRARY}
+    ${EGL_LIBRARY} ${GLES_LIBRARY} ${LOG_LIBRARY}
+    m dl c
+  )
+  include(../cmake/android-apk.cmake)
+  osu_add_android_apk(${PROJECT_NAME})
 else()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
@@ -306,7 +366,7 @@ endif()
 # client falls back to whatever dialog binary is installed. Inside a Flatpak
 # there is no such binary and no such fallback, so this is what makes an
 # import work there at all.
-if(NOT EMSCRIPTEN_BUILD)
+if(NOT EMSCRIPTEN_BUILD AND NOT ANDROID)
   # sd-bus comes from systemd, from basu (the same API unbundled, for systems
   # without systemd) or from elogind. Whichever is installed will do.
   pkg_check_modules(SDBUS IMPORTED_TARGET libsystemd)
@@ -396,9 +456,13 @@ endif()
 # ---- Install rules ----
 
 
-install(TARGETS ${PROJECT_NAME}
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+if(ANDROID)
+  install(TARGETS ${PROJECT_NAME}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+else()
+  install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 # Every face the client draws with travels with it: the UI font, the CJK
 # fallbacks, the icon font and the display face for judgements, each under
@@ -417,7 +481,7 @@ install(FILES
   DESTINATION ${CMAKE_INSTALL_DATADIR}/osu_client/licenses
 )
 
-if(NOT EMSCRIPTEN_BUILD)
+if(NOT EMSCRIPTEN_BUILD AND NOT ANDROID)
   install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/packaging/io.github.j4niwzis.osu_cpp.desktop
     DESTINATION ${CMAKE_INSTALL_DATADIR}/applications

@@ -302,11 +302,11 @@ modules:
         path: ..
       - type: git
         url: https://github.com/j4niwzis/skiff.git
-        commit: 9f65a1e2494ca6ec943211acda4a078da5ac4b6c
+        commit: 803df544257974d72428bd2b09cce444e53a17a0
         dest: .flatpak-sources/skiff
       - type: git
         url: https://github.com/j4niwzis/skiff-widgets.git
-        commit: 2870ba493b5de6ccb350924297abc0d6fc5797c3
+        commit: 065ff975ef99fe197b9b2b5d2762c060e91c5af2
         dest: .flatpak-sources/skiff-widgets
       - type: file
         url: https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.1/CPM.cmake
