@@ -235,6 +235,27 @@ jobs:
             --delete || true
 
       # Which library answered which find_package, and where each came from.
+      # What this build kept in the store, by what came out rather than by
+      # what went in.
+      #
+      # The name of an entry is its key, which is made of the inputs: the
+      # port, the options, the compiler, the toolchain. Two builds of one
+      # commit therefore write the same names, and if what they wrote differs
+      # the packages differ with no word about where. This says which entry,
+      # in one line each, so two runs can be compared without taking their
+      # packages apart afterwards.
+      - name: what the store kept
+        if: always()
+        run: |
+          store=~/.cache/cmake-everywhere/store
+          [ -d "$store" ] || exit 0
+          for entry in "$store"/*/*; do
+            [ -d "$entry" ] || continue
+            digest=$(find "$entry" -type f -print0 | sort -z \
+                     | xargs -0 sha256sum | sha256sum | cut -d" " -f1)
+            printf '%s  %s\n' "$digest" "${entry#"$store"/}"
+          done | sort -k2
+
       - name: what the build decided
         if: always()
         run: |

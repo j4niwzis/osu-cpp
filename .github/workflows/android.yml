@@ -258,7 +258,18 @@ jobs:
             extra+=("-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=$linked")
           fi
           NDK=~/android-minimal
+          # With a build type, because everything about a release is written
+          # in the Release variants of the flag variables -- the optimisation,
+          # the link-time optimisation, the strip, the single linker thread.
+          # Without one, CMake uses none of them: this job was building
+          # unoptimised and unstripped, in the release run as well, which is
+          # why its library carried 125 MB of debug information and why the
+          # two passes of it went on differing after the ordering was fixed.
+          #
+          # The toolchain file states its own flags through the _INIT
+          # variables, which a build type adds to rather than replaces.
           cmake -S standalone -B build-android -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/cmake/target.cmake" \
             -DOSU_ANDROID_NATIVE_APP_GLUE_DIR="$NDK/src/ndk/sources/android/native_app_glue" \
             -DOSU_ANDROID_FRAMEWORK_RES_APK="$NDK/tools/framework-res.apk" \
@@ -281,6 +292,27 @@ jobs:
           CCACHE_MAXSIZE: 400M
           NINJA_STATUS: "[%f/%t %es] "
         run: cmake --build build-android
+
+      # What this build kept in the store, by what came out rather than by
+      # what went in.
+      #
+      # The name of an entry is its key, which is made of the inputs: the
+      # port, the options, the compiler, the toolchain. Two builds of one
+      # commit therefore write the same names, and if what they wrote differs
+      # the packages differ with no word about where. This says which entry,
+      # in one line each, so two runs can be compared without taking their
+      # packages apart afterwards.
+      - name: what the store kept
+        if: always()
+        run: |
+          store=~/.cache/cmake-everywhere/store
+          [ -d "$store" ] || exit 0
+          for entry in "$store"/*/*; do
+            [ -d "$entry" ] || continue
+            digest=$(find "$entry" -type f -print0 | sort -z \
+                     | xargs -0 sha256sum | sha256sum | cut -d" " -f1)
+            printf '%s  %s\n' "$digest" "${entry#"$store"/}"
+          done | sort -k2
 
       - name: what the build decided
         if: always()
