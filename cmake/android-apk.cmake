@@ -120,8 +120,30 @@ the file name" ON)
     # built from source the way everything else is. android/dex writes the
     # file directly; the Java beside it stays as the statement of what these
     # classes do, which is what a reader should read.
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    set(dex_writer "${android_dir}/dex/dex.py")
+    #
+    # It is a project of its own because it runs on the machine doing the
+    # building while everything around it is compiled for the phone. Which
+    # compiler that machine has is a fact about the machine, so it is asked
+    # for rather than guessed: the default is the one this project's other
+    # host tools are built with.
+    set(OSU_HOST_CXX_COMPILER "clang++-22" CACHE STRING
+      "The C++ compiler of the machine doing the building")
+    set(OSU_HOST_CXX_FLAGS "-stdlib=libc++" CACHE STRING
+      "What that compiler needs to find a standard library with modules")
+    include(ExternalProject)
+    set(dex_writer_dir "${apk_dir}/dex-writer")
+    set(dex_writer "${dex_writer_dir}/osu-dex")
+    ExternalProject_Add(osu-dex
+      SOURCE_DIR "${android_dir}/dex"
+      BINARY_DIR "${dex_writer_dir}"
+      CMAKE_GENERATOR "Ninja"
+      CMAKE_ARGS
+        "-DCMAKE_BUILD_TYPE=Release"
+        "-DCMAKE_CXX_COMPILER=${OSU_HOST_CXX_COMPILER}"
+        "-DCMAKE_CXX_FLAGS=${OSU_HOST_CXX_FLAGS}"
+      BUILD_ALWAYS ON
+      INSTALL_COMMAND ""
+      BUILD_BYPRODUCTS "${dex_writer}")
     set(java_source
       "${android_dir}/java/io/github/j4niwzis/osu_cpp/OsuNativeActivity.java")
     set(dex_dir "${apk_dir}/dex")
@@ -132,9 +154,8 @@ the file name" ON)
     list(APPEND dex_commands
       COMMAND "${CMAKE_COMMAND}" -E rm -rf "${dex_dir}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory "${dex_dir}"
-      COMMAND "${Python3_EXECUTABLE}" "${dex_writer}" --out "${classes_dex}")
-    list(APPEND dex_dependencies "${dex_writer}"
-      "${android_dir}/dex/dexwrite.py" "${java_source}")
+      COMMAND "${dex_writer}" --out "${classes_dex}")
+    list(APPEND dex_dependencies "${dex_writer}" "${java_source}")
     set(dex_package_command
       COMMAND "${jar}" ${jar_date} --update --file "${unaligned_apk}"
         -C "${dex_dir}" classes.dex)
@@ -263,6 +284,11 @@ the file name" ON)
     COMMENT "Packaging signed Android APK")
 
   add_custom_target(apk ALL DEPENDS "${signed_apk}")
+  if(OSU_ANDROID_SYSTEM_FILE_PICKER)
+    # The package waits for the program that writes its classes.dex, which
+    # is built for this machine rather than for the phone.
+    add_dependencies(apk osu-dex)
+  endif()
   message(STATUS "Android APK: ${unsigned_apk}")
   if(OSU_ANDROID_TEST_KEY)
     message(STATUS
