@@ -15,6 +15,14 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Called by the release workflow, which asks for the same build with
+  # everything turned up: full link-time optimisation, -O3, and nothing left
+  # in the binary that a user does not run.
+  workflow_call:
+    inputs:
+      release:
+        type: boolean
+        default: false
 
 # One run of this workflow per branch at a time. A push that supersedes what
 # is building makes the older run an answer about code nobody is waiting on,
@@ -50,14 +58,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - answer: system
-            system: AUTO
-          - answer: ports
-            system: NEVER
+        # A release is built from ports and from nothing else: what it ships
+        # must be the same library on every machine, and "whatever this
+        # distribution had" is the opposite of that. The ordinary run still
+        # answers both questions.
+        answer: ${{ fromJSON(inputs.release && '["ports"]' || '["system", "ports"]') }}
     name: build (${{ matrix.answer }})
     steps:
       - uses: actions/checkout@v4
+
 
       # Clang 22 and the distribution's libstdc++. The client is C++23
       # modules and import std, so the compiler has to be able to scan for
@@ -159,14 +168,29 @@ jobs:
             ~/.cache/cmake-everywhere/sources
             ~/.cache/cmake-everywhere/store
             ~/.cache/ccache
-          key: native-${{ matrix.answer }}-${{ hashFiles('cmake/get_cme.cmake') }}-${{ github.sha }}
-          restore-keys: native-${{ matrix.answer }}-${{ hashFiles('cmake/get_cme.cmake') }}-
+          key: native-${{ matrix.answer }}${{ inputs.release && '-release' || '' }}-${{ hashFiles('cmake/get_cme.cmake') }}-${{ github.sha }}
+          restore-keys: native-${{ matrix.answer }}${{ inputs.release && '-release' || '' }}-${{ hashFiles('cmake/get_cme.cmake') }}-
 
       - name: configure
         env:
           CCACHE_DIR: ~/.cache/ccache
           CCACHE_MAXSIZE: 400M
         run: |
+          # What a release adds, and nothing at all otherwise: the ordinary
+          # run configures exactly as it always has.
+          #
+          # The _RELEASE variants, because a toolchain file sets CMAKE_C_FLAGS
+          # and naming that variable here would replace what it set -- the
+          # target and the sysroot among it. These are appended to it.
+          extra=()
+          if [ "${{ inputs.release }}" = "true" ]; then
+            tuned="-O3 -DNDEBUG -flto=full -ffunction-sections -fdata-sections"
+            linked="-flto=full -Wl,--gc-sections -Wl,-s"
+            extra+=("-DCMAKE_C_FLAGS_RELEASE=$tuned")
+            extra+=("-DCMAKE_CXX_FLAGS_RELEASE=$tuned")
+            extra+=("-DCMAKE_EXE_LINKER_FLAGS_RELEASE=$linked")
+            extra+=("-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=$linked")
+          fi
           cmake -S standalone -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang-22 \
@@ -174,7 +198,8 @@ jobs:
             -DCMAKE_CXX_FLAGS="-stdlib=libstdc++ -Wp,-U_FORTIFY_SOURCE" \
             -DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json \
             -DCME_STORE_ENABLED=ON \
-            -DCME_SYSTEM=${{ matrix.system }}
+            -DCME_SYSTEM=${{ matrix.answer == 'system' && 'AUTO' || 'NEVER' }} \
+            "${extra[@]}"
 
       - name: build
         env:

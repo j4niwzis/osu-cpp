@@ -11,11 +11,17 @@ name: flatpak
 # A branch is built through its pull request, and main is built when
 # something lands on it. Both triggers on every push meant every commit on a
 # branch with a pull request open was built twice, identically.
+# Not on every push. This build is an hour of a runner and six gigabytes of
+# cache, and what it answers -- that the ports can be satisfied by a prefix
+# somebody else populated -- does not change from one commit to the next.
+# The release builds it, and it can be asked for by hand at any time.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release:
+        type: boolean
+        default: false
 
 # One run of this workflow per branch at a time. A push that supersedes what
 # is building makes the older run an answer about code nobody is waiting on,
@@ -89,11 +95,10 @@ jobs:
             --ccache --repo=repo build-flatpak \
             flatpak/io.github.j4niwzis.osu_cpp.yml
 
-      - uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: .flatpak-builder
-          key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}-client
+      # Saved once, after the libraries. The client is minutes and the
+      # libraries are the hour, and a second copy of the same six gigabytes
+      # is what pushed every other workflow's cache out of the ten a
+      # repository is given.
 
       - name: what the build decided
         if: always()
