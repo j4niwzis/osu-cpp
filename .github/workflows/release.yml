@@ -1,0 +1,61 @@
+# Everything a release is made of, built the way a release is built.
+#
+# The ordinary workflows answer "does this still build, and what did it
+# decide"; they are run on every change and they are built to be quick about
+# it. This one answers a different question -- what somebody downloads -- and
+# it is allowed to be slow: every target is compiled at -O3 with full
+# link-time optimisation, and what comes out carries no symbol table.
+#
+# Each job is the ordinary workflow for that target, asked for with
+# release: true. There is one description of how each target is built, and
+# this is not a second one.
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# A release run is not superseded by the next one: two tags are two releases.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# What the Android job needs to attest where its package came from. A called
+# workflow gets no more than its caller was given.
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  # From ports and from nothing the machine happens to have: what is shipped
+  # has to be the same library everywhere.
+  native:
+    uses: ./.github/workflows/native.yml
+    with:
+      release: true
+
+  wasm:
+    uses: ./.github/workflows/wasm.yml
+    with:
+      release: true
+
+  click:
+    uses: ./.github/workflows/click.yml
+    with:
+      release: true
+
+  apk:
+    uses: ./.github/workflows/android.yml
+    with:
+      release: true
+    secrets: inherit
+
+  # The one build that is not in the ordinary CI at all: an hour of a runner
+  # and six gigabytes of cache, answering a question that does not change
+  # from commit to commit.
+  flatpak:
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      release: true
