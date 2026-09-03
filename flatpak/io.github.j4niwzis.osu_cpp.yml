@@ -299,6 +299,11 @@ modules:
       # rather than a build hanging on a git clone that cannot happen.
       - -DCME_OFFLINE=ON
       - -DCME_ARCHIVE=/run/build/osu-cpp/.flatpak-sources/cme.tar.gz
+      # Where each library's sources are, one declaration per library,
+      # generated from the lock by tools/lock-to-flatpak.py. An overlay is
+      # read before the registry, so this says where to look and the registry
+      # still says what each library is and how it is built.
+      - -DCME_OVERLAYS=/run/build/osu-cpp/flatpak/cme-ports
       - -DCPM_SOURCE_CACHE=/run/build/osu-cpp/.flatpak-sources/cme
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
       - -DOSU_STATIC_DEPS=ON
@@ -307,6 +312,10 @@ modules:
       - -DOSU_SKIFF_WIDGETS_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff-widgets
       - -DCPM_DOWNLOAD_LOCATION=/run/build/osu-cpp/.flatpak-sources/cpm/CPM.cmake
     sources:
+      # Everything the ports fetch, by the URL and the digest or commit the
+      # lock names. Generated beside this file; regenerate it with
+      # tools/lock-to-flatpak.py after a build that had a network.
+      - cme-sources.json
       - type: dir
         path: ..
       - type: git
@@ -322,8 +331,8 @@ modules:
       # declared here instead -- and flatpak-builder checks the digest, which
       # is the same check that file(DOWNLOAD) would have made.
       - type: file
-        url: https://github.com/j4niwzis/cmake-everywhere/archive/a06878d0cbaeccfa845f7af3def31e341fc9dc89.tar.gz
-        sha256: 8d11a778f45055f7eb89cc817fd9d3b10870ca84747d8c4078f0dd80ed0c9808
+        url: https://github.com/j4niwzis/cmake-everywhere/archive/08e7ae7d2b6c2358cd3853205829ca3d8fc1b05a.tar.gz
+        sha256: 912be6ed121b0dfd1f421f50ff77176c2c3ea5b5b3fba6414d77667977a7b6f5
         dest: .flatpak-sources
         dest-filename: cme.tar.gz
       - type: file
