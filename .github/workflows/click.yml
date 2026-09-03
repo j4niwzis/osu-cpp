@@ -50,19 +50,37 @@ jobs:
           Architectures: arm64
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
           SOURCES
-          # The x86-64 lists do not carry arm64, and asking them for it is
-          # what makes apt-get update fail rather than say nothing.
-          for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list; do
-            [ -f "$f" ] && sudo sed -i 's/^deb \[/deb [arch=amd64 /; s/^deb h/deb [arch=amd64] h/' "$f" || true
+          # The archives this machine already reads carry amd64 and nothing
+          # else, and asking them for arm64 is what makes apt-get update
+          # fail: "Failed to fetch .../binary-arm64/Packages 404". They are
+          # in deb822 format here, so the architecture is a field.
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            grep -q '^Architectures:' "$f" || \
+              sudo sed -i '/^Types: deb/a Architectures: amd64' "$f"
           done
           sudo apt-get update
-          sudo apt-get install -y \
+          # Without the ones that drag glib: its -dev-bin packages are not
+          # co-installable across architectures, and apt says so as unmet
+          # dependencies rather than as a conflict. Neither is needed here --
+          # sound goes through ALSA, and sd-bus comes from basu, which this
+          # build compiles.
+          sudo apt-get install -y --no-install-recommends \
             libc6-dev:arm64 libstdc++-14-dev:arm64 \
             libgl-dev:arm64 libegl-dev:arm64 libgles-dev:arm64 \
+            libopengl-dev:arm64 libglx-dev:arm64 libglvnd-dev:arm64 \
             libwayland-dev:arm64 libxkbcommon-dev:arm64 \
             libx11-dev:arm64 libxrandr-dev:arm64 libxinerama-dev:arm64 \
-            libxcursor-dev:arm64 libxi-dev:arm64 \
-            libasound2-dev:arm64 libpulse-dev:arm64 libdbus-1-dev:arm64
+            libxcursor-dev:arm64 libxi-dev:arm64 libasound2-dev:arm64
+
+      # What the target's GL libraries actually are on disk. FindOpenGL
+      # reported both missing after they were installed, and a listing is
+      # the difference between a wrong search path and a wrong package.
+      - name: where the target's GL is
+        run: |
+          ls -la /usr/lib/aarch64-linux-gnu/libOpenGL.so* \
+                 /usr/lib/aarch64-linux-gnu/libGLX.so* \
+                 /usr/lib/aarch64-linux-gnu/libEGL.so* 2>&1 || true
 
       - name: cmake
         run: |
@@ -86,10 +104,15 @@ jobs:
           CCACHE_DIR: ~/.cache/ccache
         run: |
           cmake -S standalone -B build-click -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/aarch64-linux-gnu.cmake" \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-22 \
+            -DCMAKE_CXX_COMPILER=clang++-22 \
             -DCME_STORE_ENABLED=ON \
             -DOSU_WAYLAND=ON \
+            -DOPENGL_opengl_LIBRARY=/usr/lib/aarch64-linux-gnu/libOpenGL.so \
+            -DOPENGL_glx_LIBRARY=/usr/lib/aarch64-linux-gnu/libGLX.so \
+            -DOPENGL_INCLUDE_DIR=/usr/include \
             -DCMAKE_INSTALL_PREFIX=/
 
       - name: build

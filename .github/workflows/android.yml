@@ -113,10 +113,13 @@ jobs:
           command -v aapt2
           command -v zipalign
 
+      # By commit, not by branch: what builds the toolchain decides what the
+      # toolchain is, so it is pinned like everything else this build reads.
       - name: the toolchain source
         uses: actions/checkout@v4
         with:
           repository: j4niwzis/minimal-android-ndk.cpp
+          ref: 1c68644f3e953ba1fa373a0ba69d5a5a203dd377
           path: ndk-tool
 
       # Keyed by what decides what comes out: the manifest of pinned AOSP
