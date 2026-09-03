@@ -23,6 +23,16 @@ on:
       release:
         type: boolean
         default: false
+      # A second pass of the same build, to be compared with the first. It
+      # writes its artifact under another name and compiles without the
+      # compiler cache, so what is compared is two compilations and not one
+      # compilation and a cache of it.
+      suffix:
+        type: string
+        default: ""
+      fresh:
+        type: boolean
+        default: false
 
 # One run of this workflow per branch at a time. A push that supersedes what
 # is building makes the older run an answer about code nobody is waiting on,
@@ -180,7 +190,7 @@ jobs:
 
       - name: configure
         env:
-          CCACHE_DIR: ~/.cache/ccache
+          CCACHE_DIR: ${{ inputs.fresh && '/tmp/ccache-second-pass' || '~/.cache/ccache' }}
           CCACHE_MAXSIZE: 400M
         run: |
           # What a release adds, and nothing at all otherwise: the ordinary
@@ -210,7 +220,7 @@ jobs:
 
       - name: build
         env:
-          CCACHE_DIR: ~/.cache/ccache
+          CCACHE_DIR: ${{ inputs.fresh && '/tmp/ccache-second-pass' || '~/.cache/ccache' }}
           CCACHE_MAXSIZE: 400M
           NINJA_STATUS: "[%f/%t %es] "
         run: cmake --build build
@@ -279,7 +289,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: matrix.answer == 'ports'
         with:
-          name: generated-sources
+          name: generated-sources${{ inputs.suffix }}
           path: |
             flatpak/cme-sources.json
             flatpak/cme-ports
@@ -290,7 +300,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: osu-cpp-linux-${{ matrix.answer }}
+          name: osu-cpp-linux-${{ matrix.answer }}${{ inputs.suffix }}
           path: |
             build/osu_client
             build/cme-report.txt

@@ -20,6 +20,16 @@ on:
       release:
         type: boolean
         default: false
+      # A second pass of the same build, to be compared with the first. It
+      # writes its artifact under another name and compiles without the
+      # compiler cache, so what is compared is two compilations and not one
+      # compilation and a cache of it.
+      suffix:
+        type: string
+        default: ""
+      fresh:
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -146,7 +156,7 @@ jobs:
 
       - name: configure
         env:
-          CCACHE_DIR: ~/.cache/ccache
+          CCACHE_DIR: ${{ inputs.fresh && '/tmp/ccache-second-pass' || '~/.cache/ccache' }}
           CCACHE_MAXSIZE: 400M
         run: |
           # What a release adds, and nothing at all otherwise: the ordinary
@@ -180,7 +190,7 @@ jobs:
 
       - name: build
         env:
-          CCACHE_DIR: ~/.cache/ccache
+          CCACHE_DIR: ${{ inputs.fresh && '/tmp/ccache-second-pass' || '~/.cache/ccache' }}
           CCACHE_MAXSIZE: 400M
           NINJA_STATUS: "[%f/%t %es] "
         run: cmake --build build-click
@@ -203,7 +213,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: osu-cpp-click
+          name: osu-cpp-click${{ inputs.suffix }}
           path: osu-cpp.click
 
       # What this run built, bound to this workflow at this commit and
