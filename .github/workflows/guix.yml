@@ -115,7 +115,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: .guix-package-cache
-          key: guix-packages-${{ runner.os }}-${{ hashFiles('guix/channels.scm', 'guix/osu-cpp.scm', 'guix/sources.scm', 'cmake/get_cme.cmake') }}
+          key: guix-packages-${{ runner.os }}-${{ hashFiles('guix/channels.scm') }}
           restore-keys: |
             guix-packages-${{ runner.os }}-
 
@@ -146,11 +146,102 @@ jobs:
             echo "the pinned Guix is already built, and this says where"
           fi
 
+          # And said plainly as well, because a link into the store is a
+          # thing that can be restored without what it points at, and a
+          # store path either exists or does not.
+          if [ -s .guix-package-cache/pinned-guix.txt ]; then
+            pinned=$(cat .guix-package-cache/pinned-guix.txt)
+            # Asked to say what it is, rather than taken at its word: a
+            # store path can be there with something it needs missing, and
+            # the answer to that is to build it, not to fail the run.
+            if [ -x "$pinned/bin/guix" ] && "$pinned/bin/guix" --version; then
+              echo "PINNED_GUIX=$pinned" >> "$GITHUB_ENV"
+              echo "the pinned Guix is here: $pinned"
+            else
+              echo "the archive names $pinned, and it does not run from here"
+            fi
+          else
+            # An archive written before this workflow started writing that
+            # path down still holds the Guix; the store is asked directly.
+            channel_revision=$(
+              sed -n 's/.*(commit "\([0-9a-f]*\)").*/\1/p' guix/channels.scm
+            )
+            for candidate in $(
+                find /gnu/store -maxdepth 1 -type d \
+                  -name "*-guix-${channel_revision:0:9}*" | sort); do
+              if [ -x "$candidate/bin/guix" ] && "$candidate/bin/guix" --version
+              then
+                echo "PINNED_GUIX=$candidate" >> "$GITHUB_ENV"
+                echo "the pinned Guix was in what was restored: $candidate"
+                break
+              fi
+            done
+          fi
+
+      # The clone of the channel, which is what the fifteen minutes are.
+      #
+      # time-machine resolves the pinned revision by updating its own copy of
+      # the Guix repository and authenticating the commit chain from the
+      # introduction, and that is a full clone of a large repository. The
+      # revision is pinned, so the answer is the same every time; what
+      # changes is only whether the copy is already here.
+      #
+      # Keyed on that revision: a run that moves the pin fetches once and
+      # every run after it does not.
+      - name: the channel, as it was cloned last time
+        if: steps.sources.outputs.have == 'yes'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/guix/checkouts
+          key: guix-checkout-${{ hashFiles('guix/channels.scm') }}
+          restore-keys: guix-checkout-
+
+      # The pinned Guix, called directly when it is already here.
+      #
+      # time-machine's job is to produce the Guix that guix/channels.scm
+      # names, and it does that by cloning the channel and authenticating the
+      # commit chain from the introduction -- fifteen minutes of a large
+      # repository, every run, for an answer that a pinned revision makes the
+      # same every time. Guix has no shallow or partial clone to offer here,
+      # and it should not: what it is walking is a signature per commit.
+      #
+      # So the answer is kept instead of recomputed. The profile it produced
+      # is in the archive this workflow restores, and the link that names it
+      # is beside it; when both are here, that Guix is run directly and no
+      # channel is consulted at all. When they are not -- a new pin, a cold
+      # cache -- time-machine does its work and this run pays for it once.
       - name: build
         if: steps.sources.outputs.have == 'yes'
         run: |
-          guix time-machine -C guix/channels.scm -- \
-            build -f guix/osu-cpp.scm --no-grafts -v2
+          # Where the pinned Guix is: what the archive said, or failing
+          # that whichever of the time machine's own links still points at
+          # something.
+          pinned="${PINNED_GUIX:-}"
+          if [ -z "$pinned" ]; then
+            for link in ~/.cache/guix/inferiors/*; do
+              [ -e "$link" ] || continue
+              candidate=$(readlink -f "$link")
+              if [ -x "$candidate/bin/guix" ]; then
+                pinned="$candidate"
+                break
+              fi
+            done
+          fi
+          if [ -n "$pinned" ]; then
+            echo "the pinned Guix is here already: $pinned"
+            "$pinned/bin/guix" build -f guix/osu-cpp.scm --no-grafts -v2
+          else
+            echo "no pinned Guix here yet; the channel says which one it is"
+            # Without authenticating thirteen thousand commits, which is
+            # twelve minutes of this run. What that check answers is "is this
+            # channel's history signed by people the introduction names", and
+            # the answer is the same every time for a revision that is
+            # pinned: what arrives is checked against the commit in
+            # channels.scm either way. The run that builds this Guix is also
+            # the run that caches it, so this is paid once per pin.
+            guix time-machine --disable-authentication -C guix/channels.scm -- \
+              build -f guix/osu-cpp.scm --no-grafts -v2
+          fi
 
       # A failed build's log is the daemon's, not the command's: guix prints
       # a path and stops. Without this the failure is a derivation name.
@@ -165,8 +256,12 @@ jobs:
       - name: what it produced
         if: steps.sources.outputs.have == 'yes' && success()
         run: |
-          out=$(guix time-machine -C guix/channels.scm -- \
-            build -f guix/osu-cpp.scm --no-grafts)
+          if [ -n "${PINNED_GUIX:-}" ]; then
+            out=$("$PINNED_GUIX/bin/guix" build -f guix/osu-cpp.scm --no-grafts)
+          else
+            out=$(guix time-machine --disable-authentication \
+              -C guix/channels.scm -- build -f guix/osu-cpp.scm --no-grafts)
+          fi
           ls -la "$out"/bin || true
 
       # Save completed custom outputs even when a later derivation fails.
@@ -192,6 +287,14 @@ jobs:
                  -o -name "*-guix-$channel_version" \) \
               -print | sort
           )
+          # The profile the time machine built, which is what the link in
+          # ~/.cache/guix/inferiors points at. Without it that link points
+          # into a store that does not have it, and the next run goes back to
+          # cloning the channel to find out what it already knows.
+          for link in ~/.cache/guix/inferiors/*; do
+            [ -e "$link" ] || continue
+            roots+=("$(readlink -f "$link")")
+          done
           if [ "${#roots[@]}" -eq 0 ]; then
             echo "no completed custom Guix packages to cache"
             echo "have=no" >> "$GITHUB_OUTPUT"
@@ -214,12 +317,52 @@ jobs:
           if [ -d ~/.cache/guix/inferiors ]; then
             tar -cf .guix-package-cache/inferiors.tar -C ~/.cache/guix inferiors
           fi
+
+          # Which store item is the Guix the pin names, written down.
+          #
+          # Not read from ~/.cache/guix/inferiors: the time machine leaves no
+          # such directory here at all -- the runs that were supposed to
+          # cache it saved an archive with nothing beside it, and every run
+          # after them went back to cloning the channel. The store is where
+          # the answer actually is, and the same find that collected the
+          # roots above knows it.
+          for candidate in "${roots[@]}"; do
+            case "$candidate" in
+              *-guix-"$channel_version"*) ;;
+              *) continue ;;
+            esac
+            if [ -x "$candidate/bin/guix" ]; then
+              echo "$candidate" > .guix-package-cache/pinned-guix.txt
+              echo "the Guix this pin names is $candidate"
+              break
+            fi
+          done
+          if [ ! -s .guix-package-cache/pinned-guix.txt ]; then
+            echo "no built Guix for $channel_version was found in the store;"
+            echo "the next run will have to build it again"
+          fi
           echo "have=yes" >> "$GITHUB_OUTPUT"
           ls -lh .guix-package-cache
 
+      # Keyed on the pinned Guix revision and nothing else.
+      #
+      # It used to be keyed on the package definition, the source list and
+      # the provider's pin as well -- all of which change most days -- so
+      # every run wrote a new half-gigabyte cache under a new key. A
+      # repository has ten gigabytes for all of them, so twenty such runs
+      # evicted everything, including the hundred and thirty megabyte Guix
+      # tarball and the archive holding the pinned Guix itself. The next run
+      # then downloaded Guix again and spent twelve minutes authenticating
+      # thirteen thousand commits to rebuild something it had built the day
+      # before.
+      #
+      # What is in this cache is the Guix that guix/channels.scm names, and
+      # that is what its key says. Our own outputs are in it too and are
+      # simply rebuilt when they have changed, which is what the daemon is
+      # for.
       - name: save Guix package cache
         if: steps.prepare-guix-package-cache.outputs.have == 'yes' && always()
         uses: actions/cache/save@v5
         with:
           path: .guix-package-cache
-          key: guix-packages-${{ runner.os }}-${{ hashFiles('guix/channels.scm', 'guix/osu-cpp.scm', 'guix/sources.scm', 'cmake/get_cme.cmake') }}
+          key: guix-packages-${{ runner.os }}-${{ hashFiles('guix/channels.scm') }}
