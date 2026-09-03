@@ -84,6 +84,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The flatpak manifest carries cmake-everywhere as a source of its own,
+      # because a flatpak-builder module has no network -- so the revision is
+      # written down twice, and moving one and not the other is a build that
+      # stops before it has a compiler. That build runs only for a release,
+      # which is half an hour after everything else has passed, so the two
+      # are compared here instead.
+      - name: the flatpak manifest names the cmake-everywhere this asks for
+        run: |
+          pin=$(sed -n 's/^set(CME_PINNED "\(.*\)")$/\1/p' cmake/get_cme.cmake)
+          sha=$(sed -n 's/^set(CME_PINNED_SHA256 "\(.*\)")$/\1/p' cmake/get_cme.cmake)
+          manifest=flatpak/io.github.j4niwzis.osu_cpp.yml
+          grep -q "cmake-everywhere/archive/$pin[.]tar[.]gz" "$manifest" || {
+            echo "$manifest does not name $pin, which cmake/get_cme.cmake asks for"
+            grep -n "cmake-everywhere/archive/" "$manifest"
+            exit 1
+          }
+          grep -q "sha256: $sha" "$manifest" || {
+            echo "$manifest does not have the digest cmake/get_cme.cmake asks for: $sha"
+            exit 1
+          }
 
       # Clang 22 and the distribution's libstdc++. The client is C++23
       # modules and import std, so the compiler has to be able to scan for
