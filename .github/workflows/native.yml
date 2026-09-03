@@ -59,9 +59,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Clang 22 and libc++. The client is C++23 modules and import std, and
-      # a compiler that cannot scan for imports cannot build it.
-      - name: clang 22 and libc++
+      # Clang 22 and the distribution's libstdc++. The client is C++23
+      # modules and import std, so the compiler has to be able to scan for
+      # imports -- but which standard library it uses is not a free choice
+      # here: every C++ library this machine has was built by g++ against
+      # libstdc++, and a library compiled against the other one exports
+      # different names for everything whose signature mentions a std type.
+      - name: clang 22
         run: |
           sudo apt-get update || true
           # meson among them: a port whose upstream builds with meson is read
@@ -72,13 +76,31 @@ jobs:
           curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
           chmod +x /tmp/llvm.sh
           sudo /tmp/llvm.sh 22 all
-          sudo apt-get install -y libc++-22-dev libc++abi-22-dev
           echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
-          # Where libc++'s module sources are according to its own manifest:
-          # apt.llvm.org names a path that does not exist on Ubuntu, and
-          # import std then fails over a manifest rather than over the code.
-          sudo mkdir -p /lib/share/libc++
-          sudo ln -sfn /usr/lib/llvm-22/share/libc++/v1 /lib/share/libc++/v1
+
+      # Where libstdc++ keeps the source of its std module, as a manifest.
+      #
+      # libc++ ships one of these and libstdc++ does not, so the path is
+      # found here rather than asked for: whichever version of the headers is
+      # installed is the one that carries bits/std.cc.
+      - name: what import std reads from libstdc++
+        run: |
+          std=$(ls /usr/include/c++/*/bits/std.cc | sort -V | tail -1)
+          echo "std module source: $std"
+          cat > /tmp/libstdc++.modules.json <<EOF
+          {
+            "version": 1,
+            "revision": 1,
+            "modules": [
+              { "logical-name": "std", "source-path": "$std",
+                "is-std-library": true },
+              { "logical-name": "std.compat",
+                "source-path": "${std%std.cc}std.compat.cc",
+                "is-std-library": true }
+            ]
+          }
+          EOF
+          cat /tmp/libstdc++.modules.json
 
       # What a desktop build reaches through rather than builds: the window
       # system, the GPU stack and the sound server are the machine's, and
@@ -149,7 +171,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang-22 \
             -DCMAKE_CXX_COMPILER=clang++-22 \
-            -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libstdc++ -Wp,-U_FORTIFY_SOURCE" \
+            -DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json \
             -DCME_STORE_ENABLED=ON \
             -DCME_SYSTEM=${{ matrix.system }}
 

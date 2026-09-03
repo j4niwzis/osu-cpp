@@ -175,7 +175,7 @@ else()
   CPMAddPackage(
     NAME skiff
     GITHUB_REPOSITORY j4niwzis/skiff
-    GIT_TAG fa5c97be3009737020c114221e4ccb2867f631f1
+    GIT_TAG d22f098c914e4aff1163ecedf5da756e176ae1ee
   )
 endif()
 
