@@ -9,13 +9,13 @@
     <application
         android:allowBackup="true"
         android:extractNativeLibs="true"
-        android:hasCode="false"
+        android:hasCode="@OSU_ANDROID_HAS_CODE@"
         android:icon="@drawable/osu_cpp_icon"
         android:label="osu!cpp"
         android:resizeableActivity="false"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="@OSU_ANDROID_ACTIVITY@"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
             android:exported="true"
             android:launchMode="singleTask"

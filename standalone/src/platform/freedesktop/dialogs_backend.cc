@@ -317,4 +317,6 @@ openArchive(const std::string &) {
 
 #endif
 
+[[nodiscard]] inline bool commitSave(const SaveFileResult &) { return true; }
+
 } // namespace platform::dialogs::backend

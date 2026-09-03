@@ -56,8 +56,13 @@ public:
 
   [[nodiscard]] WindowExtent initialExtent() const { return fInitial; }
   [[nodiscard]] int refreshHz() const { return 60; }
-  [[nodiscard]] bool windowMayRender() const {
-    return fActive.load(std::memory_order_acquire) && fSurface != EGL_NO_SURFACE;
+  // Called by the render thread at the top of every frame, which is what
+  // makes it the place to attach to and detach from the native window: EGL
+  // requires the surface to be released on the thread the context is current
+  // on, and this is that thread.
+  [[nodiscard]] bool windowMayRender() {
+    const bool attached = this->syncSurface();
+    return attached && fActive.load(std::memory_order_acquire);
   }
 
   [[nodiscard]] bool pop(Event &event) { return fInput.tryPop(event); }
@@ -98,37 +103,38 @@ public:
   }
 
   void makeContextCurrent() {
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
     if (fDisplay != EGL_NO_DISPLAY && fSurface != EGL_NO_SURFACE &&
         fContext != EGL_NO_CONTEXT) {
       eglMakeCurrent(fDisplay, fSurface, fSurface, fContext);
     }
   }
   void releaseContext() {
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
     if (fDisplay != EGL_NO_DISPLAY) {
       eglMakeCurrent(fDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     }
   }
   void framebufferSize(int &width, int &height) const {
-    width = fInitial.fWidth;
-    height = fInitial.fHeight;
-    if (fDisplay != EGL_NO_DISPLAY && fSurface != EGL_NO_SURFACE) {
-      eglQuerySurface(fDisplay, fSurface, EGL_WIDTH, &width);
-      eglQuerySurface(fDisplay, fSurface, EGL_HEIGHT, &height);
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    if (!this->querySizeLocked(width, height)) {
+      width = fInitial.fWidth;
+      height = fInitial.fHeight;
     }
   }
   [[nodiscard]] bool surfaceSize(int &width, int &height) const {
-    if (fDisplay == EGL_NO_DISPLAY || fSurface == EGL_NO_SURFACE) {
-      return false;
-    }
-    return eglQuerySurface(fDisplay, fSurface, EGL_WIDTH, &width) == EGL_TRUE &&
-           eglQuerySurface(fDisplay, fSurface, EGL_HEIGHT, &height) == EGL_TRUE;
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    return this->querySizeLocked(width, height);
   }
   void setSwapInterval(int interval) {
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    fSwapInterval = interval;
     if (fDisplay != EGL_NO_DISPLAY) {
       eglSwapInterval(fDisplay, interval);
     }
   }
   void swapBuffers() {
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
     if (fDisplay != EGL_NO_DISPLAY && fSurface != EGL_NO_SURFACE) {
       eglSwapBuffers(fDisplay, fSurface);
     }
@@ -137,7 +143,10 @@ public:
       int, std::span<const std::array<int, 4>>) {
     return false;
   }
-  void pollEvents() { this->pollOnce(0); }
+  void pollEvents() {
+    this->pollOnce(0);
+    this->drainPendingResize();
+  }
   void cursorPosition(double &x, double &y) const {
     x = fCursorX.load(std::memory_order_acquire);
     y = fCursorY.load(std::memory_order_acquire);
@@ -147,24 +156,28 @@ public:
   void pumpEvents() {
     while (!this->quitting()) {
       this->pollOnce(-1);
+      // The render thread wakes the looper after it attaches to a new
+      // surface; the resize is turned into an event here so that the input
+      // queue keeps its single producer.
+      this->drainPendingResize();
     }
     fQuit.store(true, std::memory_order_release);
   }
 
   void close() {
-    this->releaseContext();
-    if (fDisplay != EGL_NO_DISPLAY && fContext != EGL_NO_CONTEXT) {
-      eglDestroyContext(fDisplay, fContext);
+    {
+      const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+      fTargetWindow = nullptr;
+      this->releaseSurfaceLocked(/*rebindContext=*/false);
+      if (fDisplay != EGL_NO_DISPLAY && fContext != EGL_NO_CONTEXT) {
+        eglDestroyContext(fDisplay, fContext);
+      }
+      if (fDisplay != EGL_NO_DISPLAY) {
+        eglTerminate(fDisplay);
+      }
+      fContext = EGL_NO_CONTEXT;
+      fDisplay = EGL_NO_DISPLAY;
     }
-    if (fDisplay != EGL_NO_DISPLAY && fSurface != EGL_NO_SURFACE) {
-      eglDestroySurface(fDisplay, fSurface);
-    }
-    if (fDisplay != EGL_NO_DISPLAY) {
-      eglTerminate(fDisplay);
-    }
-    fContext = EGL_NO_CONTEXT;
-    fSurface = EGL_NO_SURFACE;
-    fDisplay = EGL_NO_DISPLAY;
     if (fApp != nullptr && fApp->userData == this) {
       fApp->userData = nullptr;
     }
@@ -185,13 +198,6 @@ private:
   }
 
   [[nodiscard]] bool createEgl(ANativeWindow *window) {
-    const int windowWidth = ANativeWindow_getWidth(window);
-    const int windowHeight = ANativeWindow_getHeight(window);
-    if (windowWidth <= 0 || windowHeight <= 0 ||
-        ANativeWindow_setBuffersTransform(
-            window, ANATIVEWINDOW_TRANSFORM_ROTATE_90) != 0) {
-      return false;
-    }
     fDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (fDisplay == EGL_NO_DISPLAY || eglInitialize(fDisplay, nullptr, nullptr) != EGL_TRUE) {
       return false;
@@ -202,23 +208,210 @@ private:
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
         EGL_ALPHA_SIZE, 8, EGL_DEPTH_SIZE, 0, EGL_STENCIL_SIZE, 8,
         EGL_NONE};
-    EGLConfig config = nullptr;
     EGLint count = 0;
-    if (eglChooseConfig(fDisplay, attributes, &config, 1, &count) != EGL_TRUE ||
+    if (eglChooseConfig(fDisplay, attributes, &fConfig, 1, &count) != EGL_TRUE ||
         count == 0) {
       return false;
     }
-    EGLint format = 0;
-    eglGetConfigAttrib(fDisplay, config, EGL_NATIVE_VISUAL_ID, &format);
-    if (ANativeWindow_setBuffersGeometry(window, windowHeight, windowWidth,
-                                         format) != 0) {
+    eglGetConfigAttrib(fDisplay, fConfig, EGL_NATIVE_VISUAL_ID, &fFormat);
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    if (!this->createSurfaceLocked(window)) {
       return false;
     }
-    fSurface = eglCreateWindowSurface(fDisplay, config, window, nullptr);
+    // The surface outlives this call; the window it was made for is what the
+    // render thread compares against every frame.
+    fTargetWindow = window;
+    fBoundWindow = window;
+    int width = 0;
+    int height = 0;
+    if (this->querySizeLocked(width, height)) {
+      fAttachedSize = packSize(width, height);
+    }
     const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-    fContext = eglCreateContext(fDisplay, config, EGL_NO_CONTEXT,
+    fContext = eglCreateContext(fDisplay, fConfig, EGL_NO_CONTEXT,
                                 contextAttributes);
-    return fSurface != EGL_NO_SURFACE && fContext != EGL_NO_CONTEXT;
+    return fContext != EGL_NO_CONTEXT;
+  }
+
+  // The activity's window is portrait even when the task is landscape, so the
+  // buffer is allocated with the two dimensions swapped and handed to
+  // SurfaceFlinger with a quarter turn: it rotates during composition and the
+  // renderer never pays for a second render target.
+  //
+  // Requesting the buffer size pins it: the window can be resized underneath
+  // and both ANativeWindow_getWidth and eglQuerySurface keep answering with
+  // what was asked for here. So a resize is answered by asking again, from
+  // the render thread, between frames -- no buffer is dequeued while the two
+  // requests are in flight.
+  [[nodiscard]] bool applyGeometryLocked(ANativeWindow *window) {
+    // Zero restores the window's own dimensions, which is the only way to
+    // read them back after this process has requested its own.
+    if (ANativeWindow_setBuffersGeometry(window, 0, 0, 0) != 0) {
+      return false;
+    }
+    const int windowWidth = ANativeWindow_getWidth(window);
+    const int windowHeight = ANativeWindow_getHeight(window);
+    if (windowWidth <= 0 || windowHeight <= 0) {
+      return false;
+    }
+    return ANativeWindow_setBuffersTransform(
+               window, ANATIVEWINDOW_TRANSFORM_ROTATE_90) == 0 &&
+           ANativeWindow_setBuffersGeometry(window, windowHeight, windowWidth,
+                                            fFormat) == 0;
+  }
+
+  [[nodiscard]] bool createSurfaceLocked(ANativeWindow *window) {
+    if (!this->applyGeometryLocked(window)) {
+      return false;
+    }
+    fSurface = eglCreateWindowSurface(fDisplay, fConfig, window, nullptr);
+    return fSurface != EGL_NO_SURFACE;
+  }
+
+  // The size the renderer will actually get, handed to the main thread rather
+  // than pushed from here: the event queue has one producer and it is that
+  // thread.
+  void reportSizeLocked() {
+    int width = 0;
+    int height = 0;
+    if (!this->querySizeLocked(width, height)) {
+      return;
+    }
+    const std::uint64_t packed = packSize(width, height);
+    if (packed == fAttachedSize) {
+      return;
+    }
+    fAttachedSize = packed;
+    fPendingResize.store(packed, std::memory_order_release);
+    if (fApp != nullptr && fApp->looper != nullptr) {
+      ALooper_wake(fApp->looper);
+    }
+  }
+
+  // The surface has to be unbound before it can be destroyed, and only the
+  // thread it is current on may unbind it -- which is why this is reached
+  // from the render thread and not from the command handler.
+  //
+  // rebindContext asks for the context to stay current without a surface,
+  // which the render thread wants: the frame loop keeps running while the
+  // window is gone, and the work it does before it looks at the window --
+  // uploading a decoded background, say -- is GL work that would otherwise
+  // have no context to run in. Nothing is drawn there; windowMayRender is
+  // false until a window comes back. A driver without surfaceless contexts
+  // refuses that call and leaves the context unbound, which is the behaviour
+  // this had before.
+  void releaseSurfaceLocked(bool rebindContext) {
+    if (fDisplay != EGL_NO_DISPLAY) {
+      eglMakeCurrent(fDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      if (fSurface != EGL_NO_SURFACE) {
+        eglDestroySurface(fDisplay, fSurface);
+      }
+      if (rebindContext && fContext != EGL_NO_CONTEXT) {
+        (void)eglMakeCurrent(fDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                             fContext);
+      }
+    }
+    fSurface = EGL_NO_SURFACE;
+    fBoundWindow = nullptr;
+    fSurfaceCv.notify_all();
+  }
+
+  // Render thread. Returns whether there is a surface to draw into.
+  [[nodiscard]] bool syncSurface() {
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    if (fTargetWindow != fBoundWindow) {
+      this->releaseSurfaceLocked(/*rebindContext=*/true);
+      // Claimed whether or not the attachment works, so a window that cannot
+      // be attached to is not retried on every frame.
+      fBoundWindow = fTargetWindow;
+      fGeometryStale = false;
+      if (fBoundWindow != nullptr && !this->attachLocked()) {
+        this->log("unable to attach the renderer to the native window");
+      }
+    } else if (fGeometryStale) {
+      fGeometryStale = false;
+      if (fBoundWindow != nullptr && fSurface != EGL_NO_SURFACE) {
+        if (this->applyGeometryLocked(fBoundWindow)) {
+          this->reportSizeLocked();
+        }
+        fRefreshRequested.store(true, std::memory_order_release);
+      }
+    }
+    return fSurface != EGL_NO_SURFACE;
+  }
+
+  [[nodiscard]] bool attachLocked() {
+    if (this->createSurfaceLocked(fBoundWindow) && fContext != EGL_NO_CONTEXT &&
+        eglMakeCurrent(fDisplay, fSurface, fSurface, fContext) == EGL_TRUE) {
+      // The swap interval is a property of the surface rather than of the
+      // context, so a new surface starts at the EGL default.
+      eglSwapInterval(fDisplay, fSwapInterval);
+      this->reportSizeLocked();
+      fRefreshRequested.store(true, std::memory_order_release);
+      return true;
+    }
+    // A surface the context could not be made current on is not a surface
+    // anything may draw into, so it does not survive the failure.
+    if (fSurface != EGL_NO_SURFACE) {
+      eglDestroySurface(fDisplay, fSurface);
+      fSurface = EGL_NO_SURFACE;
+    }
+    return false;
+  }
+
+  // Main thread. The window the activity has just been given; the renderer
+  // picks it up on its next frame.
+  void adoptWindow(ANativeWindow *window) {
+    if (window == nullptr) {
+      return;
+    }
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    fTargetWindow = window;
+  }
+
+  // Main thread. native_app_glue holds the window alive until this returns,
+  // so the wait is what keeps the renderer from drawing into a window Android
+  // is about to take away. The timeout bounds a render thread that is busy
+  // elsewhere: the window goes regardless, and the surface is dropped on the
+  // next frame instead.
+  void dropWindow() {
+    std::unique_lock<std::mutex> lock(fSurfaceMutex);
+    fTargetWindow = nullptr;
+    if (fBoundWindow == nullptr) {
+      return;
+    }
+    if (!fSurfaceCv.wait_for(lock, std::chrono::milliseconds(500),
+                             [this] { return fBoundWindow == nullptr; })) {
+      this->log("the render thread did not release the window in time");
+    }
+  }
+
+  [[nodiscard]] bool querySizeLocked(int &width, int &height) const {
+    if (fDisplay == EGL_NO_DISPLAY || fSurface == EGL_NO_SURFACE) {
+      return false;
+    }
+    EGLint queriedWidth = 0;
+    EGLint queriedHeight = 0;
+    if (eglQuerySurface(fDisplay, fSurface, EGL_WIDTH, &queriedWidth) !=
+            EGL_TRUE ||
+        eglQuerySurface(fDisplay, fSurface, EGL_HEIGHT, &queriedHeight) !=
+            EGL_TRUE ||
+        queriedWidth <= 0 || queriedHeight <= 0) {
+      return false;
+    }
+    width = queriedWidth;
+    height = queriedHeight;
+    return true;
+  }
+
+  void drainPendingResize() {
+    const std::uint64_t packed =
+        fPendingResize.exchange(0, std::memory_order_acq_rel);
+    if (packed == 0) {
+      return;
+    }
+    this->report(static_cast<int>(packed >> 32),
+                 static_cast<int>(packed & 0xffffffffu));
   }
 
   void pollOnce(int timeout) {
@@ -249,9 +442,14 @@ private:
       break;
     case APP_CMD_WINDOW_RESIZED:
     case APP_CMD_CONFIG_CHANGED:
-      self->noteSize();
+      self->noteGeometryStale();
+      break;
+    case APP_CMD_INIT_WINDOW:
+      self->adoptWindow(app->window);
       break;
     case APP_CMD_TERM_WINDOW:
+      self->dropWindow();
+      break;
     case APP_CMD_DESTROY:
       self->requestQuit();
       break;
@@ -329,14 +527,50 @@ private:
     if (action != AKEY_EVENT_ACTION_DOWN && action != AKEY_EVENT_ACTION_UP) {
       return false;
     }
-    const int mapped = mapKey(AKeyEvent_getKeyCode(event));
+    const std::int32_t keyCode = AKeyEvent_getKeyCode(event);
+    const std::int32_t character =
+        action == AKEY_EVENT_ACTION_DOWN
+            ? characterForKey(keyCode, AKeyEvent_getMetaState(event))
+            : 0;
+    if (character != 0) {
+      this->push({wallMs(), EventType::kChar, character});
+    }
+    const int mapped = mapKey(keyCode);
     if (mapped == 0) {
-      return false;
+      return character != 0;
     }
     this->push({wallMs(), EventType::kKey, mapped,
                 action == AKEY_EVENT_ACTION_DOWN ? input::kPress
                                                   : input::kRelease});
     return true;
+  }
+
+  [[nodiscard]] static std::int32_t characterForKey(std::int32_t key,
+                                                     std::int32_t meta) {
+    const bool shift = (meta & AMETA_SHIFT_ON) != 0;
+    if (key >= AKEYCODE_A && key <= AKEYCODE_Z) {
+      return (shift ? 'A' : 'a') + (key - AKEYCODE_A);
+    }
+    if (key >= AKEYCODE_0 && key <= AKEYCODE_9) {
+      static constexpr std::string_view shifted = ")!@#$%^&*(";
+      const std::size_t index = static_cast<std::size_t>(key - AKEYCODE_0);
+      return shift ? shifted[index] : '0' + static_cast<std::int32_t>(index);
+    }
+    switch (key) {
+    case AKEYCODE_SPACE: return ' ';
+    case AKEYCODE_COMMA: return shift ? '<' : ',';
+    case AKEYCODE_PERIOD: return shift ? '>' : '.';
+    case AKEYCODE_MINUS: return shift ? '_' : '-';
+    case AKEYCODE_EQUALS: return shift ? '+' : '=';
+    case AKEYCODE_LEFT_BRACKET: return shift ? '{' : '[';
+    case AKEYCODE_RIGHT_BRACKET: return shift ? '}' : ']';
+    case AKEYCODE_BACKSLASH: return shift ? '|' : '\\';
+    case AKEYCODE_SEMICOLON: return shift ? ':' : ';';
+    case AKEYCODE_APOSTROPHE: return shift ? '"' : '\'';
+    case AKEYCODE_SLASH: return shift ? '?' : '/';
+    case AKEYCODE_GRAVE: return shift ? '~' : '`';
+    default: return 0;
+    }
   }
 
   [[nodiscard]] static int mapKey(std::int32_t key) {
@@ -360,18 +594,16 @@ private:
     this->push({wallMs(), EventType::kWindowVisible, active ? 1 : 0});
   }
 
-  void noteSize() {
-    if (fApp == nullptr || fApp->window == nullptr) {
-      return;
-    }
-    EGLint width = ANativeWindow_getWidth(fApp->window);
-    EGLint height = ANativeWindow_getHeight(fApp->window);
+  // Main thread. What the window is now is only readable by asking it again,
+  // which the render thread does on its next frame.
+  void noteGeometryStale() {
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    fGeometryStale = true;
+  }
+
+  void report(int width, int height) {
     if (width <= 0 || height <= 0) {
       return;
-    }
-    if (fDisplay != EGL_NO_DISPLAY && fSurface != EGL_NO_SURFACE) {
-      eglQuerySurface(fDisplay, fSurface, EGL_WIDTH, &width);
-      eglQuerySurface(fDisplay, fSurface, EGL_HEIGHT, &height);
     }
     fTouchSurfaceHeight = height;
     fInitial = {width, height};
@@ -384,6 +616,20 @@ private:
   EGLDisplay fDisplay = EGL_NO_DISPLAY;
   EGLSurface fSurface = EGL_NO_SURFACE;
   EGLContext fContext = EGL_NO_CONTEXT;
+  EGLConfig fConfig = nullptr;
+  EGLint fFormat = 0;
+  EGLint fSwapInterval = 1;
+  // fSurfaceMutex guards the EGL handles and both window pointers.
+  // fTargetWindow is the window the activity currently has, fBoundWindow the
+  // one the render thread has built a surface for; the condition variable is
+  // how the command handler hears that the two agree again.
+  mutable std::mutex fSurfaceMutex;
+  std::condition_variable fSurfaceCv;
+  ANativeWindow *fTargetWindow = nullptr;
+  ANativeWindow *fBoundWindow = nullptr;
+  bool fGeometryStale = false;
+  std::uint64_t fAttachedSize = 0;
+  std::atomic<std::uint64_t> fPendingResize{0};
   WindowExtent fInitial{};
   SpscQueue<4096> fInput;
   std::atomic<bool> fQuit{false};
