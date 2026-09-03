@@ -15,6 +15,7 @@ inline void requestBeatmapArchive() {}
   return {};
 }
 inline void setCursorVisible(bool) {}
+inline void wantPointerLock(bool) {}
 inline void runMainLoop(FrameCallback, void *) {}
 inline void cancelMainLoop() {}
 [[nodiscard]] inline CanvasExtent canvasExtent() { return {}; }

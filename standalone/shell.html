@@ -117,6 +117,20 @@
         Module.webaudioContext.resume();
       }
     }
+    // A browser refuses a pointer lock for about a second after Escape was
+    // what released it, and Escape is how this game is paused: leaving the
+    // pause menu asked for the lock, was refused, and nothing asked again --
+    // so play carried on with a pointer that was never held. The next click
+    // asks.
+    canvas.addEventListener('mousedown', function () {
+      if (Module.osuWantsPointer && document.pointerLockElement !== canvas &&
+          canvas.requestPointerLock) {
+        var asked = canvas.requestPointerLock();
+        if (asked && asked.catch) {
+          asked.catch(function () {});
+        }
+      }
+    });
     canvas.addEventListener('mousedown', resumeAudio);
     canvas.addEventListener('touchstart', resumeAudio);
 

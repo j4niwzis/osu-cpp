@@ -155,6 +155,11 @@ private:
 
   // Input
   osu::Vec2 fCursor = osu::kPlayfieldCenter;
+  // Where the pointer was when the game took it, in window coordinates. Only
+  // a browser needs this: everywhere else the window system puts the cursor
+  // back itself.
+  double fPointerBeforeGrabX = 0.0;
+  double fPointerBeforeGrabY = 0.0;
   osu::Vec2 fRawPrev{};                             // last pointer position
   osu::Vec2 fVirtualCursor = osu::kPlayfieldCenter; // integrated position
   bool fHasRawPrev = false;
@@ -245,6 +250,10 @@ private:
   int fAppliedStarChoice = -1; // forces the first ordering pass
   client::carousel::Carousel fCarousel;
   client::songselect::InfoWedge fInfoWedge;
+  // What is left to play before the menu starts over, and which listing it
+  // was filled from.
+  std::vector<int> fMenuBag;
+  std::uint64_t fMenuBagRevision = 0;
   int fMenuMusicForSet = -1;   // set whose audio is playing under the menus
   double fMenuTrackWall = 0.0; // when it started, so its end can be told
   double fMusicPollWall = 0.0; // last time the track was asked if it ended
@@ -1587,17 +1596,44 @@ private:
   }
 
   void resumeGame() {
-    // Re-anchor the clock at the frozen instant: wall time spent in the
-    // pause menu never existed as far as the game timeline is concerned.
-    fPlay.fClock.reset(wallMs(), fPlay.fPausedNow);
-    fPlayback.resetClockSync(wallMs());
     fAudio.resume();
+
+    // Where a browser's game time comes from, put back where it was.
+    //
+    // Without a timeline from the audio device the game time is wall time
+    // since the play began, and wall time does not stop for a pause menu. So
+    // the map went on running while it was paused: everything due in that
+    // minute was judged missed the instant play resumed, which is the pause
+    // being "wrong" and the burst of misses after it.
+    if constexpr (!platform::capabilities::kAudioProvidesTimeline) {
+      fPlay.fStartMs = wallMs() + fPlay.fAudioOffsetMs - fPlay.fPausedNow;
+    }
+
+    // Anchored on where the music is, not on where the clock had got to when
+    // it was stopped.
+    //
+    // Those are not the same instant. The clock runs from wall time and is
+    // only occasionally checked against the device, so what it read at the
+    // moment of pausing is up to a sync interval ahead of what was actually
+    // heard -- and the device stops where it stops. Resuming from the first
+    // number while the music resumes from the second put every judgement in
+    // the next quarter of a second against that difference, which is the
+    // handful of misses that followed every pause.
+    const double at =
+        fAudio.playing()
+            ? fAudio.positionSec() * 1000.0 + fPlay.fAudioOffsetMs
+            : fPlay.fPausedNow;
+    fPlay.fClock.reset(wallMs(), at);
+    // And checked against the device on the very next sample rather than a
+    // quarter of a second later.
+    fPlayback.resetClockSync();
     this->switchState(State::kPlaying);
     fView.invalidate();
     this->setCursorVisible(false);
   }
 
   void quitToSelect() {
+    fJudgements.reportSounds();
     fAudio.stop();
     fMenuMusicForSet = -1; // let updateMenuMusic restart the loop
     this->switchState(State::kSongSelect);
@@ -1607,6 +1643,7 @@ private:
   }
 
   void finishPlay() {
+    fJudgements.reportSounds();
     fResult =
         client::captureResult(*fPlay.fEngine, fPlay.fPlayAttributes);
     fPlayback.printResult();
@@ -1639,6 +1676,30 @@ private:
   }
 
   void setCursorVisible(bool visible) {
+    if constexpr (platform::capabilities::kBrowser) {
+      // Held only for relative input. Hidden and free is what a play reading
+      // the pointer as a position wants, and asking a browser for the lock
+      // anyway is raw input whether or not it was switched on.
+      platform::web::wantPointerLock(!visible && this->relativeCursor());
+
+      // Where the pointer was before the game took it, so that giving it
+      // back puts it there.
+      //
+      // A browser puts the arrow back where the lock was taken, while the
+      // position this client follows is the one it integrated from locked
+      // motion, which by then is somewhere outside the window. The pause
+      // menu is pointed at with that position: nothing was under it, so
+      // hovering marked nothing and the first click after pausing went
+      // nowhere -- Continue that does not work until the mouse is moved.
+      if (!visible) {
+        fPointerBeforeGrabX = fPolledCursorX;
+        fPointerBeforeGrabY = fPolledCursorY;
+      } else {
+        this->enqueue({wallMs(), EventType::kCursorMove, 0, 0,
+                       static_cast<float>(fPointerBeforeGrabX),
+                       static_cast<float>(fPointerBeforeGrabY)});
+      }
+    }
     platform::web::setCursorVisible(visible);
     const auto hidden = this->relativeCursor()
                             ? platform::input::CursorMode::kDisabled
