@@ -48,7 +48,13 @@ jobs:
 
       # What flatpak-builder downloaded and what it has already built. The
       # manifest is what decides both, so it is what the key is made of.
-      - uses: actions/cache@v4
+      #
+      # Restored and saved as separate steps, because the saving is the point:
+      # actions/cache writes in a post step and a cancelled job runs none, so
+      # this build -- the long one, the one whose cache matters -- had never
+      # written a cache at all. Saving after each stage means a push that
+      # cancels this one still leaves behind everything it had built.
+      - uses: actions/cache/restore@v4
         with:
           path: .flatpak-builder
           key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}
@@ -56,11 +62,38 @@ jobs:
             flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-
             flatpak-
 
-      - name: build
+      # Everything this client is built against, and not the client. These
+      # are the modules that take the hour: cmake, gn, boost, skia, ffmpeg.
+      - name: the libraries
+        run: |
+          flatpak-builder --user --force-clean --disable-rofiles-fuse \
+            --ccache --stop-at=osu-cpp build-flatpak \
+            flatpak/io.github.j4niwzis.osu_cpp.yml
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .flatpak-builder
+          key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}-libraries
+
+      # And the client, which is minutes rather than an hour.
+      #
+      # --force-clean again: it empties the directory the application is
+      # assembled in, which the stage above left behind, and nothing else.
+      # What that stage actually did is in .flatpak-builder/cache, an ostree
+      # repository of built modules, and this run reads it rather than
+      # building them a second time.
+      - name: the client
         run: |
           flatpak-builder --user --force-clean --disable-rofiles-fuse \
             --ccache --repo=repo build-flatpak \
             flatpak/io.github.j4niwzis.osu_cpp.yml
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .flatpak-builder
+          key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}-client
 
       - name: what the build decided
         if: always()
