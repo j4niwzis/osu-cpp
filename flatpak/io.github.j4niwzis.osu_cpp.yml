@@ -302,7 +302,7 @@ modules:
         path: ..
       - type: git
         url: https://github.com/j4niwzis/skiff.git
-        commit: 803df544257974d72428bd2b09cce444e53a17a0
+        commit: fa5c97be3009737020c114221e4ccb2867f631f1
         dest: .flatpak-sources/skiff
       - type: git
         url: https://github.com/j4niwzis/skiff-widgets.git

@@ -4,7 +4,31 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/import-std.cmake)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Every find_package below is answered by this: from the system when the
+# system has it and it will do, and built from a pinned source when it will
+# not. It has to be named before project(), because that is the only way a
+# dependency provider may be installed.
+set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+    ${CMAKE_CURRENT_LIST_DIR}/../cmake/get_cme.cmake)
+
 project(osu_client LANGUAGES C CXX)
+
+# Whether the answer to every find_package below is actually installed.
+#
+# CMAKE_PROJECT_TOP_LEVEL_INCLUDES is read by the top-level project() call
+# and by no other, so a build configured from somewhere else -- or with the
+# variable set after project() -- has no provider and no sign of it: every
+# find_package quietly falls back to whatever the machine happens to have,
+# and the first library the machine has in a shape this project does not
+# expect is what finally says something, about the library rather than
+# about this.
+if(NOT COMMAND cme_provider)
+  message(FATAL_ERROR
+    "cmake-everywhere is not installed in this build, so nothing answers "
+    "find_package. CMAKE_PROJECT_TOP_LEVEL_INCLUDES is only read by the "
+    "top-level project() call: configure this directory, or the repository "
+    "root, and not a subdirectory of either.")
+endif()
 
 include(GNUInstallDirs)
 
@@ -38,34 +62,27 @@ include(../cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 
-# Use pkg-config's private dependency closure when linking bundled static
-# libraries. This is opt-in so native distro builds retain their normal shared
-# dependency selection.
-option(OSU_STATIC_DEPS "Link pkg-config dependencies statically" OFF)
-option(OSU_STATIC_VIDEO_DEPS
-  "Link libavcodec and its full codec closure statically" ${OSU_STATIC_DEPS})
+# Boost by the parts that are used. asio for the client's sockets and its
+# TLS, beast for the HTTP on top of them, json for what comes back -- and
+# nothing else of Boost is fetched or built, because a component that is not
+# asked for is a library that is not there.
+find_package(Boost REQUIRED COMPONENTS asio beast json)
 
-# Boost is header-only here. Prefer its CMake package when available, but also
-# support installations which contain only the assembled Boost include tree
-# (notably the Flatpak build and CMake versions without FindBoost).
-find_package(Boost QUIET)
-if(NOT Boost_FOUND)
-  find_path(Boost_INCLUDE_DIRS NAMES boost/asio.hpp REQUIRED)
-endif()
+# egl beside gl, because how Skia reaches GL is decided when Skia is built:
+# with neither egl nor x11 its own build assembles no GL interface at all
+# and hands back nothing at run time. EGL is the one that works under
+# Wayland, and under X11 with OSU_EGL=1; a GLX build would be x11 instead,
+# and then the context has to be a GLX one.
+find_package(Skia REQUIRED COMPONENTS gl egl png jpeg freetype)
+find_package(libzip REQUIRED)
+find_package(SndFile REQUIRED)
+find_package(mpg123 REQUIRED)
 
 if(EMSCRIPTEN_BUILD)
-  pkg_check_modules(SKIA   REQUIRED skia)
-  pkg_check_modules(LIBZIP  REQUIRED libzip)
-  pkg_check_modules(SNDFILE REQUIRED sndfile)
-  pkg_check_modules(MPG123  REQUIRED libmpg123)
-  pkg_check_modules(LIBLZMA REQUIRED liblzma)
+  find_package(LibLZMA REQUIRED)
 elseif(ANDROID)
   find_package(Threads REQUIRED)
-  pkg_check_modules(OPENAL  REQUIRED openal)
-  pkg_check_modules(SKIA    REQUIRED skia)
-  pkg_check_modules(LIBZIP  REQUIRED libzip)
-  pkg_check_modules(SNDFILE REQUIRED sndfile)
-  pkg_check_modules(MPG123  REQUIRED libmpg123)
+  find_package(OpenAL REQUIRED)
   find_library(ANDROID_LIBRARY NAMES android REQUIRED)
   find_library(NATIVEWINDOW_LIBRARY NAMES nativewindow REQUIRED)
   find_library(EGL_LIBRARY NAMES EGL REQUIRED)
@@ -80,7 +97,8 @@ else()
   # this project would rather set a version floor than write one. Asio's TLS
   # has no other backend, so this is the whole of that decision.
   find_package(OpenSSL 3.0 REQUIRED)
-  pkg_check_modules(GLFW    REQUIRED glfw3)
+  find_package(glfw3 REQUIRED)
+  find_package(OpenAL REQUIRED)
   # GLFW has no touch API.  When Wayland development files are available a
   # small native bridge turns the first contact into the pointer events the
   # rest of the client already understands.  It stays optional so X11 and
@@ -88,21 +106,6 @@ else()
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     pkg_check_modules(WAYLAND_CLIENT wayland-client)
   endif()
-  pkg_check_modules(OPENAL  REQUIRED openal)
-  pkg_check_modules(SKIA    REQUIRED skia)
-  pkg_check_modules(LIBZIP  REQUIRED libzip)
-  pkg_check_modules(SNDFILE REQUIRED sndfile)
-  pkg_check_modules(MPG123  REQUIRED libmpg123)
-endif()
-
-if(OSU_STATIC_DEPS)
-  foreach(dependency GLFW OPENAL SKIA LIBZIP SNDFILE MPG123)
-    if(DEFINED ${dependency}_STATIC_LDFLAGS)
-      set(${dependency}_LDFLAGS ${${dependency}_STATIC_LDFLAGS})
-      set(${dependency}_LIBRARIES)
-      set(${dependency}_INCLUDE_DIRS ${${dependency}_STATIC_INCLUDE_DIRS})
-    endif()
-  endforeach()
 endif()
 
 if(TEST_INSTALLED_VERSION)
@@ -123,7 +126,7 @@ else()
   CPMAddPackage(
     NAME skiff
     GITHUB_REPOSITORY j4niwzis/skiff
-    GIT_TAG 803df544257974d72428bd2b09cce444e53a17a0
+    GIT_TAG fa5c97be3009737020c114221e4ccb2867f631f1
   )
 endif()
 
@@ -258,25 +261,11 @@ endif()
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
 
-if(OSU_STATIC_DEPS)
-  target_compile_options(${PROJECT_NAME} PRIVATE
-    ${GLFW_STATIC_CFLAGS_OTHER}
-    ${OPENAL_STATIC_CFLAGS_OTHER}
-    ${SKIA_STATIC_CFLAGS_OTHER}
-    ${LIBZIP_STATIC_CFLAGS_OTHER}
-    ${SNDFILE_STATIC_CFLAGS_OTHER}
-    ${MPG123_STATIC_CFLAGS_OTHER}
-  )
-endif()
-
+# Only this project's own. Every library below arrives as a target that
+# carries its own headers, which is the difference between a name and a
+# path: a target cannot be found in the wrong place.
 target_include_directories(${PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${OPENAL_INCLUDE_DIRS}
-  ${SKIA_INCLUDE_DIRS}
-  ${Boost_INCLUDE_DIRS}
-  ${LIBZIP_INCLUDE_DIRS}
-  ${SNDFILE_INCLUDE_DIRS}
-  ${MPG123_INCLUDE_DIRS}
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
@@ -308,11 +297,12 @@ if(EMSCRIPTEN_BUILD)
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
     skiff::widgets
-    ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
-    ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
-    ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
-    ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
-    ${LIBLZMA_LDFLAGS} ${LIBLZMA_LIBRARIES}
+    Skia::skia
+    libzip::zip
+    SndFile::sndfile
+    MPG123::libmpg123
+    LibLZMA::LibLZMA
+    Boost::asio Boost::beast Boost::json
     openal
   )
 elseif(ANDROID)
@@ -327,11 +317,12 @@ elseif(ANDROID)
     osucpp::osucpp
     skiff::widgets
     Threads::Threads
-    ${OPENAL_LDFLAGS} ${OPENAL_LIBRARIES}
-    ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
-    ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
-    ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
-    ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
+    OpenAL::OpenAL
+    Skia::skia
+    libzip::zip
+    SndFile::sndfile
+    MPG123::libmpg123
+    Boost::asio Boost::beast Boost::json
     ${CXX_LIBRARY} ${CXXABI_LIBRARY} ${UNWIND_LIBRARY}
     ${COMPILER_RT_LIBRARY}
     ${ANDROID_LIBRARY} ${NATIVEWINDOW_LIBRARY}
@@ -346,13 +337,14 @@ else()
     skiff::widgets
     Threads::Threads
     OpenGL::GL
-    ${GLFW_LDFLAGS} ${GLFW_LIBRARIES}
+    glfw::glfw
     ${WAYLAND_CLIENT_LDFLAGS} ${WAYLAND_CLIENT_LIBRARIES}
-    ${OPENAL_LDFLAGS} ${OPENAL_LIBRARIES}
-    ${SKIA_LDFLAGS} ${SKIA_LIBRARIES}
-    ${LIBZIP_LDFLAGS} ${LIBZIP_LIBRARIES}
-    ${SNDFILE_LDFLAGS} ${SNDFILE_LIBRARIES}
-    ${MPG123_LDFLAGS} ${MPG123_LIBRARIES}
+    OpenAL::OpenAL
+    Skia::skia
+    libzip::zip
+    SndFile::sndfile
+    MPG123::libmpg123
+    Boost::asio Boost::beast Boost::json
     OpenSSL::SSL
     OpenSSL::Crypto
     # present.cc resolves EGL/GLX at run time rather than linking against
@@ -362,38 +354,22 @@ else()
 endif()
 
 # The desktop's own file dialog, over D-Bus. Detected rather than required:
-# without libsystemd the portal module compiles to "no portal here" and the
+# without sd-bus the portal module compiles to "no portal here" and the
 # client falls back to whatever dialog binary is installed. Inside a Flatpak
 # there is no such binary and no such fallback, so this is what makes an
 # import work there at all.
 if(NOT EMSCRIPTEN_BUILD AND NOT ANDROID)
   # sd-bus comes from systemd, from basu (the same API unbundled, for systems
-  # without systemd) or from elogind. Whichever is installed will do.
-  pkg_check_modules(SDBUS IMPORTED_TARGET libsystemd)
-  if(SDBUS_FOUND)
-    set(OSU_SDBUS_NAME libsystemd)
-  endif()
-  if(NOT SDBUS_FOUND)
-    pkg_check_modules(SDBUS IMPORTED_TARGET basu)
-    if(SDBUS_FOUND)
-      set(OSU_SDBUS_FLAVOUR OSU_SDBUS_BASU)
-      set(OSU_SDBUS_NAME basu)
-    endif()
-  endif()
-  if(NOT SDBUS_FOUND)
-    pkg_check_modules(SDBUS IMPORTED_TARGET libelogind)
-    if(SDBUS_FOUND)
-      set(OSU_SDBUS_FLAVOUR OSU_SDBUS_ELOGIND)
-      set(OSU_SDBUS_NAME libelogind)
-    endif()
-  endif()
-  if(SDBUS_FOUND)
+  # without systemd) or from elogind. Whichever is installed will do, and a
+  # machine with none of them gets basu built from source -- it is the small
+  # one, and the only reason to ask for the other two first is that they are
+  # already there. Which one answered is not asked: the port arranges the
+  # headers so that one spelling works for all three.
+  find_package(basu)
+  if(TARGET basu::basu)
     target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_HAVE_SDBUS=1)
-    if(OSU_SDBUS_FLAVOUR)
-      target_compile_definitions(${PROJECT_NAME} PRIVATE ${OSU_SDBUS_FLAVOUR}=1)
-    endif()
-    target_link_libraries(${PROJECT_NAME} PkgConfig::SDBUS)
-    message(STATUS "file dialogs: xdg-desktop-portal via ${OSU_SDBUS_NAME}")
+    target_link_libraries(${PROJECT_NAME} basu::basu)
+    message(STATUS "file dialogs: xdg-desktop-portal over sd-bus")
   else()
     message(STATUS
       "file dialogs: no sd-bus (libsystemd, basu or elogind), "
@@ -408,19 +384,13 @@ endif()
 option(OSU_VIDEO_LIBAV "Encode exported video with libavcodec" OFF)
 if(OSU_VIDEO_LIBAV)
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_VIDEO_LIBAV=1)
-  if(OSU_STATIC_VIDEO_DEPS)
-    pkg_check_modules(LIBAV REQUIRED
-      libavcodec libavformat libavutil libswresample libswscale)
-    target_include_directories(${PROJECT_NAME} PRIVATE
-      ${LIBAV_STATIC_INCLUDE_DIRS})
-    target_compile_options(${PROJECT_NAME} PRIVATE
-      ${LIBAV_STATIC_CFLAGS_OTHER})
-    target_link_libraries(${PROJECT_NAME} ${LIBAV_STATIC_LDFLAGS})
-  else()
-    pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
-      libavcodec libavformat libavutil libswresample libswscale)
-    target_link_libraries(${PROJECT_NAME} PkgConfig::LIBAV)
-  endif()
+  # By what is used of it: MPEG-4 into an MP4, and the raw frames the
+  # encoder is fed. Asking for the codecs by name is what makes them be
+  # there -- an FFmpeg built with none of them links and encodes nothing.
+  find_package(FFmpeg REQUIRED COMPONENTS mpeg4 rawvideo mp4)
+  target_link_libraries(${PROJECT_NAME}
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
+    FFmpeg::swscale FFmpeg::swresample)
 endif()
 
 # ---- Emscripten-specific options ----

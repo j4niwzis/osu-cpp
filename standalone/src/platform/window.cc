@@ -493,7 +493,12 @@ public:
       return;
     }
     if (wanted) {
-      glfwGetWindowPos(fWindow, &fWindowedX, &fWindowedY);
+      // On Wayland the window has no position to save, and it needs none:
+      // leaving fullscreen hands the size back to the compositor, which put
+      // the window where it wanted it in the first place.
+      if (glfwWindowPositionIsKnowable()) {
+        glfwGetWindowPos(fWindow, &fWindowedX, &fWindowedY);
+      }
       glfwGetWindowSize(fWindow, &fWindowedW, &fWindowedH);
       const auto monitor = glfwGetPrimaryMonitor();
       const GLFWvidmode *mode =
@@ -549,7 +554,9 @@ private:
 
   void notePlacement() {
     int x = 0, y = 0;
-    glfwGetWindowPos(fWindow, &x, &y);
+    if (glfwWindowPositionIsKnowable()) {
+      glfwGetWindowPos(fWindow, &x, &y);
+    }
     fWindowX.store(x, std::memory_order_release);
     fWindowY.store(y, std::memory_order_release);
     if (const auto monitor = glfwGetPrimaryMonitor(); monitor != nullptr) {
