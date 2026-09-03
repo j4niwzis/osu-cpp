@@ -1,0 +1,218 @@
+# The Android build, against a toolchain built from source.
+#
+# Nothing here comes from Google's NDK: minimal-android-ndk builds bionic's
+# headers and stubs, the LLVM runtimes, the startup objects and the CMake
+# toolchain file out of the AOSP sources it pins. What that toolchain then
+# builds is every library this client uses, from ports -- on a machine with
+# an Android sysroot there is no system copy of anything, so this is the run
+# that proves the ports can still build what they claim to.
+#
+# The toolchain is the expensive half and it does not change unless its
+# manifest or its own source does, so it is cached against both.
+name: android
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The Android release every source is resolved against. A tag is not a
+  # revision: the tool reads the platform manifest for it and writes down a
+  # commit per repository.
+  #
+  # 14 rather than 15, and for a reason that is about aapt2 rather than
+  # about the toolchain: from 15 on, the platform's own resources refer to
+  # aconfig feature flags, and compiling them requires every flag's value to
+  # be passed in -- "Resource flag value undefined:
+  # android.appwidget.flags.use_smaller_app_widget_system_radius". The
+  # tag named in the tool's own manifest is this one.
+  PLATFORM_TAG: android-14.0.0_r75
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # What signing an attestation for the APK needs: a token that says
+      # which workflow of which repository is asking, and the right to
+      # write the answer down.
+      id-token: write
+      attestations: write
+    # The most a hosted runner gives a job.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clang 22 and libc++, the way the click package installs them. The
+      # tool that builds the toolchain is itself C++23 modules and import
+      # std, and a compiler that cannot scan for imports cannot build it:
+      # "the compiler does not provide a way to discover the import graph
+      # dependencies" is what Ubuntu's clang says here.
+      - name: clang 22 and libc++
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y ninja-build python3 openjdk-17-jdk unzip \
+            curl ccache lsb-release software-properties-common gnupg
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22 all
+          sudo apt-get install -y libc++-22-dev libc++abi-22-dev
+          echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
+          # Where the module sources of the standard library are, according
+          # to libc++.modules.json: apt.llvm.org names ../share/libc++/v1
+          # relative to its multiarch directory, which on Ubuntu resolves to
+          # /lib/share/libc++/v1 and is not there. import std then fails
+          # over a path in a manifest rather than over anything in the code.
+          # The same link clickable makes in its image.
+          sudo mkdir -p /lib/share/libc++
+          sudo ln -sfn /usr/lib/llvm-22/share/libc++/v1 /lib/share/libc++/v1
+
+      # osu-cpp is C++23 modules and `import std`, which needs a CMake newer
+      # than any distribution ships.
+      - name: cmake
+        run: |
+          version=4.3.4
+          curl -sSL -o cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-linux-x86_64.tar.gz"
+          sudo tar xzf cmake.tar.gz -C /opt
+          echo "/opt/cmake-${version}-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      # aapt2 links the resource package and zipalign aligns the APK. The
+      # runner has Google's SDK installed and these are not taken from it:
+      # that SDK is distributed under a licence this project will not build
+      # against. Ubuntu builds the same tools from the AOSP sources and
+      # ships them as ordinary packages.
+      # Skia describes itself in GN and the port reads that description
+      # rather than reimplementing it, so gn has to exist. Ubuntu builds it
+      # from the upstream sources and ships it as generate-ninja; the binary
+      # Google distributes with depot_tools is not what is used here.
+      - name: gn
+        run: |
+          sudo apt-get install -y generate-ninja
+          gn --version
+
+      - name: aapt2 and zipalign
+        run: |
+          sudo apt-get install -y aapt zipalign
+          command -v aapt2
+          command -v zipalign
+
+      - name: the toolchain source
+        uses: actions/checkout@v4
+        with:
+          repository: j4niwzis/minimal-android-ndk.cpp
+          path: ndk-tool
+
+      # Keyed by what decides what comes out: the manifest of pinned AOSP
+      # revisions and the source of the tool that reads it.
+      - id: ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/android-minimal
+          key: android-minimal-${{ env.PLATFORM_TAG }}-${{ hashFiles('ndk-tool/manifest/sources.json', 'ndk-tool/src/**') }}
+
+      - name: build the toolchain
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        working-directory: ndk-tool
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-22 -DCMAKE_CXX_COMPILER=clang++-22 \
+            -DCMAKE_CXX_FLAGS=-stdlib=libc++
+          cmake --build build
+          # The manifest in that repository names no commits: a platform
+          # tag is resolved to one per source, and which tag is a decision
+          # this workflow makes rather than inherits. Change it here and the
+          # cache key changes with it, because the manifest is what is
+          # hashed.
+          ./build/minimal-android-ndk pin --platform "$PLATFORM_TAG"
+          # Only what an APK needs. The apk step names what it needs and the
+          # steps under it run in order; everything else in the manifest --
+          # the libraries a desktop build would want -- is left alone.
+          ./build/minimal-android-ndk --clang clang-22 \
+            --llvm-bin /usr/lib/llvm-22/bin build apk
+
+      # Two facts about the sysroot that decide what every library built
+      # against it will believe about itself. The startup objects for a
+      # program are what lets a compiler probe link one; without them the
+      # toolchain file says probes stop at an archive, and then every check
+      # of the form "does this function exist" is answered yes.
+      - name: what the toolchain says it is
+        run: |
+          find ~/android-minimal/sysroot/usr/lib -name 'crtbegin_dynamic.o' \
+            -o -name 'crtend_android.o' | sort
+          grep -E 'MANDK_BUILTINS|MANDK_RESOURCE_DIR' ~/android-minimal/cmake/target.cmake
+          ls ~/android-minimal/tools
+          if grep -q TRY_COMPILE_TARGET_TYPE ~/android-minimal/cmake/target.cmake
+          then
+            echo "probes stop at an archive: every check_function_exists says yes"
+          else
+            echo "probes link a program"
+          fi
+
+      - uses: actions/cache@v4
+        with:
+          # The store is off unless a build asks for it, and this one does,
+          # in the configure step below.
+          #
+          # The store as well as the sources: what it holds is the archives
+          # of every port built for this toolchain, which is where the time
+          # actually goes -- the toolchain itself builds from source in
+          # three minutes and Skia does not.
+          path: |
+            ~/.cache/cmake-everywhere/sources
+            ~/.cache/cmake-everywhere/store
+            ~/.cache/ccache
+          key: android-deps-${{ hashFiles('cmake/get_cme.cmake') }}-${{ github.sha }}
+          restore-keys: android-deps-${{ hashFiles('cmake/get_cme.cmake') }}-
+
+      - name: configure
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+          CCACHE_MAXSIZE: 2G
+        run: |
+          NDK=~/android-minimal
+          cmake -S standalone -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/cmake/target.cmake" \
+            -DOSU_ANDROID_NATIVE_APP_GLUE_DIR="$NDK/src/ndk/sources/android/native_app_glue" \
+            -DOSU_ANDROID_FRAMEWORK_RES_APK="$NDK/tools/framework-res.apk" \
+            -DOSU_ANDROID_APKSIGNER_JAR="$NDK/tools/apksigner.jar" \
+            -DOSU_ANDROID_SYSTEM_FILE_PICKER=OFF \
+            -DCME_BOOST_ARCHIVE=ON \
+            -DCME_STORE_ENABLED=ON
+
+      # ninja prints a line when it starts an edge, not when it finishes, so
+      # a log that stops moving means four long compilations are in flight
+      # and nothing more. With the elapsed time in the status the difference
+      # between that and a stall is visible while it happens rather than
+      # afterwards.
+      - name: build
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+          NINJA_STATUS: "[%f/%t %es] "
+        run: cmake --build build-android
+
+      - name: what the build decided
+        if: always()
+        run: cat build-android/cme-report.txt || true
+
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: osu-cpp-android
+          path: build-android/apk/*.apk
+
+      # Provenance for the APK: its digest, bound to this workflow at this
+      # commit, signed with a certificate issued for this job alone and
+      # recorded in a public log. `gh attestation verify app.apk --repo
+      # j4niwzis/osu-cpp` answers from that record.
+      #
+      # It says where the file came from, not what went into it. What went
+      # into it is the lock and the store keys, which name every source by
+      # digest and every archive by what built it.
+      - name: attest where the apk came from
+        if: success() && github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: build-android/apk/*.apk
