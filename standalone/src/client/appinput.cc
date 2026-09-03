@@ -7,6 +7,7 @@ import platform.capabilities;
 import client.input;
 import client.gameplayview;
 import client.listing;
+import client.osk;
 import client.pause;
 import client.replaybrowser;
 import client.results;
@@ -544,6 +545,16 @@ public:
         } else {
           this->routePointer(skiff::scene::PointerAction::kUp,
                              fApp.fWin.fMouseX, fApp.fWin.fMouseY);
+          if (fApp.fState == State::kSongSelect) {
+            client::osk::setVisible(fApp.fFilter.textBoxHit(
+                fApp.fWin.fMouseX, fApp.fWin.fMouseY));
+          } else if (fApp.fState == State::kDownload) {
+            const bool textBoxHit =
+                !fApp.fSetPage.open() &&
+                fApp.fListing.textBoxHit(fApp.fWin.fMouseX,
+                                         fApp.fWin.fMouseY);
+            client::osk::setVisible(textBoxHit);
+          }
           this->finishDownloadPointer();
           this->releaseCarousel();
           fApp.fOverlays.settingsClick(fApp.fWin.fMouseX, fApp.fWin.fMouseY,
@@ -742,10 +753,13 @@ public:
         return;
       }
       break;
-    case State::kSongSelect:
+    case State::kSongSelect: {
+      const bool textBoxHit = fApp.fFilter.textBoxHit(x, y);
       if (fApp.fScreens.filterClick(x, y, true)) {
+        client::osk::setVisible(textBoxHit);
         return;
       }
+      client::osk::setVisible(false);
       if (fApp.fScreens.selectFooterClick(x, y)) {
         return;
       }
@@ -754,6 +768,7 @@ public:
       // otherwise dragging the list changes the selection under you.
       fApp.fCarousel.press(y);
       return;
+    }
     case State::kDownload: {
       fDownloadPointerDown = true;
       fDownloadPointerMoved = false;
@@ -763,10 +778,13 @@ public:
       if (fApp.fSetPage.open()) {
         fApp.fSetPage.beginPointer();
         this->routePointer(skiff::scene::PointerAction::kDown, x, y);
+        client::osk::setVisible(false);
         return; // the page covers the listing underneath
       }
+      const bool textBoxHit = fApp.fListing.textBoxHit(x, y);
       fApp.fListing.beginPointer();
       this->routePointer(skiff::scene::PointerAction::kDown, x, y);
+      client::osk::setVisible(textBoxHit);
       return;
     }
     case State::kPaused:

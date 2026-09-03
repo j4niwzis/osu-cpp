@@ -244,6 +244,7 @@ public:
         skia::SkRect::MakeWH(ctx.fWidth, ctx.fHeight);
     fScene->updateTree(ctx.fNowMs);
     fScene->layoutIfNeeded(screen);
+    fSearchBoxBounds = fSearchBox->bounds();
     if (rebuilt) {
       fScene->markDamaged();
     }
@@ -260,6 +261,10 @@ public:
     return fScene ? fScene->finishFrame() : skiff::scene::FrameResult{};
   }
   [[nodiscard]] scene::Drawable *sceneRoot() noexcept { return fScene.get(); }
+
+  [[nodiscard]] bool textBoxHit(float x, float y) const noexcept {
+    return fSearchBoxBounds.contains(x, y);
+  }
 
   // Returns true when the control consumed the click.
   bool click(float x, float y, bool pressed) {
@@ -450,6 +455,7 @@ private:
 
   std::unique_ptr<scene::Drawable> fScene;
   widgets::TextBox *fSearchBox = nullptr;
+  skia::SkRect fSearchBoxBounds = skia::SkRect::MakeEmpty();
   nodes::Text *fCount = nullptr;
   nodes::Text *fRangeValue = nullptr;
   widgets::RangeSlider *fRangeSlider = nullptr;

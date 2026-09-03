@@ -242,14 +242,14 @@ private:
         "Install optional classic artwork?", 24.0f, skia::kWhite, true);
     auto *intro = panel->add<nodes::Text>(
         {.y = 38.0f, .roles = {scene::role<skin_dialog_style::Text>}},
-        "osu-cpp works without these optional files and uses fallback graphics.\n"
-        "The download is pinned to a WebOsu-2 revision. It contains osu!/lazer\n"
+        "osu-cpp works without these optional files and uses fallback graphics. "
+        "The download is pinned to a WebOsu-2 revision. It contains osu!/lazer "
         "resources from ppy and resources from other authors.",
         14.0f, skia::kWhite, false);
     intro->setWrapped(true);
     auto *sources = panel->add<nodes::Text>(
         {.y = 96.0f, .roles = {scene::role<skin_dialog_style::Text>}},
-        "Sources: WebOsu-2, the original WebOsu, and ppy/osu-resources.\n"
+        "Sources: WebOsu-2, the original WebOsu, and ppy/osu-resources. "
         "The exact licence supplied with the resources follows.",
         14.0f, skia::kWhite, false);
     sources->setWrapped(true);
@@ -305,10 +305,6 @@ private:
     std::string line;
     while (std::getline(input, line)) {
       if (line.empty()) {
-        column->add<nodes::Box>({.width = 1.0f,
-                                 .height = 8.0f,
-                                 .relativeSize = scene::Axes::kX},
-                                skia::colorSetARGB(0, 0, 0, 0));
         continue;
       }
       auto *text = column->add<nodes::Text>(
