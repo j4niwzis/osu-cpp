@@ -185,7 +185,15 @@ jobs:
       # Which library answered which find_package, and where each came from.
       - name: what the build decided
         if: always()
-        run: cat build/cme-report.txt || true
+        run: |
+          cat build/cme-report.txt || true
+          # And what a kept module library says about itself, which is the
+          # part a consumer reads to compile its interface units.
+          for u in ~/.cache/cmake-everywhere/store/skiff*/*/use.cmake; do
+            [ -f "$u" ] || continue
+            echo "=== $u"
+            cat "$u"
+          done
 
       # The same list of libraries, in the spelling flatpak-builder reads.
       #
