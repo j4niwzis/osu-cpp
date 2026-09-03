@@ -1,0 +1,120 @@
+# The Ubuntu Touch package, cross-compiled.
+#
+# Clickable builds for the device's architecture inside a container and runs
+# every compiler under qemu. Skia alone is two thousand objects; emulated,
+# that does not finish inside the six hours a job gets. So this build does
+# what the Android one does -- compiles for the target with a compiler that
+# runs here -- and assembles the .click itself, which is a Debian package
+# with a manifest in it.
+name: click
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: clang 22
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y ninja-build python3 pkg-config ccache \
+            lsb-release software-properties-common gnupg curl \
+            generate-ninja meson gperf dpkg-dev
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22 all
+          echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
+
+      # The device's architecture, as packages on this machine. dpkg keeps
+      # them under the multiarch directories, so the sysroot is this
+      # filesystem and nothing has to be emulated to read it.
+      - name: the target's libraries
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo tee /etc/apt/sources.list.d/arm64.sources > /dev/null <<'SOURCES'
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: noble noble-updates
+          Components: main universe
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SOURCES
+          # The x86-64 lists do not carry arm64, and asking them for it is
+          # what makes apt-get update fail rather than say nothing.
+          for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list; do
+            [ -f "$f" ] && sudo sed -i 's/^deb \[/deb [arch=amd64 /; s/^deb h/deb [arch=amd64] h/' "$f" || true
+          done
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc6-dev:arm64 libstdc++-14-dev:arm64 \
+            libgl-dev:arm64 libegl-dev:arm64 libgles-dev:arm64 \
+            libwayland-dev:arm64 libxkbcommon-dev:arm64 \
+            libx11-dev:arm64 libxrandr-dev:arm64 libxinerama-dev:arm64 \
+            libxcursor-dev:arm64 libxi-dev:arm64 \
+            libasound2-dev:arm64 libpulse-dev:arm64 libdbus-1-dev:arm64
+
+      - name: cmake
+        run: |
+          version=4.3.4
+          curl -sSL -o cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-linux-x86_64.tar.gz"
+          sudo tar xzf cmake.tar.gz -C /opt
+          echo "/opt/cmake-${version}-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cmake-everywhere/sources
+            ~/.cache/cmake-everywhere/store
+            ~/.cache/ccache
+          key: click-${{ hashFiles('cmake/get_cme.cmake') }}-${{ github.sha }}
+          restore-keys: click-${{ hashFiles('cmake/get_cme.cmake') }}-
+
+      - name: configure
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+        run: |
+          cmake -S standalone -B build-click -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCME_STORE_ENABLED=ON \
+            -DOSU_WAYLAND=ON \
+            -DCMAKE_INSTALL_PREFIX=/
+
+      - name: build
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+          NINJA_STATUS: "[%f/%t %es] "
+        run: cmake --build build-click
+
+      - name: what the build decided
+        if: always()
+        run: cat build-click/cme-report.txt || true
+
+      - name: the package
+        run: |
+          stage=$(mktemp -d)
+          install -Dm755 build-click/osu_client "$stage/osu_client"
+          install -Dm644 click/manifest.json "$stage/manifest.json"
+          install -Dm644 click/osu-cpp.apparmor "$stage/osu-cpp.apparmor"
+          install -Dm644 click/osu-cpp.desktop "$stage/osu-cpp.desktop"
+          install -Dm755 click/osu-cpp-launch "$stage/osu-cpp-launch"
+          cp -a standalone/assets "$stage/assets"
+          click/pack.sh "$stage" osu-cpp.click
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: osu-cpp-click
+          path: osu-cpp.click
