@@ -6,11 +6,32 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ---- Project ----
 
 # Note: update this to your new project's name and version
+# Answered by cmake-everywhere, named before project() because that is the
+# only place a dependency provider may be installed from.
+set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+
 project(
   osucpp
   VERSION 1.0
   LANGUAGES CXX
 )
+
+# Whether the answer to every find_package below is actually installed.
+#
+# CMAKE_PROJECT_TOP_LEVEL_INCLUDES is read by the top-level project() call
+# and by no other, so a build configured from somewhere else -- or with the
+# variable set after project() -- has no provider and no sign of it: every
+# find_package quietly falls back to whatever the machine happens to have,
+# and the first library the machine has in a shape this project does not
+# expect is what finally says something, about the library rather than
+# about this.
+if(NOT COMMAND cme_provider)
+  message(FATAL_ERROR
+    "cmake-everywhere is not installed in this build, so nothing answers "
+    "find_package. CMAKE_PROJECT_TOP_LEVEL_INCLUDES is only read by the "
+    "top-level project() call: configure this directory, or the repository "
+    "root, and not a subdirectory of either.")
+endif()
 
 
 
@@ -68,20 +89,33 @@ endif()
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${sources})
 
 # Link dependencies
-find_package(PkgConfig)
-pkg_check_modules(LIBLZMA REQUIRED liblzma)
-if(OSU_STATIC_DEPS AND DEFINED LIBLZMA_STATIC_LDFLAGS)
-  target_link_libraries(${PROJECT_NAME} PUBLIC ${LIBLZMA_STATIC_LDFLAGS})
-else()
-  target_link_libraries(${PROJECT_NAME} PUBLIC ${LIBLZMA_LIBRARIES})
-endif()
-target_include_directories(${PROJECT_NAME} PUBLIC
-  ${LIBLZMA_INCLUDE_DIRS}
-)
-target_link_directories(${PROJECT_NAME} PUBLIC
-  ${LIBLZMA_LIBRARY_DIRS}
-)
+#
+# One call, and where it comes from is not this project's business: the
+# system's liblzma when there is one, and a pinned source build when there
+# is not. See cmake/get_cme.cmake.
+find_package(LibLZMA REQUIRED)
+target_link_libraries(${PROJECT_NAME} PUBLIC LibLZMA::LibLZMA)
 
+
+# ---- What this library is, said by the library ----
+#
+# The client, the flatpak build and anything else that embeds osucpp should
+# not have to know what it is built against: it writes find_package(osucpp)
+# and this says the rest. The declaration is installed beside the library,
+# under share/cmake-everywhere/ports, with the features it was built with
+# baked in -- so a prefix that has osucpp has the description of osucpp.
+if(COMMAND cme_declare_port)
+  cme_declare_port(
+    NAME osucpp
+    PROVIDES osucpp
+    VERSION ${PROJECT_VERSION}
+    GITHUB_REPOSITORY j4niwzis/osu-cpp
+    GIT_TAG cmake-everywhere
+    LICENSE AGPL-3.0-or-later
+    DEPENDS xz
+    TARGETS osucpp::osucpp
+  )
+endif()
 
 # ---- Create an installable target ----
 # this allows users to install and find the library via `find_package()`.

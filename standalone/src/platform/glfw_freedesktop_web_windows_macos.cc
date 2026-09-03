@@ -271,3 +271,18 @@ export inline constexpr int GLFW_CURSOR_DISABLED = captured_GLFW_CURSOR_DISABLED
 inline constexpr int captured_GLFW_RAW_MOUSE_MOTION = GLFW_RAW_MOUSE_MOTION;
 #undef GLFW_RAW_MOUSE_MOTION
 export inline constexpr int GLFW_RAW_MOUSE_MOTION = captured_GLFW_RAW_MOUSE_MOTION;
+
+// Whether asking where the window is means anything.
+//
+// Wayland does not tell a client where its window is: the position is the
+// compositor's business, and asking GLFW for it is answered with
+// GLFW_FEATURE_UNAVAILABLE rather than with a zero. Which platform GLFW
+// chose can only be asked from 3.4 on, and a build against anything older
+// than that is one where the question had a single answer anyway.
+export inline bool glfwWindowPositionIsKnowable() {
+#if defined(GLFW_PLATFORM_WAYLAND)
+  return glfwGetPlatform() != GLFW_PLATFORM_WAYLAND;
+#else
+  return true;
+#endif
+}
