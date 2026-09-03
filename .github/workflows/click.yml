@@ -20,7 +20,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # The same image as the native build, for the same reason: `import std`
+    # needs libstdc++ 15, whose bits/std.cc is what a module manifest points
+    # at, and 24.04 carries 14.
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +48,7 @@ jobs:
           sudo tee /etc/apt/sources.list.d/arm64.sources > /dev/null <<'SOURCES'
           Types: deb
           URIs: http://ports.ubuntu.com/ubuntu-ports
-          Suites: noble noble-updates
+          Suites: resolute resolute-updates
           Components: main universe
           Architectures: arm64
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
@@ -66,12 +69,13 @@ jobs:
           # sound goes through ALSA, and sd-bus comes from basu, which this
           # build compiles.
           sudo apt-get install -y --no-install-recommends \
-            libc6-dev:arm64 libstdc++-14-dev:arm64 \
+            libc6-dev:arm64 libstdc++-15-dev:arm64 \
             libgl-dev:arm64 libegl-dev:arm64 libgles-dev:arm64 \
             libopengl-dev:arm64 libglx-dev:arm64 libglvnd-dev:arm64 \
             libwayland-dev:arm64 libxkbcommon-dev:arm64 \
             libx11-dev:arm64 libxrandr-dev:arm64 libxinerama-dev:arm64 \
-            libxcursor-dev:arm64 libxi-dev:arm64 libasound2-dev:arm64
+            libxcursor-dev:arm64 libxi-dev:arm64 libasound2-dev:arm64 \
+            libssl-dev:arm64
 
       # What the target's GL libraries actually are on disk. FindOpenGL
       # reported both missing after they were installed, and a listing is
@@ -81,6 +85,28 @@ jobs:
           ls -la /usr/lib/aarch64-linux-gnu/libOpenGL.so* \
                  /usr/lib/aarch64-linux-gnu/libGLX.so* \
                  /usr/lib/aarch64-linux-gnu/libEGL.so* 2>&1 || true
+
+      # Where libstdc++ keeps the source of its std module. The file is the
+      # same for every architecture -- it is C++ that includes headers -- and
+      # which headers it reaches is decided by the sysroot of the compile,
+      # which here is the target's.
+      - name: what import std reads from libstdc++
+        run: |
+          std=$(ls /usr/include/c++/*/bits/std.cc | sort -V | tail -1)
+          echo "std module source: $std"
+          cat > /tmp/libstdc++.modules.json <<EOF
+          {
+            "version": 1,
+            "revision": 1,
+            "modules": [
+              { "logical-name": "std", "source-path": "$std",
+                "is-std-library": true },
+              { "logical-name": "std.compat",
+                "source-path": "${std%std.cc}std.compat.cc",
+                "is-std-library": true }
+            ]
+          }
+          EOF
 
       - name: cmake
         run: |
@@ -108,6 +134,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang-22 \
             -DCMAKE_CXX_COMPILER=clang++-22 \
+            -DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json \
             -DCME_STORE_ENABLED=ON \
             -DOSU_WAYLAND=ON \
             -DOPENGL_opengl_LIBRARY=/usr/lib/aarch64-linux-gnu/libOpenGL.so \
