@@ -14,6 +14,7 @@ inline void requestBeatmapArchive() {}
 [[nodiscard]] inline std::vector<std::string> takePendingImports() {
   return {};
 }
+inline void lockOrientation(int) {}
 inline void setCursorVisible(bool) {}
 inline void wantPointerLock(bool) {}
 inline void runMainLoop(FrameCallback, void *) {}

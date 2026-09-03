@@ -81,6 +81,41 @@ public:
     return std::nullopt;
   }
 
+  // Which way up the client wants to draw: 0 whatever the window is, 1
+  // landscape, 2 portrait.
+  //
+  // The system is asked first, because a system that turns its screen leaves
+  // nothing to turn here. What it does with the request is its own business
+  // -- a display set to turn only when a person turns it ignores it -- so
+  // the window that arrives is measured afterwards, and a window the wrong
+  // way up is answered with a buffer whose dimensions are swapped and a
+  // quarter turn during composition, which costs no second render target
+  // and no work per frame.
+  void requestDrawOrientation(int kind) {
+    if (fWanted.exchange(kind, std::memory_order_acq_rel) == kind) {
+      return;
+    }
+    int orientation = android::kOrientationUnspecified;
+    if (kind == 1) {
+      orientation = android::kOrientationSensorLandscape;
+    } else if (kind == 2) {
+      orientation = android::kOrientationSensorPortrait;
+    }
+    // Nothing is asked for "whatever the window is": what the manifest asked
+    // for is what that means, and withdrawing it would turn a telephone's
+    // window portrait for no reason.
+    if (kind != 0) {
+      (void)android::requestOrientation(orientation);
+    }
+    const std::lock_guard<std::mutex> lock(fSurfaceMutex);
+    fGeometryStale = true;
+  }
+
+  // Nothing for the client to turn: where this window is the wrong way up,
+  // the buffer is allocated the other way round and composed with a quarter
+  // turn, which the client never sees and never pays for.
+  [[nodiscard]] int drawTurn() const { return 0; }
+
   void requestCursorMode(int) {}
   void requestRawMotion(bool) {}
   void requestFullscreen(bool) {}
@@ -288,7 +323,16 @@ private:
     // buffer allocated with the dimensions swapped and then composed into a
     // window they were not swapped for is the picture squashed along one
     // axis.
-    const bool turned = windowWidth < windowHeight;
+    // Turned when the window is not the way up the client draws. Asked for
+    // "whatever the window is", nothing is ever turned.
+    const int wanted = fWanted.load(std::memory_order_acquire);
+    const bool portraitWindow = windowWidth < windowHeight;
+    bool turned = false;
+    if (wanted == 1) {
+      turned = portraitWindow;
+    } else if (wanted == 2) {
+      turned = !portraitWindow;
+    }
     fTurned.store(turned, std::memory_order_release);
     const int bufferWidth = turned ? windowHeight : windowWidth;
     const int bufferHeight = turned ? windowWidth : windowHeight;
@@ -700,8 +744,11 @@ private:
   int fTouchSurfaceHeight = 1;
   // Whether the buffer is being turned a quarter, decided when its geometry
   // is applied on the render thread and read when a touch arrives on
-  // another.
-  std::atomic<bool> fTurned{true};
+  // another. False until something asks to draw the way the window is not.
+  std::atomic<bool> fTurned{false};
+  // What the client asked to draw in, which only it knows: 0 whatever the
+  // window is, 1 landscape, 2 portrait.
+  std::atomic<int> fWanted{0};
   std::int32_t fTouchId = -1;
 };
 

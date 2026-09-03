@@ -50,6 +50,17 @@ public:
                1.0f, 0.0f, 1.0f, ""});
     this->add({1, "fps", "Show FPS counter", SettingKind::kToggle, 0.0f, 1.0f,
                0.0f, 0.0f, ""});
+    // Which way up the client draws, which is not the same as which way up
+    // the window is. Named outright, everything above this line -- the
+    // layout, the playfield, where a touch landed -- is told the surface is
+    // that way round, and the platform puts the picture into the window it
+    // really has. Where the platform can be asked to turn the screen
+    // instead, it is asked, and then there is nothing to turn: asking is a
+    // request and not a promise, though, and a display set to turn only when
+    // a person turns it ignores it.
+    this->add({1, "orientation", "Draw in", SettingKind::kChoice, 0.0f, 1.0f,
+               1.0f, 0.0f, "",
+               {"whatever the window is", "landscape", "portrait"}});
     // A list rather than a switch: there is no reason to assume these two
     // are the only renderers this client will ever have.
     this->add({1, "renderer", "Renderer", SettingKind::kChoice, 0.0f, 1.0f,
