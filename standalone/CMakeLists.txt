@@ -565,7 +565,9 @@ if(EMSCRIPTEN_BUILD)
     "SHELL:-sENVIRONMENT=web"
     "SHELL:-pthread"
     "SHELL:-msimd128"
-    "SHELL:-sEXPORTED_RUNTIME_METHODS=['GL','callMain','FS']"
+    # ccall among them: the page hands the client the path of an archive it
+    # has just written, and a string argument is what ccall is for.
+    "SHELL:-sEXPORTED_RUNTIME_METHODS=['GL','callMain','FS','ccall']"
     "SHELL:-sFETCH"
     "SHELL:-lidbfs.js"
     "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html"

@@ -452,7 +452,29 @@ public:
       int height, std::span<const std::array<int, 4>> damage) {
     return presentation::swapWithDamage(height, damage);
   }
-  void pollEvents() { glfwPollEvents(); }
+  void pollEvents() {
+#ifdef __EMSCRIPTEN__
+    // A browser window that changed size is not something GLFW hears about:
+    // Emscripten's GLFW knows the sizes it was told and nothing else, so a
+    // page resized by the user left the client drawing at the size it
+    // started with, stretched by the browser to fill the element.
+    //
+    // The page says how large the canvas is shown; this says how many
+    // pixels are behind it. Setting the window size is what makes
+    // Emscripten resize the buffer and fire the framebuffer callback, which
+    // is what remakes the surface.
+    const auto canvas = platform::web::canvasExtent();
+    if (fWindow != nullptr && canvas.fWidth > 0 && canvas.fHeight > 0) {
+      int width = 0;
+      int height = 0;
+      glfwGetWindowSize(fWindow, &width, &height);
+      if (width != canvas.fWidth || height != canvas.fHeight) {
+        glfwSetWindowSize(fWindow, canvas.fWidth, canvas.fHeight);
+      }
+    }
+#endif
+    glfwPollEvents();
+  }
   void cursorPosition(double &x, double &y) const {
     glfwGetCursorPos(fWindow, &x, &y);
   }

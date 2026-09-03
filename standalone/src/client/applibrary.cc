@@ -257,6 +257,21 @@ public:
     for (const auto &p : paths) {
       this->importFrom(std::filesystem::path(p));
     }
+    if constexpr (platform::capabilities::kBrowser) {
+      // The browser's picker answers whenever the user does, so what it
+      // chose arrives here rather than where it was asked for. The bytes
+      // are in the module's filesystem and belong to nobody once the
+      // library has copied them out.
+      bool imported = false;
+      for (const auto &p : platform::web::takePendingImports()) {
+        imported = this->importFrom(std::filesystem::path(p)) || imported;
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(p), ec);
+      }
+      if (imported) {
+        platform::web::syncMapStorage();
+      }
+    }
   }
 
   bool importFrom(const std::filesystem::path &src) {
