@@ -395,19 +395,32 @@ public:
     }
   }
 
-  void play() {
+  // Whether a source took it. Nothing plays when the pool is entirely busy,
+  // and the caller counts that: a pool that is permanently busy is a sample
+  // that has gone silent for the rest of the session, which is not something
+  // to discover by ear.
+  bool play() {
     if (fBuffer == 0 || fSources.empty() || !audioContext().ok())
-      return;
+      return false;
     for (audio::ALuint source : fSources) {
       audio::ALint state = audio::kInitial;
       audio::alGetSourcei(source, audio::kSourceState, &state);
-      if (state != audio::kPlaying) {
-        audio::alSourcei(source, audio::kBuffer,
-                         static_cast<audio::ALint>(fBuffer));
-        audio::alSourcePlay(source);
-        return;
+      // A paused source is not free either, and binding a buffer to one is
+      // an error that leaves the source holding the sample it had.
+      if (state == audio::kPlaying || state == audio::kPaused) {
+        continue;
       }
+      audio::alSourcei(source, audio::kBuffer,
+                       static_cast<audio::ALint>(fBuffer));
+      audio::alSourcePlay(source);
+      return true;
     }
+    return false;
+  }
+
+  // Whether the device gave this sample anything to play through.
+  [[nodiscard]] bool playable() const noexcept {
+    return fBuffer != 0 && !fSources.empty();
   }
 
 private:

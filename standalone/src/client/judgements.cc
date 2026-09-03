@@ -15,13 +15,33 @@ public:
   void reset() {
     fPlayedEvents = 0;
     fCombo = 0;
+    fPlayed = 0;
+    fSilentBusy = 0;
+    fSilentUnplayable = 0;
+    fMissing = 0;
+  }
+
+  // What the last play sounded like, in numbers. A map whose hitsounds go
+  // quiet says here whether the samples were not found, not loaded, or found
+  // and loaded and left with no free source to play through.
+  void reportSounds() const {
+    if (fSilentBusy == 0 && fSilentUnplayable == 0 && fMissing == 0) {
+      return;
+    }
+    std::println(std::cerr,
+                 "[hitsound] {} played, {} had no free source, {} could not "
+                 "be loaded, {} not found; {} samples held",
+                 fPlayed, fSilentBusy, fSilentUnplayable, fMissing,
+                 fSetSamples.size() + fSkinSamples.size());
   }
 
   void setGain(float gain) {
     fGain = gain;
-    for (auto &[name, player] : fSamples) {
-      (void)name;
-      player.setVolume(gain);
+    for (auto *cache : {&fSetSamples, &fSkinSamples}) {
+      for (auto &[name, player] : *cache) {
+        (void)name;
+        player.setVolume(gain);
+      }
     }
   }
 
@@ -33,6 +53,7 @@ public:
     while (fPlayedEvents < events.size()) {
       const auto &event = events[fPlayedEvents++];
       const int previous = fCombo;
+      this->useSet(set);
       fCombo = engine.score().fCombo;
       view.setCombo(fCombo);
       if (event.fKind != osu::HitKind::kBasic) {
@@ -74,6 +95,22 @@ public:
   }
 
 private:
+  // The samples a beatmap carries are cached under the name they have inside
+  // it -- "normal-hitnormal.ogg" and nothing more -- so the cache belongs to
+  // the set and is dropped when the set changes. Kept across sets, it would
+  // both answer the next map with the previous map's sounds and hold every
+  // set's sources open at once, which is how a device runs out of them.
+  //
+  // Skin samples are cached under their path, which is unambiguous, so they
+  // survive.
+  void useSet(const osu::BeatmapSet &set) {
+    if (&set == fSetOfSamples) {
+      return;
+    }
+    fSetOfSamples = &set;
+    fSetSamples.clear();
+  }
+
   void playSample(const std::string &name, const osu::BeatmapSet &set,
                   const Skin &skin) {
     if (name.empty()) {
@@ -83,12 +120,12 @@ private:
       const std::string key = name + std::string(extension);
       const auto bytes = set.findFile(key);
       if (!bytes.empty()) {
-        auto &player = fSamples[key];
+        auto &player = fSetSamples[key];
         if (!player.loaded()) {
           player.load(bytes, std::string(extension));
           player.setVolume(fGain);
         }
-        player.play();
+        this->start(player);
         return;
       }
     }
@@ -97,13 +134,24 @@ private:
       if (!std::filesystem::exists(path)) {
         continue;
       }
-      auto &player = fSamples[path.string()];
+      auto &player = fSkinSamples[path.string()];
       if (!player.loaded()) {
         player.load(path);
         player.setVolume(fGain);
       }
-      player.play();
+      this->start(player);
       return;
+    }
+    ++fMissing;
+  }
+
+  void start(platform::sound::SamplePlayer &player) {
+    if (!player.playable()) {
+      ++fSilentUnplayable;
+    } else if (player.play()) {
+      ++fPlayed;
+    } else {
+      ++fSilentBusy;
     }
   }
 
@@ -138,10 +186,16 @@ private:
                map.fObjects[index]);
   }
 
-  std::unordered_map<std::string, platform::sound::SamplePlayer> fSamples;
+  std::unordered_map<std::string, platform::sound::SamplePlayer> fSetSamples;
+  std::unordered_map<std::string, platform::sound::SamplePlayer> fSkinSamples;
+  const osu::BeatmapSet *fSetOfSamples = nullptr;
   std::size_t fPlayedEvents = 0;
   int fCombo = 0;
   float fGain = 1.0f;
+  std::uint64_t fPlayed = 0;
+  std::uint64_t fSilentBusy = 0;
+  std::uint64_t fSilentUnplayable = 0;
+  std::uint64_t fMissing = 0;
 };
 
 } // namespace client
