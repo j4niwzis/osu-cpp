@@ -19,9 +19,10 @@ extern "C" {
 }
 #endif
 
-export module client.portal;
+export module platform.freedesktop.dialogs_backend;
 
 import std;
+import platform.dialogs.types;
 
 // xdg-desktop-portal: the desktop's own file dialog, asked for over D-Bus.
 //
@@ -31,12 +32,7 @@ import std;
 // Outside one it still shows the dialog that belongs to the desktop, GTK on
 // GNOME and Qt on KDE, instead of whichever binary happens to be installed.
 // And it needs nothing linked but D-Bus itself.
-export namespace client::portal {
-
-struct SaveFileResult {
-  bool fPortalAvailable = false;
-  std::optional<std::filesystem::path> fPath;
-};
+export namespace platform::dialogs::backend {
 
 #ifdef OSU_HAVE_SDBUS
 
@@ -321,4 +317,4 @@ openArchive(const std::string &) {
 
 #endif
 
-} // namespace client::portal
+} // namespace platform::dialogs::backend

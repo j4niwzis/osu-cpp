@@ -1,9 +1,5 @@
 module;
 
-// popen/pclose: POSIX rather than standard, so they come in through the
-// global fragment rather than through import std.
-#include <cstdio>
-
 // OSU_VIDEO_LIBAV builds against libavcodec instead of talking to an ffmpeg
 // binary. Two reasons to want it: a wasm build has no processes to spawn at
 // all, and a desktop one stops depending on what is installed on the machine.
@@ -24,6 +20,7 @@ extern "C" {
 export module client.video;
 
 import std;
+import platform.external_video_encoder;
 import skia;
 
 export namespace client {
@@ -592,89 +589,35 @@ private:
 class VideoExporter {
 public:
   [[nodiscard]] static bool ffmpegAvailable() {
-    return std::system("command -v ffmpeg > /dev/null 2>&1") == 0;
+    return platform::ExternalVideoEncoder::available();
   }
 
   [[nodiscard]] bool begin(const VideoOptions &opts) {
-    fOpts = opts;
-    fFrame = 0;
-    if (!ffmpegAvailable()) {
-      fError = "ffmpeg not found in PATH";
-      return false;
-    }
-    // The frames arrive on stdin; the audio, if there is any, is a second
-    // input read from the file it was written to.
-    std::string cmd = std::format(
-        "ffmpeg -y -loglevel error -f rawvideo -pixel_format rgba "
-        "-video_size {}x{} -framerate {} -i -",
-        opts.fWidth, opts.fHeight, opts.fFps);
-    if (!opts.fAudio.empty() && std::filesystem::exists(opts.fAudio)) {
-      cmd += std::format(" -ss {:.3f} -i '{}' -c:a aac -shortest",
-                         opts.fAudioOffsetSec, opts.fAudio.string());
-    }
-    cmd += std::format(
-        " -c:v libx264 -pix_fmt yuv420p -crf 18 -preset medium '{}'",
-        opts.fOutput.string());
-
-    fPipe = ::popen(cmd.c_str(), "w");
-    if (fPipe == nullptr) {
-      fError = "could not start ffmpeg";
-      return false;
-    }
-    return true;
+    return fEncoder.begin(opts.fWidth, opts.fHeight, opts.fFps, opts.fAudio,
+                          opts.fAudioOffsetSec, opts.fOutput);
   }
 
   // Called once per rendered frame with the pixels as they came off the
   // surface: tightly packed RGBA, top row first, which is what ffmpeg was
   // told to expect.
   void addFrame(std::span<const std::uint8_t> rgba) {
-    if (fPipe == nullptr || rgba.empty()) {
-      return;
-    }
-    if (std::fwrite(rgba.data(), 1, rgba.size(), fPipe) != rgba.size()) {
-      fError = "ffmpeg stopped reading frames";
-      ::pclose(fPipe);
-      fPipe = nullptr;
-      return;
-    }
-    ++fFrame;
+    fEncoder.addFrame(rgba);
   }
 
-  [[nodiscard]] std::size_t frameCount() const noexcept { return fFrame; }
-  [[nodiscard]] const std::string &error() const noexcept { return fError; }
+  [[nodiscard]] std::size_t frameCount() const noexcept {
+    return fEncoder.frameCount();
+  }
+  [[nodiscard]] const std::string &error() const noexcept {
+    return fEncoder.error();
+  }
 
   // Close the pipe and wait for the encoder to finish writing the file.
   [[nodiscard]] bool finish() {
-    if (fPipe == nullptr) {
-      if (fError.empty()) {
-        fError = "the encoder was never started";
-      }
-      return false;
-    }
-    const int rc = ::pclose(fPipe);
-    fPipe = nullptr;
-    if (fFrame == 0) {
-      fError = "no frames were rendered";
-      return false;
-    }
-    if (rc != 0) {
-      fError = std::format("ffmpeg exited with {}", rc);
-      return false;
-    }
-    return true;
-  }
-
-  ~VideoExporter() {
-    if (fPipe != nullptr) {
-      ::pclose(fPipe); // an export abandoned midway still lets go of ffmpeg
-    }
+    return fEncoder.finish();
   }
 
 private:
-  VideoOptions fOpts;
-  std::FILE *fPipe = nullptr;
-  std::size_t fFrame = 0;
-  std::string fError;
+  platform::ExternalVideoEncoder fEncoder;
 };
 
 #endif

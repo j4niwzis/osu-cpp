@@ -1,11 +1,32 @@
-export module client.audio;
+export module platform.audio_engine;
 
 import std;
-import audio;
-import client.util;
+import platform.audio;
 
-export namespace client {
-namespace audio_client {
+namespace platform::sound::detail {
+
+[[nodiscard]] std::string
+lowerExtension(const std::filesystem::path &path) {
+  auto ext = path.extension().string();
+  std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return ext;
+}
+
+[[nodiscard]] std::vector<std::uint8_t>
+readFile(const std::filesystem::path &path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return {};
+  }
+  return {std::istreambuf_iterator<char>(file),
+          std::istreambuf_iterator<char>()};
+}
+
+} // namespace platform::sound::detail
+
+export namespace platform::sound {
 
 // OpenAL Soft mixes every source into one buffer and runs an output limiter
 // over the sum. Sources at full gain add up past full scale in a hurry --
@@ -436,5 +457,4 @@ private:
   }
 };
 
-} // namespace audio_client
-} // namespace client
+} // namespace platform::sound

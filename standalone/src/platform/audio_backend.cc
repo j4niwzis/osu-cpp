@@ -5,9 +5,10 @@ module;
 #include <mpg123.h>
 #include <sndfile.h>
 
-export module audio;
+export module platform.audio;
 
 import std;
+import platform.configuration;
 
 export namespace audio {
 
@@ -480,7 +481,8 @@ inline void report_pcm_level(std::span<const std::int16_t> samples,
   // Silent when the material is intact: this exists to catch a decoder
   // mangling the samples, which is what it was written for, not to narrate
   // every track that loads.
-  if (jumps > 0 || std::getenv("OSU_AUDIO_DUMP") != nullptr) {
+  if (jumps > 0 ||
+      platform::runtimeConfiguration().fAudioDumpDirectory.has_value()) {
     std::cerr << "[audio] " << what << ": peak " << peak << ", "
               << (100.0 * static_cast<double>(hot) /
                   static_cast<double>(samples.size()))
@@ -494,20 +496,19 @@ inline void report_pcm_level(std::span<const std::int16_t> samples,
 // OSU_AUDIO_DUMP names a directory.
 inline void dump_pcm(std::span<const std::int16_t> samples, int rate,
                      int channels) {
-  const char *dir = std::getenv("OSU_AUDIO_DUMP");
-  if (dir == nullptr || samples.empty() || channels <= 0) {
+  const auto dir = platform::runtimeConfiguration().fAudioDumpDirectory;
+  if (!dir || samples.empty() || channels <= 0) {
     return;
   }
   static int counter = 0;
-  const std::string path =
-      std::string(dir) + "/decoded-" + std::to_string(counter++) + ".wav";
+  const auto path = *dir / std::format("decoded-{}.wav", counter++);
   SF_INFO info{};
   info.samplerate = rate;
   info.channels = channels;
   info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
   SNDFILE *file = sf_open(path.c_str(), SFM_WRITE, &info);
   if (file == nullptr) {
-    std::cerr << "[audio] dump: cannot write " << path << '\n';
+    std::cerr << "[audio] dump: cannot write " << path.string() << '\n';
     return;
   }
   sf_writef_short(file, samples.data(),

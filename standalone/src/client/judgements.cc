@@ -4,7 +4,7 @@ import std;
 import osu;
 import archive;
 import skin;
-import client.audio;
+import platform.audio_engine;
 import client.gameplayview;
 import client.hitsoundmix;
 
@@ -138,7 +138,7 @@ private:
                map.fObjects[index]);
   }
 
-  std::unordered_map<std::string, audio_client::SamplePlayer> fSamples;
+  std::unordered_map<std::string, platform::sound::SamplePlayer> fSamples;
   std::size_t fPlayedEvents = 0;
   int fCombo = 0;
   float fGain = 1.0f;

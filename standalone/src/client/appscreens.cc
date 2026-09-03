@@ -1,6 +1,8 @@
 export module client.appscreens;
 
 import std;
+import platform.web_runtime;
+import platform.capabilities;
 import osu;
 import skia;
 import client.carousel;
@@ -173,16 +175,16 @@ public:
   // are, route their input and report what has to be repainted.
 
   void updateSongSelect() {
-#ifdef __EMSCRIPTEN__
-    if (!fApp.fLibraryLoaded) {
-      if (detail::gMapsSynced.load(std::memory_order_acquire)) {
+    if constexpr (platform::capabilities::kBrowser) {
+      if (!fApp.fLibraryLoaded) {
+      if (platform::web::mapStorageReady()) {
         fApp.fLibraryRuntime.initLibrary();
       } else {
         fApp.fFrame.damageAll("waiting on local storage");
         return;
       }
+      }
     }
-#endif
     this->refreshReplayFilter();
     fApp.fLibrary.rebuildVisible(client::parseQuery(fApp.fFilter.text()));
 
@@ -262,8 +264,8 @@ public:
 
   void frameSongSelect() {
     auto *canvas = fApp.fFrame.canvas();
-#ifdef __EMSCRIPTEN__
-    if (!fApp.fLibraryLoaded) {
+    if constexpr (platform::capabilities::kBrowser) {
+      if (!fApp.fLibraryLoaded) {
       canvas->clear(skia::colorSetARGB(255, 18, 14, 24));
       fApp.drawTextCentered(canvas, "Syncing local storage...",
                              static_cast<float>(fApp.fWin.fScreenW) * 0.5f,
@@ -271,8 +273,8 @@ public:
                              skia::kWhite, 0.8f);
       fApp.present();
       return;
+      }
     }
-#endif
     fApp.drawScreenBackground(canvas);
 
     const float sw = static_cast<float>(fApp.fWin.fScreenW);

@@ -3,7 +3,7 @@ export module client.hitsoundmix;
 import std;
 import osu;
 import skin;
-import client.audio;
+import platform.audio_engine;
 import client.util;
 
 export namespace client {
@@ -53,14 +53,14 @@ sampleNames(double time, osu::HitSound sound, const osu::HitSample &sample,
   return names;
 }
 
-[[nodiscard]] audio_client::DecodedAudio
+[[nodiscard]] platform::sound::DecodedAudio
 loadSample(std::string_view name, const osu::BeatmapSet &set,
            const Skin &skin) {
   for (const std::string_view extension : {".wav", ".ogg"}) {
     const std::string key = std::string(name) + std::string(extension);
     const auto bytes = set.findFile(key);
     if (!bytes.empty()) {
-      return audio_client::decodeAudio(bytes, extension);
+      return platform::sound::decodeAudio(bytes, extension);
     }
   }
   for (const std::string_view extension : {".wav", ".ogg"}) {
@@ -69,13 +69,13 @@ loadSample(std::string_view name, const osu::BeatmapSet &set,
     if (!std::filesystem::exists(path)) {
       continue;
     }
-    return audio_client::decodeAudio(detail::readFile(path), extension);
+    return platform::sound::decodeAudio(detail::readFile(path), extension);
   }
   return {};
 }
 
 void addPcm(std::vector<float> &mix, int outputRate, std::size_t atFrame,
-            const audio_client::DecodedAudio &sample, float gain) {
+            const platform::sound::DecodedAudio &sample, float gain) {
   if (sample.fSamples.empty() || sample.fRate <= 0 ||
       sample.fChannels <= 0 || outputRate <= 0) {
     return;
@@ -155,7 +155,7 @@ mixReplayAudio(std::span<const std::uint8_t> musicBytes,
                osu::RuleSet rules, const osu::BeatmapSet &set,
                const Skin &skin, float musicGain, float effectGain,
                const std::filesystem::path &output) {
-  auto music = audio_client::decodeAudio(musicBytes, musicExtension);
+  auto music = platform::sound::decodeAudio(musicBytes, musicExtension);
   if (music.fSamples.empty() || music.fRate <= 0 || music.fChannels <= 0) {
     return std::nullopt;
   }
@@ -169,7 +169,7 @@ mixReplayAudio(std::span<const std::uint8_t> musicBytes,
   }
   engine.advance(map.lastObjectEndTime() + 1500.0);
 
-  std::unordered_map<std::string, audio_client::DecodedAudio> samples;
+  std::unordered_map<std::string, platform::sound::DecodedAudio> samples;
   bool addedHitsound = false;
   for (const auto &event : engine.events()) {
     if (event.fKind != osu::HitKind::kBasic ||
