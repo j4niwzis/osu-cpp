@@ -338,19 +338,29 @@ elseif(ANDROID)
   find_library(CXX_LIBRARY NAMES c++ REQUIRED)
   find_library(CXXABI_LIBRARY NAMES c++abi REQUIRED)
   find_library(UNWIND_LIBRARY NAMES unwind REQUIRED)
-  # Which file clang would link its builtins from, asked of clang with the
-  # flags this build compiles with. Not -print-resource-dir: that answers
-  # about the clang installation -- /usr/lib/llvm22 -- and the runtime for
-  # this target was built and put somewhere else entirely by whoever made
-  # the toolchain. -print-libgcc-file-name answers about this target.
+  # The toolchain file may already have asked, in which case it knows better
+  # than anything reconstructed here.
+  if(NOT COMPILER_RT_LIBRARY AND MANDK_BUILTINS)
+    set(COMPILER_RT_LIBRARY "${MANDK_BUILTINS}")
+  endif()
+  # Otherwise: which file clang would link its builtins from, asked of clang
+  # with the flags that link, not only the flags that compile. -rtlib is a
+  # link flag, and a clang built to default to libgcc -- which apt.llvm.org's
+  # is -- answers this question about libgcc unless told otherwise, naming a
+  # file no Android sysroot has. Not -print-resource-dir either: that answers
+  # about the clang installation, and the runtime for this target was built
+  # and put somewhere else by whoever made the toolchain.
   if(NOT COMPILER_RT_LIBRARY)
-    separate_arguments(OSU_ANDROID_RT_FLAGS UNIX_COMMAND "${CMAKE_C_FLAGS}")
+    separate_arguments(OSU_ANDROID_RT_FLAGS UNIX_COMMAND
+      "${CMAKE_C_FLAGS} ${CMAKE_EXE_LINKER_FLAGS}")
     execute_process(
       COMMAND "${CMAKE_C_COMPILER}" ${OSU_ANDROID_RT_FLAGS}
               --target=${CMAKE_C_COMPILER_TARGET}
-              --sysroot=${CMAKE_SYSROOT} -print-libgcc-file-name
-      OUTPUT_VARIABLE COMPILER_RT_LIBRARY
+              --sysroot=${CMAKE_SYSROOT} -rtlib=compiler-rt
+              -print-libgcc-file-name
+      OUTPUT_VARIABLE OSU_ANDROID_RT_ANSWER
       OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    set(COMPILER_RT_LIBRARY "${OSU_ANDROID_RT_ANSWER}")
   endif()
   # The architecture is the one being built for, not the one this was
   # written on.
@@ -370,10 +380,13 @@ elseif(ANDROID)
   endif()
   if(NOT EXISTS "${COMPILER_RT_LIBRARY}")
     message(FATAL_ERROR
-      "Android compiler-rt not found: ${COMPILER_RT_LIBRARY}. That path is "
-      "what ${CMAKE_C_COMPILER} answers -print-libgcc-file-name with, for "
-      "this target and sysroot. Pass COMPILER_RT_LIBRARY, or "
-      "OSU_ANDROID_RESOURCE_DIR to build the name the old way.")
+      "Android compiler-rt not found: \"${COMPILER_RT_LIBRARY}\".\n"
+      "  the toolchain file says MANDK_BUILTINS is \"${MANDK_BUILTINS}\"\n"
+      "  ${CMAKE_C_COMPILER} answers -print-libgcc-file-name with "
+      "\"${OSU_ANDROID_RT_ANSWER}\"\n"
+      "  the name built from OSU_ANDROID_RESOURCE_DIR "
+      "\"${OSU_ANDROID_RESOURCE_DIR}\" is what is left when both are empty\n"
+      "Pass COMPILER_RT_LIBRARY to say it outright.")
   endif()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
