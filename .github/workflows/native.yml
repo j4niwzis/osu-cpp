@@ -182,6 +182,15 @@ jobs:
           NINJA_STATUS: "[%f/%t %es] "
         run: cmake --build build
 
+      # What a cancelled or failed run left in the store. The cache is
+      # restored by the next run whatever happened to this one, so a
+      # half-written entry outlives the build that abandoned it.
+      - name: sweep the store
+        if: always()
+        run: |
+          python3 build/_cme/tools/store-gc.py --unfinished --incomplete \
+            --delete || true
+
       # Which library answered which find_package, and where each came from.
       - name: what the build decided
         if: always()
