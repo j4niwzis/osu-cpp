@@ -216,6 +216,52 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                       (format out
                               "{~%  \"version\": 1,~%  \"revision\": 1,~%  \"modules\": [~%    { \"logical-name\": \"std\", \"source-path\": \"~a\",~%      \"is-std-library\": true },~%    { \"logical-name\": \"std.compat\", \"source-path\": \"~a/bits/std.compat.cc\",~%      \"is-std-library\": true }~%  ]~%}~%"
                               std std-directory)))))))
+          ;; Guix's Skia package installs headers, libskia.so, and a
+          ;; pkg-config file, but not the CMake package configuration used
+          ;; by the upstream Skia port. Supply the small imported-target
+          ;; adapter here; Skia itself still comes entirely from Guix.
+          (add-before 'configure 'write-skia-package-config
+            (lambda* (#:key inputs #:allow-other-keys)
+              (let* ((skia (assoc-ref inputs "skia"))
+                     ;; Guix's regular Skia recipe is a shared component
+                     ;; build, while skia-for-friction (the package selected
+                     ;; by this channel) is static. Use what the package
+                     ;; actually installed instead of assuming one variant.
+                     (libraries (find-files skia "^libskia\\.(so|a)$"))
+                     (library (and (pair? libraries) (first libraries)))
+                     (directory "/tmp/guix-cmake/Skia")
+                     ;; Guix installs every header it found under
+                     ;; include/skia/ keeping the path it had in the source
+                     ;; tree, so a public header is at
+                     ;; include/skia/include/effects/SkRuntimeEffect.h. Skia
+                     ;; headers include each other from the root of that
+                     ;; tree ("include/core/SkFoo.h"), and this project
+                     ;; includes them the way the port installs them
+                     ;; (<skia/effects/SkRuntimeEffect.h>). Both are true of
+                     ;; the same tree under two names, so the second one is
+                     ;; made here: a directory whose skia/ is that include/.
+                     (root (string-append skia "/include/skia"))
+                     (shim (string-append directory "/as-installed"))
+                     (config (string-append directory "/SkiaConfig.cmake")))
+                (unless library
+                  (error "the Guix Skia input contains no libskia library"))
+                (mkdir-p directory)
+                (mkdir-p shim)
+                (unless (file-exists? (string-append shim "/skia"))
+                  (symlink (string-append root "/include")
+                           (string-append shim "/skia")))
+                (call-with-output-file config
+                  (lambda (out)
+                    (format out "\
+add_library(Skia::skia UNKNOWN IMPORTED)~%
+set_target_properties(Skia::skia PROPERTIES~%
+  IMPORTED_LOCATION \"~a\"~%
+  INTERFACE_INCLUDE_DIRECTORIES \"~a;~a\")~%
+foreach(component IN LISTS Skia_FIND_COMPONENTS)~%
+  set(Skia_${component}_FOUND TRUE)~%
+endforeach()~%
+set(Skia_FOUND TRUE)~%" library shim root)))
+                (setenv "Skia_DIR" directory))))
           ;; One declaration per application component, saying where its
           ;; pinned checkout is. Distribution libraries are Guix inputs.
           ;;
