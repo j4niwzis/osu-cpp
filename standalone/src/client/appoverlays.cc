@@ -301,7 +301,15 @@ public:
                             static_cast<float>(osu::kPlayfieldHeight));
     fApp.fSkin.precomputeSliderBodies(*fApp.fPlay.fMap, fApp.fComboInfo,
                                      exportScale, fApp.fContext.get());
-    fApp.fSkin.flattenBodiesToRaster(fApp.fContext.get());
+    if (!fApp.fSkin.flattenBodiesToRaster(fApp.fContext.get())) {
+      // The render runs on a thread with no GL context, so a body still on
+      // the GPU is not something it can draw -- Skia stops the program
+      // rather than draw nothing. Dropped, they are built as they are met.
+      std::println(std::cerr,
+                   "[export] the slider bodies could not be read back from "
+                   "the GPU; they are drawn as they are met instead");
+      fApp.fSkin.forgetPrecomputedBodies();
+    }
 
     request.fMap = *fApp.fPlay.fMap;
     request.fCombo = fApp.fComboInfo;
