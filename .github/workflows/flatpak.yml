@@ -1,0 +1,62 @@
+# The Flatpak build.
+#
+# Every dependency is a module of the manifest, built into /app, and the
+# client is configured with CME_OFFLINE: nothing is fetched, because a
+# flatpak-builder module has no network. So this run answers a question the
+# other builds cannot -- whether the ports can be answered entirely by a
+# prefix that somebody else populated, which is what packaging for a
+# distribution is.
+name: flatpak
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: flatpak and the runtime
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y flatpak flatpak-builder ccache
+          flatpak remote-add --if-not-exists --user flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.llvm22//25.08
+
+      # What flatpak-builder downloaded and what it has already built. The
+      # manifest is what decides both, so it is what the key is made of.
+      - uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}
+          restore-keys: |
+            flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-
+            flatpak-
+
+      - name: build
+        run: |
+          flatpak-builder --user --force-clean --disable-rofiles-fuse \
+            --ccache --repo=repo build-flatpak \
+            flatpak/io.github.j4niwzis.osu_cpp.yml
+
+      - name: what the build decided
+        if: always()
+        run: cat .flatpak-builder/build/osu-cpp*/build*/cme-report.txt || true
+
+      - name: bundle
+        run: |
+          flatpak build-bundle repo osu-cpp.flatpak io.github.j4niwzis.osu_cpp
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: osu-cpp-flatpak
+          path: osu-cpp.flatpak

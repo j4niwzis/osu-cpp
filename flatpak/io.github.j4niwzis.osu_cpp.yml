@@ -291,6 +291,14 @@ modules:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CXX_COMPILER=clang++
       - -DCMAKE_CXX_STDLIB_MODULES_JSON=/run/build/osu-cpp/flatpak/libstdc++.modules.json
+      # Nothing is fetched here. A module builds without a network, and the
+      # modules above have already put every library this needs into /app --
+      # so every find_package should be answered from there, and a port that
+      # wants to build from source instead is a port whose system answer was
+      # rejected. Offline is how that becomes an error naming the library
+      # rather than a build hanging on a git clone that cannot happen.
+      - -DCME_OFFLINE=ON
+      - -DCPM_SOURCE_CACHE=/run/build/osu-cpp/.flatpak-sources/cme
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
       - -DOSU_STATIC_DEPS=ON
       - -DOSU_VIDEO_LIBAV=ON
