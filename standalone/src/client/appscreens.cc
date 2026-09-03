@@ -616,6 +616,7 @@ public:
   // answer to "is this frame worth drawing".
   void updateDownload() {
     fApp.fMirrors.pollProgress();
+    fApp.fMirrors.pollSearchRetry();
     // A card also draws its own state -- idle, fetching, done, failed -- out
     // of the entry, and that is written from a dozen places: a transfer
     // starting, one finishing, an import marking everything already owned.
