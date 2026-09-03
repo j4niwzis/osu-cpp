@@ -98,6 +98,7 @@
           src = componentSources.skiff;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
           propagatedBuildInputs = [ skia153 pkgs.libGL ];
+          hardeningDisable = [ "fortify" "fortify3" ];
           preConfigure = moduleSetup;
           cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" "-DSKIFF_INSTALL=ON" ];
           postInstall = ''
@@ -112,6 +113,16 @@
           src = componentSources.skiff_widgets;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
           propagatedBuildInputs = [ skiff ];
+          hardeningDisable = [ "fortify" "fortify3" ];
+          # The build-tree alias is skiff::widgets. Give the exported target
+          # the same public name instead of the implementation target's
+          # skiff::skiff-widgets name.
+          postPatch = ''
+            substituteInPlace CMakeLists.txt \
+              --replace-fail \
+                'set_target_properties(''${PROJECT_NAME} PROPERTIES CXX_STANDARD 23)' \
+                'set_target_properties(''${PROJECT_NAME} PROPERTIES CXX_STANDARD 23 EXPORT_NAME widgets)'
+          '';
           preConfigure = moduleSetup;
           cmakeFlags = [
             "-DCMAKE_BUILD_TYPE=Release"
@@ -142,6 +153,7 @@
           # What a desktop build reaches through rather than builds.
           buildInputs = with pkgs; [
             libGL libglvnd libxkbcommon wayland wayland-protocols
+            libffi
             xorg.libX11 xorg.libXrandr xorg.libXinerama xorg.libXcursor
             xorg.libXi alsa-lib libpulseaudio dbus systemd
             boost skia153 libzip libsndfile mpg123 openal glfw

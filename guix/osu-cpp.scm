@@ -166,30 +166,46 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
           ;; this build's compiler actually searches and describe it, just
           ;; as the native and Nix builds do.
           (add-before 'configure 'write-stdlib-module-manifest
-            (lambda _
-              (let* ((compiler (or (getenv "CXX") "c++"))
-                     (answer
-                      (let ((pipe
-                             (open-pipe* OPEN_READ "sh" "-c"
-                              (string-append
-                               compiler
-                               " -std=c++23 -x c++ -E -v /dev/null 2>&1"))))
-                        (let ((text (get-string-all pipe)))
-                          (close-pipe pipe)
-                          text)))
-                     (directories
-                      (filter file-is-directory?
-                              (map string-trim-both
-                                   (string-split answer #\newline))))
-                     (std-directory
-                      (find (lambda (directory)
-                              (file-exists?
-                               (string-append directory "/bits/std.cc")))
-                            directories)))
-                (unless std-directory
-                  (error "libstdc++ bits/std.cc is not in the compiler's search path"))
-                (let ((std (string-append std-directory "/bits/std.cc")))
+            (lambda* (#:key inputs #:allow-other-keys)
+              ;; Guix's Clang wrapper injects its libstdc++ include paths
+              ;; outside Clang's built-in search list. Use the explicit GCC
+              ;; toolchain input instead of trying to rediscover wrapper
+              ;; state from `clang++ -v`.
+              (let* ((toolchain (assoc-ref inputs "gcc-toolchain"))
+                     (std-files
+                      (find-files toolchain "^std\\.cc$"))
+                     (std
+                      (find (lambda (file)
+                              (string-contains file "/bits/std.cc"))
+                            std-files)))
+                (unless std
+                  (error "libstdc++ bits/std.cc is not in the GCC toolchain"))
+                (let* ((std-directory (dirname (dirname std)))
+                       (config-files
+                        (find-files toolchain "^c\\+\\+config\\.h$"))
+                       (config
+                        (find (lambda (file)
+                                (string-contains file "/bits/c++config.h"))
+                              config-files))
+                       (directories
+                        (delete-duplicates
+                         (filter identity
+                          (list std-directory
+                                (string-append std-directory "/backward")
+                                (and config (dirname (dirname config)))))))
+                       (include-flags
+                        (string-join
+                         (append-map (lambda (directory)
+                                       (list "-isystem" directory))
+                                     directories)
+                         " ")))
+                  ;; clang-scan-deps does not run Guix's compiler wrapper;
+                  ;; put the same standard-library paths on CMake's command
+                  ;; line so module dependency scanning sees them too.
+                  (setenv "CXXFLAGS" include-flags)
                   (format #t "std module source: ~a~%" std)
+                  (format #t "standard library include flags: ~a~%"
+                          include-flags)
                   (call-with-output-file "/tmp/libstdc++.modules.json"
                     (lambda (out)
                       (format out
@@ -248,6 +264,9 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                  ;; For wayland-scanner, which glfw runs to generate its
                  ;; protocol bindings.
                  "wayland"))
+      ;; Clang compiles the project; this explicit GCC 15 toolchain supplies
+      ;; the libstdc++ C++23 module sources and headers it compiles against.
+      (list (list "gcc-toolchain" (needed "gcc-toolchain@15")))
       ;; The application components the phase reads the port out of.
       (map (lambda (entry)
              (list (string-append "cme-source-" (first entry)) (third entry)))
