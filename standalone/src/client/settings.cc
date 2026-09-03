@@ -118,10 +118,10 @@ public:
     // The names are spelled out here rather than taken from client.mirrors:
     // the settings know nothing about the network, and should not start.
     // Which one a build starts with: mino in a browser, where it is the one
-    // that answers a page most reliably, and nerinyan everywhere else.
-    this->add({4, "mirror", "Beatmap mirror", SettingKind::kChoice, 0.0f, 2.0f,
-               1.0f, platform::capabilities::kBrowser ? 2.0f : 0.0f, "",
-               {"nerinyan", "osu.direct", "mino (catboy.best)"}});
+    // that answers a page most reliably, and osu.direct everywhere else.
+    this->add({4, "mirror", "Beatmap mirror", SettingKind::kChoice, 0.0f, 1.0f,
+               1.0f, platform::capabilities::kBrowser ? 1.0f : 0.0f, "",
+               {"osu.direct", "mino (catboy.best)"}});
   }
 
   [[nodiscard]] const std::vector<SettingDef> &defs() const noexcept {
