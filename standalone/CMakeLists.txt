@@ -97,12 +97,32 @@ find_package(PkgConfig REQUIRED)
 # asked for is a library that is not there.
 find_package(Boost REQUIRED COMPONENTS asio beast json)
 
-# egl beside gl, because how Skia reaches GL is decided when Skia is built:
-# with neither egl nor x11 its own build assembles no GL interface at all
-# and hands back nothing at run time. EGL is the one that works under
-# Wayland, and under X11 with OSU_EGL=1; a GLX build would be x11 instead,
-# and then the context has to be a GLX one.
-find_package(Skia REQUIRED COMPONENTS gl egl png jpeg freetype)
+# Whether this build is for a machine that may be running Wayland.
+#
+# It decides one thing, and that thing is how Skia reaches GL. With neither
+# egl nor x11 Skia assembles no GL interface at all and hands back nothing at
+# run time, so one of the two has to be asked for: EGL is what works under
+# Wayland (and under X11 with OSU_EGL=1), GLX is what an X11-only machine
+# has. Off, this build also leaves out the Wayland touch bridge.
+#
+# Off is not a smaller version of the same program -- it is a program for a
+# different machine. It is offered because the smaller set is what an
+# installed Skia is likely to have: Debian builds its libskia with neither
+# skia_use_egl nor skia_use_x11 set, so a build that asks for EGL cannot use
+# it and builds its own.
+option(OSU_WAYLAND "Reach GL through EGL, and build the Wayland touch bridge"
+       ON)
+
+# GL, and nothing about how Skia reaches it.
+#
+# Skia's egl and x11 features are two spellings of one thing -- both compile
+# GrGLMakeNativeInterface, from different sources, so a build may have one or
+# neither -- and this client needs neither: it assembles the interface from
+# the loader of whatever created the context, in initSkia.
+#
+# So no interface is asked for. A Skia built here is built without one, and a
+# Skia already installed is used whichever way it was built.
+find_package(Skia REQUIRED COMPONENTS gl png jpeg freetype)
 find_package(libzip REQUIRED)
 find_package(SndFile REQUIRED)
 find_package(mpg123 REQUIRED)
@@ -132,7 +152,7 @@ else()
   # small native bridge turns the first contact into the pointer events the
   # rest of the client already understands.  It stays optional so X11 and
   # non-Linux builds retain exactly their existing dependency set.
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND OSU_WAYLAND)
     pkg_check_modules(WAYLAND_CLIENT wayland-client)
   endif()
 endif()

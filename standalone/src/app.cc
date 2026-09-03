@@ -1930,7 +1930,26 @@ private:
   }
 
   bool initSkia() {
+    // Two ways to get a GL interface, and the second is the one that always
+    // exists.
+    //
+    // GrGLMakeNativeInterface is compiled from Skia's own egl or glx sources.
+    // A Skia built with neither -- which is how Debian builds the one it
+    // ships -- has the variant that returns nothing, so this is not a
+    // failure to report but a question to ask differently.
+    //
+    // The other way is to assemble the interface from a loader, and this
+    // process has one: whatever made the context knows where its entry
+    // points are, and answers the same whether that was EGL or GLX.
     auto interface = skia::GrGLMakeNativeInterface();
+    if (!interface) {
+      interface = skia::GrGLMakeAssembledInterface(
+          &fWindowRuntime,
+          [](void *context, const char name[]) -> skia::GrGLFuncPtr {
+            return static_cast<platform::WindowRuntime *>(context)
+                ->procAddress(name);
+          });
+    }
     if (!interface) {
       return false;
     }
