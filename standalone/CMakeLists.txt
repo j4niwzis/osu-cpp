@@ -351,11 +351,19 @@ if(NOT EMSCRIPTEN_BUILD AND WAYLAND_CLIENT_FOUND)
 endif()
 
 # ---- Link ----
+#
+# skiff as well as skiff::widgets, because this client imports skiff's own
+# modules -- import skia, import scene -- and a target that imports a module
+# links the library that provides it. Through the widgets alone it worked
+# only while skiff was built here: a library taken from the store is an
+# imported target, and CMake synthesises its module sources for the targets
+# that link it, not for the targets that link those.
 
 if(EMSCRIPTEN_BUILD)
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
     skiff::widgets
+    skiff::skiff
     Skia::skia
     libzip::zip
     SndFile::sndfile
@@ -421,6 +429,7 @@ elseif(ANDROID)
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
     skiff::widgets
+    skiff::skiff
     Threads::Threads
     OpenAL::OpenAL
     Skia::skia
@@ -440,6 +449,7 @@ else()
   target_link_libraries(${PROJECT_NAME}
     osucpp::osucpp
     skiff::widgets
+    skiff::skiff
     Threads::Threads
     OpenGL::GL
     glfw::glfw

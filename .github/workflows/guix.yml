@@ -93,10 +93,30 @@ jobs:
       # release has, that is a version to pin deliberately, not a moving one
       # to inherit.
 
+      # git 2.52 stops when it cannot read the system configuration --
+      # "unknown error occurred while reading the configuration files" --
+      # and every source here is a git checkout, so a file the build user
+      # cannot read is every fetch failing at git init.
+      - name: git's system configuration
+        if: steps.sources.outputs.have == 'yes'
+        run: |
+          ls -l /etc/gitconfig || echo "there is none"
+          sudo chmod a+r /etc/gitconfig 2>/dev/null || true
+
       - name: build
         if: steps.sources.outputs.have == 'yes'
         run: |
           guix build -f guix/osu-cpp.scm --no-grafts -v2
+
+      # A failed build's log is the daemon's, not the command's: guix prints
+      # a path and stops. Without this the failure is a derivation name.
+      - name: the log of whatever failed
+        if: steps.sources.outputs.have == 'yes' && failure()
+        run: |
+          for log in $(sudo find /var/log/guix/drvs -name '*.gz' -newermt '-30 minutes'); do
+            echo "=== $log"
+            sudo zcat "$log" | tail -60
+          done
 
       - name: what it produced
         if: steps.sources.outputs.have == 'yes' && success()
