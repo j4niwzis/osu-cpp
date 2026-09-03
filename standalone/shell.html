@@ -4,121 +4,117 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>osu!cpp</title>
+  <!-- Cross-origin isolation, without which a threaded build has no
+       SharedArrayBuffer to run in. Absent when this file is opened straight
+       out of a build directory, which is why it is asked for and not
+       required. -->
+  <script src="coi.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #111; }
-    #canvas { width: 100vw !important; height: 100vh !important; display: block; }
-    #drop-zone { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-                 display: flex; flex-direction: column; align-items: center; justify-content: center;
-                 color: #ccc; font-family: sans-serif; font-size: 18px; z-index: 10;
-                 background: rgba(0,0,0,0.85); }
-    #drop-zone.hidden { display: none; }
-    #drop-zone h1 { font-size: 36px; margin-bottom: 12px; color: #fff; }
-    #drop-zone p { margin: 6px 0; }
-    #drop-zone .row { display: flex; gap: 16px; margin-top: 16px; }
-    #drop-zone label { display: inline-block; padding: 12px 32px;
-                       color: #fff; border-radius: 6px; cursor: pointer;
-                       font-size: 16px; }
-    #drop-zone .btn-beatmap { background: #e0689b; }
-    #drop-zone .btn-beatmap:hover { background: #f078ab; }
-    #drop-zone input[type=file] { display: none; }
-    #status { position: absolute; top: 12px; left: 12px; color: #ccc; font-family: sans-serif;
-              font-size: 14px; z-index: 20; }
+    /* The element is sized here and nowhere else. How many pixels are behind
+       it is the client's business: it reads this size every frame and sets
+       the buffer to match, which is also what tells it to redraw. */
+    #canvas { width: 100vw; height: 100vh; display: block; }
+    #loading { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+               display: flex; flex-direction: column; align-items: center;
+               justify-content: center; color: #ccc; background: #111;
+               font-family: sans-serif; font-size: 16px; z-index: 10; }
+    #loading.hidden { display: none; }
+    #loading h1 { font-size: 34px; margin-bottom: 10px; color: #fff; }
+    #loading p { margin: 4px 0; color: #888; }
   </style>
 </head>
 <body>
-  <div id="drop-zone">
+  <div id="loading">
     <h1>osu!cpp</h1>
-    <p>Drop a <strong>.osz</strong> beatmap file here</p>
-    <div class="row">
-      <label for="beatmap-input" class="btn-beatmap">Choose beatmap</label>
-    </div>
-    <input type="file" id="beatmap-input" accept=".osz,.zip">
+    <p id="loading-note">Loading…</p>
   </div>
-  <div id="status"></div>
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <!-- The picker the client asks for when the import button is pressed. -->
+  <input id="beatmap-input" type="file" accept=".osz,.zip" multiple style="display:none">
+
   <script>
-    var canvas = document.createElement('canvas');
-    canvas.id = 'canvas';
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    document.body.appendChild(canvas);
+    var canvas = document.getElementById('canvas');
+    var loading = document.getElementById('loading');
+    var note = document.getElementById('loading-note');
+    var beatmapInput = document.getElementById('beatmap-input');
 
     var Module = {
       canvas: canvas,
+      // Beatmaps and skins are imported and downloaded inside the client, so
+      // it starts with nothing to be told.
       arguments: [],
-      print: function(text) { console.log(text); },
-      printErr: function(text) { console.error(text); },
-      onRuntimeInitialized: function() {
-        function resumeAudio() {
-          if (Module.webaudioContext && Module.webaudioContext.state === 'suspended') {
-            Module.webaudioContext.resume();
-          }
-        }
-        canvas.addEventListener('mousedown', resumeAudio);
-        canvas.addEventListener('click', resumeAudio);
-
-        function syncCanvasSize() {
-          canvas.width = window.innerWidth;
-          canvas.height = window.innerHeight;
-        }
-        window.addEventListener('resize', syncCanvasSize);
-
-        var hiddenCursor = false;
-        Module.setCursorVisible = function(visible) {
-          hiddenCursor = !visible;
-          canvas.style.cursor = visible ? 'default' : 'none';
-        };
-
-        if (pendingOsz) { writeOsz(pendingOsz); pendingOsz = null; }
+      print: function (text) { console.log(text); },
+      printErr: function (text) { console.error(text); },
+      setStatus: function (text) { if (text) { note.textContent = text; } },
+      onRuntimeInitialized: function () {
+        loading.classList.add('hidden');
+        canvas.focus();
+      },
+      // Called by the client, which hides the pointer while playing.
+      setCursorVisible: function (visible) {
+        canvas.style.cursor = visible ? 'default' : 'none';
+      },
+      // Called by the client when the import button in its menu is pressed.
+      // A file input can only be opened from a user gesture, and a button
+      // press is one -- the client is reacting to the same click.
+      osuPickBeatmap: function () {
+        beatmapInput.value = '';
+        beatmapInput.click();
       },
     };
 
-    var dropZone = document.getElementById('drop-zone');
-    var statusEl = document.getElementById('status');
-    var beatmapInput = document.getElementById('beatmap-input');
-    var beatmapReady = false;
-    var pendingOsz = null;
-
-    function tryStart() {
-      if (!beatmapReady) return;
-      statusEl.textContent = 'Starting...';
-      dropZone.classList.add('hidden');
-      Module.callMain(['--beatmap', '/beatmap.osz']);
+    // An audio context may not start until the page has been interacted
+    // with, and the browser is the one keeping count.
+    function resumeAudio() {
+      if (Module.webaudioContext && Module.webaudioContext.state === 'suspended') {
+        Module.webaudioContext.resume();
+      }
     }
+    canvas.addEventListener('mousedown', resumeAudio);
+    canvas.addEventListener('touchstart', resumeAudio);
 
-    function writeOsz(data) {
-      Module.FS.writeFile('/beatmap.osz', data);
-      beatmapReady = true;
-      tryStart();
-    }
+    // Where an imported archive is put: a name of its own each time, because
+    // two files chosen at once are two imports and the client takes them a
+    // frame apart.
+    var importCount = 0;
 
-    function loadOsz(file) {
-      statusEl.textContent = 'Loading beatmap: ' + file.name + '...';
+    function importArchive(file) {
       var reader = new FileReader();
-      reader.onload = function(ev) {
-        var data = new Uint8Array(ev.target.result);
-        if (typeof Module.FS !== 'undefined') {
-          writeOsz(data);
-        } else {
-          pendingOsz = data;
-          statusEl.textContent = 'Beatmap loaded, waiting for runtime...';
+      reader.onload = function (event) {
+        var path = '/import-' + (importCount++) + '.osz';
+        try {
+          Module.FS.writeFile(path, new Uint8Array(event.target.result));
+        } catch (error) {
+          console.error('import: ' + error);
+          return;
         }
+        Module.ccall('osu_import_archive', null, ['string'], [path]);
       };
-      reader.onerror = function() { statusEl.textContent = 'Failed to read beatmap file.'; };
+      reader.onerror = function () {
+        console.error('import: cannot read ' + file.name);
+      };
       reader.readAsArrayBuffer(file);
     }
 
-    beatmapInput.addEventListener('change', function(e) {
-      if (e.target.files[0]) loadOsz(e.target.files[0]);
+    function importFiles(files) {
+      for (var i = 0; i < files.length; ++i) {
+        importArchive(files[i]);
+      }
+    }
+
+    beatmapInput.addEventListener('change', function (event) {
+      importFiles(event.target.files);
     });
 
-    dropZone.addEventListener('dragover', function(e) { e.preventDefault(); });
-    dropZone.addEventListener('drop', function(e) {
-      e.preventDefault();
-      var file = e.dataTransfer.files[0];
-      if (!file) return;
-      if (file.name.endsWith('.osz') || file.name.endsWith('.zip')) {
-        loadOsz(file);
+    // Dropping an archive on the window does the same thing, which is what
+    // the desktop build does with a drop.
+    window.addEventListener('dragover', function (event) { event.preventDefault(); });
+    window.addEventListener('drop', function (event) {
+      event.preventDefault();
+      if (event.dataTransfer && event.dataTransfer.files.length > 0) {
+        importFiles(event.dataTransfer.files);
       }
     });
   </script>

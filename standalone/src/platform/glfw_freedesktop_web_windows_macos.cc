@@ -44,6 +44,7 @@ export using ::glfwGetVideoMode;
 export using ::glfwGetWindowMonitor;
 export using ::glfwGetWindowPos;
 export using ::glfwGetWindowSize;
+export using ::glfwSetWindowSize;
 export using ::glfwGetMonitorWorkarea;
 export using ::glfwGetWindowUserPointer;
 export using ::glfwInit;

@@ -51,6 +51,19 @@ jobs:
           key: wasm-${{ hashFiles('cmake/get_cme.cmake') }}-${{ github.sha }}
           restore-keys: wasm-${{ hashFiles('cmake/get_cme.cmake') }}-
 
+      # What the client reads at run time, packaged into the module's own
+      # filesystem: it looks for fonts/<name> beside itself, and in a
+      # browser "beside itself" is whatever was preloaded.
+      #
+      # All of them. The two CJK faces are twenty of these twenty-one
+      # megabytes, and leaving them out is a page that draws Japanese titles
+      # as empty boxes -- which is most of the titles.
+      - name: the fonts the web build carries
+        run: |
+          mkdir -p /tmp/wasm-data
+          cp -a standalone/assets/fonts /tmp/wasm-data/fonts
+          du -sh /tmp/wasm-data
+
       - name: configure
         env:
           CCACHE_DIR: ~/.cache/ccache
@@ -66,6 +79,7 @@ jobs:
             -DCMAKE_C_FLAGS="-pthread" \
             -DCMAKE_CXX_FLAGS="-pthread" \
             -DCMAKE_EXE_LINKER_FLAGS="-pthread" \
+            -DWASM_PRELOAD_DATA=/tmp/wasm-data \
             -DCME_STORE_ENABLED=ON
 
       - name: build
@@ -85,4 +99,5 @@ jobs:
           path: |
             build-wasm/*.js
             build-wasm/*.wasm
+            build-wasm/*.data
             build-wasm/*.html
