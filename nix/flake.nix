@@ -68,14 +68,19 @@
         };
       in
       {
-        packages.default = pkgs.stdenv.mkDerivation {
+        # Clang, because this is compiled with Clang everywhere else and
+        # Skia's headers say so: GCC ignores the clang:: attributes they
+        # carry, warns about every one of them, and then disagrees about
+        # modules. A compiler in nativeBuildInputs is not the compiler a
+        # derivation is built with -- the stdenv is.
+        packages.default = pkgs.llvmPackages_latest.stdenv.mkDerivation {
           pname = "osu-cpp";
           version = "1.0.0";
           src = ../.;
 
           nativeBuildInputs = with pkgs; [
             cmake ninja pkg-config python3 gn meson gperf
-            llvmPackages_latest.clang llvmPackages_latest.lld
+            llvmPackages_latest.lld
             # A program rather than a library: glfw generates its Wayland
             # protocol bindings with it, and stops when it is not there.
             wayland-scanner
@@ -91,6 +96,15 @@
             openssl
           ];
 
+          # No _FORTIFY_SOURCE.
+          #
+          # glibc's fortified headers declare the printf family through
+          # clang overloads with internal linkage, and libstdc++'s std
+          # module exports those names: "using declaration referring to
+          # 'fprintf' with internal linkage cannot be exported". The native
+          # build says the same thing with -Wp,-U_FORTIFY_SOURCE.
+          hardeningDisable = [ "fortify" "fortify3" ];
+
           # A home that can be written to. Nix points HOME at
           # /homeless-shelter, and the first thing that wants to put
           # something under it -- the source cache -- fails there.
@@ -100,8 +114,74 @@
             sources=$TMPDIR/cme-sources
             mkdir -p "$ports" "$sources"
           '' + unpack + ''
-            # Said here rather than in cmakeFlags, because the directory has
-            # a name only the builder knows.
+            # Where the standard library this compiler uses keeps the
+            # source of its std module.
+            #
+            # libc++ ships a manifest saying so and CMake finds it by
+            # itself; libstdc++ ships none, and the manifest written here
+            # has to name the same headers the compiler includes -- naming
+            # another copy of GCC in the store got as far as scanning
+            # bits/std.cc and stopped at "bits/stdc++.h not found".
+            searched=$(echo | $CXX -std=c++23 -x c++ -E -v - 2>&1 \
+              | sed -n '/#include <\.\.\.> search starts here:/,/End of search list/p' \
+              | sed -n 's/^ //p')
+            # And said outright, as flags.
+            #
+            # Nix gives the compiler its include directories through a
+            # wrapper script that sets NIX_CFLAGS_COMPILE. clang-scan-deps
+            # does not run that script -- it reads the command line and
+            # scans by itself -- so the module scan saw a compiler with no
+            # C++ headers at all and stopped on bits/stdc++.h, a file in a
+            # directory the compiler uses and the command line never named.
+            includes=""
+            std=""
+            for dir in $searched; do
+              includes="$includes -isystem $dir"
+              if [ -f "$dir/bits/std.cc" ]; then
+                std="$dir/bits/std.cc"
+              fi
+            done
+            # The two directories beside the C++ headers that belong to the
+            # same standard library: the machine-dependent one that holds
+            # c++config.h, and backward, which is where <strstream> is and
+            # where the std module reaches for it.
+            if [ -n "$std" ]; then
+              root=$(dirname "$(dirname "$std")")
+              for extra in "$root/backward" "$root"/*/bits/c++config.h; do
+                case "$extra" in
+                  */bits/c++config.h) extra=$(dirname "$(dirname "$extra")") ;;
+                esac
+                if [ -d "$extra" ]; then
+                  includes="$includes -isystem $extra"
+                fi
+              done
+            fi
+            echo "include directories:$includes"
+            cmakeFlagsArray+=("-DCMAKE_CXX_FLAGS=$includes")
+            if [ -n "$std" ]; then
+              echo "std module source: $std"
+              cat > "$TMPDIR/libstdc++.modules.json" <<JSON
+            {
+              "version": 1,
+              "revision": 1,
+              "modules": [
+                { "logical-name": "std", "source-path": "$std",
+                  "is-std-library": true },
+                { "logical-name": "std.compat",
+                  "source-path": "''${std%std.cc}std.compat.cc",
+                  "is-std-library": true }
+              ]
+            }
+            JSON
+              cmakeFlagsArray+=("-DCMAKE_CXX_STDLIB_MODULES_JSON=$TMPDIR/libstdc++.modules.json")
+            else
+              echo "no bits/std.cc among the compiler's include directories;"
+              echo "leaving CMake to find whatever manifest the standard"
+              echo "library ships."
+            fi
+
+            # Said here rather than in cmakeFlags, because these have names
+            # only the builder knows.
             cmakeFlagsArray+=("-DCME_OVERLAYS=$ports")
           '';
 
