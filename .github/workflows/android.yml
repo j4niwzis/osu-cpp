@@ -11,10 +11,25 @@
 # manifest or its own source does, so it is cached against both.
 name: android
 
+# A branch is built through its pull request, and main is built when
+# something lands on it. Both triggers on every push meant every commit on a
+# branch with a pull request open was built twice, identically.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+# One run of this workflow per branch at a time. A push that supersedes what
+# is building makes the older run an answer about code nobody is waiting on,
+# and these runs are long enough that eleven of them at once filled the
+# twenty a free account may have.
+#
+# main is exempt: what landed there is worth an answer even if something
+# lands on top of it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # The Android release every source is resolved against. A tag is not a
