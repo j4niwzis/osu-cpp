@@ -9,6 +9,15 @@ void attach(android_app *app);
 [[nodiscard]] android_app *application();
 [[nodiscard]] bool prepareAssets();
 [[nodiscard]] bool enterImmersiveMode();
+// What this activity asks the system for, which is a request and not a
+// promise: a display set to turn only when a person turns it ignores it, and
+// then the client turns its own buffer instead. The numbers are
+// ActivityInfo's: unspecified is what the manifest asked for, and the two
+// sensor ones let the device be held either way up within that.
+constexpr int kOrientationUnspecified = -1;
+constexpr int kOrientationSensorLandscape = 6;
+constexpr int kOrientationSensorPortrait = 7;
+[[nodiscard]] bool requestOrientation(int orientation);
 
 } // namespace platform::android
 
@@ -153,6 +162,48 @@ bool enterImmersiveMode() {
     if (reference != nullptr) {
       env->DeleteLocalRef(reference);
     }
+  }
+  if (attached) {
+    vm->DetachCurrentThread();
+  }
+  return succeeded;
+}
+
+bool requestOrientation(int orientation) {
+  android_app *app = application();
+  if (app == nullptr || app->activity == nullptr ||
+      app->activity->vm == nullptr || app->activity->clazz == nullptr) {
+    return false;
+  }
+  JavaVM *vm = app->activity->vm;
+  JNIEnv *env = nullptr;
+  bool attached = false;
+  void *raw = nullptr;
+  const jint state = vm->GetEnv(&raw, JNI_VERSION_1_6);
+  if (state == JNI_OK) {
+    env = static_cast<JNIEnv *>(raw);
+  } else if (state == JNI_EDETACHED &&
+             vm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
+    attached = true;
+  }
+  if (env == nullptr) {
+    return false;
+  }
+  jclass activityClass = env->GetObjectClass(app->activity->clazz);
+  jmethodID setRequestedOrientation =
+      activityClass != nullptr
+          ? env->GetMethodID(activityClass, "setRequestedOrientation", "(I)V")
+          : nullptr;
+  if (setRequestedOrientation != nullptr) {
+    env->CallVoidMethod(app->activity->clazz, setRequestedOrientation,
+                        static_cast<jint>(orientation));
+  }
+  bool succeeded = setRequestedOrientation != nullptr && !env->ExceptionCheck();
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+  if (activityClass != nullptr) {
+    env->DeleteLocalRef(activityClass);
   }
   if (attached) {
     vm->DetachCurrentThread();

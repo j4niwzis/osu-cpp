@@ -110,6 +110,34 @@ inline void requestBeatmapArchive() {
 // What the page has put there since the last frame asked.
 [[nodiscard]] std::vector<std::string> takePendingImports();
 
+// Which way up the page is asked to be: 0 whatever it is, 1 landscape, 2
+// portrait.
+//
+// The browser grants this only in fullscreen and only on a device that has
+// an orientation to lock, and refuses with a rejected promise otherwise --
+// which is the ordinary answer on a desktop and is not an error. The client
+// draws the way it decided either way.
+inline void lockOrientation(int kind) {
+  EM_ASM({
+    try {
+      const kind = $0;
+      if (!screen.orientation) {
+        return;
+      }
+      if (kind === 0) {
+        screen.orientation.unlock();
+      } else {
+        const wanted = kind === 1 ? 'landscape' : 'portrait';
+        const locked = screen.orientation.lock(wanted);
+        if (locked && locked.catch) {
+          locked.catch(function() {});
+        }
+      }
+    } catch (e) {
+    }
+  }, kind);
+}
+
 inline void setCursorVisible(bool visible) {
   EM_ASM({ Module.setCursorVisible(!!$0); }, visible ? 1 : 0);
 }

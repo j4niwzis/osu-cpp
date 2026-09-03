@@ -377,6 +377,12 @@ public:
   // Returns the visible framebuffer region in window-local coordinates.
   [[nodiscard]] std::optional<std::array<int, 4>>
   visiblePortion(int width, int height) const {
+    // Not while the picture is turned: this is where the window is on the
+    // screen, in the window's own terms, and the client would read it as a
+    // region of a surface that is the other way round.
+    if (this->drawTurn() != 0) {
+      return std::nullopt;
+    }
     const int x = fWindowX.load(std::memory_order_acquire);
     const int y = fWindowY.load(std::memory_order_acquire);
     const int areaX = fWorkAreaX.load(std::memory_order_acquire);
@@ -403,6 +409,47 @@ public:
     fCursorModeRequest.store(mode, std::memory_order_release);
     glfwPostEmptyEvent();
   }
+  // Which way up the client wants to draw: 0 whatever the window is, 1
+  // landscape, 2 portrait.
+  //
+  // A desktop window has no orientation to ask about and no screen that will
+  // turn: what the setting means here is which way the client arranges
+  // itself, which the client decides for itself. A browser does have
+  // something to ask, and only in fullscreen on a device that turns; a
+  // refusal is the ordinary answer and is not an error.
+  void requestDrawOrientation(int kind) {
+    if (fDrawOrientation.load(std::memory_order_acquire) == kind) {
+      return;
+    }
+    fDrawOrientationRequest.store(kind, std::memory_order_release);
+    glfwPostEmptyEvent();
+  }
+
+  // Applied where GLFW may be asked things, which is the thread that owns
+  // the window.
+  //
+  // A window that is now a different shape to the client is a resize and
+  // nothing else: the client hears about its surface through resize events
+  // and never asks, so a turn that changed no event changed nothing at all
+  // -- which is what choosing portrait on a desktop did.
+  void applyPendingOrientation() {
+    const int kind = fDrawOrientationRequest.exchange(-1,
+                                                     std::memory_order_acq_rel);
+    if (kind < 0 ||
+        fDrawOrientation.exchange(kind, std::memory_order_acq_rel) == kind) {
+      return;
+    }
+    platform::web::lockOrientation(kind);
+    int width = 0;
+    int height = 0;
+    this->framebufferSize(width, height);
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    fReportedSize.store(packSize(width, height), std::memory_order_release);
+    this->push({wallMs(), EventType::kResize, width, height});
+  }
+
   void requestRawMotion(bool enabled) {
     fRawMotionRequest.store(enabled ? GLFW_TRUE : GLFW_FALSE,
                             std::memory_order_release);
@@ -436,11 +483,63 @@ public:
   // code never depends on a GLFW handle or its numeric cursor constants.
   void makeContextCurrent() { glfwMakeContextCurrent(fWindow); }
   void releaseContext() { glfwMakeContextCurrent(nullptr); }
+  // A quarter turn between the window and the surface the client draws
+  // into, or none.
+  //
+  // The client asked to draw one way up and the window is the other way up.
+  // A desktop has no screen to turn and a browser refuses outside
+  // fullscreen, so the surface the client is given has the shape it asked
+  // for and the picture is turned on its way into the window. Everything
+  // above this -- the layout, the pointer, the damage -- is in that
+  // surface's coordinates and never learns what the window is.
+  [[nodiscard]] int drawTurn() const {
+    const int kind = fDrawOrientation.load(std::memory_order_acquire);
+    if (kind == 0 || fWindow == nullptr) {
+      return 0;
+    }
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(fWindow, &width, &height);
+    if (width <= 0 || height <= 0) {
+      return 0;
+    }
+    const bool portrait = height > width;
+    return (kind == 1 && portrait) || (kind == 2 && !portrait) ? 90 : 0;
+  }
+
   void framebufferSize(int &width, int &height) const {
     glfwGetFramebufferSize(fWindow, &width, &height);
+    if (this->drawTurn() != 0) {
+      std::swap(width, height);
+    }
+  }
+
+  // A point in the window, in the coordinates of the surface. The turn is
+  // the one applied to the picture, read backwards: the surface's x runs
+  // down the window and its y runs back along it.
+  void turnPointer(double &x, double &y) const {
+    if (this->drawTurn() == 0) {
+      return;
+    }
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(fWindow, &width, &height);
+    const double wasX = x;
+    x = y;
+    y = static_cast<double>(width) - wasX;
   }
   [[nodiscard]] bool surfaceSize(int &width, int &height) const {
-    return presentation::surfaceSize(fWindow, &width, &height);
+    if (!presentation::surfaceSize(fWindow, &width, &height)) {
+      return false;
+    }
+    // In the surface's terms, like every other size this hands out. Asked
+    // every frame by the client to catch a resize the events have not
+    // reached it with yet -- so answering in the window's terms undid the
+    // turn a frame after it was applied, and the two answers took turns.
+    if (this->drawTurn() != 0) {
+      std::swap(width, height);
+    }
+    return true;
   }
   // Where a GL entry point is, for whoever needs to assemble an interface of
   // their own. GLFW knows because GLFW made the context, and it answers the
@@ -452,6 +551,14 @@ public:
   void swapBuffers() { glfwSwapBuffers(fWindow); }
   [[nodiscard]] bool swapWithDamage(
       int height, std::span<const std::array<int, 4>> damage) {
+    // Not while the picture is turned. These rectangles are in the surface's
+    // coordinates and the compositor is told about the window's; turned,
+    // they name the wrong part of it, and a compositor told the wrong part
+    // shows the old one. The whole window is handed over instead, which is
+    // what a build without buffer age does anyway.
+    if (this->drawTurn() != 0) {
+      return false;
+    }
     return presentation::swapWithDamage(height, damage);
   }
   void pollEvents() {
@@ -476,9 +583,11 @@ public:
     }
 #endif
     glfwPollEvents();
+    this->applyPendingOrientation();
   }
   void cursorPosition(double &x, double &y) const {
     glfwGetCursorPos(fWindow, &x, &y);
+    this->turnPointer(x, y);
   }
   void setCursorMode(input::CursorMode mode) {
     const int native = mode == input::CursorMode::kNormal
@@ -509,6 +618,7 @@ public:
       if (fullscreen != -1) {
         this->applyFullscreen(fullscreen == 1);
       }
+      this->applyPendingOrientation();
     }
     fQuit.store(true, std::memory_order_release);
   }
@@ -666,6 +776,12 @@ private:
     glfwSetFramebufferSizeCallback(
         fWindow, [](GLFWwindow *window, int width, int height) {
           auto &self = from(window);
+          // In the surface's terms, which is what everything above here is
+          // in: a window that is turned on its way to the screen reports the
+          // size of what the client drew, not the size of the window.
+          if (self.drawTurn() != 0) {
+            std::swap(width, height);
+          }
           self.fReportedSize.store(packSize(width, height),
                                    std::memory_order_release);
           self.measurePointerScale();
@@ -702,9 +818,11 @@ private:
     // uniform value is preserved by the ratio of the two areas.  Only repair
     // clearly inconsistent axes so genuinely anisotropic desktop scaling
     // keeps the GLFW values it has always used.
+    double turnedX = x * scaleX;
+    double turnedY = y * scaleY;
+    this->turnPointer(turnedX, turnedY);
     this->push({wallMs(), EventType::kCursorMove, 0, 0,
-                static_cast<float>(x * scaleX),
-                static_cast<float>(y * scaleY)});
+                static_cast<float>(turnedX), static_cast<float>(turnedY)});
   }
 
   // How many framebuffer pixels one window coordinate is, measured when the
@@ -766,6 +884,12 @@ private:
   std::atomic<bool> fQuit{false};
   std::atomic<int> fExitCode{0};
   std::atomic<int> fCursorModeRequest{-1};
+  // What the client asked to draw in, kept so that asking again for the same
+  // thing does not ask the page again.
+  std::atomic<int> fDrawOrientation{0};
+  // Asked for on the drawing thread, applied on the thread that owns the
+  // window; -1 is nothing asked.
+  std::atomic<int> fDrawOrientationRequest{-1};
   std::atomic<int> fRawMotionRequest{-1};
   std::atomic<int> fFullscreenRequest{-1};
   bool fFullscreen = true; // the window is created on a monitor

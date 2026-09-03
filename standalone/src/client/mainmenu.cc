@@ -416,6 +416,11 @@ public:
     // milliseconds per call, and the visualiser runs on an anchored clock
     // between reads precisely so that it is not paid per frame.
     std::function<double()> fAudioPositionMs;
+    // How the buttons are arranged, which the client takes from a setting:
+    // by what fits, or one of the two answers named outright. What fits is
+    // the default and what a window nobody chose an answer for gets.
+    enum class Arrangement : std::uint8_t { kFits, kLandscape, kPortrait };
+    Arrangement fArrangement = Arrangement::kFits;
   };
 
   // The artwork is drawn by the client, which owns the beatmap and the view
@@ -482,10 +487,41 @@ public:
     const float leftW = static_cast<float>(leftCount) * (btnW + btnGap);
     const float groupW = leftW + 2.0f * logoR + 28.0f * uiScale + rightW;
 
-    const float targetLogoX = fState == State::kInitial
-                                  ? sw * 0.5f
-                                  : (sw - groupW) * 0.5f + leftW + logoR;
-    const float targetLogoY = sh * (fState == State::kInitial ? 0.46f : 0.5f);
+    // A column where the row does not fit.
+    //
+    // The buttons are a row either side of the logo, and that row needs
+    // about seven hundred points of width. A window narrower than that is
+    // not a window the row can be squeezed into -- in a portrait one it ran
+    // off both edges -- so the same buttons are stacked under the logo
+    // instead, in the order they are written in, with the ones that belong
+    // left of the logo at the bottom: back and settings, nearest the hand.
+    //
+    // Decided by what fits rather than by which way up the window is: a
+    // short wide window is a row, a tall narrow one is a column, and a
+    // window that is neither gets whichever it has room for.
+    bool column = groupW > sw * 0.96f;
+    if (ctx.fArrangement == Ctx::Arrangement::kLandscape) {
+      column = false;
+    } else if (ctx.fArrangement == Ctx::Arrangement::kPortrait) {
+      column = true;
+    }
+    const float columnW = std::min(sw * 0.72f, btnW * 1.9f);
+    const float columnGap = btnGap * 2.0f;
+    const int columnCount = leftCount + rightCount;
+    const float columnH =
+        static_cast<float>(columnCount) * (btnH + columnGap);
+    // The logo and the column, centred as one group, the way the row and the
+    // logo are centred as one group.
+    const float groupH = 2.0f * logoR + 28.0f * uiScale + columnH;
+
+    const float targetLogoX =
+        fState == State::kInitial || column
+            ? sw * 0.5f
+            : (sw - groupW) * 0.5f + leftW + logoR;
+    float targetLogoY = sh * (fState == State::kInitial ? 0.46f : 0.5f);
+    if (column && fState != State::kInitial) {
+      targetLogoY = (sh - groupH) * 0.5f + logoR;
+    }
     const float targetScale = fState == State::kInitial ? 1.0f : 0.62f;
 
     fLogoTarget = {targetLogoX, targetLogoY, targetScale};
@@ -498,6 +534,24 @@ public:
     float xLeft = fLogo.x() - logoReach - 28.0f * uiScale;
 
     fMenu.ensure(fBtns.size(), skia::SkRect::MakeWH(sw, sh));
+
+    // Which slot of the column each button is in, when there is a column.
+    // The ones drawn right of the logo keep the order they are written in
+    // and come first; the ones drawn left of it follow, so that back and
+    // settings are at the bottom.
+    std::vector<int> slots(fBtns.size(), -1);
+    if (column) {
+      int slot = 0;
+      for (const bool leftSide : {false, true}) {
+        for (std::size_t i = 0; i < fBtns.size(); ++i) {
+          if (fBtns[i].fVisible == fState && fBtns[i].fLeftSide == leftSide) {
+            slots[i] = slot++;
+          }
+        }
+      }
+    }
+    const float columnTop = fLogo.y() + fLogoBase * fLogo.scale() +
+                            28.0f * uiScale;
 
     // Hit-test the geometry that was actually drawn, then ease, then derive
     // this frame's geometry from the new values. Updating hover after width
@@ -523,12 +577,23 @@ public:
         continue;
       }
 
-      const float w = btnW * expand * (1.0f + 0.18f * fMenu.buttonHover(i));
+      const float grown = 1.0f + 0.18f * fMenu.buttonHover(i);
       skia::SkRect rect;
-      if (b.fLeftSide) {
+      if (column) {
+        // Width from the middle out, so that a button growing under the
+        // pointer stays centred under the logo rather than walking to one
+        // side.
+        const float w = columnW * expand * grown;
+        const float y = columnTop +
+                        static_cast<float>(std::max(slots[i], 0)) *
+                            (btnH + columnGap);
+        rect = skia::SkRect::MakeXYWH((sw - w) * 0.5f, y, w, btnH);
+      } else if (b.fLeftSide) {
+        const float w = btnW * expand * grown;
         rect = skia::SkRect::MakeXYWH(xLeft - w, rowY, w, btnH);
         xLeft -= w + btnGap;
       } else {
+        const float w = btnW * expand * grown;
         rect = skia::SkRect::MakeXYWH(xRight, rowY, w, btnH);
         xRight += w + btnGap;
       }

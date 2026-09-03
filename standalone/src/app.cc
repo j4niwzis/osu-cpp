@@ -312,6 +312,15 @@ private:
   std::atomic<bool> fFullscreenToggleRequest{false};
   bool fSliderBodiesStale = false;
   double fLastResizeWall = 0.0;
+  // The window's own surface, which is what the client draws into unless the
+  // picture has to be turned on its way into it, and the turn itself: 0 or
+  // 90 degrees.
+  decltype(client::FrameState::fWindowSurface) fWindowItself;
+  int fPresentTurn = 0;
+  // The window itself, in its own pixels, which is what the client draws
+  // into unless there is a turn between them.
+  int fWindowW = 0;
+  int fWindowH = 0;
   // Set when a map is loaded and cleared by the frame that first shows it.
   // The difficulty of the map being played, under the ranked calculator and
   // with the mods applied, kept so the play can be priced when it ends.
@@ -1033,6 +1042,13 @@ private:
     // loaded, say -- could leave this set; outside frame() nothing is drawing
     // by definition.
     fFrame.fDrawing = false;
+
+    // Which way up to draw. Told to the platform every frame and acted on by
+    // it only when it changes: where it can turn the screen it asks for that
+    // and there is nothing else to do, and where it cannot it answers with a
+    // resize, because a surface that is now a different shape is exactly
+    // that.
+    fWindowRuntime.requestDrawOrientation(fSettings.choice("orientation"));
     if (fWindowRuntime.takeRefreshRequest()) {
       // Set on the event thread, acted on here: everything those buffers held
       // is suspect, so the history of what they hold goes with it.
@@ -1369,6 +1385,40 @@ private:
       fContext->flushAndSubmit(fFrame.fSurface.get());
     }
 
+    // And into the window, turned a quarter, where the client is drawing the
+    // way up the window is not. The whole surface every frame: what changed
+    // is known in the surface's coordinates, and this is the one place where
+    // those are not the window's.
+    if (fPresentTurn != 0 && fWindowItself &&
+        fFrame.fWindowSurface.get() != fWindowItself.get()) {
+      if (auto image = fFrame.fWindowSurface->makeImageSnapshot()) {
+        auto *windowCanvas = fWindowItself->getCanvas();
+        windowCanvas->save();
+        // From nothing, every frame. What was in the window before is the
+        // picture the other way up, and anything this does not cover is that
+        // picture still showing.
+        windowCanvas->clear(skia::colorSetARGB(255, 0, 0, 0));
+        // The surface's x runs down the window and its y runs back along it,
+        // which is the same turn the pointer is read through. Said as a
+        // matrix rather than as two calls, and against the window's own
+        // width, so that there is one place to read what the turn is.
+        windowCanvas->setMatrix(
+            skia::SkMatrix::Translate(static_cast<float>(fWindowW), 0.0f) *
+            skia::SkMatrix::RotateDeg(90.0f));
+        // The whole surface into the whole window: the sizes are each
+        // other's, turned, and saying so leaves nothing for rounding to
+        // decide.
+        const skia::SkRect from = skia::SkRect::MakeWH(
+            static_cast<float>(image->width()),
+            static_cast<float>(image->height()));
+        windowCanvas->drawImageRect(image.get(), from, from,
+                                    skia::SkSamplingOptions(), nullptr,
+                                    skia::SkCanvas::kStrict_SrcRectConstraint);
+        windowCanvas->restore();
+      }
+      fContext->flushAndSubmit(fWindowItself.get());
+    }
+
     fDrawnMouseX = fWin.fMouseX;
     fDrawnMouseY = fWin.fMouseY;
     const auto beforeSwap = std::chrono::steady_clock::now();
@@ -1668,6 +1718,20 @@ private:
            fSettings.flag("rawinput");
   }
 
+  // What the client draws in, as the menu asks about it: the window's own
+  // shape, or the one the setting names.
+  [[nodiscard]] client::mainmenu::Screen::Ctx::Arrangement arrangement() const {
+    using Arrangement = client::mainmenu::Screen::Ctx::Arrangement;
+    switch (fSettings.choice("orientation")) {
+    case 1:
+      return Arrangement::kLandscape;
+    case 2:
+      return Arrangement::kPortrait;
+    default:
+      return Arrangement::kFits;
+    }
+  }
+
   void applyPointerMode() {
     if (fState == State::kPlaying) {
       this->setCursorVisible(false); // re-evaluates the mode below
@@ -1799,6 +1863,13 @@ private:
                        static_cast<float>(cx), static_cast<float>(cy)});
       }
     }
+
+    // Which way up to draw, told to the platform every frame and acted on
+    // by it only when it changes. Where the platform can turn the screen it
+    // does and there is nothing else to do; where it cannot, it hands over a
+    // surface the right way up and this side of the client never learns the
+    // difference.
+    fWindowRuntime.requestDrawOrientation(fSettings.choice("orientation"));
 
     int fw = 0, fh = 0;
     fWindowRuntime.framebufferSize(fw, fh);
@@ -2041,6 +2112,7 @@ private:
     ctx.fFont = &fFont;
     ctx.fVisualiser = fSettings.flag("visualiser");
     ctx.fTriangles = fSettings.flag("menutriangles");
+    ctx.fArrangement = this->arrangement();
     ctx.fHasArtwork = fView.hasBackground();
     ctx.fLibraryEmpty = fLibrary.sets().empty();
     ctx.fAudioPlaying = fAudio.playing();
@@ -2211,15 +2283,52 @@ private:
     fWin.fScreenH = std::max(1, static_cast<int>(std::lround(h / scale)));
     this->layoutForScreen();
 
+    // What the window really is, and what the client draws into, which are
+    // the same surface unless the picture has to be turned on its way in.
+    //
+    // The platform says which: where it can turn the picture itself -- an
+    // Android buffer allocated the other way round and composed with a
+    // quarter turn -- it says no turn is needed and hands over a surface
+    // that is already the shape the client asked for. Where it cannot, the
+    // client draws into one of its own and turns it here, which costs one
+    // surface and one full-screen draw per frame and is paid only while the
+    // window is the way up the client did not ask for.
+    fPresentTurn = fWindowRuntime.drawTurn();
+    fWindowW = fWin.fPixelW;
+    fWindowH = fWin.fPixelH;
+    if (fPresentTurn != 0) {
+      std::swap(fWindowW, fWindowH);
+    }
+    const int windowW = fWindowW;
+    const int windowH = fWindowH;
+
     skia::GrGLFramebufferInfo info;
     info.fFBOID = 0;
     info.fFormat = skia::kGlRgba8;
     skia::GrBackendRenderTarget target =
-        skia::MakeGL(fWin.fPixelW, fWin.fPixelH, 0, 0, info);
-    fFrame.fWindowSurface = skia::WrapBackendRenderTarget(
+        skia::MakeGL(windowW, windowH, 0, 0, info);
+    fWindowItself = skia::WrapBackendRenderTarget(
         fContext.get(), target, skia::kBottomLeft_GrSurfaceOrigin,
         skia::kRGBA_8888_SkColorType, nullptr, nullptr);
+    if (fPresentTurn == 0) {
+      fFrame.fWindowSurface = fWindowItself;
+    } else {
+      fFrame.fWindowSurface = skia::RenderTarget(
+          fContext.get(), skia::Budgeted::kYes,
+          skia::SkImageInfo::Make(fWin.fPixelW, fWin.fPixelH,
+                                  skia::kRGBA_8888_SkColorType,
+                                  skia::kPremul_SkAlphaType),
+          0, skia::kBottomLeft_GrSurfaceOrigin, nullptr, false);
+      if (!fFrame.fWindowSurface) {
+        // Nothing to draw into is worse than the wrong way up.
+        fPresentTurn = 0;
+        fFrame.fWindowSurface = fWindowItself;
+      }
+    }
     fFrame.fSurface = fFrame.fWindowSurface;
+    std::println(std::cerr,
+                 "[gfx] drawing {}x{} into a {}x{} window, turned {} degrees",
+                 fWin.fPixelW, fWin.fPixelH, windowW, windowH, fPresentTurn);
     // Dropped rather than remade: eight megabytes for a screen nobody may be
     // drawing on that way. The frame that needs it makes it.
     fFrame.fRasterSurface.reset();
