@@ -343,6 +343,12 @@
   },
   {
     "type": "git",
+    "url": "https://github.com/fmtlib/fmt.git",
+    "commit": "1be298e1bd68957e4cd352e1f676f00e07dcfb57",
+    "dest": ".flatpak-sources/ports/fmt"
+  },
+  {
+    "type": "git",
     "url": "https://gitlab.freedesktop.org/freetype/freetype.git",
     "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
     "dest": ".flatpak-sources/ports/freetype"
@@ -392,7 +398,7 @@
   {
     "type": "git",
     "url": "https://github.com/kcat/openal-soft.git",
-    "commit": "dc7d7054a5b4f3bec1dc23a42fd616a0847af948",
+    "commit": "b2c48f7718ef3fcf67921a8b6534c4914e328970",
     "dest": ".flatpak-sources/ports/openal-soft"
   },
   {

@@ -18,6 +18,8 @@
              (guix git-download)
              (guix download)
              (guix base16)
+             (guix base32)
+             (guix utils)
              (guix build-system cmake)
              ((guix licenses) #:prefix license:)
              (gnu packages)
@@ -30,6 +32,42 @@
 ;; load, and the names are what `guix show` answers to.
 (define (needed name)
   (specification->package name))
+
+;; CMake as this project asks for it.
+;;
+;; standalone/CMakeLists.txt says 4.3.4 and means it: what it needs from
+;; CMake is what CMake learned to do about C++ modules in imported targets.
+;; Guix has 4.1.3 today and the release this runs from has 3.31.10, so the
+;; version that is asked for is built from its own release with the recipe
+;; Guix already has for CMake.
+(define cmake-for-this
+  (let ((base (needed "cmake-minimal")))
+    (package
+      (inherit base)
+      (name "cmake-minimal")
+      (version "4.3.4")
+      (source
+       (origin
+         (method url-fetch)
+         (uri (string-append
+               "https://github.com/Kitware/CMake/releases/download/v"
+               version "/cmake-" version ".tar.gz"))
+         (sha256
+          (base32 "1nmd67lrk14pq6bqlrr5yc6l9qdpdvf1wawzadjdfjgbp6bzivzx"))))
+      (arguments
+       (substitute-keyword-arguments (package-arguments base)
+         ;; Guix's recipe deletes the help documentation by a path it spells
+         ;; out with the version of another package -- cmake-bootstrap, which
+         ;; is 3.31.10 -- so with the sources changed the phase looked for
+         ;; share/cmake-3.31/Help in a tree that has share/cmake-4.3, and
+         ;; stopped after a CMake that had just built and installed.
+         ;;
+         ;; Kept rather than deleted at another path: the documentation is
+         ;; not in the way, and a phase whose only job is to save space is
+         ;; not worth teaching a second version number.
+         ((#:phases phases)
+          #~(modify-phases #$phases
+              (delete 'delete-help-documentation))))))))
 
 (define %here (dirname (current-filename)))
 (define %top (dirname %here))
@@ -82,6 +120,16 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
     (arguments
      (list
       #:tests? #f
+      ;; The CMake this needs, said where the build system reads it. A
+      ;; cmake in the inputs is a cmake on PATH; the one that configures is
+      ;; the build system's own, and it was still 3.31.10 -- "CMake 4.3.4 or
+      ;; higher is required. You are running version 3.31.10", with 4.3.4
+      ;; built and sitting in the profile.
+      #:cmake cmake-for-this
+      ;; Ninja, because C++ modules are compiled in an order only a build
+      ;; system that reads a scanner's answers can produce, and Make is not
+      ;; one. CMake refuses the combination outright.
+      #:generator "Ninja"
       #:modules '((guix build cmake-build-system)
                   (guix build utils)
                   (srfi srfi-1)
@@ -147,7 +195,7 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
     (native-inputs
      (append
       (map (lambda (name) (list name (needed name)))
-           (list "cmake" "ninja" "pkg-config" "python" "gn" "meson"
+           (list "ninja" "pkg-config" "python" "gn" "meson"
                  "gperf" "clang-toolchain" "tar" "gzip" "xz" "bzip2"
                  "coreutils"))
       ;; Every library the lock names, under a name the phase reads the port

@@ -344,6 +344,12 @@
     sha256 = "09d6pj9fl693lnl51zwgkizlkk4k179vpx0bx13mpv93z5kpkp6d";
     fetchSubmodules = false;
   };  # 1.4.3
+  fmt = pkgs.fetchgit {
+    url = "https://github.com/fmtlib/fmt.git";
+    rev = "1be298e1bd68957e4cd352e1f676f00e07dcfb57";
+    sha256 = "0nkb975pmky40z8wx2ksz7yw7nhjhkqir6m1qfivdgslvjcczkjd";
+    fetchSubmodules = false;
+  };  # 12.2.0
   freetype = pkgs.fetchgit {
     url = "https://gitlab.freedesktop.org/freetype/freetype.git";
     rev = "42608f77f20749dd6ddc9e0536788eaad70ea4b5";
@@ -392,10 +398,10 @@
   };  # 1.3.5
   openal_soft = pkgs.fetchgit {
     url = "https://github.com/kcat/openal-soft.git";
-    rev = "dc7d7054a5b4f3bec1dc23a42fd616a0847af948";
-    sha256 = "03nnlxq9dxaa8vlr3852x2shnpcrcpp56nz5zzpz1jjd7wabf1jm";
+    rev = "b2c48f7718ef3fcf67921a8b6534c4914e328970";
+    sha256 = "0v1cs3rkgmb3rmfz60ilhga5kdmh9prnhj31ha8wx0vc3slbj8gv";
     fetchSubmodules = false;
-  };  # 1.24.3
+  };  # 1.25.2
   opus = pkgs.fetchgit {
     url = "https://github.com/xiph/opus.git";
     rev = "ddbe48383984d56acd9e1ab6a090c54ca6b735a6";
