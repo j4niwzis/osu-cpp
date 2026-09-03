@@ -91,20 +91,19 @@ include(../cmake/CPM.cmake)
 
 find_package(PkgConfig REQUIRED)
 
-# Boost by the parts that are used. asio for the client's sockets and its
+# Boost by the parts that are used. asio_core for the client's sockets and its
 # TLS, beast for the HTTP on top of them, json for what comes back -- and
 # nothing else of Boost is fetched or built, because a component that is not
 # asked for is a library that is not there.
 #
 # A browser has no sockets to give and this client does not ask for any: the
 # web build talks through fetch, its transport is network_backend_web.cc and
-# the Beast one is not compiled. Asking for asio and beast there fetched and
-# built two libraries -- and Context and Date_Time under them -- for a
-# program with no reference to any of it.
+# the Beast one is not compiled. Asking for the networking libraries there
+# fetched and built libraries for a program with no reference to any of them.
 if(EMSCRIPTEN_BUILD)
   find_package(Boost REQUIRED COMPONENTS json)
 else()
-  find_package(Boost REQUIRED COMPONENTS asio beast json)
+  find_package(Boost REQUIRED COMPONENTS asio_core beast json)
 endif()
 
 # Whether this build is for a machine that may be running Wayland.
@@ -446,7 +445,7 @@ elseif(ANDROID)
     libzip::zip
     SndFile::sndfile
     MPG123::libmpg123
-    Boost::asio Boost::beast Boost::json
+    Boost::asio_core Boost::beast Boost::json
     ${CXX_LIBRARY} ${CXXABI_LIBRARY} ${UNWIND_LIBRARY}
     ${COMPILER_RT_LIBRARY}
     ${ANDROID_LIBRARY} ${NATIVEWINDOW_LIBRARY}
@@ -469,7 +468,7 @@ else()
     libzip::zip
     SndFile::sndfile
     MPG123::libmpg123
-    Boost::asio Boost::beast Boost::json
+    Boost::asio_core Boost::beast Boost::json
     OpenSSL::SSL
     OpenSSL::Crypto
     # present.cc resolves EGL/GLX at run time rather than linking against

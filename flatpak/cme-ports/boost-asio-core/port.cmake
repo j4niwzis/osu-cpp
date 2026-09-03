@@ -2,5 +2,5 @@
 # sources are in a build that may not fetch. What the
 # library is, and how it is built, the registry still says.
 cme_declare_port(
-  NAME boost-date-time
-  SOURCE_DIR "/run/build/osu-cpp/.flatpak-sources/ports/boost-date-time")
+  NAME boost-asio-core
+  SOURCE_DIR "/run/build/osu-cpp/.flatpak-sources/ports/boost-asio-core")
