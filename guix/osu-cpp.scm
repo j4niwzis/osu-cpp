@@ -146,9 +146,9 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
               "-DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json"
               "-DCME_OFFLINE=ON"
               "-DCME_SYSTEM=ALWAYS"
-              "-DCME_SYSTEM_OSUCPP=NEVER"
-              "-DCME_SYSTEM_SKIFF=NEVER"
-              "-DCME_SYSTEM_SKIFF-WIDGETS=NEVER"
+              "-DCME_SYSTEM_OSUCPP=OFF"
+              "-DCME_SYSTEM_SKIFF=OFF"
+              "-DCME_SYSTEM_SKIFF-WIDGETS=OFF"
               (string-append "-DCME_ARCHIVE=" #$%cme)
               (string-append "-DCME_OVERLAYS=" #$%ports))
       #:phases
