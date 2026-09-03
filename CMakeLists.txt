@@ -47,8 +47,18 @@ endif()
 # ---- Add dependencies via CPM ----
 # see https://github.com/TheLartians/CPM.cmake for more info
 
+# The one thing this option needs that is not in this repository is
+# PackageProject.cmake, which comes from a repository -- so it is off by
+# default in a build that has said it may not fetch. A Flatpak, Nix or Guix
+# build embeds this library rather than packaging it, and stopped here on an
+# unknown command packageProject: the fetch that defines it cannot happen.
+set(osu_package_library ON)
+if(CME_OFFLINE)
+  set(osu_package_library OFF)
+endif()
 option(OSU_INSTALL_LIBRARY_PACKAGE
-  "Generate and install the standalone osucpp CMake package" ON)
+  "Generate and install the standalone osucpp CMake package"
+  ${osu_package_library})
 
 if(OSU_INSTALL_LIBRARY_PACKAGE)
   include(cmake/CPM.cmake)

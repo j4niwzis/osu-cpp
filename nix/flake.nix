@@ -76,12 +76,19 @@
           nativeBuildInputs = with pkgs; [
             cmake ninja pkg-config python3 gn meson gperf
             llvmPackages_latest.clang llvmPackages_latest.lld
+            # A program rather than a library: glfw generates its Wayland
+            # protocol bindings with it, and stops when it is not there.
+            wayland-scanner
           ];
           # What a desktop build reaches through rather than builds.
           buildInputs = with pkgs; [
             libGL libglvnd libxkbcommon wayland wayland-protocols
             xorg.libX11 xorg.libXrandr xorg.libXinerama xorg.libXcursor
             xorg.libXi alsa-lib libpulseaudio dbus systemd
+            # Asio's TLS has one backend and this is it. 3.0 and later,
+            # because everything before it carried a licence the AGPL does
+            # not combine with.
+            openssl
           ];
 
           # A home that can be written to. Nix points HOME at
