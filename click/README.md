@@ -29,14 +29,7 @@ link steps use substantial memory):
 clickable build --arch arm64
 ```
 
-The resulting `.click` is placed below `build/click/`. To install and launch on
-an attached device:
-
-```sh
-clickable install --arch arm64
-clickable launch --arch arm64
-clickable logs
-```
+The resulting `.click` is placed below `build/click/`.
 
 Build caches, including CMake, Skia, GLFW, skiff and skiff-widgets checkouts,
 live under `build/click/aarch64-linux-gnu`. The recipe always reconfigures its

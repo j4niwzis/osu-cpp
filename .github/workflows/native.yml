@@ -1,0 +1,95 @@
+# The build this project is developed with: a native Linux one, with every
+# dependency answered by cmake-everywhere -- from the system where the system
+# has it, and from a pinned source where it does not.
+#
+# It is the cheapest of the builds and the one that says the most: a change
+# to a port, to an importer or to the client is visible here first, and in
+# minutes.
+name: native
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clang 22 and libc++. The client is C++23 modules and import std, and
+      # a compiler that cannot scan for imports cannot build it.
+      - name: clang 22 and libc++
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y ninja-build python3 pkg-config ccache \
+            lsb-release software-properties-common gnupg curl \
+            generate-ninja
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22 all
+          sudo apt-get install -y libc++-22-dev libc++abi-22-dev
+          echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
+          # Where libc++'s module sources are according to its own manifest:
+          # apt.llvm.org names a path that does not exist on Ubuntu, and
+          # import std then fails over a manifest rather than over the code.
+          sudo mkdir -p /lib/share/libc++
+          sudo ln -sfn /usr/lib/llvm-22/share/libc++/v1 /lib/share/libc++/v1
+
+      # What a desktop build reaches through rather than builds: the window
+      # system, the GPU stack and the sound server are the machine's, and
+      # their headers have to be here for a port to find them.
+      - name: what the system provides
+        run: |
+          sudo apt-get install -y \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev wayland-protocols libgl-dev \
+            libegl-dev libasound2-dev libpulse-dev libdbus-1-dev
+
+      - name: cmake
+        run: |
+          version=4.3.4
+          curl -sSL -o cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-linux-x86_64.tar.gz"
+          sudo tar xzf cmake.tar.gz -C /opt
+          echo "/opt/cmake-${version}-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cmake-everywhere/sources
+            ~/.cache/cmake-everywhere/store
+            ~/.cache/ccache
+          key: native-${{ hashFiles('cmake/get_cme.cmake') }}-${{ github.sha }}
+          restore-keys: native-${{ hashFiles('cmake/get_cme.cmake') }}-
+
+      - name: configure
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+          CCACHE_MAXSIZE: 2G
+        run: |
+          cmake -S standalone -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-22 \
+            -DCMAKE_CXX_COMPILER=clang++-22 \
+            -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
+            -DCME_STORE_ENABLED=ON
+
+      - name: build
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+          NINJA_STATUS: "[%f/%t %es] "
+        run: cmake --build build
+
+      # Which library answered which find_package, and where each came from.
+      - name: what the build decided
+        if: always()
+        run: cat build/cme-report.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: osu-cpp-linux
+          path: build/osu_client
