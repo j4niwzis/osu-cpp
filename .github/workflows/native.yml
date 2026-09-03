@@ -235,6 +235,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="-stdlib=libstdc++ -Wp,-U_FORTIFY_SOURCE" \
             -DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json \
             -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON \
             -DCME_SYSTEM=${{ matrix.answer == 'system' && 'AUTO' || 'NEVER' }} \
             "${extra[@]}"
 

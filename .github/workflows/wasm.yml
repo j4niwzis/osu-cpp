@@ -132,6 +132,7 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DWASM_PRELOAD_DATA=/tmp/wasm-data \
             -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON \
             -DOSU_VIDEO_LIBAV=ON \
             "${extra[@]}"
 
