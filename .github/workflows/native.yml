@@ -200,13 +200,24 @@ jobs:
             --sources flatpak/cme-sources.json --ports flatpak/cme-ports || true
           ls -la flatpak/cme-sources.json flatpak/cme-ports | head -30
 
+      # And in the spelling Nix reads. The digest of a git checkout is of its
+      # contents rather than of an archive, so this one needs the checkouts
+      # the build made -- which is why it runs here and not anywhere else.
+      - name: what a Nix build would have to be given
+        if: matrix.answer == 'ports'
+        run: |
+          python3 build/_cme/tools/lock-to-nix.py standalone/cme-lock.json \
+            ~/.cache/cmake-everywhere/sources > nix/sources.nix || true
+          head -20 nix/sources.nix
+
       - uses: actions/upload-artifact@v4
         if: matrix.answer == 'ports'
         with:
-          name: flatpak-sources
+          name: generated-sources
           path: |
             flatpak/cme-sources.json
             flatpak/cme-ports
+            nix/sources.nix
           if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4
