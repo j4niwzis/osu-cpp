@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The generated lock input now supplies only the two application
       # components that Guix cannot package on our behalf.
@@ -38,7 +38,7 @@ jobs:
       # A hundred and thirty megabytes of a fixed version with a fixed
       # digest, so fetching it again every run is asking a mirror for
       # something we already have.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         if: steps.sources.outputs.have == 'yes'
         with:
           path: guix-binary-1.5.0.x86_64-linux.tar.xz
