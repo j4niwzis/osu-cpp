@@ -201,6 +201,7 @@ jobs:
 
       - name: the package
         run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           stage=$(mktemp -d)
           install -Dm755 build-click/osu_client "$stage/osu_client"
           install -Dm644 click/manifest.json "$stage/manifest.json"

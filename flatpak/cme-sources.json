@@ -27,7 +27,7 @@
     "type": "git",
     "url": "https://github.com/boostorg/asio.git",
     "commit": "4fa4abee89a62fdeeccac2585caece625f40647e",
-    "dest": ".flatpak-sources/ports/boost-asio"
+    "dest": ".flatpak-sources/ports/boost-asio-core"
   },
   {
     "type": "git",
@@ -79,12 +79,6 @@
   },
   {
     "type": "git",
-    "url": "https://github.com/boostorg/context.git",
-    "commit": "cc1b9e02cd530d6607becc984e1e5bfa4f7b3600",
-    "dest": ".flatpak-sources/ports/boost-context"
-  },
-  {
-    "type": "git",
     "url": "https://github.com/boostorg/conversion.git",
     "commit": "71b14ad1dae1d2be91ad310007c749ca93dc2e72",
     "dest": ".flatpak-sources/ports/boost-conversion"
@@ -94,12 +88,6 @@
     "url": "https://github.com/boostorg/core.git",
     "commit": "a90a31934fe8bcb6e6be6dfea77b80492c7b6c81",
     "dest": ".flatpak-sources/ports/boost-core"
-  },
-  {
-    "type": "git",
-    "url": "https://github.com/boostorg/date_time.git",
-    "commit": "6248d64ed94916e446c83a038e8c8208ebb262ee",
-    "dest": ".flatpak-sources/ports/boost-date-time"
   },
   {
     "type": "git",

@@ -243,7 +243,15 @@ jobs:
           extra=()
           if [ "${{ inputs.release }}" = "true" ]; then
             tuned="-O3 -DNDEBUG -flto=full -ffunction-sections -fdata-sections"
-            linked="-flto=full -Wl,--gc-sections -Wl,-s"
+            # Full LTO hands its partitions back to LLD from worker threads.
+            # Their completion order changed the dynamic-symbol and PLT order
+            # between otherwise identical links. One linker thread fixes the
+            # order; compilation remains parallel.
+            # Static libraries are implementation details of this shared
+            # object. Exporting all of their symbols let libjpeg's j12 and
+            # j16 archive groups enter the dynamic table in either order,
+            # changing the PLT and a handful of branch offsets.
+            linked="-flto=full -Wl,--gc-sections -Wl,-s -Wl,--threads=1 -Wl,--exclude-libs,ALL"
             extra+=("-DCMAKE_C_FLAGS_RELEASE=$tuned")
             extra+=("-DCMAKE_CXX_FLAGS_RELEASE=$tuned")
             extra+=("-DCMAKE_EXE_LINKER_FLAGS_RELEASE=$linked")

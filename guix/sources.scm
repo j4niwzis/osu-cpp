@@ -33,12 +33,12 @@
                           (commit "3df3aafd1924084d46988590bd94cf4c1b362859")))
       (file-name "boost-array-1.92.0-checkout")
       (sha256 (base32 "11pfvy81423k6ljg3lbsvi67h7s1mkl3lnlh7awvqfdydnzi0icj"))))
-  (list "boost-asio" "1.92.0"
+  (list "boost-asio-core" "1.92.0"
     (origin
       (method git-fetch)
       (uri (git-reference (url "https://github.com/boostorg/asio.git")
                           (commit "4fa4abee89a62fdeeccac2585caece625f40647e")))
-      (file-name "boost-asio-1.92.0-checkout")
+      (file-name "boost-asio-core-1.92.0-checkout")
       (sha256 (base32 "1pf6sqd8p21f73732lxdpmf6822br5b8f56krlhmwrm9cy0yn5x4"))))
   (list "boost-assert" "1.92.0"
     (origin
@@ -96,13 +96,6 @@
                           (commit "2698b43803c012601e6bb1a6116e83767b97986c")))
       (file-name "boost-container-hash-1.92.0-checkout")
       (sha256 (base32 "0sq91nqb5gczkjfz5zjv8n6x4qqxfmcs2mpf5q8ih51r19mv225x"))))
-  (list "boost-context" "1.92.0"
-    (origin
-      (method git-fetch)
-      (uri (git-reference (url "https://github.com/boostorg/context.git")
-                          (commit "cc1b9e02cd530d6607becc984e1e5bfa4f7b3600")))
-      (file-name "boost-context-1.92.0-checkout")
-      (sha256 (base32 "1f69bld0a65ckjnq0g606d6bbw7v0dj5wcr4dx7z3f91k2q6qm4i"))))
   (list "boost-conversion" "1.92.0"
     (origin
       (method git-fetch)
@@ -117,13 +110,6 @@
                           (commit "a90a31934fe8bcb6e6be6dfea77b80492c7b6c81")))
       (file-name "boost-core-1.92.0-checkout")
       (sha256 (base32 "13si4arspygsyq1mwshmnaink2pc26kj11vbw4bb5s28pcilvp33"))))
-  (list "boost-date-time" "1.92.0"
-    (origin
-      (method git-fetch)
-      (uri (git-reference (url "https://github.com/boostorg/date_time.git")
-                          (commit "6248d64ed94916e446c83a038e8c8208ebb262ee")))
-      (file-name "boost-date-time-1.92.0-checkout")
-      (sha256 (base32 "1nncfphylkgyl0rlbkls71sr0xxf2wrkaadgq425sd00gxyy4nip"))))
   (list "boost-describe" "1.92.0"
     (origin
       (method git-fetch)

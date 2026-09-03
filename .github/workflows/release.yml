@@ -90,6 +90,18 @@ jobs:
       fresh: true
     secrets: inherit
 
+  flatpak:
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      release: true
+
+  flatpak-again:
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      release: true
+      suffix: "-again"
+      fresh: true
+
   # What the two passes made, compared.
   #
   # The APK is compared unsigned. A run with no keystore signs with a test
@@ -98,7 +110,7 @@ jobs:
   # reason that says nothing about the build. The unsigned package is what
   # this workflow attests, and it is what is compared.
   reproducible:
-    needs: [native, native-again, wasm, wasm-again, click, click-again, apk, apk-again]
+    needs: [native, native-again, wasm, wasm-again, click, click-again, apk, apk-again, flatpak, flatpak-again]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -130,8 +142,8 @@ jobs:
               differs=1
             fi
           }
-          compare passes/osu-cpp-linux-ports/build/osu_client \
-                  passes/osu-cpp-linux-ports-again/build/osu_client
+          compare passes/osu-cpp-linux-ports/osu_client \
+                  passes/osu-cpp-linux-ports-again/osu_client
           compare passes/osu-cpp-wasm/build-wasm/osu_client.wasm \
                   passes/osu-cpp-wasm-again/build-wasm/osu_client.wasm
           compare passes/osu-cpp-wasm/build-wasm/osu_client.data \
@@ -140,15 +152,12 @@ jobs:
                   passes/osu-cpp-click-again/osu-cpp.click
           compare passes/osu-cpp-android/osu-cpp-unsigned.apk \
                   passes/osu-cpp-android-again/osu-cpp-unsigned.apk
+          # A Flatpak bundle is a nondeterministically compressed transport
+          # for an immutable OSTree commit. Compare the commit IDs: equal IDs
+          # mean every file and all of its metadata are equal.
+          compare passes/osu-cpp-flatpak/osu-cpp.flatpak.commit \
+                  passes/osu-cpp-flatpak-again/osu-cpp.flatpak.commit
           exit "$differs"
-
-  # The one build that is not in the ordinary CI at all: an hour of a runner
-  # and six gigabytes of cache, answering a question that does not change
-  # from commit to commit.
-  flatpak:
-    uses: ./.github/workflows/flatpak.yml
-    with:
-      release: true
 
   # And what was built for the browser becomes the page.
   #
