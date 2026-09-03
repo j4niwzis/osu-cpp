@@ -97,6 +97,9 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
           ;; way, so the build directory is beside it.
           (add-after 'unpack 'enter-standalone
             (lambda _
+              ;; A home that can be written to: the build runs with none,
+              ;; and the source cache is the first thing to want one.
+              (setenv "HOME" (getcwd))
               (chdir "standalone")))
           ;; One declaration per library, saying where its sources are.
           ;;
@@ -113,18 +116,24 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                    (when (string-prefix? "cme-source-" name)
                      (let* ((port (string-drop name (string-length "cme-source-")))
                             (place (string-append #$%ports "/" port))
-                            (tree (if (file-is-directory? item)
-                                      item
-                                      (let ((into (string-append place "/source")))
-                                        (mkdir-p into)
-                                        ;; A release archive is its contents
-                                        ;; under one directory named after
-                                        ;; itself, which is not part of the
-                                        ;; tree the port expects.
-                                        (invoke "tar" "xf" item "-C" into
-                                                "--strip-components=1")
-                                        into))))
-                       (mkdir-p place)
+                            (tree (string-append place "/source")))
+                       (mkdir-p tree)
+                       ;; Copied rather than pointed at. A store item is
+                       ;; read-only and some projects write into their own
+                       ;; source tree while configuring -- zlib renames
+                       ;; zconf.h out of the way -- so a build from the
+                       ;; store stops on a permission it was never given.
+                       ;;
+                       ;; An archive is unpacked as it is copied, because
+                       ;; the digest the lock holds is the archive's. A
+                       ;; release archive is its contents under one
+                       ;; directory named after itself, which is not part of
+                       ;; the tree the port expects.
+                       (if (file-is-directory? item)
+                           (copy-recursively item tree)
+                           (invoke "tar" "xf" item "-C" tree
+                                   "--strip-components=1"))
+                       (invoke "chmod" "-R" "u+w" tree)
                        (call-with-output-file (string-append place "/port.cmake")
                          (lambda (out)
                            (format out
@@ -139,7 +148,8 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
      (append
       (map (lambda (name) (list name (needed name)))
            (list "cmake" "ninja" "pkg-config" "python" "gn" "meson"
-                 "gperf" "clang-toolchain" "tar" "gzip" "xz" "bzip2"))
+                 "gperf" "clang-toolchain" "tar" "gzip" "xz" "bzip2"
+                 "coreutils"))
       ;; Every library the lock names, under a name the phase reads the port
       ;; out of.
       (map (lambda (entry)

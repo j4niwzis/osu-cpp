@@ -28,26 +28,31 @@
         # nothing else. What each library is, and how it is built, the
         # registry inside cmake-everywhere still says -- an overlay is read
         # before it and only fills in what it knows.
-        # A fetched repository is already a tree. A fetched archive is one
-        # file, because the digest the lock holds is the archive's, so it is
-        # unpacked here -- in an ordinary derivation, where unpacking is
-        # allowed to be whatever tar does.
-        ports = pkgs.runCommand "osu-cpp-cme-ports" { nativeBuildInputs = [ pkgs.gnutar pkgs.gzip pkgs.xz pkgs.bzip2 ]; } (
-          pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList (name: source: ''
-            port=${builtins.replaceStrings [ "_" ] [ "-" ] name}
-            mkdir -p "$out/$port"
-            tree=${source}
-            if [ ! -d "$tree" ]; then
-              mkdir -p "$out/$port/source"
-              tar xf ${source} -C "$out/$port/source" --strip-components=1
-              tree=$out/$port/source
-            fi
-            cat > "$out/$port/port.cmake" <<PORT
-            cme_declare_port(
-              NAME $port
-              SOURCE_DIR "$tree")
-            PORT
-          '') sources));
+        # What each library's sources are, as a shell script that puts
+        # them somewhere the build may write.
+        #
+        # A store path is read-only, and a project that writes into its own
+        # source tree cannot be built from one: zlib renames zconf.h out of
+        # the way while configuring, and stopped on "Permission denied" --
+        # in a directory nothing was supposed to write to and zlib was never
+        # told about. So every source is copied first, and an archive is
+        # unpacked while it is copied, because the digest the lock holds is
+        # the archive's.
+        unpack = pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList (name: source: ''
+          port=${builtins.replaceStrings [ "_" ] [ "-" ] name}
+          mkdir -p "$ports/$port" "$sources/$port"
+          if [ -d ${source} ]; then
+            cp -r ${source}/. "$sources/$port"
+          else
+            tar xf ${source} -C "$sources/$port" --strip-components=1
+          fi
+          chmod -R u+w "$sources/$port"
+          cat > "$ports/$port/port.cmake" <<PORT
+          cme_declare_port(
+            NAME $port
+            SOURCE_DIR "$sources/$port")
+          PORT
+        '') sources);
 
         # The provider itself, by the revision and digest cmake/get_cme.cmake
         # pins. Fetched here because the build may not fetch.
@@ -79,11 +84,24 @@
             xorg.libXi alsa-lib libpulseaudio dbus systemd
           ];
 
+          # A home that can be written to. Nix points HOME at
+          # /homeless-shelter, and the first thing that wants to put
+          # something under it -- the source cache -- fails there.
+          preConfigure = ''
+            export HOME=$TMPDIR
+            ports=$TMPDIR/cme-ports
+            sources=$TMPDIR/cme-sources
+            mkdir -p "$ports" "$sources"
+          '' + unpack + ''
+            # Said here rather than in cmakeFlags, because the directory has
+            # a name only the builder knows.
+            cmakeFlagsArray+=("-DCME_OVERLAYS=$ports")
+          '';
+
           cmakeDir = "../standalone";
           cmakeFlags = [
             "-DCME_OFFLINE=ON"
             "-DCME_ARCHIVE=${cme}"
-            "-DCME_OVERLAYS=${ports}"
             "-DCMAKE_BUILD_TYPE=Release"
           ];
 
