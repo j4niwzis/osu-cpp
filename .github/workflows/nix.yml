@@ -1,0 +1,53 @@
+# The Nix build.
+#
+# Every input is a store path decided before the build starts, so what this
+# tests is the same claim the Flatpak build tests -- that the ports can be
+# answered from sources somebody else fetched -- with the further constraint
+# that there is no working directory to put anything in.
+name: nix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      # Generated from the lock by a build that had a network, and committed.
+      # Without it there is nothing to fetch and nothing to say so.
+      - name: is there a list of sources
+        id: sources
+        run: |
+          if [ -f nix/sources.nix ]; then
+            echo "have=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=no" >> "$GITHUB_OUTPUT"
+            echo "nix/sources.nix is not committed yet: the native run"
+            echo "generates it and it has to be taken from there."
+          fi
+
+      - uses: cachix/install-nix-action@v27
+        if: steps.sources.outputs.have == 'yes'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: build
+        if: steps.sources.outputs.have == 'yes'
+        run: nix build ./nix --print-build-logs
+
+      - uses: actions/upload-artifact@v4
+        if: steps.sources.outputs.have == 'yes' && success()
+        with:
+          name: osu-cpp-nix
+          path: result/bin/*
