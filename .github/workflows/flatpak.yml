@@ -99,6 +99,15 @@ jobs:
         if: always()
         run: cat .flatpak-builder/build/osu-cpp*/build*/cme-report.txt || true
 
+      # What is being kept, by part. A repository is given ten gigabytes of
+      # cache in total and the least recently used entry is evicted to stay
+      # under it, so a cache this size is not free to the other workflows:
+      # it is what pushed the WebAssembly store out and made that build
+      # compile Skia from the beginning again.
+      - name: what the cache is made of
+        if: always()
+        run: du -sh .flatpak-builder/* 2>/dev/null | sort -h || true
+
       - name: bundle
         run: |
           flatpak build-bundle repo osu-cpp.flatpak io.github.j4niwzis.osu_cpp
