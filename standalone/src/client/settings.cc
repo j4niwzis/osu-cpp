@@ -2,6 +2,7 @@ export module client.settings;
 
 import std;
 import bjson;
+import platform.capabilities;
 
 export namespace client {
 
@@ -116,8 +117,10 @@ public:
     // replaced by the next one, so this is a preference and not a promise.
     // The names are spelled out here rather than taken from client.mirrors:
     // the settings know nothing about the network, and should not start.
+    // Which one a build starts with: mino in a browser, where it is the one
+    // that answers a page most reliably, and nerinyan everywhere else.
     this->add({4, "mirror", "Beatmap mirror", SettingKind::kChoice, 0.0f, 2.0f,
-               1.0f, 0.0f, "",
+               1.0f, platform::capabilities::kBrowser ? 2.0f : 0.0f, "",
                {"nerinyan", "osu.direct", "mino (catboy.best)"}});
   }
 

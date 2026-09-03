@@ -104,6 +104,10 @@ struct Filters {
 // One beatmap set in the listing, with everything a card draws.
 struct Entry {
   long fSetId = -1;
+  // Any one beatmap of the set. A mirror that serves artwork and previews is
+  // asked for a beatmap: the set id answers 404 for everything but the sets
+  // whose id happens to also be one.
+  long fMapId = -1;
   std::string fTitle, fTitleUnicode, fArtist, fArtistUnicode, fCreator;
   std::string fStatus;
   std::string fUpdated;   // yyyy-mm-dd, for the date statistic
@@ -128,6 +132,10 @@ struct Entry {
   skia::Sp<skia::SkImage> fPageCover; // the big cover, fetched on demand
   enum class Cover : std::uint8_t { kNone, kFetching, kReady, kFailed };
   Cover fPageCoverSt = Cover::kNone;
+  // Which of the hosts that serve artwork is being tried. They do not all
+  // have every set, so a refusal moves on to the next rather than leaving
+  // the panel blank.
+  std::uint8_t fPageCoverHost = 0;
   bool fVideo = false, fStoryboard = false, fNsfw = false, fSpotlight = false;
   bool fFeatured = false;  // track_id != null
   double fRating = 0.0;
@@ -138,6 +146,7 @@ struct Entry {
   float fProgress = 0.0f;
   enum class Thumb : std::uint8_t { kNone, kFetching, kReady, kFailed };
   Thumb fThumbSt = Thumb::kNone;
+  std::uint8_t fThumbHost = 0;
   skia::Sp<skia::SkImage> fThumb;
 };
 
