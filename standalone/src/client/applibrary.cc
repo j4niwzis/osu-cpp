@@ -27,15 +27,27 @@ public:
   // ---- Library ----------------------------------------------------------
 
   void initLibrary() {
-    fApp.fMapsDir = platform::capabilities::kBrowser
-                        ? std::filesystem::path{"/maps"}
-                        : platform::system::mapsDirectory();
+    // The same directory everywhere. In a browser the home it is under is
+    // the one mounted from the browser's storage, so the library, the
+    // settings beside it and the replays beside those all survive a reload
+    // -- which /maps, a directory of its own with nothing else in it, could
+    // not do for anything but the maps.
+    fApp.fMapsDir = platform::system::mapsDirectory();
     std::error_code ec;
     std::filesystem::create_directories(fApp.fMapsDir, ec);
+    // A browser is allowed not to have storage -- a private window refuses
+    // it -- and a client that cannot keep beatmaps is still a client that
+    // can play one. Throwing here stopped the frame loop instead, which is
+    // a screen that never changes again.
     if (ec) {
-      throw std::runtime_error(std::format(
-          "cannot create persistent map directory {}: {}",
-          fApp.fMapsDir.string(), ec.message()));
+      if constexpr (!platform::capabilities::kBrowser) {
+        throw std::runtime_error(std::format(
+            "cannot create persistent map directory {}: {}",
+            fApp.fMapsDir.string(), ec.message()));
+      }
+      std::println(std::cerr, "[library] {} cannot be made ({}); nothing will "
+                              "be kept between visits",
+                   fApp.fMapsDir.string(), ec.message());
     }
     fApp.fThumbDir = fApp.fMapsDir / "thumbnails";
     fApp.fLibrary.configure(fApp.fLoader, fApp.fMapsDir, fApp.fThumbDir,
@@ -43,15 +55,23 @@ public:
     fApp.fReplayDir = fApp.fMapsDir.parent_path() / "replays";
     std::filesystem::create_directories(fApp.fReplayDir, ec);
     if (ec) {
-      throw std::runtime_error(std::format(
-          "cannot create replay directory {}: {}", fApp.fReplayDir.string(),
-          ec.message()));
+      if constexpr (!platform::capabilities::kBrowser) {
+        throw std::runtime_error(std::format(
+            "cannot create replay directory {}: {}", fApp.fReplayDir.string(),
+            ec.message()));
+      }
+      std::println(std::cerr, "[library] no replay directory: {}",
+                   ec.message());
     }
     std::filesystem::create_directories(fApp.fThumbDir, ec);
     if (ec) {
-      throw std::runtime_error(std::format(
-          "cannot create thumbnail directory {}: {}", fApp.fThumbDir.string(),
-          ec.message()));
+      if constexpr (!platform::capabilities::kBrowser) {
+        throw std::runtime_error(std::format(
+            "cannot create thumbnail directory {}: {}", fApp.fThumbDir.string(),
+            ec.message()));
+      }
+      std::println(std::cerr, "[library] no thumbnail directory: {}",
+                   ec.message());
     }
     fApp.fLibrary.loadCache();
     fApp.fReplayBrowser.initialize(
