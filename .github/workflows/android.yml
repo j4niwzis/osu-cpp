@@ -212,7 +212,7 @@ jobs:
       - name: configure
         env:
           CCACHE_DIR: ~/.cache/ccache
-          CCACHE_MAXSIZE: 2G
+          CCACHE_MAXSIZE: 400M
         run: |
           NDK=~/android-minimal
           cmake -S standalone -B build-android -G Ninja \
@@ -235,6 +235,7 @@ jobs:
       - name: build
         env:
           CCACHE_DIR: ~/.cache/ccache
+          CCACHE_MAXSIZE: 400M
           NINJA_STATUS: "[%f/%t %es] "
         run: cmake --build build-android
 
