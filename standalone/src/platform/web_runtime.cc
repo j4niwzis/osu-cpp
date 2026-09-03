@@ -15,6 +15,7 @@ inline void requestBeatmapArchive() {}
   return {};
 }
 inline void lockOrientation(int) {}
+[[nodiscard]] inline bool offerDownload(const std::string &) { return false; }
 inline void setCursorVisible(bool) {}
 inline void wantPointerLock(bool) {}
 inline void runMainLoop(FrameCallback, void *) {}

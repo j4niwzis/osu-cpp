@@ -20,6 +20,7 @@ extern "C" {
 export module client.video;
 
 import std;
+import platform.capabilities;
 import platform.external_video_encoder;
 import skia;
 
@@ -104,6 +105,16 @@ public:
     if ((fFormat->oformat->flags & AVFMT_GLOBALHEADER) != 0) {
       fCodec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
+    // As many threads as the machine has, which is not what libavcodec does
+    // on its own: thread_count is one until something says otherwise, and
+    // nothing here ever did -- a replay was encoded on a single core on
+    // every platform this runs on.
+    //
+    // Fewer in a browser. The render already runs on a thread of its own, so
+    // the encoder's are workers started from inside a worker, and a machine
+    // with sixteen cores would open sixteen of them for a picture that is
+    // not the reason the export is slow.
+    fCodec->thread_count = platform::capabilities::kBrowser ? 4 : 0;
     // Ignored by encoders that do not have them, which is the point of
     // setting them through the options rather than the context.
     av_opt_set(fCodec->priv_data, "preset", "medium", 0);
