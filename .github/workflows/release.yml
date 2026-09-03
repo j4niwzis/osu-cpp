@@ -59,3 +59,46 @@ jobs:
     uses: ./.github/workflows/flatpak.yml
     with:
       release: true
+
+  # And what was built for the browser becomes the page.
+  #
+  # The branch is what GitHub Pages serves, so publishing is a commit on it
+  # -- the same five files every time, taken from the run that just made
+  # them rather than from a build somebody did by hand.
+  page:
+    needs: wasm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: page
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: osu-cpp-wasm
+          path: built
+
+      - name: what the page serves
+        run: |
+          cp built/build-wasm/osu_client.js .
+          cp built/build-wasm/osu_client.wasm .
+          cp built/build-wasm/osu_client.data .
+          cp built/build-wasm/osu_client.html index.html
+          cp built/standalone/coi.js .
+          ls -l index.html coi.js osu_client.js osu_client.wasm osu_client.data
+
+      - name: publish
+        run: |
+          git config user.name j4niwzis
+          git config user.email j4niwzis@proton.me
+          git add -A
+          if git diff --cached --quiet; then
+            echo "the page already serves this build"
+            exit 0
+          fi
+          git commit -m "The release build, as the page serves it
+
+Built by the release workflow from ${{ github.sha }}."
+          git push

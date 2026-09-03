@@ -313,7 +313,7 @@ jobs:
       # into it is the lock and the store keys, which name every source by
       # digest and every archive by what built it.
       - name: attest where the apk came from
-        if: success() && github.event_name == 'push'
+        if: ${{ success() && (inputs.release || github.event_name == 'push') }}
         uses: actions/attest-build-provenance@v2
         with:
           # The unsigned package, not the signed file. What this workflow

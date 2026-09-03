@@ -27,6 +27,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # What attesting a release artifact needs: a token that says which
+      # workflow of which repository is asking, and the right to write the
+      # answer into the public record.
+      id-token: write
+      attestations: write
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -131,3 +138,19 @@ jobs:
             build-wasm/*.data
             build-wasm/*.html
             standalone/coi.js
+
+      # What this run built, bound to this workflow at this commit and
+      # recorded in a public log. `gh attestation verify <file> --repo
+      # j4niwzis/osu-cpp` answers from that record.
+      #
+      # Only for a release: an ordinary run builds the same thing and nobody
+      # downloads it.
+      - name: attest what this built
+        if: ${{ inputs.release && success() }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            build-wasm/osu_client.wasm
+            build-wasm/osu_client.js
+            build-wasm/osu_client.data
+
