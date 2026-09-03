@@ -2,10 +2,10 @@
 ;;;
 ;;; A Guix build has no network and no working directory it can be handed
 ;;; things in: every input is a store item decided before the build starts.
-;;; So the shape is the Flatpak one and the Nix one again -- sources.scm says
-;;; what to fetch, and a generated port declaration says where each one
-;;; landed, which is the only thing cmake-everywhere needs to be told. What
-;;; each library is and how it is built stays in the registry.
+;;; Libraries are Guix packages. Only the two application components that
+;;; no distribution packages, skiff and skiff-widgets, come from sources.scm.
+;;; CME_SYSTEM=ALWAYS makes an absent Guix library an error rather than
+;;; silently building another copy.
 ;;;
 ;;; sources.scm is generated from cme-lock.json by tools/lock-to-guix.py,
 ;;; which comes with cmake-everywhere. It holds a revision or an archive
@@ -97,12 +97,17 @@
     (sha256 (base16-string->bytevector %cme-digest))))
 
 ;; (port version origin) for every library the lock names.
-(define %sources
+(define %all-sources
   (if (file-exists? (string-append %here "/sources.scm"))
       (load (string-append %here "/sources.scm"))
       (error "guix/osu-cpp.scm: guix/sources.scm is not there. A build with \
 a network writes it: tools/lock-to-guix.py standalone/cme-lock.json \
 $CPM_SOURCE_CACHE > guix/sources.scm")))
+
+(define %sources
+  (filter (lambda (entry)
+            (member (first entry) '("skiff" "skiff-widgets")))
+          %all-sources))
 
 ;; Where the port declarations and the unpacked archives are written. A
 ;; store item is read-only and there is nowhere else with a name that both
@@ -132,11 +137,18 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
       #:generator "Ninja"
       #:modules '((guix build cmake-build-system)
                   (guix build utils)
+                  (ice-9 popen)
+                  (ice-9 textual-ports)
                   (srfi srfi-1)
                   (srfi srfi-13))
       #:configure-flags
       #~(list "-DCMAKE_BUILD_TYPE=Release"
+              "-DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json"
               "-DCME_OFFLINE=ON"
+              "-DCME_SYSTEM=ALWAYS"
+              "-DCME_SYSTEM_OSUCPP=NEVER"
+              "-DCME_SYSTEM_SKIFF=NEVER"
+              "-DCME_SYSTEM_SKIFF-WIDGETS=NEVER"
               (string-append "-DCME_ARCHIVE=" #$%cme)
               (string-append "-DCME_OVERLAYS=" #$%ports))
       #:phases
@@ -149,7 +161,42 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
               ;; and the source cache is the first thing to want one.
               (setenv "HOME" (getcwd))
               (chdir "standalone")))
-          ;; One declaration per library, saying where its sources are.
+          ;; libstdc++ carries the sources of its standard-library modules,
+          ;; but no manifest that tells CMake where they are. Find the copy
+          ;; this build's compiler actually searches and describe it, just
+          ;; as the native and Nix builds do.
+          (add-before 'configure 'write-stdlib-module-manifest
+            (lambda _
+              (let* ((compiler (or (getenv "CXX") "c++"))
+                     (answer
+                      (let ((pipe
+                             (open-pipe* OPEN_READ "sh" "-c"
+                              (string-append
+                               compiler
+                               " -std=c++23 -x c++ -E -v /dev/null 2>&1"))))
+                        (let ((text (get-string-all pipe)))
+                          (close-pipe pipe)
+                          text)))
+                     (directories
+                      (filter file-is-directory?
+                              (map string-trim-both
+                                   (string-split answer #\newline))))
+                     (std-directory
+                      (find (lambda (directory)
+                              (file-exists?
+                               (string-append directory "/bits/std.cc")))
+                            directories)))
+                (unless std-directory
+                  (error "libstdc++ bits/std.cc is not in the compiler's search path"))
+                (let ((std (string-append std-directory "/bits/std.cc")))
+                  (format #t "std module source: ~a~%" std)
+                  (call-with-output-file "/tmp/libstdc++.modules.json"
+                    (lambda (out)
+                      (format out
+                              "{~%  \"version\": 1,~%  \"revision\": 1,~%  \"modules\": [~%    { \"logical-name\": \"std\", \"source-path\": \"~a\",~%      \"is-std-library\": true },~%    { \"logical-name\": \"std.compat\", \"source-path\": \"~a/bits/std.compat.cc\",~%      \"is-std-library\": true }~%  ]~%}~%"
+                              std std-directory)))))))
+          ;; One declaration per application component, saying where its
+          ;; pinned checkout is. Distribution libraries are Guix inputs.
           ;;
           ;; An input that is a checkout is already a tree; an input that is
           ;; an archive is one file, and a port needs a tree -- so it is
@@ -201,8 +248,7 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                  ;; For wayland-scanner, which glfw runs to generate its
                  ;; protocol bindings.
                  "wayland"))
-      ;; Every library the lock names, under a name the phase reads the port
-      ;; out of.
+      ;; The application components the phase reads the port out of.
       (map (lambda (entry)
              (list (string-append "cme-source-" (first entry)) (third entry)))
            %sources)))
@@ -212,6 +258,10 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                 "wayland-protocols" "libx11" "libxrandr" "libxinerama"
                 "libxcursor" "libxi" "alsa-lib" "pulseaudio" "dbus"
                 "elogind"
+                "boost" "skia" "libzip" "libsndfile" "mpg123" "openal"
+                "glfw" "xz" "zlib" "libpng" "libjpeg-turbo" "freetype"
+                "expat" "flac" "fmt" "libogg" "opus" "libvorbis"
+                "vulkan-headers"
                 ;; Asio's TLS has one backend and this is it.
                 "openssl")))
     (home-page "https://github.com/j4niwzis/osu-cpp")

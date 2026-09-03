@@ -1,59 +1,39 @@
 # Building this client with Nix.
 #
-# A Nix build has no network either, and unlike flatpak-builder it does not
-# even have a working directory it can be handed things in: every input is a
-# store path, decided before the build starts. So the shape is the same as
-# the Flatpak one and the mechanism is identical -- sources.nix says what to
-# fetch, and a generated overlay of port declarations says where each one
-# landed, which is the only thing cmake-everywhere needs to be told.
-#
-# sources.nix is generated from cme-lock.json by tools/lock-to-nix.py, which
-# comes with cmake-everywhere. Regenerate it after a build that had a
-# network; it holds a revision and a digest per library and nothing else.
+# Libraries come from nixpkgs. CME is kept as the dependency provider so the
+# CMake graph is unchanged, but CME_SYSTEM=ALWAYS makes a missing nixpkgs
+# package an error instead of silently compiling another copy from source.
 {
   description = "osu!cpp, a native client for osu! beatmaps";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    # An exact nixos-unstable revision: repository packages without a
+    # different package set appearing beneath the same source revision.
+    nixpkgs.url = "github:NixOS/nixpkgs/83199d0d373dd3ac2b9a1996b1d0263f76ab7a4c";
+    flake-utils.url = "github:numtide/flake-utils/11707dc2f618dd54ca8739b309ec4fc024de578b";
   };
 
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        sources = import ./sources.nix { inherit pkgs; };
-
-        # One port declaration per library: where its sources are, and
-        # nothing else. What each library is, and how it is built, the
-        # registry inside cmake-everywhere still says -- an overlay is read
-        # before it and only fills in what it knows.
-        # What each library's sources are, as a shell script that puts
-        # them somewhere the build may write.
-        #
-        # A store path is read-only, and a project that writes into its own
-        # source tree cannot be built from one: zlib renames zconf.h out of
-        # the way while configuring, and stopped on "Permission denied" --
-        # in a directory nothing was supposed to write to and zlib was never
-        # told about. So every source is copied first, and an archive is
-        # unpacked while it is copied, because the digest the lock holds is
-        # the archive's.
-        unpack = pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList (name: source: ''
-          port=${builtins.replaceStrings [ "_" ] [ "-" ] name}
-          mkdir -p "$ports/$port" "$sources/$port"
-          if [ -d ${source} ]; then
-            cp -r ${source}/. "$sources/$port"
-          else
-            tar xf ${source} -C "$sources/$port" --strip-components=1
-          fi
-          chmod -R u+w "$sources/$port"
-          cat > "$ports/$port/port.cmake" <<PORT
-          cme_declare_port(
-            NAME $port
-            SOURCE_DIR "$sources/$port")
-          PORT
-        '') sources);
-
+        # These are application components, not distribution libraries.
+        # Keep only their pinned checkouts from the generated lock input.
+        componentSources = pkgs.lib.filterAttrs
+          (name: _: builtins.elem name [ "skiff" "skiff_widgets" ])
+          (import ./sources.nix { inherit pkgs; });
+        unpackComponents = pkgs.lib.concatStrings
+          (pkgs.lib.mapAttrsToList (name: source: ''
+            port=${builtins.replaceStrings [ "_" ] [ "-" ] name}
+            mkdir -p "$ports/$port" "$components/$port"
+            cp -r ${source}/. "$components/$port"
+            chmod -R u+w "$components/$port"
+            cat > "$ports/$port/port.cmake" <<PORT
+            cme_declare_port(
+              NAME $port
+              SOURCE_DIR "$components/$port")
+            PORT
+          '') componentSources);
         # The provider itself, by the revision and digest cmake/get_cme.cmake
         # pins. Fetched here because the build may not fetch.
         pinned = builtins.readFile ../cmake/get_cme.cmake;
@@ -90,6 +70,9 @@
             libGL libglvnd libxkbcommon wayland wayland-protocols
             xorg.libX11 xorg.libXrandr xorg.libXinerama xorg.libXcursor
             xorg.libXi alsa-lib libpulseaudio dbus systemd
+            boost skia libzip libsndfile mpg123 openal glfw
+            xz zlib libpng libjpeg_turbo freetype expat
+            flac fmt libogg opus libvorbis vulkan-headers
             # Asio's TLS has one backend and this is it. 3.0 and later,
             # because everything before it carried a licence the AGPL does
             # not combine with.
@@ -111,9 +94,9 @@
           preConfigure = ''
             export HOME=$TMPDIR
             ports=$TMPDIR/cme-ports
-            sources=$TMPDIR/cme-sources
-            mkdir -p "$ports" "$sources"
-          '' + unpack + ''
+            components=$TMPDIR/cme-components
+            mkdir -p "$ports" "$components"
+          '' + unpackComponents + ''
             # Where the standard library this compiler uses keeps the
             # source of its std module.
             #
@@ -179,15 +162,16 @@
               echo "leaving CMake to find whatever manifest the standard"
               echo "library ships."
             fi
-
-            # Said here rather than in cmakeFlags, because these have names
-            # only the builder knows.
             cmakeFlagsArray+=("-DCME_OVERLAYS=$ports")
           '';
 
           cmakeDir = "../standalone";
           cmakeFlags = [
             "-DCME_OFFLINE=ON"
+            "-DCME_SYSTEM=ALWAYS"
+            "-DCME_SYSTEM_OSUCPP=NEVER"
+            "-DCME_SYSTEM_SKIFF=NEVER"
+            "-DCME_SYSTEM_SKIFF-WIDGETS=NEVER"
             "-DCME_ARCHIVE=${cme}"
             "-DCMAKE_BUILD_TYPE=Release"
           ];

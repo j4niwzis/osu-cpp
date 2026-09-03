@@ -189,7 +189,8 @@ set(OSU_SKIFF_WIDGETS_SOURCE_DIR "" CACHE PATH
   "Existing skiff-widgets checkout; avoids fetching it during offline builds")
 
 if(OSU_SKIFF_SOURCE_DIR)
-  cme_declare_port(NAME skiff PROVIDES skiff SOURCE_DIR "${OSU_SKIFF_SOURCE_DIR}")
+  cme_declare_port(NAME skiff PROVIDES skiff
+                   SOURCE_DIR "${OSU_SKIFF_SOURCE_DIR}")
 else()
   cme_declare_port(
     NAME skiff
