@@ -6,5 +6,9 @@ Name: skia
 Description: Skia built for osu-cpp
 Version: 148
 Cflags: -I${includedir} -I${includedir}/skia
-Libs: -L${libdir} -lskia
-Libs.private: -lfreetype -lfontconfig -lpng16 -ljpeg -lwebp -lwebpdemux -lz -lEGL -lGLESv2 -lm -ldl
+# Not Libs.private, although that is where a library's own dependencies
+# usually go: pkg-config hands those out only when it is asked with --static,
+# and what is described here is a static library and nothing else. A consumer
+# that links libskia.a needs every one of these, whether or not it thought to
+# ask that way -- and the ones it does not use are dropped by --as-needed.
+Libs: -L${libdir} -lskia -lfreetype -lfontconfig -lpng16 -ljpeg -lwebp -lwebpdemux -lz -lEGL -lGLESv2 -lm -ldl

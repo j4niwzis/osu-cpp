@@ -208,6 +208,25 @@ modules:
 
   - name: x264
     buildsystem: simple
+    # Not through LTO, unlike everything else here.
+    #
+    # x264 aligns the stack to 64 bytes because its assembly requires it, and
+    # with LTO that requirement is written into the bitcode as a module flag.
+    # Linking it beside code compiled the ordinary way is then refused:
+    # "linking module flags 'override-stack-alignment': IDs have conflicting
+    # values: i32 64 ... and i32 16". Nothing is lost -- what x264 spends its
+    # time in is hand-written assembly, which LTO does not touch.
+    # With -override, because build-options are appended to what the manifest
+    # sets above unless they say otherwise: cflags alone produced
+    # "-O3 -flto -O3", which is the flag being removed followed by the flag
+    # doing the removing.
+    build-options:
+      cflags: -O3
+      cflags-override: true
+      cxxflags: -O3
+      cxxflags-override: true
+      ldflags: ""
+      ldflags-override: true
     build-commands:
       - >-
         CC=clang AR=llvm-ar RANLIB=llvm-ranlib
@@ -331,8 +350,8 @@ modules:
       # declared here instead -- and flatpak-builder checks the digest, which
       # is the same check that file(DOWNLOAD) would have made.
       - type: file
-        url: https://github.com/j4niwzis/cmake-everywhere/archive/08e7ae7d2b6c2358cd3853205829ca3d8fc1b05a.tar.gz
-        sha256: 912be6ed121b0dfd1f421f50ff77176c2c3ea5b5b3fba6414d77667977a7b6f5
+        url: https://github.com/j4niwzis/cmake-everywhere/archive/3dce40d9cfe8d5aa103fe15070028b723aee62ac.tar.gz
+        sha256: 2566f7272a13ff154a4c3fdd2c7d58076117a9f3dade8d7e646a5bc98c1fc9eb
         dest: .flatpak-sources
         dest-filename: cme.tar.gz
       - type: file
