@@ -3,7 +3,8 @@ export module client.framestate;
 import std;
 import skia;
 import skiff.scene;
-import present;
+import platform.presentation;
+import platform.configuration;
 
 export namespace client {
 
@@ -134,7 +135,7 @@ public:
   void begin(const BeginOptions &opts) {
     fDrawing = true;
     fBlitRegions.clear();
-    fBufferAge = opts.fPartial ? present::bufferAge() : -1;
+    fBufferAge = opts.fPartial ? platform::presentation::bufferAge() : -1;
     fAgeReported = fBufferAge >= 0;
     fBufferAgeAssumed = false;
     if (fBufferAge < 0 && opts.fPartial && opts.fAssumedBufferAge > 0) {
@@ -410,7 +411,7 @@ public:
                  ? std::format(" (partial redraw, buffer age {} via {})",
                                fBufferAge,
                                fBufferAgeAssumed ? "assumption"
-                                                 : present::backend())
+                                                 : platform::presentation::backend())
                  : ""));
     fDiag.fCostLogWall = wall;
     fDiag.fCostUpdateUs = fDiag.fCostDrawUs = fDiag.fCostBlitUs =
@@ -438,9 +439,10 @@ private:
     std::int64_t fCostClipArea = 0;
     int fCostFrames = 0;
     double fCostLogWall = 0.0;
-    const bool fForceShowDamage = std::getenv("OSU_SHOW_DAMAGE") != nullptr;
-    const bool fTraceRepaint = std::getenv("OSU_TRACE_REPAINT") != nullptr ||
-                               std::getenv("OSU_TRACE_RESIZE") != nullptr;
+    const bool fForceShowDamage =
+        platform::runtimeConfiguration().fShowDamage;
+    const bool fTraceRepaint =
+        platform::runtimeConfiguration().fTraceRepaint;
     bool fTracedClipping = false;
     int fTracedAge = -2;
     std::size_t fTracedHistory = 0;

@@ -2,13 +2,14 @@ export module client.appoverlays;
 
 import std;
 import osu;
-import glfw;
+import platform.input;
+import platform.capabilities;
 import skia;
 import skin;
-import client.audio;
+import platform.audio_engine;
 import client.hitsoundmix;
 import client.mods;
-import client.portal;
+import platform.dialogs;
 import client.settingspanel;
 import client.util;
 import client.video;
@@ -101,11 +102,11 @@ public:
 
   [[nodiscard]] float musicGain() const {
     return fApp.fSettings.value("master") * fApp.fSettings.value("music") *
-           audio_client::kMusicHeadroom;
+           platform::sound::kMusicHeadroom;
   }
   [[nodiscard]] float effectGain() const {
     return fApp.fSettings.value("master") * fApp.fSettings.value("effect") *
-           audio_client::kEffectHeadroom;
+           platform::sound::kEffectHeadroom;
   }
 
   // Difficulties are ordered by the rating being shown, which means the
@@ -150,13 +151,13 @@ public:
   [[nodiscard]] std::vector<client::ModEntry> modEntries() const {
     return {
         {"EZ", "Easy", "Larger circles, more forgiving HP drain.",
-         osu::mod::kEasy, 0, glfw::kKeyQ, 0.5},
+         osu::mod::kEasy, 0, platform::input::kKeyQ, 0.5},
         {"HT", "Half Time", "Less zoom... more time to react.",
-         osu::mod::kHalfTime, 0, glfw::kKeyW, 0.3},
+         osu::mod::kHalfTime, 0, platform::input::kKeyW, 0.3},
         {"HR", "Hard Rock", "Everything just got a bit harder...",
-         osu::mod::kHardRock, 1, glfw::kKeyA, 1.06},
+         osu::mod::kHardRock, 1, platform::input::kKeyA, 1.06},
         {"DT", "Double Time", "Zoooooooooom...", osu::mod::kDoubleTime, 1,
-         glfw::kKeyD, 1.12},
+         platform::input::kKeyD, 1.12},
     };
   }
 
@@ -225,7 +226,9 @@ public:
     const std::string suggested = std::format(
         "{}-{}x{}.mp4", safe, request.fOptions.fWidth, request.fOptions.fHeight);
     if (output.empty()) {
-#ifndef __EMSCRIPTEN__
+      if constexpr (!platform::capabilities::kNativeFileDialogs) {
+        return;
+      }
       if (fExportPickerOpen) {
         return;
       }
@@ -246,9 +249,6 @@ public:
             this->exportReplayVideo(*chosen);
           });
       return;
-#else
-      return;
-#endif
     }
     if (output.extension() != ".mp4") {
       output += ".mp4";
@@ -366,55 +366,15 @@ public:
   }
 
 private:
-#ifndef __EMSCRIPTEN__
   [[nodiscard]] static std::filesystem::path
   runExportPicker(const std::string &suggested) {
-    const auto portal = client::portal::saveVideo("Export replay video",
-                                                   suggested);
+    const auto portal =
+        platform::dialogs::saveVideo("Export replay video", suggested);
     if (portal.fPortalAvailable) {
       return portal.fPath.value_or(std::filesystem::path{});
     }
-
-    std::error_code ec;
-    const auto answer = std::filesystem::temp_directory_path(ec) /
-                        "osu_client_export.txt";
-    const std::string answerString = answer.string();
-    const std::string commands[] = {
-        std::format("zenity --file-selection --save --confirm-overwrite "
-                    "--file-filter='MP4 video | *.mp4' --filename='{}' "
-                    "--title='Export replay video'", suggested),
-        std::format("kdialog --getsavefilename '{}' '*.mp4|MP4 video'",
-                    suggested),
-        std::format("matedialog --file-selection --save --confirm-overwrite "
-                    "--filename='{}' --title='Export replay video'", suggested),
-        std::format("qarma --file-selection --save --confirm-overwrite "
-                    "--filename='{}' --title='Export replay video'", suggested),
-    };
-    for (const auto &pick : commands) {
-      const std::string bin = pick.substr(0, pick.find(' '));
-      if (std::system(("command -v " + bin + " > /dev/null 2>&1").c_str()) !=
-          0) {
-        continue;
-      }
-      std::filesystem::remove(answer, ec);
-      if (std::system((pick + " > '" + answerString + "' 2>/dev/null").c_str()) !=
-          0) {
-        return {};
-      }
-      std::ifstream in(answer);
-      std::string path;
-      std::getline(in, path);
-      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
-        path.pop_back();
-      }
-      return std::filesystem::path(path);
-    }
-    std::println(std::cerr,
-                 "[export] no save dialog available (portal, zenity, "
-                 "kdialog, matedialog or qarma)");
     return {};
   }
-#endif
 
   Host &fApp;
   bool fExportPickerOpen = false;

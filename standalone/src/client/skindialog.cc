@@ -1,6 +1,7 @@
 export module client.skindialog;
 
 import std;
+import platform.system;
 import skia;
 import skiff.scene;
 import skiff.nodes;
@@ -183,9 +184,8 @@ private:
 
   [[nodiscard]] static std::string loadLicence() {
     std::vector<std::filesystem::path> candidates;
-    std::error_code ec;
-    const auto executable = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec && !executable.empty()) {
+    const auto executable = platform::system::executablePath({});
+    if (!executable.empty()) {
       const auto prefix = executable.parent_path().parent_path();
       candidates.emplace_back(prefix / "share" / "osu_client" / "licenses" /
                               "WebOsu-CC-BY-NC-4.0.md");

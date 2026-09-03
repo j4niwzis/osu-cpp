@@ -6,7 +6,7 @@ export namespace client {
 
 // Anchored game clock.
 //
-// Maps a monotonic wall clock (glfwGetTime-based, milliseconds) onto the
+// Maps a monotonic wall clock (monotonic-clock-based, milliseconds) onto the
 // audio/game timeline. The audio device is queried only sparsely (see
 // App::maybeSyncClock); between syncs the game time is extrapolated from the
 // wall clock, which removes per-frame blocking OpenAL queries from the frame

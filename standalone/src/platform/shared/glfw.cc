@@ -16,7 +16,7 @@ GLFWAPI void glfwGetMonitorWorkarea(GLFWmonitor *monitor, int *xpos, int *ypos,
 }
 #endif
 
-export module glfw;
+export module platform.glfw;
 
 export namespace glfw {
 

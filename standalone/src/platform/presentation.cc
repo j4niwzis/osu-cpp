@@ -4,7 +4,7 @@ module;
 #include <dlfcn.h>
 #endif
 
-export module present;
+export module platform.presentation;
 
 import std;
 
@@ -23,7 +23,7 @@ import std;
 // without the extension and a GLX context without the GLX one all end up in
 // the same place: unavailable, and the client falls back to what it did
 // before.
-export namespace present {
+export namespace platform::presentation {
 
 // -1 when nothing can be asked, 0 when the contents are undefined (repaint
 // everything), N >= 1 when the buffer holds the frame from N swaps ago.
@@ -52,16 +52,16 @@ export namespace present {
 // been replaced by an answer should say so.
 [[nodiscard]] const char *backend();
 
-} // namespace present
+} // namespace platform::presentation
 
 #ifdef __EMSCRIPTEN__
 
-namespace present {
+namespace platform::presentation {
 int bufferAge() { return -1; }
 bool surfaceSize(void *, int *, int *) { return false; }
 bool swapWithDamage(int, std::span<const std::array<int, 4>>) { return false; }
 const char *backend() { return "none"; }
-} // namespace present
+} // namespace platform::presentation
 
 #else
 
@@ -260,7 +260,7 @@ struct Loaded {
 
 } // namespace
 
-namespace present {
+namespace platform::presentation {
 
 int bufferAge() {
   const Loaded &state = loaded();
@@ -362,6 +362,6 @@ bool swapWithDamage(int surfaceHeight,
 
 const char *backend() { return loaded().fBackend; }
 
-} // namespace present
+} // namespace platform::presentation
 
 #endif

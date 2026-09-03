@@ -2,8 +2,8 @@ export module client.appinput;
 
 import std;
 import osu;
-import glfw;
-import present;
+import platform.input;
+import platform.capabilities;
 import client.input;
 import client.gameplayview;
 import client.listing;
@@ -67,7 +67,7 @@ public:
     // alternative was two days of this.
     int liveW = 0;
     int liveH = 0;
-    if (present::surfaceSize(fApp.fWindow, &liveW, &liveH) &&
+    if (fApp.fWindowRuntime.surfaceSize(liveW, liveH) &&
         (liveW != fApp.fWin.fPixelW || liveH != fApp.fWin.fPixelH)) {
       fApp.resize(liveW, liveH);
     }
@@ -83,11 +83,11 @@ public:
     if (fApp.fPlay.fAwaitingFirstFrame) {
       return 0.0;
     }
-#ifdef __EMSCRIPTEN__
-    return wallMs - fApp.fPlay.fStartMs + fApp.fPlay.fAudioOffsetMs;
-#else
-    return fApp.fPlay.fClock.sample(wallMs);
-#endif
+    if constexpr (platform::capabilities::kAudioProvidesTimeline) {
+      return fApp.fPlay.fClock.sample(wallMs);
+    } else {
+      return wallMs - fApp.fPlay.fStartMs + fApp.fPlay.fAudioOffsetMs;
+    }
   }
 
   void applyEvent(const Event &ev) {
@@ -231,54 +231,54 @@ public:
   // undo the first. Gameplay is not in either group: a key held down is one
   // press there, however long it is held.
   [[nodiscard]] static bool repeatable(int key) {
-    return key == glfw::kKeyBackspace || key == glfw::kKeyDelete ||
-           key == glfw::kKeyLeft || key == glfw::kKeyRight ||
-           key == glfw::kKeyUp || key == glfw::kKeyDown ||
-           key == glfw::kKeyPageUp || key == glfw::kKeyPageDown;
+    return key == platform::input::kKeyBackspace || key == platform::input::kKeyDelete ||
+           key == platform::input::kKeyLeft || key == platform::input::kKeyRight ||
+           key == platform::input::kKeyUp || key == platform::input::kKeyDown ||
+           key == platform::input::kKeyPageUp || key == platform::input::kKeyPageDown;
   }
 
   void applyKey(const Event &ev) {
     const int key = ev.fA;
     int action = ev.fB;
-    if (action == glfw::kRepeat) {
+    if (action == platform::input::kRepeat) {
       if (fApp.fState == State::kPlaying || !repeatable(key)) {
         return;
       }
-      action = glfw::kPress; // a repeat is a press to everything that repeats
+      action = platform::input::kPress; // a repeat is a press to everything that repeats
     }
     // GLFW reports the modifier state with every key event; tracking press
     // and release of the control keys separately loses sync whenever focus
     // changes while held.
-    const bool ctrl = (static_cast<int>(ev.fX) & glfw::kModControl) != 0;
-    const bool shift = (static_cast<int>(ev.fX) & glfw::kModShift) != 0;
-    if (key == glfw::kKeyLeftControl || key == glfw::kKeyRightControl) {
+    const bool ctrl = (static_cast<int>(ev.fX) & platform::input::kModControl) != 0;
+    const bool shift = (static_cast<int>(ev.fX) & platform::input::kModShift) != 0;
+    if (key == platform::input::kKeyLeftControl || key == platform::input::kKeyRightControl) {
       return;
     }
     // Backspace edits the size while the dialog is up, for the same reason.
-    if (fApp.fExportDialog.open() && action == glfw::kPress &&
-        key == glfw::kKeyBackspace) {
+    if (fApp.fExportDialog.open() && action == platform::input::kPress &&
+        key == platform::input::kKeyBackspace) {
       fApp.fExportDialog.backspaceSize();
       return;
     }
-    if (action == glfw::kPress && key == glfw::kKeyO && ctrl) {
+    if (action == platform::input::kPress && key == platform::input::kKeyO && ctrl) {
       fApp.fOverlays.toggleSettings();
       return;
     }
-    if (action == glfw::kPress && key == glfw::kKeyTab &&
+    if (action == platform::input::kPress && key == platform::input::kKeyTab &&
         this->routeKey(skiff::scene::Key::kTab, shift)) {
       return;
     }
     std::optional<skiff::scene::Key> editingKey;
-    if (key == glfw::kKeyBackspace) {
+    if (key == platform::input::kKeyBackspace) {
       editingKey = skiff::scene::Key::kBackspace;
-    } else if (key == glfw::kKeyDelete) {
+    } else if (key == platform::input::kKeyDelete) {
       editingKey = skiff::scene::Key::kDelete;
-    } else if (key == glfw::kKeyLeft) {
+    } else if (key == platform::input::kKeyLeft) {
       editingKey = skiff::scene::Key::kLeft;
-    } else if (key == glfw::kKeyRight) {
+    } else if (key == platform::input::kKeyRight) {
       editingKey = skiff::scene::Key::kRight;
     }
-    if (action == glfw::kPress && editingKey &&
+    if (action == platform::input::kPress && editingKey &&
         this->routeKey(*editingKey, shift)) {
       if (fApp.fState == State::kSongSelect &&
           (*editingKey == skiff::scene::Key::kBackspace ||
@@ -287,7 +287,7 @@ public:
       }
       return;
     }
-    if (action == glfw::kPress && key == glfw::kKeyEscape) {
+    if (action == platform::input::kPress && key == platform::input::kKeyEscape) {
       if (fApp.fDeleteDialog.open()) {
         fApp.fDeleteDialog.close();
         return;
@@ -310,7 +310,7 @@ public:
         return;
       }
     }
-    if (action != glfw::kPress && fApp.fState != State::kPlaying) {
+    if (action != platform::input::kPress && fApp.fState != State::kPlaying) {
       return; // menus only care about presses
     }
 
@@ -336,20 +336,20 @@ public:
     case State::kPaused:
       // GameplayMenuOverlay: the arrows cycle the buttons, enter takes the
       // selected one, and back is the first button -- Continue.
-      if (key == glfw::kKeyEscape) {
+      if (key == platform::input::kKeyEscape) {
         fApp.resumeGame();
-      } else if (key == glfw::kKeyUp) {
+      } else if (key == platform::input::kKeyUp) {
         fApp.fPauseMenu.selectPrevious();
-      } else if (key == glfw::kKeyDown) {
+      } else if (key == platform::input::kKeyDown) {
         fApp.fPauseMenu.selectNext();
-      } else if (key == glfw::kKeyEnter) {
+      } else if (key == platform::input::kKeyEnter) {
         this->applyPauseAction(fApp.fPauseMenu.triggerSelected());
       }
       return;
     case State::kResults:
-      if (key == glfw::kKeyEscape) {
+      if (key == platform::input::kKeyEscape) {
         fApp.quitToSelect();
-      } else if (key == glfw::kKeyEnter) {
+      } else if (key == platform::input::kKeyEnter) {
         fApp.retry();
       }
       return;
@@ -358,8 +358,8 @@ public:
     }
 
     // Playing.
-    if (key == glfw::kKeyEscape) {
-      if (action == glfw::kPress) {
+    if (key == platform::input::kKeyEscape) {
+      if (action == platform::input::kPress) {
         fApp.pauseGame();
       }
       return;
@@ -368,21 +368,21 @@ public:
       return;
     }
     std::uint32_t bit = 0;
-    if (key == glfw::kKeyZ) {
+    if (key == platform::input::kKeyZ) {
       bit = 1u << 0;
-    } else if (key == glfw::kKeyX) {
+    } else if (key == platform::input::kKeyX) {
       bit = 1u << 1;
-    } else if (key == glfw::kKeySpace) {
+    } else if (key == platform::input::kKeySpace) {
       bit = 1u << 2;
     } else {
       return;
     }
-    this->applyButton(bit, action == glfw::kPress, ev.fWallMs);
+    this->applyButton(bit, action == platform::input::kPress, ev.fWallMs);
   }
 
   void keySongSelect(int key) {
     const int nSets = static_cast<int>(fApp.fLibrary.visible().size());
-    if (key == glfw::kKeyEscape) {
+    if (key == platform::input::kKeyEscape) {
       if (!fApp.fFilter.text().empty()) {
         fApp.fFilter.clearText();
         fApp.fLibrary.markDirty();
@@ -391,33 +391,33 @@ public:
       fApp.switchState(State::kMainMenu);
       return;
     }
-    if (key == glfw::kKeyBackspace) {
+    if (key == platform::input::kKeyBackspace) {
       if (!fApp.fFilter.text().empty()) {
         fApp.fFilter.popText();
         fApp.fLibrary.markDirty();
       }
       return;
     }
-    if (key == glfw::kKeyF3) {
+    if (key == platform::input::kKeyF3) {
       fApp.fScreens.cycleSortMode();
       return;
     }
     // lazer's song select keeps the search box permanently focused: every
     // printable key belongs to the query, never to a shortcut. Actions live
     // on function keys and the footer buttons.
-    if (key == glfw::kKeyF1) {
+    if (key == platform::input::kKeyF1) {
       fApp.fOverlays.toggleMods(); // lazer: F1 is mod select
       return;
     }
-    if (key == glfw::kKeyF4) {
+    if (key == platform::input::kKeyF4) {
       this->openDownloads();
       return;
     }
-    if (key == glfw::kKeyF5) {
+    if (key == platform::input::kKeyF5) {
       fApp.fLibraryRuntime.importOsz();
       return;
     }
-    if (key == glfw::kKeyF2) {
+    if (key == platform::input::kKeyF2) {
       fApp.selectRandom();
       return;
     }
@@ -426,7 +426,7 @@ public:
     }
     const int nDiffs =
         static_cast<int>(fApp.fLibrary.infosFor(fApp.fLibrary.selSet()).size());
-    if (key == glfw::kKeyUp) {
+    if (key == platform::input::kKeyUp) {
       if (fApp.fLibrary.selDiff() > 0) {
         --fApp.fLibrary.selDiff();
       } else if (const int pos = fApp.fLibrary.visiblePos(); pos > 0) {
@@ -436,7 +436,7 @@ public:
             0,
             static_cast<int>(fApp.fLibrary.infosFor(fApp.fLibrary.selSet()).size()) - 1);
       }
-    } else if (key == glfw::kKeyDown) {
+    } else if (key == platform::input::kKeyDown) {
       if (fApp.fLibrary.selDiff() + 1 < nDiffs) {
         ++fApp.fLibrary.selDiff();
       } else if (const int pos = fApp.fLibrary.visiblePos();
@@ -446,20 +446,20 @@ public:
             fApp.fLibrary.visible()[static_cast<std::size_t>(pos + 1)];
         fApp.fLibrary.selDiff() = 0;
       }
-    } else if (key == glfw::kKeyLeft) {
+    } else if (key == platform::input::kKeyLeft) {
       if (const int pos = fApp.fLibrary.visiblePos(); pos > 0) {
         fApp.fLibrary.selSet() =
             fApp.fLibrary.visible()[static_cast<std::size_t>(pos - 1)];
         fApp.fLibrary.selDiff() = 0;
       }
-    } else if (key == glfw::kKeyRight) {
+    } else if (key == platform::input::kKeyRight) {
       if (const int pos = fApp.fLibrary.visiblePos();
           pos >= 0 && pos + 1 < static_cast<int>(fApp.fLibrary.visible().size())) {
         fApp.fLibrary.selSet() =
             fApp.fLibrary.visible()[static_cast<std::size_t>(pos + 1)];
         fApp.fLibrary.selDiff() = 0;
       }
-    } else if (key == glfw::kKeyEnter) {
+    } else if (key == platform::input::kKeyEnter) {
       fApp.startPlay(fApp.fLibrary.selSet(), fApp.fLibrary.selDiff());
     }
   }
@@ -490,7 +490,7 @@ public:
   }
 
   void keyDownload(int key) {
-    if (key == glfw::kKeyEscape) {
+    if (key == platform::input::kKeyEscape) {
       if (fApp.fSetPage.open()) {
         this->closeSetPage();
         return;
@@ -498,11 +498,11 @@ public:
       this->leaveDownload();
       return;
     }
-    if (key == glfw::kKeyEnter) {
+    if (key == platform::input::kKeyEnter) {
       fApp.fMirrors.startSearch(fApp.fListing.filters());
       return;
     }
-    if (key == glfw::kKeyBackspace) {
+    if (key == platform::input::kKeyBackspace) {
       this->popUtf8(fApp.fListing.filters().fQuery);
       fApp.fListing.queryEdited();
     }
@@ -510,11 +510,11 @@ public:
 
   void keyReplayList(int key) {
     std::optional<std::filesystem::path> watch;
-    if (key == glfw::kKeyLeft) {
+    if (key == platform::input::kKeyLeft) {
       watch = fApp.fReplayBrowser.key(client::ReplayBrowser::Key::kPrevious);
-    } else if (key == glfw::kKeyRight) {
+    } else if (key == platform::input::kKeyRight) {
       watch = fApp.fReplayBrowser.key(client::ReplayBrowser::Key::kNext);
-    } else if (key == glfw::kKeyEnter) {
+    } else if (key == platform::input::kKeyEnter) {
       watch = fApp.fReplayBrowser.key(client::ReplayBrowser::Key::kActivate);
     }
     if (watch) {
@@ -529,8 +529,8 @@ public:
     if (fApp.fState == State::kMainMenu || fApp.fState == State::kSongSelect ||
         fApp.fState == State::kDownload || fApp.fState == State::kPaused ||
         fApp.fState == State::kResults) {
-      if (button == glfw::kMouseButtonLeft) {
-        const bool pressed = action == glfw::kPress;
+      if (button == platform::input::kMouseButtonLeft) {
+        const bool pressed = action == platform::input::kPress;
         // The panel strip takes the press before anything else so that a drag
         // that starts on a panel scrolls the list instead of selecting.
         if (fApp.fScreens.panelListActive() && !fApp.fExportDialog.open() &&
@@ -558,8 +558,8 @@ public:
     // Playing. The pause button in the corner belongs to the client, not to
     // the game: it is answered before the press becomes a tap, and it works
     // while a replay is being watched, where taps are ignored altogether.
-    if (fApp.fState == State::kPlaying && button == glfw::kMouseButtonLeft &&
-        action == glfw::kPress &&
+    if (fApp.fState == State::kPlaying && button == platform::input::kMouseButtonLeft &&
+        action == platform::input::kPress &&
         client::GameplayView::pauseButtonHitBounds(
             fApp.fWin.fScreenW, fApp.fWin.fScreenH, fApp.uiScale())
             .contains(fApp.fWin.fMouseX, fApp.fWin.fMouseY)) {
@@ -571,14 +571,14 @@ public:
       return;
     }
     std::uint32_t bit = 0;
-    if (button == glfw::kMouseButtonLeft) {
+    if (button == platform::input::kMouseButtonLeft) {
       bit = 1u << 3;
-    } else if (button == glfw::kMouseButtonRight) {
+    } else if (button == platform::input::kMouseButtonRight) {
       bit = 1u << 4;
     } else {
       return;
     }
-    this->applyButton(bit, action == glfw::kPress, ev.fWallMs);
+    this->applyButton(bit, action == platform::input::kPress, ev.fWallMs);
   }
 
   void refreshInputLayers() {

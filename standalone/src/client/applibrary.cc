@@ -1,22 +1,19 @@
 module;
-
-#ifdef __EMSCRIPTEN__
-#include "emscripten_macro.h"
-#endif
-
 export module client.applibrary;
 
 import std;
 import osu;
 import skia;
-import audio;
-import client.audio;
+import platform.system;
+import platform.web_runtime;
+import platform.capabilities;
+import platform.audio_engine;
 import client.filter;
 import client.library;
 import client.loader;
 import client.listing;
 import client.mirrors;
-import client.portal;
+import platform.dialogs;
 import client.replaybrowser;
 import client.settings;
 import client.util;
@@ -30,24 +27,9 @@ public:
   // ---- Library ----------------------------------------------------------
 
   void initLibrary() {
-#ifdef __EMSCRIPTEN__
-    fApp.fMapsDir = "/maps";
-#else
-    if (const char *xdg = std::getenv("XDG_DATA_HOME");
-        xdg != nullptr && *xdg != '\0') {
-      // Flatpak exposes the application's persistent writable data directory
-      // here. Native desktops which set XDG_DATA_HOME get the same standard
-      // behaviour.
-      fApp.fMapsDir = std::filesystem::path(xdg) / "osu-cpp" / "maps";
-    } else if (const char *home = std::getenv("HOME"); home != nullptr) {
-      // Keep the historical native location when XDG_DATA_HOME is unset, so
-      // an update does not make an existing library appear to disappear.
-      fApp.fMapsDir = std::filesystem::path(home) / ".local" / "share" /
-                 "osu_client" / "maps";
-    } else {
-      fApp.fMapsDir = "maps";
-    }
-#endif
+    fApp.fMapsDir = platform::capabilities::kBrowser
+                        ? std::filesystem::path{"/maps"}
+                        : platform::system::mapsDirectory();
     std::error_code ec;
     std::filesystem::create_directories(fApp.fMapsDir, ec);
     if (ec) {
@@ -189,7 +171,7 @@ public:
     // when changing selection. Decode on the worker, upload to OpenAL here.
     const std::string ext = detail::fileExtension(audioName);
     std::vector<std::uint8_t> copy(bytes.begin(), bytes.end());
-    auto pcm = std::make_shared<audio_client::DecodedAudio>();
+    auto pcm = std::make_shared<platform::sound::DecodedAudio>();
     const int forSet = fApp.fLibrary.selSet();
     // The index alone is not identity: deleting a beatmap shifts everything
     // after it, so the path is checked too before this track is adopted.
@@ -200,7 +182,7 @@ public:
     fApp.fLoader.submit(
         static_cast<std::uint64_t>(fApp.fLibrary.selSet()) | (3ull << 32),
         [copy = std::move(copy), ext, pcm] {
-          *pcm = audio_client::decodeAudio(copy, ext);
+          *pcm = platform::sound::decodeAudio(copy, ext);
         },
         [this, forSet, forPath, pcm] {
           if (forSet != fApp.fLibrary.selSet() || pcm->fSamples.empty()) {
@@ -261,20 +243,15 @@ public:
   }
 
   void syncMapsDir() {
-#ifdef __EMSCRIPTEN__
-    EM_ASM(FS.syncfs(false, function(err){}));
-#endif
+    platform::web::syncMapStorage();
   }
 
   // ---- Import an external .osz into the library -------------------------
   //
-  // No portable file dialog exists in this stack, so: on desktop we shell out
-  // to whatever GTK/KDE picker is installed (zenity/kdialog/matedialog/qarma);
-  // in the browser the JS side handles the <input type=file> and drops the
-  // bytes at /import.osz, then calls back. Either way the chosen archive is
-  // copied into the maps dir and added to the library.
-  // Files dropped onto the window (the reliable import path: no dialog
-  // binary required, works on any desktop).
+  // The platform layer owns the native picker; the browser drops the chosen
+  // bytes at /import.osz and calls back. Either way the archive is copied
+  // into the maps directory and added to the library. Window drops feed the
+  // same path on desktops.
   void drainDroppedFiles() {
     const auto paths = fApp.fWindowRuntime.takeDroppedFiles();
     for (const auto &p : paths) {
@@ -294,12 +271,10 @@ public:
   }
 
   void importOsz() {
-#ifdef __EMSCRIPTEN__
-    EM_ASM({
-      if (Module.osuPickBeatmap)
-        Module.osuPickBeatmap();
-    });
-#else
+    if constexpr (platform::capabilities::kBrowser) {
+      platform::web::requestBeatmapArchive();
+      return;
+    }
     // The picker is another process and the user takes as long as they take.
     // Waited for here, on the thread that draws, it stops the frame loop for
     // the whole of that: the window goes unresponsive and stays on whatever
@@ -318,69 +293,14 @@ public:
             this->importFrom(*chosen);
           }
         });
-#endif
   }
 
-#ifndef __EMSCRIPTEN__
-  // Shell out to a native file dialog via std::system (no POSIX popen: that
-  // needs <stdio.h>, which mixes badly with `import std` on this toolchain).
-  // The picker writes the chosen path to a temp file; we read it back.
   [[nodiscard]] std::filesystem::path runFilePicker() {
-    // The desktop's own dialog first. It is the only one that reaches outside
-    // a Flatpak sandbox, and on a plain desktop it is still the one that
-    // belongs there rather than whichever binary happens to be installed.
-    if (auto chosen = client::portal::openArchive("Import beatmap")) {
+    if (auto chosen = platform::dialogs::openArchive("Import beatmap")) {
       return *chosen;
     }
-    std::error_code ec;
-    const auto tmp =
-        std::filesystem::temp_directory_path(ec) / "osu_client_import.txt";
-    const std::string tmpStr = tmp.string();
-    const std::string commands[] = {
-        "zenity --file-selection "
-        "--file-filter='osu! beatmap | *.osz *.zip' --title='Import beatmap'",
-        "kdialog --getopenfilename . '*.osz *.zip|osu! beatmap'",
-        "matedialog --file-selection",
-        "qarma --file-selection",
-    };
-    for (const auto &pick : commands) {
-      // Is the binary even installed? `command -v` keeps a missing dialog
-      // from looking like a user cancellation.
-      const std::string bin = pick.substr(0, pick.find(' '));
-      if (std::system(("command -v " + bin + " > /dev/null 2>&1").c_str()) !=
-          0) {
-        continue;
-      }
-      std::filesystem::remove(tmp, ec);
-      const std::string cmd = pick + " > '" + tmpStr + "' 2>/dev/null";
-      const int rc = std::system(cmd.c_str());
-      if (rc != 0) {
-        std::println(std::cerr, "[import] {} exited {} (cancelled?)", bin, rc);
-        return {};
-      }
-      std::ifstream in(tmp);
-      if (!in) {
-        continue;
-      }
-      std::string path;
-      std::getline(in, path);
-      std::filesystem::remove(tmp, ec);
-      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
-        path.pop_back();
-      }
-      if (!path.empty()) {
-        return std::filesystem::path(path);
-      }
-      return {};
-    }
-    std::println(std::cerr,
-                 "[import] no file dialog installed (tried zenity, kdialog, "
-                 "matedialog, qarma). Drag a .osz onto the window instead, or "
-                 "copy it into {}",
-                 fApp.fMapsDir.string());
     return {};
   }
-#endif
 
   // ---- Download screen logic -------------------------------------------
 

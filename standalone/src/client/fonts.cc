@@ -3,15 +3,16 @@ export module client.fonts;
 import std;
 import skia;
 import skiff.paint;
+import platform.system;
+import platform.configuration;
 
 namespace client::font_detail {
 
 [[nodiscard]] std::vector<std::filesystem::path>
 assetCandidates(const std::string &name) {
   std::vector<std::filesystem::path> candidates;
-  std::error_code ec;
-  const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  if (!ec && !exe.empty()) {
+  const auto exe = platform::system::executablePath({});
+  if (!exe.empty()) {
     const auto prefix = exe.parent_path().parent_path();
     candidates.push_back(prefix / "share" / "osu_client" / "fonts" / name);
     candidates.push_back(exe.parent_path() / "fonts" / name);
@@ -127,7 +128,7 @@ struct ClientFonts {
 
 [[nodiscard]] ClientFonts loadClientFonts(float size) {
   auto &stack = skiff::paint::fonts();
-  if (std::getenv("OSU_SYSTEM_FONT") == nullptr) {
+  if (!platform::runtimeConfiguration().fUseSystemFont) {
     stack.setPrimary(font_detail::loadTypeface("Inter.ttf"));
     for (const char *name :
          {"NotoSansJP.ttf", "NotoSansKR.ttf", "FontAwesome-Solid.ttf"}) {

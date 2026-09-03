@@ -1,21 +1,25 @@
 module;
 
-#ifdef __EMSCRIPTEN__
-#include "emscripten_macro.h"
-#endif
-
 #ifdef OSU_WAYLAND_TOUCH
 #include <dlfcn.h>
 #include <wayland-client.h>
 #endif
 
-export module client.windowruntime;
+export module platform.window;
 
 import std;
-import glfw;
+import platform.glfw;
+import platform.clock;
+import platform.input;
 import client.input;
+import platform.presentation;
+import platform.configuration;
+import platform.web_runtime;
 
-namespace client {
+namespace platform {
+
+using client::Event;
+using client::EventType;
 
 // GLFW deliberately exposes no touchscreen API.  On Wayland that means
 // wl_touch events disappear inside its event pump instead of reaching the
@@ -102,7 +106,7 @@ public:
 
 private:
 #ifdef OSU_WAYLAND_TOUCH
-  static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
+  static double wallMs() { return platform::clock::milliseconds(); }
 
   void move(wl_fixed_t x, wl_fixed_t y) {
     fX = static_cast<float>(wl_fixed_to_double(x));
@@ -115,8 +119,8 @@ private:
       fContact = -1;
       return;
     }
-    fPush({wallMs(), EventType::kMouseButton, glfw::kMouseButtonLeft,
-           glfw::kRelease});
+    fPush({wallMs(), EventType::kMouseButton, platform::input::kMouseButtonLeft,
+           platform::input::kRelease});
     fContact = -1;
   }
 
@@ -162,8 +166,8 @@ private:
     }
     self.fContact = id;
     self.move(x, y);
-    self.fPush({wallMs(), EventType::kMouseButton, glfw::kMouseButtonLeft,
-                glfw::kPress});
+    self.fPush({wallMs(), EventType::kMouseButton, platform::input::kMouseButtonLeft,
+                platform::input::kPress});
   }
 
   static void touchUp(void *data, wl_touch *, uint32_t, uint32_t, int32_t id) {
@@ -208,9 +212,13 @@ private:
 #endif
 };
 
-} // namespace client
+} // namespace platform
 
-export namespace client {
+export namespace platform {
+
+using client::Event;
+using client::EventType;
+using client::SpscQueue;
 
 struct WindowExtent {
   int fWidth = 0;
@@ -229,6 +237,7 @@ public:
   ~WindowRuntime() { this->close(); }
 
   [[nodiscard]] bool open(std::function<void()> toggleFullscreen) {
+    const auto configuration = platform::runtimeConfiguration();
     glfw::glfwSetErrorCallback([](int code, const char *message) {
       std::println(std::cerr, "[glfw] error {}: {}", code,
                    message != nullptr ? message : "unknown error");
@@ -246,8 +255,9 @@ public:
     glfw::glfwWindowHint(glfw::kContextVersionMinor, 0);
     glfw::glfwWindowHint(glfw::kResizable, glfw::kTrue);
     glfw::glfwWindowHint(glfw::kSamples, 0);
-    fInitial.fWidth = EM_ASM_INT({ return Module.canvas.width; });
-    fInitial.fHeight = EM_ASM_INT({ return Module.canvas.height; });
+    const auto canvas = platform::web::canvasExtent();
+    fInitial.fWidth = canvas.fWidth;
+    fInitial.fHeight = canvas.fHeight;
     fWindow = glfw::glfwCreateWindow(fInitial.fWidth, fInitial.fHeight,
                                      "osu_client", nullptr, nullptr);
 #else
@@ -259,7 +269,7 @@ public:
       if (mode->refreshRate > 0) {
         fRefreshHz = mode->refreshRate;
       }
-    } else if (std::getenv("OSU_GLES") != nullptr) {
+    } else if (configuration.fPreferGles) {
       // MirClient Click windows are placed and resized by Lomiri rather than
       // against a GLFW monitor. This is only the size of the first buffer;
       // the compositor's resize event supplies the real screen dimensions.
@@ -277,7 +287,7 @@ public:
       int fProfile;
       int fCreation;
     };
-    const int desktopCreation = std::getenv("OSU_EGL") != nullptr
+    const int desktopCreation = configuration.fForceEgl
                                     ? glfw::kEglContextApi
                                     : glfw::kNativeContextApi;
     const ContextChoice choices[] = {
@@ -290,7 +300,7 @@ public:
         {"gles 2.0", glfw::kOpenGLEsApi, 2, 0, glfw::kOpenGLAnyProfile,
          glfw::kEglContextApi},
     };
-    const bool preferGles = std::getenv("OSU_GLES") != nullptr;
+    const bool preferGles = configuration.fPreferGles;
     const std::array<int, 4> order = preferGles ? std::array{2, 3, 0, 1}
                                                 : std::array{0, 1, 2, 3};
     for (const int index : order) {
@@ -336,7 +346,6 @@ public:
     return true;
   }
 
-  [[nodiscard]] glfw::GLFWwindow *window() const { return fWindow; }
   [[nodiscard]] WindowExtent initialExtent() const { return fInitial; }
   [[nodiscard]] int refreshHz() const { return fRefreshHz; }
   [[nodiscard]] bool windowMayRender() const {
@@ -421,6 +430,39 @@ public:
     return fExitCode.load(std::memory_order_acquire);
   }
 
+  // Graphics and input operations stay behind this boundary so application
+  // code never depends on a GLFW handle or its numeric cursor constants.
+  void makeContextCurrent() { glfw::glfwMakeContextCurrent(fWindow); }
+  void releaseContext() { glfw::glfwMakeContextCurrent(nullptr); }
+  void framebufferSize(int &width, int &height) const {
+    glfw::glfwGetFramebufferSize(fWindow, &width, &height);
+  }
+  [[nodiscard]] bool surfaceSize(int &width, int &height) const {
+    return presentation::surfaceSize(fWindow, &width, &height);
+  }
+  void setSwapInterval(int interval) { glfw::glfwSwapInterval(interval); }
+  void swapBuffers() { glfw::glfwSwapBuffers(fWindow); }
+  [[nodiscard]] bool swapWithDamage(
+      int height, std::span<const std::array<int, 4>> damage) {
+    return presentation::swapWithDamage(height, damage);
+  }
+  void pollEvents() { glfw::glfwPollEvents(); }
+  void cursorPosition(double &x, double &y) const {
+    glfw::glfwGetCursorPos(fWindow, &x, &y);
+  }
+  void setCursorMode(input::CursorMode mode) {
+    const int native = mode == input::CursorMode::kNormal
+                           ? glfw::kCursorNormal
+                           : mode == input::CursorMode::kHidden
+                                 ? glfw::kCursorHidden
+                                 : glfw::kCursorDisabled;
+#ifdef __EMSCRIPTEN__
+    glfw::glfwSetInputMode(fWindow, glfw::kCursor, native);
+#else
+    this->requestCursorMode(native);
+#endif
+  }
+
 #ifndef __EMSCRIPTEN__
   void pumpEvents() {
     while (!this->quitting()) {
@@ -440,6 +482,8 @@ public:
     }
     fQuit.store(true, std::memory_order_release);
   }
+#else
+  void pumpEvents() {}
 #endif
 
 #ifndef __EMSCRIPTEN__
@@ -495,7 +539,7 @@ private:
   }
 
   [[nodiscard]] static double wallMs() {
-    return glfw::glfwGetTime() * 1000.0;
+    return platform::clock::milliseconds();
   }
   [[nodiscard]] static std::uint64_t packSize(int width, int height) {
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(width))
@@ -523,7 +567,7 @@ private:
         fWindow, [](glfw::GLFWwindow *window, int key, int, int action,
                     int mods) {
           auto &self = from(window);
-          if (action == glfw::kPress && key == glfw::kKeyF11) {
+          if (action == platform::input::kPress && key == platform::input::kKeyF11) {
             if (self.fToggleFullscreen) {
               self.fToggleFullscreen();
             }
@@ -671,4 +715,4 @@ private:
   std::vector<std::string> fDroppedFiles;
 };
 
-} // namespace client
+} // namespace platform

@@ -131,21 +131,96 @@ endif()
 
 # ---- Create binary ----
 
-file(GLOB_RECURSE module_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
-
-if(NOT EMSCRIPTEN_BUILD)
-  list(FILTER module_sources EXCLUDE REGEX "emscripten\\.cc$")
+# Platform implementations are source overlays. For foo.cc, a matching
+# foo_android.cc, foo_web.cc, foo_wasi.cc or foo_freedesktop.cc replaces the
+# common file on that platform. A suffixed file may also stand alone when
+# there is no common fallback. Keeping the choice here avoids platform ifdefs
+# throughout the client and symlinks that packagers may copy incorrectly.
+set(OSU_PLATFORM_VARIANT_PATTERN
+  "android|web|wasi|freedesktop|windows|macos")
+if(ANDROID)
+  set(OSU_PLATFORM_SUFFIX android)
+elseif(EMSCRIPTEN_BUILD)
+  set(OSU_PLATFORM_SUFFIX web)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set(OSU_PLATFORM_SUFFIX wasi)
+elseif(UNIX AND NOT APPLE)
+  # The conventional Wayland/X11, D-Bus and xdg ecosystem. This includes
+  # glibc and musl desktops, Flatpak, Click and postmarketOS, not Android.
+  set(OSU_PLATFORM_SUFFIX freedesktop)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  set(OSU_PLATFORM_SUFFIX windows)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set(OSU_PLATFORM_SUFFIX macos)
 else()
-  # No sockets in the browser: the beast wrapper is native-only.
+  # The unsuffixed source is the generic implementation.
+  set(OSU_PLATFORM_SUFFIX "")
+endif()
+
+file(GLOB_RECURSE all_cpp_sources CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc")
+set(common_cpp_sources ${all_cpp_sources})
+list(FILTER common_cpp_sources EXCLUDE REGEX
+  "_(${OSU_PLATFORM_VARIANT_PATTERN})\\.cc$")
+# Implementation pieces live below platform/<variant>/. They are not public
+# overlays and only the selected platform's directory enters the target.
+list(FILTER common_cpp_sources EXCLUDE REGEX
+  "/platform/(${OSU_PLATFORM_VARIANT_PATTERN})/")
+
+set(selected_cpp_sources)
+foreach(source IN LISTS common_cpp_sources)
+  get_filename_component(source_dir "${source}" DIRECTORY)
+  get_filename_component(source_name "${source}" NAME_WE)
+  if(OSU_PLATFORM_SUFFIX)
+    set(overlay "${source_dir}/${source_name}_${OSU_PLATFORM_SUFFIX}.cc")
+  else()
+    set(overlay "")
+  endif()
+  if(overlay AND EXISTS "${overlay}")
+    list(APPEND selected_cpp_sources "${overlay}")
+  else()
+    list(APPEND selected_cpp_sources "${source}")
+  endif()
+endforeach()
+
+# Also admit platform-only implementation files without a common foo.cc.
+foreach(source IN LISTS all_cpp_sources)
+  if(OSU_PLATFORM_SUFFIX AND
+     source MATCHES "_${OSU_PLATFORM_SUFFIX}\\.cc$")
+    list(APPEND selected_cpp_sources "${source}")
+  endif()
+endforeach()
+list(REMOVE_DUPLICATES selected_cpp_sources)
+
+if(OSU_PLATFORM_SUFFIX)
+  file(GLOB_RECURSE platform_implementation_sources CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${OSU_PLATFORM_SUFFIX}/*.cc")
+  list(APPEND selected_cpp_sources ${platform_implementation_sources})
+endif()
+list(REMOVE_DUPLICATES selected_cpp_sources)
+
+set(module_sources ${selected_cpp_sources})
+if(EMSCRIPTEN_BUILD)
+  # Browser fetch replaces the native Beast socket transport.
   list(FILTER module_sources EXCLUDE REGEX "beast\\.cc$")
 endif()
 
-list(REMOVE_ITEM module_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
+set(main_source "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc")
+if(OSU_PLATFORM_SUFFIX)
+  set(main_overlay
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main_${OSU_PLATFORM_SUFFIX}.cc")
+else()
+  set(main_overlay "")
+endif()
+if(main_overlay AND EXISTS "${main_overlay}")
+  set(main_source "${main_overlay}")
+endif()
+list(REMOVE_ITEM module_sources "${main_source}")
 
 if(EMSCRIPTEN_BUILD)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -pthread -msimd128")
 endif()
-add_executable(${PROJECT_NAME} ${module_sources} ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cc)
+add_executable(${PROJECT_NAME} ${module_sources} ${main_source})
 
 target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${module_sources})
 

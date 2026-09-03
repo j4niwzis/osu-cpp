@@ -4,7 +4,7 @@ import std;
 import skia;
 import skin;
 import bjson;
-import client.audio;
+import platform.audio_engine;
 import client.http;
 import client.listing;
 import client.palette;
@@ -753,7 +753,7 @@ private:
   std::string fDownloadStatus;
   // Track previews come from osu!'s own preview endpoint and play on their
   // own source, so the menu music is untouched.
-  audio_client::AudioPlayer fPreview;
+  platform::sound::AudioPlayer fPreview;
   long fPreviewId = -1;
   bool fPreviewPending = false;
   std::uint32_t fPreviewGeneration = 0; // stale fetches must not start playing

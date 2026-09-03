@@ -1,20 +1,19 @@
 module;
 
-#ifdef __EMSCRIPTEN__
-#include "emscripten_macro.h"
-#endif
-
 export module app;
 
 import std;
 import osu;
-import glfw;
+import platform.clock;
+import platform.input;
+import platform.configuration;
+import platform.web_runtime;
+import platform.capabilities;
 import skia;
-import audio;
 import skin;
 import archive;
 import client.util;
-import client.audio;
+import platform.audio_engine;
 import client.input;
 import client.timing;
 import client.http;
@@ -38,7 +37,6 @@ import client.songselect;
 import client.pause;
 import client.results;
 import client.mainmenu;
-import present;
 import client.setpage;
 import skiff.scene;
 import skiff.nodes;
@@ -49,7 +47,7 @@ import client.videoexport;
 import client.framestate;
 import client.fonts;
 import client.judgements;
-import client.windowruntime;
+import platform.window;
 import client.playresult;
 import client.appinput;
 import client.applibrary;
@@ -57,27 +55,10 @@ import client.appscreens;
 import client.appoverlays;
 import client.appplayback;
 import bjson;
-#ifdef __EMSCRIPTEN__
-import emscripten;
-#endif
-
-#ifdef __EMSCRIPTEN__
-namespace client::detail {
-inline std::atomic<bool> gMapsSynced{false};
-} // namespace client::detail
-
-extern "C" EMSCRIPTEN_KEEPALIVE void osu_maps_synced() {
-  client::detail::gMapsSynced.store(true, std::memory_order_release);
-}
-#endif
 
 namespace client {
 
-using audio_client::alFormat;
-using audio_client::AudioContext;
-using audio_client::audioContext;
-using audio_client::AudioPlayer;
-using audio_client::SamplePlayer;
+using platform::sound::AudioPlayer;
 
 export extern "C++" class App {
 public:
@@ -143,9 +124,7 @@ private:
   bool fNoGlow = false;
 
   // Window / GL / Skia
-  client::WindowRuntime fWindowRuntime;
-  // Render APIs still take the native handle; ownership lives in the runtime.
-  glfw::GLFWwindow *fWindow = nullptr;
+  platform::WindowRuntime fWindowRuntime;
   skia::Sp<skia::GrDirectContext> fContext;
   client::FrameState fFrame;
   skiff::scene::InputRouter fInputRouter;
@@ -201,7 +180,10 @@ private:
   // into is missing exactly that.
   // The setting decides; the variable is there for a run before settings
   // exist, and to force it on while measuring.
-  const bool fForcePartialRedraw = std::getenv("OSU_PARTIAL_REDRAW") != nullptr;
+  const platform::RuntimeConfiguration fPlatformConfiguration =
+      platform::runtimeConfiguration();
+  const bool fForcePartialRedraw =
+      fPlatformConfiguration.fForcePartialRedraw;
   // OSU_TRACE_REPAINT=1 prints the numbers a frame's clip decision is made
   // from -- but only when one of them changes, so a session is a handful of
   // lines rather than one per frame. A screen going black but for the live
@@ -210,19 +192,12 @@ private:
   // could. OSU_TRACE_RESIZE is the old name and still works.
   // OSU_BUFFER_AGE=N overrides the setting of the same meaning, for measuring.
   const int fForcedBufferAge = [] {
-    const char *value = std::getenv("OSU_BUFFER_AGE");
-    return value != nullptr ? std::atoi(value) : 0;
+    return platform::runtimeConfiguration().fBufferAge.value_or(0);
   }();
 
   [[nodiscard]] bool partialRedraw() const {
-#ifdef __EMSCRIPTEN__
-    // WebGL throws the drawing buffer away after compositing unless the
-    // context was made with preserveDrawingBuffer, so there is no older frame
-    // to repaint a piece of: in a browser every frame is a whole frame.
-    return false;
-#else
-    return fForcePartialRedraw || fSettings.flag("partial");
-#endif
+    return !platform::capabilities::kBrowser &&
+           (fForcePartialRedraw || fSettings.flag("partial"));
   }
   std::chrono::steady_clock::time_point fNextFrame{};
   std::int64_t fLastSwapUs = 0; // reported by the frame breakdown
@@ -538,21 +513,17 @@ private:
     if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); })) {
       return 1;
     }
-    fWindow = fWindowRuntime.window();
     const auto initial = fWindowRuntime.initialExtent();
     fWin.fPixelW = initial.fWidth;
     fWin.fPixelH = initial.fHeight;
     fRefreshHz = fWindowRuntime.refreshHz();
-#ifdef __EMSCRIPTEN__
-    EM_ASM(Module.setCursorVisible(true));
-#endif
+    platform::web::setCursorVisible(true);
 
-#ifdef __EMSCRIPTEN__
-    glfw::glfwMakeContextCurrent(fWindow);
+    if constexpr (!platform::capabilities::kThreadedWindowLoop) {
+    fWindowRuntime.makeContextCurrent();
 
     if (!this->initSkia()) {
       fWindowRuntime.close();
-      fWindow = nullptr;
       return 1;
     }
 
@@ -570,14 +541,7 @@ private:
 
     // Persistent library at /maps (IDBFS). The initial syncfs is async; the
     // library is scanned once the flag flips (see frameSongSelect).
-    EM_ASM({
-      try {
-        FS.mkdir('/maps');
-      } catch (e) {
-      }
-      FS.mount(IDBFS, {}, '/maps');
-      FS.syncfs(true, function(err) { Module._osu_maps_synced(); });
-    });
+    platform::web::initializeMapStorage();
 
     fState = State::kMainMenu;
     fStateEnterWall = wallMs();
@@ -586,13 +550,13 @@ private:
       fLibrary.selectInitialSet();
       fState = State::kSongSelect;
     }
-    EM_ASM(Module.setCursorVisible(true));
-    emscripten::emscripten_set_main_loop_arg(emscriptenFrameProc, this, 0, 1);
+    platform::web::setCursorVisible(true);
+    platform::web::runMainLoop(emscriptenFrameProc, this);
     return 0;
-#else
+    } else {
     // Snapshot the real framebuffer size on the main thread (that query is
     // main-thread-only in GLFW); the render thread must not call it.
-    glfw::glfwGetFramebufferSize(fWindow, &fWin.fPixelW, &fWin.fPixelH);
+    fWindowRuntime.framebufferSize(fWin.fPixelW, fWin.fPixelH);
 
     // The GL context is owned by the render thread from here on. The main
     // thread degrades into a pure event pump: it blocks in glfwWaitEvents,
@@ -602,12 +566,11 @@ private:
     fWindowRuntime.pumpEvents();
     renderThread.join();
     return fWindowRuntime.exitCode();
-#endif
+    }
   }
 
-#ifndef __EMSCRIPTEN__
   void renderThreadMain() {
-    glfw::glfwMakeContextCurrent(fWindow);
+    fWindowRuntime.makeContextCurrent();
 
     if (!this->initSkia()) {
       fWindowRuntime.setExitCode(1);
@@ -648,16 +611,14 @@ private:
     }
     fWindowRuntime.setExitCode(0);
     this->requestQuit();
-    glfw::glfwMakeContextCurrent(nullptr);
+    fWindowRuntime.releaseContext();
   }
-
-#endif
 
   void requestQuit() {
     fWindowRuntime.requestQuit();
   }
 
-  [[nodiscard]] static double wallMs() { return glfw::glfwGetTime() * 1000.0; }
+  [[nodiscard]] static double wallMs() { return platform::clock::milliseconds(); }
 
   void enqueue(const Event &ev) { fWindowRuntime.push(ev); }
 
@@ -716,17 +677,18 @@ private:
   // Applied here because glfwSwapInterval only affects the calling thread's
   // context, and this is the thread that owns it.
   void applySwapInterval() {
-#ifndef __EMSCRIPTEN__
+    if constexpr (!platform::capabilities::kThreadedWindowLoop) {
+      return;
+    }
     const int wanted = fSwapIntervalRequest.load(std::memory_order_acquire);
     if (wanted < 0 || wanted == fSwapInterval) {
       return;
     }
     fSwapInterval = wanted;
-    glfw::glfwSwapInterval(wanted);
+    fWindowRuntime.setSwapInterval(wanted);
     fNextFrame = std::chrono::steady_clock::now();
     std::println(std::cerr, "[gfx] swap interval {} (monitor {} Hz)", wanted,
                  fRefreshHz);
-#endif
   }
 
   // Plenty of drivers and compositors ignore the swap interval outright, so
@@ -734,7 +696,9 @@ private:
   // monitor's refresh here. When the driver does honour the interval the swap
   // has already blocked and this sleeps for nothing.
   void limitFrameRate() {
-#ifndef __EMSCRIPTEN__
+    if constexpr (!platform::capabilities::kThreadedWindowLoop) {
+      return;
+    }
     if (fSwapInterval <= 0 || fRefreshHz <= 0) {
       return;
     }
@@ -759,7 +723,6 @@ private:
       std::this_thread::sleep_until(fNextFrame);
     }
     fNextFrame += period;
-#endif
   }
 
   // A text caret is shown for 600 ms of every 1000; this is when it next
@@ -1084,9 +1047,9 @@ private:
       // task-switcher thumbnails live instead, so native Wayland on
       // postmarketOS additionally treats loss of activity as hidden. That
       // exception is deliberately not applied to desktop systems.
-#ifndef __EMSCRIPTEN__
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
-#endif
+      if constexpr (platform::capabilities::kThreadedWindowLoop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      }
       return;
     }
     {
@@ -1115,9 +1078,9 @@ private:
     if (!this->needsFrame()) {
       // Nothing to show: no clear, no draw, no swap, so the front buffer
       // keeps what it already had.
-#ifndef __EMSCRIPTEN__
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
-#endif
+      if constexpr (platform::capabilities::kThreadedWindowLoop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      }
       // In a browser this is a callback on the main thread and the frame is
       // paced by requestAnimationFrame: sleeping here would block the page,
       // and emscripten implements the sleep as a spin, which is worse than
@@ -1142,9 +1105,9 @@ private:
       // The question the safety net exists to ask has just been asked and
       // answered, so the net does not need to fire.
       fFrame.fLastDrawWall = wallMs();
-#ifndef __EMSCRIPTEN__
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-#endif
+      if constexpr (platform::capabilities::kThreadedWindowLoop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
       return;
     }
     fFrame.fLastDrawWall = wallMs();
@@ -1397,8 +1360,9 @@ private:
         damage.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
       }
     }
-    if (damage.empty() || !present::swapWithDamage(fWin.fPixelH, damage)) {
-      glfw::glfwSwapBuffers(fWindow);
+    if (damage.empty() ||
+        !fWindowRuntime.swapWithDamage(fWin.fPixelH, damage)) {
+      fWindowRuntime.swapBuffers();
     }
     fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
                       std::chrono::steady_clock::now() - beforeSwap)
@@ -1651,19 +1615,12 @@ private:
   }
 
   void setCursorVisible(bool visible) {
-#ifdef __EMSCRIPTEN__
-    if (visible) {
-      EM_ASM(Module.setCursorVisible(true));
-    } else {
-      EM_ASM(Module.setCursorVisible(false));
-    }
-    glfw::glfwSetInputMode(fWindow, glfw::kCursor,
-                           visible ? glfw::kCursorNormal : glfw::kCursorHidden);
-#else
-    const int hidden =
-        this->relativeCursor() ? glfw::kCursorDisabled : glfw::kCursorHidden;
-    fWindowRuntime.requestCursorMode(visible ? glfw::kCursorNormal : hidden);
-#endif
+    platform::web::setCursorVisible(visible);
+    const auto hidden = this->relativeCursor()
+                            ? platform::input::CursorMode::kDisabled
+                            : platform::input::CursorMode::kHidden;
+    fWindowRuntime.setCursorMode(
+        visible ? platform::input::CursorMode::kNormal : hidden);
   }
 
   // ---- Download screen logic -------------------------------------------
@@ -1686,20 +1643,19 @@ private:
 
 
 
-#ifdef __EMSCRIPTEN__
   static void emscriptenFrameProc(void *arg) {
     static_cast<App *>(arg)->emscriptenFrame();
   }
 
   void emscriptenFrame() {
-    glfw::glfwPollEvents();
+    fWindowRuntime.pollEvents();
 
     {
       // Polled rather than delivered by a callback here, so it is only an
       // event when it actually moved: pushing the same position every frame
       // made every frame an event, and an event owes frames.
       double cx = 0, cy = 0;
-      glfw::glfwGetCursorPos(fWindow, &cx, &cy);
+      fWindowRuntime.cursorPosition(cx, cy);
       if (cx != fPolledCursorX || cy != fPolledCursorY) {
         fPolledCursorX = cx;
         fPolledCursorY = cy;
@@ -1709,7 +1665,7 @@ private:
     }
 
     int fw = 0, fh = 0;
-    glfw::glfwGetFramebufferSize(fWindow, &fw, &fh);
+    fWindowRuntime.framebufferSize(fw, fh);
     if (fw != fWin.fPixelW || fh != fWin.fPixelH) {
       this->resize(fw, fh);
     }
@@ -1721,14 +1677,12 @@ private:
         if (fRecord)
           fPlayback.saveReplay();
       }
-      emscripten::emscripten_cancel_main_loop();
+      platform::web::cancelMainLoop();
       return;
     }
 
     this->frame();
   }
-#endif
-
   // ---- Shared UI helpers ------------------------------------------------
 
   // Decode the background off-thread; the UI keeps the previous artwork
@@ -1882,25 +1836,25 @@ private:
   [[nodiscard]] static client::mainmenu::Screen::Key menuKey(int key) {
     using Key = client::mainmenu::Screen::Key;
     switch (key) {
-    case glfw::kKeyEscape:
+    case platform::input::kKeyEscape:
       return Key::kEscape;
-    case glfw::kKeyEnter:
+    case platform::input::kKeyEnter:
       return Key::kEnter;
-    case glfw::kKeySpace:
+    case platform::input::kKeySpace:
       return Key::kSpace;
-    case glfw::kKeyP:
+    case platform::input::kKeyP:
       return Key::kP;
-    case glfw::kKeyB:
+    case platform::input::kKeyB:
       return Key::kB;
-    case glfw::kKeyD:
+    case platform::input::kKeyD:
       return Key::kD;
-    case glfw::kKeyI:
+    case platform::input::kKeyI:
       return Key::kI;
-    case glfw::kKeyQ:
+    case platform::input::kKeyQ:
       return Key::kQ;
-    case glfw::kKeyS:
+    case platform::input::kKeyS:
       return Key::kS;
-    case glfw::kKeyR:
+    case platform::input::kKeyR:
       return Key::kR;
     default:
       return Key::kOther;
@@ -2112,11 +2066,9 @@ private:
       return;
     }
     fWin.fFullscreen = wanted;
-#ifndef __EMSCRIPTEN__
-    // The move itself is the window owner's: GLFW pins it to the thread that
-    // pumps events, and this is not that thread.
-    fWindowRuntime.requestFullscreen(wanted);
-#endif
+    if constexpr (platform::capabilities::kThreadedWindowLoop) {
+      fWindowRuntime.requestFullscreen(wanted);
+    }
   }
 
   void shutdown() {
@@ -2124,7 +2076,6 @@ private:
     fFrame.fSurface.reset();
     fContext.reset();
     fWindowRuntime.close();
-    fWindow = nullptr;
   }
 };
 

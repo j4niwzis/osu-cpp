@@ -21,8 +21,6 @@
                        font-size: 16px; }
     #drop-zone .btn-beatmap { background: #e0689b; }
     #drop-zone .btn-beatmap:hover { background: #f078ab; }
-    #drop-zone .btn-skin { background: #68a0e0; }
-    #drop-zone .btn-skin:hover { background: #78b0f0; }
     #drop-zone input[type=file] { display: none; }
     #status { position: absolute; top: 12px; left: 12px; color: #ccc; font-family: sans-serif;
               font-size: 14px; z-index: 20; }
@@ -34,11 +32,8 @@
     <p>Drop a <strong>.osz</strong> beatmap file here</p>
     <div class="row">
       <label for="beatmap-input" class="btn-beatmap">Choose beatmap</label>
-      <label for="skin-input" class="btn-skin">Choose skin (.osk)</label>
     </div>
-    <p style="font-size:14px; color:#888;">Skin is optional — fallback shapes used otherwise</p>
     <input type="file" id="beatmap-input" accept=".osz,.zip">
-    <input type="file" id="skin-input" accept=".osk,.zip">
   </div>
   <div id="status"></div>
   <script>
@@ -74,7 +69,6 @@
           canvas.style.cursor = visible ? 'default' : 'none';
         };
 
-        if (pendingOsk) { writeOsk(pendingOsk); pendingOsk = null; }
         if (pendingOsz) { writeOsz(pendingOsz); pendingOsz = null; }
       },
     };
@@ -82,61 +76,20 @@
     var dropZone = document.getElementById('drop-zone');
     var statusEl = document.getElementById('status');
     var beatmapInput = document.getElementById('beatmap-input');
-    var skinInput = document.getElementById('skin-input');
-
-    var skinReady = false;
     var beatmapReady = false;
     var pendingOsz = null;
-    var pendingOsk = null;
 
     function tryStart() {
       if (!beatmapReady) return;
-      if (!skinReady) {
-        statusEl.textContent = 'Starting (no skin)...';
-        dropZone.classList.add('hidden');
-        Module.callMain(['--beatmap', '/beatmap.osz']);
-        return;
-      }
-      statusEl.textContent = 'Extracting skin...';
-      var result = Module._extractSkin();
-      if (result !== 0) {
-        statusEl.textContent = 'Skin extraction failed, starting without skin...';
-        dropZone.classList.add('hidden');
-        Module.callMain(['--beatmap', '/beatmap.osz']);
-        return;
-      }
       statusEl.textContent = 'Starting...';
       dropZone.classList.add('hidden');
-      Module.callMain(['--beatmap', '/beatmap.osz', '--skin', '/skin']);
-    }
-
-    function writeOsk(data) {
-      Module.FS.writeFile('/skin.osk', data);
-      statusEl.textContent = 'Skin loaded.';
-      skinReady = true;
-      tryStart();
+      Module.callMain(['--beatmap', '/beatmap.osz']);
     }
 
     function writeOsz(data) {
       Module.FS.writeFile('/beatmap.osz', data);
       beatmapReady = true;
       tryStart();
-    }
-
-    function loadOsk(file) {
-      statusEl.textContent = 'Loading skin: ' + file.name + '...';
-      var reader = new FileReader();
-      reader.onload = function(ev) {
-        var data = new Uint8Array(ev.target.result);
-        if (typeof Module.FS !== 'undefined') {
-          writeOsk(data);
-        } else {
-          pendingOsk = data;
-          statusEl.textContent = 'Skin loaded, waiting for runtime...';
-        }
-      };
-      reader.onerror = function() { statusEl.textContent = 'Failed to read skin file.'; };
-      reader.readAsArrayBuffer(file);
     }
 
     function loadOsz(file) {
@@ -159,18 +112,12 @@
       if (e.target.files[0]) loadOsz(e.target.files[0]);
     });
 
-    skinInput.addEventListener('change', function(e) {
-      if (e.target.files[0]) loadOsk(e.target.files[0]);
-    });
-
     dropZone.addEventListener('dragover', function(e) { e.preventDefault(); });
     dropZone.addEventListener('drop', function(e) {
       e.preventDefault();
       var file = e.dataTransfer.files[0];
       if (!file) return;
-      if (file.name.endsWith('.osk')) {
-        loadOsk(file);
-      } else if (file.name.endsWith('.osz') || file.name.endsWith('.zip')) {
+      if (file.name.endsWith('.osz') || file.name.endsWith('.zip')) {
         loadOsz(file);
       }
     });
