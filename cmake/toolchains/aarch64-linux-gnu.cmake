@@ -24,12 +24,31 @@ if(NOT OSU_CROSS_SYSROOT STREQUAL "/")
   set(CMAKE_SYSROOT "${OSU_CROSS_SYSROOT}")
 endif()
 
+# Which directory under lib/ this architecture's libraries are in.
+#
+# Multiarch keeps them in lib/<triple>, and CMake looks there only when it
+# knows the triple: for a native build the compiler is asked, for a cross
+# build nothing asks. Without it, find_library reads lib/ and lib64/ and
+# reports that libOpenGL is missing on a machine where it is installed --
+# under lib/aarch64-linux-gnu, which is where it belongs.
+set(CMAKE_LIBRARY_ARCHITECTURE ${OSU_CROSS_TRIPLE})
+
 # Where a cross build looks and where it does not: programs are this
 # machine's, libraries and headers are the target's. Without this a
 # find_library walks into /usr/lib/x86_64-linux-gnu and finds something that
 # links and does not run.
 set(CMAKE_FIND_ROOT_PATH "${OSU_CROSS_SYSROOT}/usr/${OSU_CROSS_TRIPLE}"
                          "${OSU_CROSS_SYSROOT}")
+# And named outright, because CMAKE_LIBRARY_ARCHITECTURE is also what CMake
+# works out for itself while it identifies the compiler, and what it works
+# out there is about the machine it is running on. Said here it is a fact
+# about the target: libX11 and libOpenGL are in lib/<triple> and a search
+# that does not look there reports them missing on a machine that has them.
+list(APPEND CMAKE_LIBRARY_PATH
+     "${OSU_CROSS_SYSROOT}/usr/lib/${OSU_CROSS_TRIPLE}"
+     "${OSU_CROSS_SYSROOT}/lib/${OSU_CROSS_TRIPLE}")
+list(APPEND CMAKE_INCLUDE_PATH "${OSU_CROSS_SYSROOT}/usr/include")
+
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
