@@ -22,6 +22,12 @@ on:
       release:
         type: boolean
         default: false
+      suffix:
+        type: string
+        default: ""
+      fresh:
+        type: boolean
+        default: false
 
 # One run of this workflow per branch at a time. A push that supersedes what
 # is building makes the older run an answer about code nobody is waiting on,
@@ -31,7 +37,7 @@ on:
 # main is exempt: what landed there is worth an answer even if something
 # lands on top of it.
 concurrency:
-  group: flatpak-${{ github.ref }}
+  group: flatpak-${{ github.ref }}${{ inputs.suffix }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -45,6 +51,12 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
+
+      # One timestamp for both passes. It is passed explicitly to
+      # flatpak-builder below: merely exporting SOURCE_DATE_EPOCH does not
+      # override its default choice, the checkout's manifest mtime.
+      - name: the source date
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
       - name: flatpak and the runtime
         run: |
@@ -66,6 +78,7 @@ jobs:
       # written a cache at all. Saving after each stage means a push that
       # cancels this one still leaves behind everything it had built.
       - uses: actions/cache/restore@v4
+        if: ${{ !inputs.fresh }}
         with:
           path: .flatpak-builder
           key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}
@@ -77,12 +90,17 @@ jobs:
       # are the modules that take the hour: cmake, gn, boost, skia, ffmpeg.
       - name: the libraries
         run: |
+          cache=()
+          if [ "${{ inputs.fresh }}" != "true" ]; then
+            cache+=(--ccache)
+          fi
           flatpak-builder --user --force-clean --disable-rofiles-fuse \
-            --ccache --stop-at=osu-cpp build-flatpak \
+            --override-source-date-epoch="$SOURCE_DATE_EPOCH" \
+            "${cache[@]}" --stop-at=osu-cpp build-flatpak \
             flatpak/io.github.j4niwzis.osu_cpp.yml
 
       - uses: actions/cache/save@v4
-        if: always()
+        if: ${{ always() && !inputs.fresh }}
         with:
           path: .flatpak-builder
           key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}-libraries
@@ -96,8 +114,13 @@ jobs:
       # building them a second time.
       - name: the client
         run: |
+          cache=()
+          if [ "${{ inputs.fresh }}" != "true" ]; then
+            cache+=(--ccache)
+          fi
           flatpak-builder --user --force-clean --disable-rofiles-fuse \
-            --ccache --repo=repo build-flatpak \
+            --override-source-date-epoch="$SOURCE_DATE_EPOCH" \
+            "${cache[@]}" --repo=repo build-flatpak \
             flatpak/io.github.j4niwzis.osu_cpp.yml
 
       # Saved once, after the libraries. The client is minutes and the
@@ -121,12 +144,22 @@ jobs:
       - name: bundle
         run: |
           flatpak build-bundle repo osu-cpp.flatpak io.github.j4niwzis.osu_cpp
+          # A .flatpak is an OSTree static delta. Its compression is not a
+          # canonical serialization, so two bundles of the same immutable
+          # commit need not have the same bytes. Record the content-addressed
+          # commit the bundle transports; that is the build output whose
+          # reproducibility matters.
+          ostree --repo=repo rev-parse \
+            app/io.github.j4niwzis.osu_cpp/x86_64/master \
+            > osu-cpp.flatpak.commit
 
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: osu-cpp-flatpak
-          path: osu-cpp.flatpak
+          name: osu-cpp-flatpak${{ inputs.suffix }}
+          path: |
+            osu-cpp.flatpak
+            osu-cpp.flatpak.commit
 
       # What this run built, bound to this workflow at this commit and
       # recorded in a public log. `gh attestation verify <file> --repo
@@ -140,4 +173,3 @@ jobs:
         with:
           subject-path: |
             osu-cpp.flatpak
-

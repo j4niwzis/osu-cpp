@@ -123,6 +123,7 @@ jobs:
             -DCMAKE_C_FLAGS="-pthread" \
             -DCMAKE_CXX_FLAGS="-pthread" \
             -DCMAKE_EXE_LINKER_FLAGS="-pthread" \
+            -DCMAKE_INSTALL_PREFIX=/usr \
             -DWASM_PRELOAD_DATA=/tmp/wasm-data \
             -DCME_STORE_ENABLED=ON \
             "${extra[@]}"

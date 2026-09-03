@@ -26,7 +26,7 @@
     sha256 = "11pfvy81423k6ljg3lbsvi67h7s1mkl3lnlh7awvqfdydnzi0icj";
     fetchSubmodules = false;
   };  # 1.92.0
-  boost_asio = pkgs.fetchgit {
+  boost_asio_core = pkgs.fetchgit {
     url = "https://github.com/boostorg/asio.git";
     rev = "4fa4abee89a62fdeeccac2585caece625f40647e";
     sha256 = "1pf6sqd8p21f73732lxdpmf6822br5b8f56krlhmwrm9cy0yn5x4";
@@ -80,12 +80,6 @@
     sha256 = "0sq91nqb5gczkjfz5zjv8n6x4qqxfmcs2mpf5q8ih51r19mv225x";
     fetchSubmodules = false;
   };  # 1.92.0
-  boost_context = pkgs.fetchgit {
-    url = "https://github.com/boostorg/context.git";
-    rev = "cc1b9e02cd530d6607becc984e1e5bfa4f7b3600";
-    sha256 = "1f69bld0a65ckjnq0g606d6bbw7v0dj5wcr4dx7z3f91k2q6qm4i";
-    fetchSubmodules = false;
-  };  # 1.92.0
   boost_conversion = pkgs.fetchgit {
     url = "https://github.com/boostorg/conversion.git";
     rev = "71b14ad1dae1d2be91ad310007c749ca93dc2e72";
@@ -96,12 +90,6 @@
     url = "https://github.com/boostorg/core.git";
     rev = "a90a31934fe8bcb6e6be6dfea77b80492c7b6c81";
     sha256 = "13si4arspygsyq1mwshmnaink2pc26kj11vbw4bb5s28pcilvp33";
-    fetchSubmodules = false;
-  };  # 1.92.0
-  boost_date_time = pkgs.fetchgit {
-    url = "https://github.com/boostorg/date_time.git";
-    rev = "6248d64ed94916e446c83a038e8c8208ebb262ee";
-    sha256 = "1nncfphylkgyl0rlbkls71sr0xxf2wrkaadgq425sd00gxyy4nip";
     fetchSubmodules = false;
   };  # 1.92.0
   boost_describe = pkgs.fetchgit {
