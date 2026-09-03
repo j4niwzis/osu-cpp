@@ -273,6 +273,16 @@ private:
     }
     // Turned only when the window is the other way up.
     //
+    // Which is also all this can know. Where a system answers the
+    // manifest's landscape by letterboxing rather than by turning its
+    // screen, the window is landscape and smaller than the display -- and
+    // the activity is told the display is the letterbox: waydroid, whose
+    // screen is 1080x2340, answered "how large is the display" with
+    // 1080x534 through android.view.Display, getMaximumWindowMetrics and
+    // the system's own resources alike. Nothing here can see it, so nothing
+    // here tries to; it is a property of the display, and on waydroid it is
+    // turned off with "wm fixed-to-user-rotation disabled".
+    //
     // It was turned every time, and on a device that had already given this
     // activity a landscape window the quarter turn was the second one: a
     // buffer allocated with the dimensions swapped and then composed into a
