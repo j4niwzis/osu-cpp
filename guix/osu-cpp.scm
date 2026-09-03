@@ -197,7 +197,10 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
       (map (lambda (name) (list name (needed name)))
            (list "ninja" "pkg-config" "python" "gn" "meson"
                  "gperf" "clang-toolchain" "tar" "gzip" "xz" "bzip2"
-                 "coreutils"))
+                 "coreutils"
+                 ;; For wayland-scanner, which glfw runs to generate its
+                 ;; protocol bindings.
+                 "wayland"))
       ;; Every library the lock names, under a name the phase reads the port
       ;; out of.
       (map (lambda (entry)
@@ -208,7 +211,9 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
           (list "mesa" "libglvnd" "libxkbcommon" "wayland"
                 "wayland-protocols" "libx11" "libxrandr" "libxinerama"
                 "libxcursor" "libxi" "alsa-lib" "pulseaudio" "dbus"
-                "elogind")))
+                "elogind"
+                ;; Asio's TLS has one backend and this is it.
+                "openssl")))
     (home-page "https://github.com/j4niwzis/osu-cpp")
     (synopsis "Native client for osu! beatmaps")
     (description
