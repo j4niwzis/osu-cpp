@@ -332,6 +332,8 @@ public:
 
     glfwSetInputMode(fWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     glfwSetWindowUserPointer(fWindow, this);
+    // Before any event arrives, because every cursor event reads it.
+    this->measurePointerScale();
     this->installCallbacks();
     fWaylandTouch.init(fWindow, [this](const Event &event) {
       if (event.fType == EventType::kCursorMove) {
@@ -666,6 +668,7 @@ private:
           auto &self = from(window);
           self.fReportedSize.store(packSize(width, height),
                                    std::memory_order_release);
+          self.measurePointerScale();
           self.push({wallMs(), EventType::kResize, width, height});
         });
   }
@@ -680,6 +683,33 @@ private:
   // other HiDPI platform), so normalize both mouse and synthesized touch
   // before AppInput applies the client's own UI scale.
   void pushCursor(double x, double y) {
+    // The scale is read from what was measured when the window last changed
+    // size, not asked for here.
+    //
+    // Asking is two calls into the window system, and this runs once per
+    // cursor event: with raw input that is the mouse's own rate, a thousand
+    // times a second, on the thread whose job is to keep taking events. The
+    // pointer moved in steps because the pump was busy asking how big the
+    // window was -- which it had just been told.
+    const double scaleX = fPointerScaleX;
+    const double scaleY = fPointerScaleY;
+
+    // Lomiri can rotate a fullscreen Wayland surface before GLFW has swapped
+    // its logical width and height.  The framebuffer is already landscape in
+    // that interval (and can remain so for the lifetime of a Click window),
+    // which makes the two ratios above reciprocal distortions rather than
+    // content scales.  Pixel density is unchanged by a quarter turn, and its
+    // uniform value is preserved by the ratio of the two areas.  Only repair
+    // clearly inconsistent axes so genuinely anisotropic desktop scaling
+    // keeps the GLFW values it has always used.
+    this->push({wallMs(), EventType::kCursorMove, 0, 0,
+                static_cast<float>(x * scaleX),
+                static_cast<float>(y * scaleY)});
+  }
+
+  // How many framebuffer pixels one window coordinate is, measured when the
+  // window says it has changed and kept until it says so again.
+  void measurePointerScale() {
     int windowW = 0, windowH = 0, framebufferW = 0, framebufferH = 0;
     glfwGetWindowSize(fWindow, &windowW, &windowH);
     glfwGetFramebufferSize(fWindow, &framebufferW, &framebufferH);
@@ -691,11 +721,11 @@ private:
                                 : 1.0;
 
     // Lomiri can rotate a fullscreen Wayland surface before GLFW has swapped
-    // its logical width and height.  The framebuffer is already landscape in
+    // its logical width and height. The framebuffer is already landscape in
     // that interval (and can remain so for the lifetime of a Click window),
     // which makes the two ratios above reciprocal distortions rather than
-    // content scales.  Pixel density is unchanged by a quarter turn, and its
-    // uniform value is preserved by the ratio of the two areas.  Only repair
+    // content scales. Pixel density is unchanged by a quarter turn, and its
+    // uniform value is preserved by the ratio of the two areas. Only repair
     // clearly inconsistent axes so genuinely anisotropic desktop scaling
     // keeps the GLFW values it has always used.
     const double smaller = std::min(scaleX, scaleY);
@@ -708,9 +738,8 @@ private:
       scaleX = uniform;
       scaleY = uniform;
     }
-    this->push({wallMs(), EventType::kCursorMove, 0, 0,
-                static_cast<float>(x * scaleX),
-                static_cast<float>(y * scaleY)});
+    fPointerScaleX = scaleX;
+    fPointerScaleY = scaleY;
   }
 
   void pushWindowActivity() {
@@ -748,6 +777,10 @@ private:
   std::atomic<int> fWorkAreaX{0}, fWorkAreaY{0}, fWorkAreaW{0}, fWorkAreaH{0};
   std::mutex fDropMutex;
   std::vector<std::string> fDroppedFiles;
+  // Framebuffer pixels per window coordinate, in each axis. Measured when
+  // the window changes size and read on every cursor event.
+  double fPointerScaleX = 1.0;
+  double fPointerScaleY = 1.0;
 };
 
 } // namespace platform
