@@ -138,6 +138,39 @@ inline void lockOrientation(int kind) {
   }, kind);
 }
 
+// A file the page hands to the person looking at it.
+//
+// There is no filesystem a browser will write to and no place a file
+// written into this one can be found afterwards, so what "saved" means here
+// is the download the browser already knows how to do: the bytes are read
+// out of the module's own filesystem, wrapped in a blob and offered under
+// the name they were written with.
+[[nodiscard]] inline bool offerDownload(const std::string &path) {
+  return EM_ASM_INT({
+           try {
+             const path = UTF8ToString($0);
+             const bytes = FS.readFile(path);
+             const name = path.split('/').pop();
+             const blob = new Blob([bytes], {type : 'video/mp4'});
+             const url = URL.createObjectURL(blob);
+             const link = document.createElement('a');
+             link.href = url;
+             link.download = name;
+             document.body.appendChild(link);
+             link.click();
+             document.body.removeChild(link);
+             // Not at once: a click that has been dispatched has not
+             // necessarily been acted on yet, and a revoked URL is a
+             // download that never starts.
+             setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
+             return 1;
+           } catch (e) {
+             return 0;
+           }
+         },
+         path.c_str()) != 0;
+}
+
 inline void setCursorVisible(bool visible) {
   EM_ASM({ Module.setCursorVisible(!!$0); }, visible ? 1 : 0);
 }

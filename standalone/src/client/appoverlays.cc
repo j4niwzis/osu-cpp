@@ -10,6 +10,8 @@ import platform.audio_engine;
 import client.hitsoundmix;
 import client.mods;
 import platform.dialogs;
+import platform.system;
+import platform.web_runtime;
 import client.settingspanel;
 import client.util;
 import client.video;
@@ -227,6 +229,15 @@ public:
         "{}-{}x{}.mp4", safe, request.fOptions.fWidth, request.fOptions.fHeight);
     if (output.empty()) {
       if constexpr (!platform::capabilities::kNativeFileDialogs) {
+        // Nowhere to ask, so nowhere to ask about. In a browser that is not
+        // the end of it: there is a filesystem of its own to write into and
+        // the page can hand the result over afterwards, which is what a
+        // browser calls saving. Anywhere else with no picker there is
+        // nothing this could do that the person did not ask for.
+        if constexpr (platform::capabilities::kBrowser) {
+          this->exportReplayVideo(platform::system::applicationDataPath() /
+                                  suggested);
+        }
         return;
       }
       if (fExportPickerOpen) {
@@ -365,6 +376,22 @@ public:
       return;
     }
     if (status.fOk) {
+      if constexpr (platform::capabilities::kBrowser) {
+        // Written into a filesystem nobody can reach, and then handed over.
+        if (platform::web::offerDownload(status.fMessage)) {
+          fApp.fExportDialog.setStatus(std::format(
+              "downloading {}",
+              std::filesystem::path(status.fMessage).filename().string()));
+          std::println(std::cerr, "[export] offered {}", status.fMessage);
+          fPendingSave = {};
+          fApp.fVideoExporter.clearFinished();
+          return;
+        }
+        this->exportFailed("the browser would not take the rendered video");
+        fPendingSave = {};
+        fApp.fVideoExporter.clearFinished();
+        return;
+      }
       if (!platform::dialogs::commitSave(fPendingSave)) {
         this->exportFailed(
             "rendered video could not be written to the selected document");
