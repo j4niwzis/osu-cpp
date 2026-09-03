@@ -321,6 +321,16 @@ if(ANDROID)
     ${module_sources} ${main_source} "${native_app_glue}")
   target_include_directories(${PROJECT_NAME} PRIVATE
     "${OSU_ANDROID_NATIVE_APP_GLUE_DIR}")
+  # The one function in this library that Android looks up by name.
+  #
+  # A build that hides its symbols by default hides this one too, and a
+  # hidden symbol is not in the dynamic table at all -- no linker option
+  # exports it back, because hidden is a statement about the table rather
+  # than about what is kept. So the file that defines it is compiled as
+  # visible; everything else this library is made of stays hidden, which is
+  # the point.
+  set_source_files_properties("${native_app_glue}" PROPERTIES
+    COMPILE_OPTIONS "-fvisibility=default")
   target_link_options(${PROJECT_NAME} PRIVATE
     "LINKER:-u,ANativeActivity_onCreate"
     "LINKER:--no-undefined")

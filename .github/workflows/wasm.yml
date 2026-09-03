@@ -108,8 +108,14 @@ jobs:
           # memory does not link with one that was not.
           extra=()
           if [ "${{ inputs.release }}" = "true" ]; then
-            extra+=("-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -flto")
-            extra+=("-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -flto")
+            # Hidden by default here as well. What a page calls into is
+            # named in EXPORTED_FUNCTIONS or carries EMSCRIPTEN_KEEPALIVE,
+            # both of which say visible; everything else is this module'''s
+            # own business, and hiding it is what lets the optimiser treat
+            # it as such.
+            tuned="-O3 -DNDEBUG -flto -fvisibility=hidden -fvisibility-inlines-hidden"
+            extra+=("-DCMAKE_C_FLAGS_RELEASE=$tuned")
+            extra+=("-DCMAKE_CXX_FLAGS_RELEASE=$tuned")
             extra+=("-DCMAKE_EXE_LINKER_FLAGS_RELEASE=-O3 -flto -g0 -sASSERTIONS=0")
           fi
           # -pthread everywhere, because Skia is compiled that way by its
