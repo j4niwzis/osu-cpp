@@ -380,8 +380,8 @@
   {
     "type": "archive",
     "url": "https://www.mpg123.de/download/mpg123-1.32.10.tar.bz2",
-    "dest": ".flatpak-sources/ports/mpg123",
-    "sha512": "4df3e76cafe642b1df8befaff3d3530150c13446ca7f07b8d527af5b6522e4d2dedd025a3f095f23a51e2318d17e1395de6e55c70e3a90f80017ea0955fe8c1f"
+    "sha512": "4df3e76cafe642b1df8befaff3d3530150c13446ca7f07b8d527af5b6522e4d2dedd025a3f095f23a51e2318d17e1395de6e55c70e3a90f80017ea0955fe8c1f",
+    "dest": ".flatpak-sources/ports/mpg123"
   },
   {
     "type": "git",
@@ -404,8 +404,8 @@
   {
     "type": "archive",
     "url": "https://codeload.github.com/google/skia/tar.gz/9d07e5bad9e3e21da2426946e589daa647218271",
-    "dest": ".flatpak-sources/ports/skia",
     "sha512": "9c1682194e671dd49eb1131f61bd6a1d48cd32f41f8df77b26d93a65092cd2c8f5c52d3101afc804b303537c2277bc1ba46deb9ac047b2132d59c28b3e6edd18",
+    "dest": ".flatpak-sources/ports/skia",
     "archive-type": "tar-gzip"
   },
   {

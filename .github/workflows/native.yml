@@ -227,6 +227,22 @@ jobs:
             ~/.cache/cmake-everywhere/sources > nix/sources.nix || true
           head -20 nix/sources.nix
 
+      # And in the spelling Guix reads, which needs the same checkouts for
+      # the same reason.
+      - name: what a Guix build would have to be given
+        if: matrix.answer == 'ports'
+        run: |
+          python3 build/_cme/tools/lock-to-guix.py standalone/cme-lock.json \
+            ~/.cache/cmake-everywhere/sources > guix/sources.scm || true
+          head -20 guix/sources.scm
+          # A digest nobody could compute is written as an empty one, which
+          # would be a build that fails on the first library rather than a
+          # file that says what is missing.
+          if grep -q 'base32 ""' guix/sources.scm; then
+            echo "some sources have no digest yet:"
+            grep -B 6 'base32 ""' guix/sources.scm | grep '(list "' || true
+          fi
+
       - uses: actions/upload-artifact@v4
         if: matrix.answer == 'ports'
         with:
@@ -235,6 +251,7 @@ jobs:
             flatpak/cme-sources.json
             flatpak/cme-ports
             nix/sources.nix
+            guix/sources.scm
           if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4

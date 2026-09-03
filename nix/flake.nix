@@ -28,13 +28,24 @@
         # nothing else. What each library is, and how it is built, the
         # registry inside cmake-everywhere still says -- an overlay is read
         # before it and only fills in what it knows.
-        ports = pkgs.runCommand "osu-cpp-cme-ports" { } (
+        # A fetched repository is already a tree. A fetched archive is one
+        # file, because the digest the lock holds is the archive's, so it is
+        # unpacked here -- in an ordinary derivation, where unpacking is
+        # allowed to be whatever tar does.
+        ports = pkgs.runCommand "osu-cpp-cme-ports" { nativeBuildInputs = [ pkgs.gnutar pkgs.gzip pkgs.xz pkgs.bzip2 ]; } (
           pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList (name: source: ''
-            mkdir -p $out/${name}
-            cat > $out/${name}/port.cmake <<'PORT'
+            port=${builtins.replaceStrings [ "_" ] [ "-" ] name}
+            mkdir -p "$out/$port"
+            tree=${source}
+            if [ ! -d "$tree" ]; then
+              mkdir -p "$out/$port/source"
+              tar xf ${source} -C "$out/$port/source" --strip-components=1
+              tree=$out/$port/source
+            fi
+            cat > "$out/$port/port.cmake" <<PORT
             cme_declare_port(
-              NAME ${builtins.replaceStrings [ "_" ] [ "-" ] name}
-              SOURCE_DIR "${source}")
+              NAME $port
+              SOURCE_DIR "$tree")
             PORT
           '') sources));
 
