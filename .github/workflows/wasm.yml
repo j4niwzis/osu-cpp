@@ -55,8 +55,17 @@ jobs:
         env:
           CCACHE_DIR: ~/.cache/ccache
         run: |
+          # -pthread everywhere, because Skia is compiled that way by its
+          # own configuration for WebAssembly, and a wasm object built for
+          # shared memory does not link with one that was not. It is also
+          # what makes <pthread.h> the answer for a library that asks
+          # whether this platform has threads: without it Boost.Container
+          # decided this was Windows and reached for __declspec.
           emcmake cmake -S standalone -B build-wasm -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-pthread" \
+            -DCMAKE_CXX_FLAGS="-pthread" \
+            -DCMAKE_EXE_LINKER_FLAGS="-pthread" \
             -DCME_STORE_ENABLED=ON
 
       - name: build

@@ -95,7 +95,17 @@ find_package(PkgConfig REQUIRED)
 # TLS, beast for the HTTP on top of them, json for what comes back -- and
 # nothing else of Boost is fetched or built, because a component that is not
 # asked for is a library that is not there.
-find_package(Boost REQUIRED COMPONENTS asio beast json)
+#
+# A browser has no sockets to give and this client does not ask for any: the
+# web build talks through fetch, its transport is network_backend_web.cc and
+# the Beast one is not compiled. Asking for asio and beast there fetched and
+# built two libraries -- and Context and Date_Time under them -- for a
+# program with no reference to any of it.
+if(EMSCRIPTEN_BUILD)
+  find_package(Boost REQUIRED COMPONENTS json)
+else()
+  find_package(Boost REQUIRED COMPONENTS asio beast json)
+endif()
 
 # Whether this build is for a machine that may be running Wayland.
 #
@@ -369,7 +379,7 @@ if(EMSCRIPTEN_BUILD)
     SndFile::sndfile
     MPG123::libmpg123
     LibLZMA::LibLZMA
-    Boost::asio Boost::beast Boost::json
+    Boost::json
     openal
   )
 elseif(ANDROID)
