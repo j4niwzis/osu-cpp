@@ -62,6 +62,39 @@ loadTypeface(const std::string &name) {
   return nullptr;
 }
 
+// The fonts this device already has, for the writing this program does not
+// carry.
+//
+// Android names its families in a configuration file and Skia reads it; what
+// comes back is the same Noto CJK that a package would otherwise carry a
+// second copy of -- ten megabytes of one, for Japanese and Korean. Asked for
+// by character rather than by family name, because which family holds a
+// script is the system's business and differs between devices.
+void addSystemFallbacks() {
+#if defined(__ANDROID__)
+  auto system = skia::SkFontMgr_New_Android(
+      nullptr, skia::SkFontScanner_Make_FreeType());
+  if (!system) {
+    std::println(std::cerr, "[ui] this device offers no font configuration");
+    return;
+  }
+  // One character per script, which is how a font manager is asked whether
+  // it has the script at all: hiragana, hangul, a han ideograph.
+  for (const auto sample : {0x3042, 0xAC00, 0x4E00}) {
+    auto face = system->matchFamilyStyleCharacter(
+        nullptr, skia::SkFontStyle(), nullptr, 0, sample);
+    if (!face) {
+      continue;
+    }
+    skia::SkString family;
+    face->getFamilyName(&family);
+    std::println(std::cerr, "[ui] {} for U+{:04X}, from this device",
+                 family.c_str(), sample);
+    skiff::paint::fonts().addFallback(std::move(face));
+  }
+#endif
+}
+
 void loadExtraFonts() {
   static constexpr std::array<const char *, 4> kKnown = {
       "Inter.ttf", "NotoSansJP.ttf", "NotoSansKR.ttf",
@@ -130,6 +163,10 @@ struct ClientFonts {
   auto &stack = skiff::paint::fonts();
   if (!platform::runtimeConfiguration().fUseSystemFont) {
     stack.setPrimary(font_detail::loadTypeface("Inter.ttf"));
+    // The device's own scripts first, and the carried ones after: a package
+    // that has both should prefer what the machine already had in memory,
+    // and one that carries none of them still reads Japanese.
+    font_detail::addSystemFallbacks();
     for (const char *name :
          {"NotoSansJP.ttf", "NotoSansKR.ttf", "FontAwesome-Solid.ttf"}) {
       stack.addFallback(font_detail::loadTypeface(name));
