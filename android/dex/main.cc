@@ -27,6 +27,7 @@ const std::string kRunnable = "Ljava/lang/Runnable;";
 const std::string kString = "Ljava/lang/String;";
 const std::string kStrings = "[Ljava/lang/String;";
 const std::string kSecurity = "Ljava/lang/SecurityException;";
+const std::string kSystem = "Ljava/lang/System;";
 const std::string kInt = "I";
 const std::string kVoid = "V";
 
@@ -46,6 +47,7 @@ constexpr std::uint32_t kProtected = 0x4;
 constexpr std::uint32_t kFinal = 0x10;
 constexpr std::uint32_t kSynthetic = 0x1000;
 constexpr std::uint32_t kNative = 0x100;
+constexpr std::uint32_t kStatic = 0x8;
 constexpr std::uint32_t kConstructor = 0x10000;
 
 // The three classes, described twice -- once to collect what they name and
@@ -138,6 +140,25 @@ constexpr std::uint32_t kConstructor = 0x10000;
 
   // -- the activity ---------------------------------------------------------
   dex::Class activity(pool, kActivity, kNativeActivity, {}, kPublic | kFinal);
+
+  // The library, loaded by name before anything in this class runs.
+  //
+  // NativeActivity opens it itself, with dlopen, to find
+  // ANativeActivity_onCreate -- and a library opened that way is not one of
+  // the class loader's, so the runtime looking for the implementation of a
+  // native method declared here does not search it. It says so exactly:
+  //
+  //   No implementation found for void ...nativeDocumentSelected(int, String)
+  //   (tried Java_..._nativeDocumentSelected and ...__ILjava_lang_String_2)
+  //
+  // -- with the symbol present in the library all along. System.loadLibrary
+  // is what registers it against this class loader, and it is the same
+  // library either way: the second open of the same soname returns the first.
+  code = std::make_shared<dex::Code>(pool, 1, 0, 1);
+  code->constantString(0, "osu_client");
+  code->callStatic({0}, {kSystem, "loadLibrary", kVoid, {kString}});
+  code->returnVoid();
+  activity.method("<clinit>", kVoid, {}, kStatic | kConstructor, code, true);
 
   code = std::make_shared<dex::Code>(pool, 1, 1, 1);
   code->callDirect({0}, {kNativeActivity, "<init>", kVoid, {}});

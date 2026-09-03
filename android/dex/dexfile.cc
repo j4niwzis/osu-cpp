@@ -401,6 +401,10 @@ public:
                   const Method &what) {
     op35c(0x70, fPool.method(what), arguments);
   }
+  void callStatic(std::initializer_list<std::uint8_t> arguments,
+                  const Method &what) {
+    op35c(0x71, fPool.method(what), arguments);
+  }
 
   // The one thing here that is not an instruction: what to do when the
   // instructions between two labels throw.

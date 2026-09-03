@@ -6,6 +6,15 @@ import android.net.Uri;
 import android.os.Bundle;
 
 public final class OsuNativeActivity extends NativeActivity {
+    // NativeActivity opens the library itself, with dlopen, to find
+    // ANativeActivity_onCreate. A library opened that way is not one of this
+    // class loader's, and the runtime looking for the implementation of the
+    // native method below does not search it -- "No implementation found",
+    // with the symbol exported all along. This is what registers it.
+    static {
+        System.loadLibrary("osu_client");
+    }
+
     private static final int OPEN_BEATMAP = 0x4f53;
     private static final int CREATE_VIDEO = 0x4f54;
 
