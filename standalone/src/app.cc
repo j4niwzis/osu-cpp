@@ -233,6 +233,11 @@ private:
   // Filtering / sorting: the control itself lives in client.filtercontrol.
   client::FilterControl fFilter;
   bool fLibraryLoaded = false;
+  // Whether the skin offer was up on the previous frame, so that its closing
+  // can be noticed.
+  bool fSkinDialogWasOpen = false;
+  // Tried and failed. Said once and not tried again.
+  bool fLibraryInitFailed = false;
   int fAppliedStarChoice = -1; // forces the first ordering pass
   client::carousel::Carousel fCarousel;
   client::songselect::InfoWedge fInfoWedge;
@@ -543,11 +548,6 @@ private:
     // library is scanned once the flag flips (see frameSongSelect).
     platform::web::initializeMapStorage();
 
-    // The same offer every other build makes on a first run. It is about the
-    // skin directory, which the library has nothing to do with, so it does
-    // not wait for storage to be read.
-    fSkinDialog.showIfNeeded();
-
     fState = State::kMainMenu;
     fStateEnterWall = wallMs();
     // A CLI-provided .osz reaches the wasm build too (preloaded); jump to it.
@@ -839,12 +839,19 @@ private:
     if (fSkinDialog.takeInstalled()) {
       fSkin.load(fSkin.root());
       fFrame.damageAll("optional skin installed");
-      // A browser keeps what a filesystem was told to keep, and it is only
-      // told when something asks. A skin downloaded and never flushed is a
-      // skin that is downloaded again on the next visit.
-      if constexpr (platform::capabilities::kBrowser) {
+    }
+
+    // A browser keeps what a filesystem was told to keep, and it is only
+    // told when something asks. Both endings of this dialog write a file
+    // beside the skin -- the one that says it was installed and the one that
+    // says it was declined -- and neither was flushed, so the offer came
+    // back on the next visit however it had been answered.
+    if constexpr (platform::capabilities::kBrowser) {
+      const bool open = fSkinDialog.open();
+      if (fSkinDialogWasOpen && !open) {
         platform::web::syncMapStorage();
       }
+      fSkinDialogWasOpen = open;
     }
 
     // Overlays are drawn after the screen, over most of it, so appearance and
@@ -1654,6 +1661,35 @@ private:
 
 
 
+  // The library, as soon as there is somewhere to read it from.
+  //
+  // Not when song select is entered, which is where this used to happen: the
+  // call wires up the mirrors, the replays and the paths as well as reading
+  // the library, so until it had run the menu was half-connected. Pressing
+  // browse called a mirror search that had never been given its callbacks --
+  // std::bad_function_call, from a menu that looked ready.
+  void openLibraryWhenStorageAnswers() {
+    if (fLibraryLoaded || fLibraryInitFailed ||
+        !platform::web::mapStorageReady()) {
+      return;
+    }
+    try {
+      fLibraryRuntime.initLibrary();
+      // And the offer, which is a question about a directory that has only
+      // just been read. Asked before that, it was asked of an empty
+      // filesystem: the answer to it is a file beside the skin, and a file
+      // that has not been read back yet is a file that is not there --
+      // so the offer came back however it had been answered.
+      fSkinDialog.showIfNeeded();
+    } catch (const std::exception &trouble) {
+      // Once. A frame that fails fails sixty times a second, and the second
+      // failure says nothing the first did not.
+      fLibraryInitFailed = true;
+      std::println(std::cerr, "[library] cannot be opened: {}",
+                   trouble.what());
+    }
+  }
+
   static void emscriptenFrameProc(void *arg) {
     // A frame that throws in a browser is a client that stops drawing and
     // says nothing: the runtime reports "uncaught CppException" and a
@@ -1680,6 +1716,7 @@ private:
   }
 
   void emscriptenFrame() {
+    this->openLibraryWhenStorageAnswers();
     fWindowRuntime.pollEvents();
 
     {

@@ -46,7 +46,10 @@
       // it starts with nothing to be told.
       arguments: [],
       print: function (text) { console.log(text); },
-      printErr: function (text) { console.error(text); },
+      // Through log rather than error: the client writes what it is doing
+      // to stderr, and a browser answers every console.error with a stack
+      // trace of the runtime, which buries the line it was printing.
+      printErr: function (text) { console.log(text); },
       setStatus: function (text) { if (text) { note.textContent = text; } },
       onRuntimeInitialized: function () {
         loading.classList.add('hidden');
