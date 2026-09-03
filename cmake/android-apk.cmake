@@ -226,15 +226,7 @@ the file name" ON)
     # META-INF, and entries cannot be removed the way they were added: with
     # them there is no way back from the signed file to the package. Nothing
     # older than API 24 reads this APK anyway.
-    #
-    # --alignment-preserved, because apksigner does not preserve it: the
-    # documentation says it does, and the source says alignmentPreserved is
-    # false unless asked. What it does instead is lay the archive out again
-    # -- every entry moved by four bytes, the two directory entries dropped
-    # -- so the signed file stops being the package plus a signature, and
-    # nothing can compare the two.
     COMMAND "${java}" -jar "${OSU_ANDROID_APKSIGNER_JAR}" sign
-      --alignment-preserved
       --ks "${OSU_ANDROID_KEYSTORE}"
       --ks-key-alias "${OSU_ANDROID_KEY_ALIAS}"
       --ks-pass "pass:${OSU_ANDROID_KEY_PASSWORD}"

@@ -225,41 +225,25 @@ jobs:
         run: cat build-android/cme-report.txt || true
 
 
+      # The signature is an insertion, and removing it is the inverse of
+      # adding it -- so the file that comes back out of the signed APK is the
+      # package, byte for byte. That is what makes a release signed with a
+      # key nobody here has checkable against a build nobody there ran.
+      - name: the way back from signed to unsigned
+        run: |
+          python3 tools/apk-strip-signature.py \
+            build-android/apk/osu-cpp-test-signed.apk /tmp/stripped.apk
+          a=$(sha256sum /tmp/stripped.apk | cut -d' ' -f1)
+          b=$(sha256sum build-android/apk/osu-cpp-unsigned.apk | cut -d' ' -f1)
+          echo "stripped  $a"
+          echo "unsigned  $b"
+          test "$a" = "$b"
 
-      # Before the checks below, so that a check that fails leaves something
-      # to look at.
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: success()
         with:
           name: osu-cpp-android
           path: build-android/apk/*.apk
-          if-no-files-found: ignore
-
-      # That a signed APK and an unsigned one differ by nothing but the
-      # signature, checked the way F-Droid checks it.
-      #
-      # apksigcopier is what fdroidserver uses to verify a reproducible
-      # build: it copies the signature from the signed APK onto the unsigned
-      # one and compares the results, which is the question actually being
-      # asked -- and it knows the cases a byte comparison gets wrong, v1
-      # signatures and alignment among them.
-      #
-      # So a release signed with a key that never comes here can be compared
-      # by anyone against the unsigned package this workflow attests.
-      - name: signed and unsigned differ only by the signature
-        run: |
-          sudo apt-get install -y apksigcopier
-          # apksigcopier verifies the result by running apksigner, and wants
-          # it as a command. The one this build made is a jar, and it is the
-          # one that signed the APK, so it is the one that should check it.
-          printf '#!/bin/sh\nexec java -jar "%s" "$@"\n' \
-            "$HOME/android-minimal/tools/apksigner.jar" \
-            | sudo tee /usr/local/bin/apksigner > /dev/null
-          sudo chmod +x /usr/local/bin/apksigner
-          apksigner --version
-          apksigcopier compare --unsigned \
-            build-android/apk/osu-cpp-test-signed.apk \
-            build-android/apk/osu-cpp-unsigned.apk
 
       # Provenance for the APK: its digest, bound to this workflow at this
       # commit, signed with a certificate issued for this job alone and
