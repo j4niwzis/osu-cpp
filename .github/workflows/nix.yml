@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  build:
+  skia:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -25,6 +25,38 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+
+      # GitHub's cache keeps the custom Skia build between ephemeral runners.
+      # The source definitions form the immutable key; an older compatible
+      # store is still useful when one of those definitions changes.
+      - name: restore and save Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('nix/flake.nix', 'nix/sources.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 8G
+
+      - name: build Skia
+        run: nix build ./nix#skia --print-build-logs
+
+  build:
+    needs: skia
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: restore cached Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('nix/flake.nix', 'nix/sources.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          save: false
 
       - name: build
         run: nix build ./nix --print-build-logs
