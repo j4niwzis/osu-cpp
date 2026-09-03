@@ -93,15 +93,19 @@ jobs:
       # release has, that is a version to pin deliberately, not a moving one
       # to inherit.
 
-      # git 2.52 stops when it cannot read the system configuration --
-      # "unknown error occurred while reading the configuration files" --
-      # and every source here is a git checkout, so a file the build user
-      # cannot read is every fetch failing at git init.
-      - name: git's system configuration
+      # git 2.52 stops before it starts when it cannot read the system
+      # configuration -- "unable to access '/etc/gitconfig': Permission
+      # denied", then "unknown error occurred while reading the
+      # configuration files" -- and every source here is a checkout, so that
+      # is every fetch. The file is readable by everyone on this machine and
+      # is not readable inside the containers the daemon builds in, so it is
+      # moved out of the way: no system configuration is a case git knows
+      # how to be in.
+      - name: git's system configuration, out of the way
         if: steps.sources.outputs.have == 'yes'
         run: |
           ls -l /etc/gitconfig || echo "there is none"
-          sudo chmod a+r /etc/gitconfig 2>/dev/null || true
+          sudo mv /etc/gitconfig /etc/gitconfig.not-for-this-run || true
 
       - name: build
         if: steps.sources.outputs.have == 'yes'
