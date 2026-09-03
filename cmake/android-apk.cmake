@@ -20,6 +20,16 @@ function(osu_add_android_apk target)
   endif()
   set(OSU_ANDROID_APKSIGNER_JAR "" CACHE FILEPATH
     "Source-built apksigner executable jar")
+  # Whether this build makes its own key.
+  #
+  # A key made here is a test key: it lives in the build directory, it is
+  # written down in this file, and anyone can produce a signature with it. It
+  # says so in the certificate and in the name of the file it signs, because
+  # a signature that looks like a release and is not is worse than no
+  # signature. A real key is passed in, and never comes near this repository.
+  option(OSU_ANDROID_TEST_KEY
+    "Sign with a key this build generates, and say so in the certificate and \
+the file name" ON)
   set(OSU_ANDROID_KEY_ALIAS "androiddebugkey" CACHE STRING "APK signing key alias")
   set(OSU_ANDROID_KEY_PASSWORD "android" CACHE STRING "APK signing key password")
   set(OSU_ANDROID_KEYSTORE "${CMAKE_BINARY_DIR}/apk/debug.keystore"
@@ -28,6 +38,16 @@ function(osu_add_android_apk target)
     "Build the DEX bridge for Android's system document picker" ON)
   set(OSU_ANDROID_D8_JAR "" CACHE FILEPATH
     "R8 jar containing com.android.tools.r8.D8")
+
+  # The modification time every entry this build adds to the APK is given.
+  #
+  # Three builds of the same sources produced three different APKs, and the
+  # whole difference was here: fourteen entries identical, three carrying the
+  # clock. The 117 MB of native code was byte-identical every time, so the
+  # only thing standing between this and a reproducible package was the time
+  # of day it was packed at.
+  set(OSU_ANDROID_ENTRY_TIMESTAMP "2001-01-01T00:00:00Z" CACHE STRING
+    "The modification time given to every entry this build adds to the APK")
 
   find_program(aapt2 NAMES aapt2 REQUIRED)
   find_program(zipalign NAMES zipalign REQUIRED)
@@ -47,11 +67,41 @@ function(osu_add_android_apk target)
     endif()
   endforeach()
 
+  # jar --date is JDK 17 and later. Older ones write the clock and there is
+  # nothing to be done about it from here, so it is said rather than left to
+  # be discovered by whoever compares two APKs.
+  #
+  # The operation is spelled long too. `jar --date X uf archive` is not a
+  # command: given a long option, jar stops reading `uf` as the operation and
+  # says that one of -{ctxuid} must be specified, which is true and is not
+  # about the date at all.
+  execute_process(
+    COMMAND "${jar}" --date "${OSU_ANDROID_ENTRY_TIMESTAMP}" --version
+    RESULT_VARIABLE jar_dated OUTPUT_QUIET ERROR_QUIET)
+  if(jar_dated EQUAL 0)
+    set(jar_date --date "${OSU_ANDROID_ENTRY_TIMESTAMP}")
+    message(STATUS
+      "APK entries are dated ${OSU_ANDROID_ENTRY_TIMESTAMP}")
+  else()
+    set(jar_date)
+    message(STATUS
+      "${jar} does not take --date: APK entries carry the time they were "
+      "packed at, and two builds of the same sources will differ")
+  endif()
+
   set(apk_dir "${CMAKE_BINARY_DIR}/apk")
   set(stage_dir "${apk_dir}/stage")
+  # Three files, named for what they are. The middle one is the package: it
+  # is what gets signed, it is what a signature can be stripped back to, and
+  # it is the one worth attesting, because it is the same for everyone who
+  # builds these sources and the signed one is not.
+  set(unaligned_apk "${apk_dir}/osu-cpp-unaligned.apk")
   set(unsigned_apk "${apk_dir}/osu-cpp-unsigned.apk")
-  set(aligned_apk "${apk_dir}/osu-cpp-aligned.apk")
-  set(signed_apk "${apk_dir}/osu-cpp.apk")
+  if(OSU_ANDROID_TEST_KEY)
+    set(signed_apk "${apk_dir}/osu-cpp-test-signed.apk")
+  else()
+    set(signed_apk "${apk_dir}/osu-cpp.apk")
+  endif()
   set(compiled_resources "${apk_dir}/resources.zip")
   set(native_dir "${stage_dir}/lib/${OSU_ANDROID_ABI}")
   set(android_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../android")
@@ -98,7 +148,8 @@ function(osu_add_android_apk target)
         "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity\$2.class")
     list(APPEND dex_dependencies "${java_source}" ${java_stubs})
     set(dex_package_command
-      COMMAND "${jar}" uf "${unsigned_apk}" -C "${dex_dir}" classes.dex)
+      COMMAND "${jar}" ${jar_date} --update --file "${unaligned_apk}"
+        -C "${dex_dir}" classes.dex)
   else()
     set(OSU_ANDROID_ACTIVITY "android.app.NativeActivity")
     set(OSU_ANDROID_HAS_CODE false)
@@ -125,17 +176,26 @@ function(osu_add_android_apk target)
   file(GLOB_RECURSE android_resources CONFIGURE_DEPENDS
     "${android_dir}/res/*")
 
-  add_custom_command(
-    OUTPUT "${OSU_ANDROID_KEYSTORE}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${apk_dir}"
-    COMMAND "${keytool}" -genkeypair -noprompt
-      -keystore "${OSU_ANDROID_KEYSTORE}"
-      -storepass "${OSU_ANDROID_KEY_PASSWORD}"
-      -alias "${OSU_ANDROID_KEY_ALIAS}"
-      -keypass "${OSU_ANDROID_KEY_PASSWORD}"
-      -dname "CN=osu-cpp debug,O=osu-cpp,C=XX"
-      -keyalg RSA -keysize 2048 -validity 10000
-    VERBATIM)
+  if(OSU_ANDROID_TEST_KEY)
+    add_custom_command(
+      OUTPUT "${OSU_ANDROID_KEYSTORE}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${apk_dir}"
+      COMMAND "${keytool}" -genkeypair -noprompt
+        -keystore "${OSU_ANDROID_KEYSTORE}"
+        -storepass "${OSU_ANDROID_KEY_PASSWORD}"
+        -alias "${OSU_ANDROID_KEY_ALIAS}"
+        -keypass "${OSU_ANDROID_KEY_PASSWORD}"
+        -dname "CN=osu-cpp TEST KEY - not a release key,O=osu-cpp,C=XX"
+        -keyalg RSA -keysize 2048 -validity 10000
+      VERBATIM)
+  elseif(NOT EXISTS "${OSU_ANDROID_KEYSTORE}")
+    # Without OSU_ANDROID_TEST_KEY this build signs with a key it was given
+    # and does not invent one, because a key it invented would be a test key
+    # wearing a release name.
+    message(FATAL_ERROR
+      "OSU_ANDROID_TEST_KEY is off and OSU_ANDROID_KEYSTORE is "
+      "${OSU_ANDROID_KEYSTORE}, and there is no such file")
+  endif()
 
   add_custom_command(
     OUTPUT "${signed_apk}"
@@ -146,27 +206,36 @@ function(osu_add_android_apk target)
     ${copy_libraries}
     ${dex_commands}
     COMMAND "${CMAKE_COMMAND}" -E rm -f
-      "${compiled_resources}" "${unsigned_apk}" "${aligned_apk}" "${signed_apk}"
+      "${compiled_resources}" "${unaligned_apk}" "${unsigned_apk}" "${signed_apk}"
     COMMAND "${aapt2}" compile
       --dir "${android_dir}/res"
       -o "${compiled_resources}"
     COMMAND "${aapt2}" link
-      -o "${unsigned_apk}"
+      -o "${unaligned_apk}"
       -I "${OSU_ANDROID_FRAMEWORK_RES_APK}"
       --manifest "${android_manifest}"
       --min-sdk-version "${OSU_ANDROID_MIN_API}"
       --target-sdk-version "${OSU_ANDROID_TARGET_API}"
       -A "${CMAKE_CURRENT_SOURCE_DIR}/assets"
       "${compiled_resources}"
-    COMMAND "${jar}" uf "${unsigned_apk}" -C "${stage_dir}" lib
+    COMMAND "${jar}" ${jar_date} --update --file "${unaligned_apk}"
+      -C "${stage_dir}" lib
     ${dex_package_command}
-    COMMAND "${zipalign}" -f 4 "${unsigned_apk}" "${aligned_apk}"
+    COMMAND "${zipalign}" -f 4 "${unaligned_apk}" "${unsigned_apk}"
+    # Schemes v2 and v3 only. A v1 signature is three ordinary entries under
+    # META-INF, and entries cannot be removed the way they were added: with
+    # them there is no way back from the signed file to the package. Nothing
+    # older than API 24 reads this APK anyway.
     COMMAND "${java}" -jar "${OSU_ANDROID_APKSIGNER_JAR}" sign
       --ks "${OSU_ANDROID_KEYSTORE}"
       --ks-key-alias "${OSU_ANDROID_KEY_ALIAS}"
       --ks-pass "pass:${OSU_ANDROID_KEY_PASSWORD}"
       --key-pass "pass:${OSU_ANDROID_KEY_PASSWORD}"
-      --out "${signed_apk}" "${aligned_apk}"
+      --min-sdk-version "${OSU_ANDROID_MIN_API}"
+      --v1-signing-enabled false
+      --v2-signing-enabled true
+      --v3-signing-enabled true
+      --out "${signed_apk}" "${unsigned_apk}"
     DEPENDS ${target} "${OSU_ANDROID_KEYSTORE}"
       "${android_manifest}" ${dex_dependencies}
       ${android_resources} ${packaged_assets} ${prefix_libraries}
@@ -174,5 +243,12 @@ function(osu_add_android_apk target)
     COMMENT "Packaging signed Android APK")
 
   add_custom_target(apk ALL DEPENDS "${signed_apk}")
-  message(STATUS "Android APK target: ${signed_apk}")
+  message(STATUS "Android APK: ${unsigned_apk}")
+  if(OSU_ANDROID_TEST_KEY)
+    message(STATUS
+      "  signed with a key this build generates, as ${signed_apk}; "
+      "the certificate says so")
+  else()
+    message(STATUS "  signed with ${OSU_ANDROID_KEYSTORE}, as ${signed_apk}")
+  endif()
 endfunction()
