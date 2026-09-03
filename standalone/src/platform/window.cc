@@ -440,6 +440,12 @@ public:
   [[nodiscard]] bool surfaceSize(int &width, int &height) const {
     return presentation::surfaceSize(fWindow, &width, &height);
   }
+  // Where a GL entry point is, for whoever needs to assemble an interface of
+  // their own. GLFW knows because GLFW made the context, and it answers the
+  // same way whether that context came through EGL or through GLX.
+  [[nodiscard]] void (*procAddress(const char *name) const)() {
+    return glfwGetProcAddress(name);
+  }
   void setSwapInterval(int interval) { glfwSwapInterval(interval); }
   void swapBuffers() { glfwSwapBuffers(fWindow); }
   [[nodiscard]] bool swapWithDamage(

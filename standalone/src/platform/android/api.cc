@@ -70,6 +70,9 @@ export using ::eglDestroyContext;
 export using ::eglDestroySurface;
 export using ::eglGetConfigAttrib;
 export using ::eglGetDisplay;
+// Where a GL entry point is. Needed to assemble a GL interface for a Skia
+// that was not built with a factory of its own.
+export using ::eglGetProcAddress;
 export using ::eglInitialize;
 export using ::eglMakeCurrent;
 export using ::eglQuerySurface;

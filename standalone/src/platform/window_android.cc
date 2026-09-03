@@ -133,6 +133,12 @@ public:
       eglSwapInterval(fDisplay, interval);
     }
   }
+  // The same question as on the desktop, answered by EGL because EGL is what
+  // made this context.
+  [[nodiscard]] void (*procAddress(const char *name) const)() {
+    return eglGetProcAddress(name);
+  }
+
   void swapBuffers() {
     const std::lock_guard<std::mutex> lock(fSurfaceMutex);
     if (fDisplay != EGL_NO_DISPLAY && fSurface != EGL_NO_SURFACE) {
