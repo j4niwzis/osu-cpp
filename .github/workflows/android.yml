@@ -273,6 +273,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$NDK/cmake/target.cmake" \
             -DCME_BUILD_MACHINE_CXX_COMPILER=clang++-22 \
             -DCME_BUILD_MACHINE_CXX_FLAGS=-stdlib=libc++ \
+            -DOSU_VIDEO_LIBAV=ON \
             -DOSU_ANDROID_NATIVE_APP_GLUE_DIR="$NDK/src/ndk/sources/android/native_app_glue" \
             -DOSU_ANDROID_FRAMEWORK_RES_APK="$NDK/tools/framework-res.apk" \
             -DOSU_ANDROID_APKSIGNER_JAR="$NDK/tools/apksigner.jar" \

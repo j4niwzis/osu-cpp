@@ -350,8 +350,8 @@ modules:
       # declared here instead -- and flatpak-builder checks the digest, which
       # is the same check that file(DOWNLOAD) would have made.
       - type: file
-        url: https://github.com/j4niwzis/cmake-everywhere/archive/16094555b23bcff0fb981c432721ce5291b905f2.tar.gz
-        sha256: 4f5dd7cc62914296358f120a9fa94d3a5e6c02ac2899eb659373abb3b3f84060
+        url: https://github.com/j4niwzis/cmake-everywhere/archive/f9ad6048a9b2a155a136a9b5fa7d966d5638067e.tar.gz
+        sha256: 802db356218c69a6cd58e654acaeb6fbcb09a1caecbe8e4cb85f838fa25eca1c
         dest: .flatpak-sources
         dest-filename: cme.tar.gz
       - type: file
