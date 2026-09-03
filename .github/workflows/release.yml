@@ -14,7 +14,6 @@ name: release
 on:
   workflow_dispatch:
   push:
-    branches: [cmake-everywhere]
     tags: ["v*"]
 
 # A release run is not superseded by the next one: two tags are two releases.
