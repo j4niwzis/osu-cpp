@@ -131,6 +131,21 @@ jobs:
           sudo "$(command -v guix)" archive --authorize < "$public_key"
           gzip -dc "$archive" | guix archive --import
 
+          # And what says that the pinned revision has already been built.
+          #
+          # The store now holds the Guix the time machine would produce, but
+          # time-machine looks for it by asking git: it clones the channel to
+          # resolve the commit, and that clone is twelve minutes of every run.
+          # ~/.cache/guix/inferiors is the answer it keeps -- a link from the
+          # channel revision to the profile in the store -- so restoring it
+          # with the store contents is what makes the second run skip the
+          # clone entirely.
+          if [ -f .guix-package-cache/inferiors.tar ]; then
+            mkdir -p ~/.cache/guix
+            tar -xf .guix-package-cache/inferiors.tar -C ~/.cache/guix
+            echo "the pinned Guix is already built, and this says where"
+          fi
+
       - name: build
         if: steps.sources.outputs.have == 'yes'
         run: |
@@ -155,17 +170,26 @@ jobs:
           ls -la "$out"/bin || true
 
       # Save completed custom outputs even when a later derivation fails.
-      # The recursive archive includes everything those outputs reference,
-      # so a rerun can use the built CMake (and, after success, osu-cpp)
-      # without rebuilding their closures.
+      # This also includes the Guix produced by the pinned time-machine:
+      # compiling that inferior accounted for twelve minutes of a cache-hit
+      # run. The recursive archive includes every runtime reference.
       - name: prepare Guix package cache
         id: prepare-guix-package-cache
         if: steps.sources.outputs.have == 'yes' && always()
         run: |
+          channel_revision=$(
+            sed -n 's/.*(commit "\([0-9a-f]*\)").*/\1/p' guix/channels.scm
+          )
+          channel_version=${channel_revision:0:9}
+          if [ -z "$channel_version" ]; then
+            echo "could not read the pinned Guix revision"
+            exit 1
+          fi
           mapfile -t roots < <(
             find /gnu/store -maxdepth 1 -type d \
               \( -name '*-cmake-minimal-4.3.4' \
-                 -o -name '*-osu-cpp-1.0.0' \) \
+                 -o -name '*-osu-cpp-1.0.0' \
+                 -o -name "*-guix-$channel_version" \) \
               -print | sort
           )
           if [ "${#roots[@]}" -eq 0 ]; then
@@ -174,10 +198,22 @@ jobs:
             exit 0
           fi
           mkdir -p .guix-package-cache
+          # The foreign-distribution installer only needs trusted substitute
+          # keys, so it does not create a local archive-signing key. Generate
+          # this runner's ephemeral key before exporting its completed work.
+          if ! sudo test -s /etc/guix/signing-key.pub; then
+            sudo "$(command -v guix)" archive --generate-key
+          fi
           sudo cat /etc/guix/signing-key.pub \
             > .guix-package-cache/signing-key.pub
           guix archive --export --recursive "${roots[@]}" \
             | gzip -1 > .guix-package-cache/packages.nar.gz
+          # The links that say which channel revision that Guix is, kept
+          # beside it: without them the next run clones the channel again to
+          # find out something it already has.
+          if [ -d ~/.cache/guix/inferiors ]; then
+            tar -cf .guix-package-cache/inferiors.tar -C ~/.cache/guix inferiors
+          fi
           echo "have=yes" >> "$GITHUB_OUTPUT"
           ls -lh .guix-package-cache
 
