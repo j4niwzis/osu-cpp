@@ -21,6 +21,7 @@
              (guix base32)
              (guix utils)
              (guix build-system cmake)
+             (guix build-system gnu)
              ((guix licenses) #:prefix license:)
              (gnu packages)
              (ice-9 regex)
@@ -113,6 +114,211 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
   (filter (lambda (entry)
             (member (first entry) '("skiff" "skiff-widgets")))
           %all-sources))
+
+;; Skia, at the milestone this program is written against.
+;;
+;; The distribution packages one, and it is older than the type this client
+;; needs. The probe says so exactly:
+;;
+;;   error: no type named 'Uniform' in 'SkRuntimeEffect'
+;;   error: no member named 'findUniform' in 'SkRuntimeEffect'
+;;
+;; -- and the slider bodies are drawn by a runtime effect whose uniforms are
+;; set by name through SkRuntimeEffectBuilder. So this is the package that
+;; distribution is missing, defined here: the milestone every other build of
+;; this program uses, from the archive sources.scm already pins, built the
+;; way the port builds it -- GN, everything it can take from the system
+;; taken from the system, and nothing from third_party/externals, which no
+;; build here ever fetches.
+;;
+;; The layout is the one an installed Skia has: its public headers under
+;; include/skia, which is what makes "include/core/SkCanvas.h" -- the way
+;; Skia's headers include each other -- resolve for whoever links it.
+(define skia-for-this
+  (let* ((entry (or (find (lambda (item) (string=? (first item) "skia"))
+                          %all-sources)
+                    (error "guix/osu-cpp.scm: sources.scm names no skia")))
+         (skia-version (second entry))
+         ;; Named for what it is.
+         ;;
+         ;; sources.scm calls this one "skia-153", and how a Guix build
+         ;; unpacks a source is decided by that name: with no extension on
+         ;; it the unpack phase copied the archive into the build directory
+         ;; and called it done -- "phase `unpack' succeeded after 0.0
+         ;; seconds", a directory with a tarball in it and no tree. The
+         ;; digest is of the contents and does not change with the name.
+         (skia-source (origin
+                        (inherit (third entry))
+                        (file-name (string-append "skia-" (second entry)
+                                                  ".tar.gz")))))
+    (package
+      (name "skia")
+      (version skia-version)
+      (source skia-source)
+      (build-system gnu-build-system)
+      (arguments
+       (list
+        #:tests? #f
+        #:modules '((guix build gnu-build-system)
+                    (guix build utils)
+                    (srfi srfi-1)
+                    (ice-9 ftw))
+        #:phases
+        #~(modify-phases %standard-phases
+            (delete 'bootstrap)
+            (delete 'patch-generated-file-shebangs)
+            ;; Where the tree actually is.
+            ;;
+            ;; GN finds what to build by looking for a .gn file in the
+            ;; directory it is run in or above it, and says so plainly when
+            ;; it cannot: "Can't find source root". Which directory that is
+            ;; depends on how the archive unpacked, so it is looked for
+            ;; rather than assumed, and said out loud either way.
+            (add-after 'unpack 'enter-the-source
+              (lambda _
+                (unless (file-exists? ".gn")
+                  (let ((inside (scandir "."
+                                         (lambda (name)
+                                           (and (not (member name '("." "..")))
+                                                (file-is-directory? name))))))
+                    (when (= (length inside) 1)
+                      (chdir (first inside)))))
+                (format #t "source root: ~a~%" (getcwd))
+                (format #t "and it has a .gn: ~a~%" (file-exists? ".gn"))
+                (unless (file-exists? ".gn")
+                  (error "no .gn in the Skia archive; GN has no build to read"))))
+            (replace 'configure
+              (lambda* (#:key inputs #:allow-other-keys)
+                ;; What the port says, in the spelling GN reads. Nothing is
+                ;; compiled out of third_party/externals: this tree has
+                ;; none, so a bundled path would not quietly happen, it
+                ;; would fail to find its sources.
+                (invoke
+                 "gn" "gen" "out"
+                 (string-append
+                  "--args="
+                  (string-join
+                   (list "is_official_build=true"
+                         "is_component_build=false"
+                         ;; Skia asks its BUILDCONFIG which compiler this is
+                         ;; by running "cc --version", and there is no cc in
+                         ;; a Guix build environment -- the compiler is gcc.
+                         ;; The same GCC 15 that supplies the standard
+                         ;; library this program is compiled against, so
+                         ;; that what links Skia and what compiles the
+                         ;; client are one libstdc++.
+                         "cc=\"gcc\""
+                         "cxx=\"g++\""
+                         "skia_enable_tools=false"
+                         "skia_enable_ganesh=true"
+                         "skia_use_gl=true"
+                         "skia_use_egl=false"
+                         "skia_use_x11=false"
+                         "skia_use_vulkan=false"
+                         "skia_use_dawn=false"
+                         "skia_use_freetype=true"
+                         "skia_use_system_freetype2=true"
+                         ;; The client carries its own fonts and asks Skia
+                         ;; for no font database, so this is a dependency it
+                         ;; would take and never use.
+                         "skia_use_fontconfig=false"
+                         "skia_use_libpng_decode=true"
+                         "skia_use_libpng_encode=true"
+                         "skia_use_system_libpng=true"
+                         "skia_use_libjpeg_turbo_decode=true"
+                         "skia_use_libjpeg_turbo_encode=true"
+                         "skia_use_system_libjpeg_turbo=true"
+                         "skia_use_libwebp_decode=false"
+                         "skia_use_libwebp_encode=false"
+                         "skia_use_zlib=true"
+                         "skia_use_system_zlib=true"
+                         "skia_use_expat=true"
+                         "skia_use_system_expat=true"
+                         "skia_use_harfbuzz=false"
+                         "skia_use_icu=false"
+                         "skia_enable_skunicode=false"
+                         "skia_use_wuffs=false"
+                         "skia_use_libavif=false"
+                         "skia_use_libjxl_decode=false"
+                         "skia_use_dng_sdk=false"
+                         "skia_use_piex=false"
+                         "skia_use_lua=false"
+                         "skia_use_libheif=false"
+                         "skia_enable_pdf=false"
+                         "skia_enable_svg=false"
+                         "skia_enable_skottie=false"
+                         ;; Where FreeType's headers are.
+                         ;;
+                         ;; Skia's target for a system FreeType names
+                         ;; /usr/include/freetype2 outright, and there is no
+                         ;; /usr here -- the build stopped on "ft2build.h:
+                         ;; No such file or directory" after six minutes of
+                         ;; compiling. Every other system library it takes
+                         ;; keeps its headers where the environment already
+                         ;; points; this one keeps them a directory down.
+                         (string-append
+                          "extra_cflags=[\"-I"
+                          (assoc-ref inputs "freetype")
+                          "/include/freetype2\"]"))
+                   " ")))))
+            (replace 'build
+              (lambda* (#:key parallel-build? #:allow-other-keys)
+                (invoke "ninja" "-C" "out"
+                        "-j" (number->string (if parallel-build?
+                                                 (parallel-job-count)
+                                                 1))
+                        "skia")))
+            (replace 'install
+              (lambda _
+                (let* ((out #$output)
+                       (headers (string-append out "/include/skia"))
+                       (lib (string-append out "/lib")))
+                  (mkdir-p headers)
+                  (copy-recursively "include"
+                                    (string-append headers "/include"))
+                  ;; The same headers under the name a consumer uses.
+                  ;;
+                  ;; Skia's own headers include each other from the root of
+                  ;; its tree -- "include/core/SkTypes.h" -- and a program
+                  ;; that links it includes them as <skia/core/SkCanvas.h>.
+                  ;; Both are true of one directory once it has a skia in it
+                  ;; that is its include, so one -I answers both and there
+                  ;; is nothing for a consumer to arrange.
+                  (symlink "include" (string-append headers "/skia"))
+                  ;; modules/skcms is included as "modules/skcms/..." by the
+                  ;; public headers, and it is public for that reason.
+                  (when (file-exists? "modules")
+                    (copy-recursively
+                     "modules" (string-append headers "/modules")
+                     #:select? (lambda (file stat)
+                                 (or (eq? (stat:type stat) 'directory)
+                                     (string-suffix? ".h" file)))))
+                  (mkdir-p lib)
+                  (install-file "out/libskia.a" lib)
+                  (mkdir-p (string-append lib "/pkgconfig"))
+                  (call-with-output-file
+                      (string-append lib "/pkgconfig/skia.pc")
+                    (lambda (port)
+                      (format port
+                              "prefix=~a~%libdir=${prefix}/lib~%\
+includedir=${prefix}/include~%~%\
+Name: skia~%Description: 2D graphics library~%Version: ~a~%\
+Requires: freetype2 libpng libjpeg zlib expat~%\
+Cflags: -I${includedir}/skia~%Libs: -L${libdir} -lskia~%"
+                              out #$version)))))))))
+      (native-inputs (list (needed "gn") (needed "ninja") (needed "python")
+                           (needed "pkg-config")
+                           (needed "gcc-toolchain@15")))
+      (inputs (list (needed "expat") (needed "freetype")
+                    (needed "libjpeg-turbo") (needed "libpng")
+                    (needed "zlib") (needed "mesa") (needed "libglvnd")))
+      (home-page "https://skia.org")
+      (synopsis "2D graphics library")
+      (description
+       "Skia is the 2D graphics library this client draws through. This is
+the milestone it is written against, which is newer than the one the
+distribution packages.")
+      (license license:bsd-3))))
 
 ;; Where the port declarations and the unpacked archives are written. A
 ;; store item is read-only and there is nowhere else with a name that both
@@ -258,52 +464,23 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                       (format out
                               "{~%  \"version\": 1,~%  \"revision\": 1,~%  \"modules\": [~%    { \"logical-name\": \"std\", \"source-path\": \"~a\",~%      \"is-std-library\": true },~%    { \"logical-name\": \"std.compat\", \"source-path\": \"~a/bits/std.compat.cc\",~%      \"is-std-library\": true }~%  ]~%}~%"
                               std std-directory)))))))
-          ;; Guix's Skia package installs headers, libskia.so, and a
-          ;; pkg-config file, but not the CMake package configuration used
-          ;; by the upstream Skia port. Supply the small imported-target
-          ;; adapter here; Skia itself still comes entirely from Guix.
-          (add-before 'configure 'write-skia-package-config
-            (lambda* (#:key inputs #:allow-other-keys)
-              (let* ((skia (assoc-ref inputs "skia"))
-                     ;; Guix's regular Skia recipe is a shared component
-                     ;; build, while skia-for-friction (the package selected
-                     ;; by this channel) is static. Use what the package
-                     ;; actually installed instead of assuming one variant.
-                     (libraries (find-files skia "^libskia\\.(so|a)$"))
-                     (library (and (pair? libraries) (first libraries)))
-                     (directory "/tmp/guix-cmake/Skia")
-                     ;; Guix installs every header it found under
-                     ;; include/skia/ keeping the path it had in the source
-                     ;; tree, so a public header is at
-                     ;; include/skia/include/effects/SkRuntimeEffect.h. Skia
-                     ;; headers include each other from the root of that
-                     ;; tree ("include/core/SkFoo.h"), and this project
-                     ;; includes them the way the port installs them
-                     ;; (<skia/effects/SkRuntimeEffect.h>). Both are true of
-                     ;; the same tree under two names, so the second one is
-                     ;; made here: a directory whose skia/ is that include/.
-                     (root (string-append skia "/include/skia"))
-                     (shim (string-append directory "/as-installed"))
-                     (config (string-append directory "/SkiaConfig.cmake")))
-                (unless library
-                  (error "the Guix Skia input contains no libskia library"))
-                (mkdir-p directory)
-                (mkdir-p shim)
-                (unless (file-exists? (string-append shim "/skia"))
-                  (symlink (string-append root "/include")
-                           (string-append shim "/skia")))
-                (call-with-output-file config
-                  (lambda (out)
-                    (format out "\
-add_library(Skia::skia UNKNOWN IMPORTED)~%
-set_target_properties(Skia::skia PROPERTIES~%
-  IMPORTED_LOCATION \"~a\"~%
-  INTERFACE_INCLUDE_DIRECTORIES \"~a;~a\")~%
-foreach(component IN LISTS Skia_FIND_COMPONENTS)~%
-  set(Skia_${component}_FOUND TRUE)~%
-endforeach()~%
-set(Skia_FOUND TRUE)~%" library shim root)))
-                (setenv "Skia_DIR" directory))))
+          ;; The link CMake leaves in the source tree, taken back out.
+          ;;
+          ;; With CMAKE_EXPORT_COMPILE_COMMANDS on, CMake puts a
+          ;; compile_commands.json in the build directory and a symbolic
+          ;; link to it beside the sources. The phase that installs licence
+          ;; files walks the source tree, and a link whose target is not
+          ;; there stops that walk:
+          ;;
+          ;;   error: in phase 'install-license-files': system-error "stat"
+          ;;   ("No such file or directory" "../compile_commands.json")
+          ;;
+          ;; -- after the program had built and installed.
+          (add-before 'install-license-files 'forget-the-compile-commands
+            (lambda _
+              (let ((link "../compile_commands.json"))
+                (when (false-if-exception (lstat link))
+                  (delete-file link)))))
           ;; One declaration per application component, saying where its
           ;; pinned checkout is. Distribution libraries are Guix inputs.
           ;;
@@ -365,17 +542,19 @@ set(Skia_FOUND TRUE)~%" library shim root)))
              (list (string-append "cme-source-" (first entry)) (third entry)))
            %sources)))
     (inputs
-     (map (lambda (name) (list name (needed name)))
+     (append
+      (list (list "skia" skia-for-this))
+      (map (lambda (name) (list name (needed name)))
           (list "mesa" "libglvnd" "libxkbcommon" "wayland"
                 "wayland-protocols" "libx11" "libxrandr" "libxinerama"
                 "libxcursor" "libxi" "alsa-lib" "pulseaudio" "dbus"
                 "elogind"
-                "boost" "skia" "libzip" "libsndfile" "mpg123" "openal"
+                "boost" "libzip" "libsndfile" "mpg123" "openal"
                 "glfw" "xz" "zlib" "libpng" "libjpeg-turbo" "freetype"
                 "expat" "flac" "fmt" "libogg" "opus" "libvorbis"
                 "vulkan-headers"
                 ;; Asio's TLS has one backend and this is it.
-                "openssl")))
+                "openssl"))))
     (home-page "https://github.com/j4niwzis/osu-cpp")
     (synopsis "Native client for osu! beatmaps")
     (description
