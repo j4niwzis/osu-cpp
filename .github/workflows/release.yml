@@ -52,6 +52,95 @@ jobs:
       release: true
     secrets: inherit
 
+  # And all of it a second time.
+  #
+  # A build that cannot be repeated is a build nobody else can check: the
+  # point of naming every source by digest and every archive by what built it
+  # is that somebody with the same inputs gets the same bytes. This is that
+  # claim, tested rather than asserted. The second pass compiles without the
+  # compiler cache, so what is compared is two compilations rather than one
+  # compilation and a cache of it.
+  native-again:
+    uses: ./.github/workflows/native.yml
+    with:
+      release: true
+      suffix: "-again"
+      fresh: true
+
+  wasm-again:
+    uses: ./.github/workflows/wasm.yml
+    with:
+      release: true
+      suffix: "-again"
+      fresh: true
+
+  click-again:
+    uses: ./.github/workflows/click.yml
+    with:
+      release: true
+      suffix: "-again"
+      fresh: true
+
+  apk-again:
+    uses: ./.github/workflows/android.yml
+    with:
+      release: true
+      suffix: "-again"
+      fresh: true
+    secrets: inherit
+
+  # What the two passes made, compared.
+  #
+  # The APK is compared unsigned. A run with no keystore signs with a test
+  # key it generates for itself, and two such keys are two different
+  # signatures over identical content -- so the signed files differ for a
+  # reason that says nothing about the build. The unsigned package is what
+  # this workflow attests, and it is what is compared.
+  reproducible:
+    needs: [native, native-again, wasm, wasm-again, click, click-again, apk, apk-again]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: passes
+
+      - name: what the two passes made
+        run: |
+          find passes -type f | sort | while read -r file; do
+            printf '%s  %s\n' "$(sha256sum "$file" | cut -d" " -f1)" "$file"
+          done
+
+      - name: and whether it is the same
+        run: |
+          differs=0
+          compare() {
+            first="$1"
+            second="$2"
+            if [ ! -f "$first" ] || [ ! -f "$second" ]; then
+              echo "missing: $first or $second"
+              differs=1
+              return
+            fi
+            if cmp -s "$first" "$second"; then
+              echo "same: $first"
+            else
+              echo "DIFFERS: $first"
+              ls -l "$first" "$second"
+              differs=1
+            fi
+          }
+          compare passes/osu-cpp-linux-ports/build/osu_client \
+                  passes/osu-cpp-linux-ports-again/build/osu_client
+          compare passes/osu-cpp-wasm/build-wasm/osu_client.wasm \
+                  passes/osu-cpp-wasm-again/build-wasm/osu_client.wasm
+          compare passes/osu-cpp-wasm/build-wasm/osu_client.data \
+                  passes/osu-cpp-wasm-again/build-wasm/osu_client.data
+          compare passes/osu-cpp-click/osu-cpp.click \
+                  passes/osu-cpp-click-again/osu-cpp.click
+          compare passes/osu-cpp-android/osu-cpp-unsigned.apk \
+                  passes/osu-cpp-android-again/osu-cpp-unsigned.apk
+          exit "$differs"
+
   # The one build that is not in the ordinary CI at all: an hour of a runner
   # and six gigabytes of cache, answering a question that does not change
   # from commit to commit.
