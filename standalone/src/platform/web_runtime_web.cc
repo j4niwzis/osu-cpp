@@ -114,6 +114,18 @@ inline void setCursorVisible(bool visible) {
   EM_ASM({ Module.setCursorVisible(!!$0); }, visible ? 1 : 0);
 }
 
+// Whether the client wants the pointer held to the canvas.
+//
+// Hiding the cursor and holding it are different things: a play with the
+// pointer read as a position wants it hidden and free, and only relative
+// input -- raw input, or a sensitivity other than 1:1 -- wants it held. The
+// page keeps this so it can ask again after a refusal, and a browser refuses
+// for about a second after Escape released the lock, which is how the game
+// is paused.
+inline void wantPointerLock(bool wanted) {
+  EM_ASM({ Module.osuWantsPointer = !!$0; }, wanted ? 1 : 0);
+}
+
 inline void runMainLoop(FrameCallback callback, void *context) {
   emscripten_set_main_loop_arg(callback, context, 0, 1);
 }
@@ -154,3 +166,5 @@ std::vector<std::string> platform::web::takePendingImports() {
   const std::scoped_lock lock(gImportMutex);
   return std::exchange(gPendingImports, std::vector<std::string>{});
 }
+
+
