@@ -32,7 +32,7 @@ on:
         default: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: click-${{ github.ref }}${{ inputs.suffix }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:

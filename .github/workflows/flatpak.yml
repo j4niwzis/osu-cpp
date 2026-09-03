@@ -31,7 +31,7 @@ on:
 # main is exempt: what landed there is worth an answer even if something
 # lands on top of it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: flatpak-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:

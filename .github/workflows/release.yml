@@ -14,6 +14,7 @@ name: release
 on:
   workflow_dispatch:
   push:
+    branches: [cmake-everywhere]
     tags: ["v*"]
 
 # A release run is not superseded by the next one: two tags are two releases.
@@ -187,7 +188,5 @@ jobs:
             echo "the page already serves this build"
             exit 0
           fi
-          git commit -m "The release build, as the page serves it
-
-Built by the release workflow from ${{ github.sha }}."
+          git commit -m "The release build, as the page serves it Built by the release workflow from ${{ github.sha }}."
           git push
