@@ -298,6 +298,7 @@ modules:
       # rejected. Offline is how that becomes an error naming the library
       # rather than a build hanging on a git clone that cannot happen.
       - -DCME_OFFLINE=ON
+      - -DCME_ARCHIVE=/run/build/osu-cpp/.flatpak-sources/cme.tar.gz
       - -DCPM_SOURCE_CACHE=/run/build/osu-cpp/.flatpak-sources/cme
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
       - -DOSU_STATIC_DEPS=ON
@@ -316,6 +317,15 @@ modules:
         url: https://github.com/j4niwzis/skiff-widgets.git
         commit: 065ff975ef99fe197b9b2b5d2762c060e91c5af2
         dest: .flatpak-sources/skiff-widgets
+      # The provider itself, by the revision and digest cmake/get_cme.cmake
+      # names. A module has no network, so what it would have fetched is
+      # declared here instead -- and flatpak-builder checks the digest, which
+      # is the same check that file(DOWNLOAD) would have made.
+      - type: file
+        url: https://github.com/j4niwzis/cmake-everywhere/archive/736278b73ee4c1eb0cbfc1ac39ec0ac3fed33912.tar.gz
+        sha256: 4e681fea26b92aa52b8c34dabc7ef0073ec2385b5a10e3b040e815f51c180afb
+        dest: .flatpak-sources
+        dest-filename: cme.tar.gz
       - type: file
         url: https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.1/CPM.cmake
         sha256: f3a6dcc6a04ce9e7f51a127307fa4f699fb2bade357a8eb4c5b45df76e1dc6a5
