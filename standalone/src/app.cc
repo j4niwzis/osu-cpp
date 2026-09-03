@@ -233,6 +233,10 @@ private:
   // Filtering / sorting: the control itself lives in client.filtercontrol.
   client::FilterControl fFilter;
   bool fLibraryLoaded = false;
+  // Whether this machine refused to let the slider bodies be read back off
+  // the GPU. Remembered so the next map is built the working way the first
+  // time.
+  bool fBodiesMustBeBuiltOnTheCpu = false;
   // Whether the skin offer was up on the previous frame, so that its closing
   // can be noticed.
   bool fSkinDialogWasOpen = false;
@@ -424,15 +428,11 @@ private:
     this->loadComboInfo();
     fSkin.setComboColors(fPlay.fMap->fComboColors);
     fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale,
-                                 fContext.get(), this->sliderBodyKey());
+                                 this->sliderBodyContext(),
+                                 this->sliderBodyKey());
     fSliderBodyScale = fScale;
     fSliderBodiesStale = false;
-    if (fSettings.choice("renderer") == 1) {
-      // Built on the GPU either way, since that is what SkSL is for; moved
-      // into memory now so the CPU rasteriser does not read them back on
-      // every frame that draws a slider.
-      fSkin.flattenBodiesToRaster(fContext.get());
-    }
+    this->sliderBodiesIntoMemory();
     if (fAutoplay) {
       if (replay) {
         fPlay.fAutoplayEvents = std::move(replay->fEvents);
@@ -1446,9 +1446,16 @@ private:
   // pictures, so all three are in the name they are filed under.
   [[nodiscard]] std::string sliderBodyKey() const {
     // The md5 rather than the file name: two sets can both hold a Normal.osu.
-    return std::format("{}:{}:{:.4f}:{}", fPlayback.beatmapMd5(),
+    // And where they were built, because a set built on the GPU and a set
+    // built on the CPU are not interchangeable: one of them cannot be drawn
+    // by a raster canvas.
+    return std::format("{}:{}:{:.4f}:{}{}", fPlayback.beatmapMd5(),
                        fBeatmapFilename, fScale,
-                       fSettings.choice("renderer"));
+                       fSettings.choice("renderer"),
+                       (fBodiesMustBeBuiltOnTheCpu ||
+                        this->sliderBodyContext() == nullptr)
+                           ? ":cpu"
+                           : "");
   }
 
   // A rasterised body is only as sharp as the scale it was built at. Rebuilt
@@ -1463,10 +1470,9 @@ private:
       return;
     }
     fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale,
-                                 fContext.get(), this->sliderBodyKey());
-    if (fSettings.choice("renderer") == 1) {
-      fSkin.flattenBodiesToRaster(fContext.get());
-    }
+                                 this->sliderBodyContext(),
+                                 this->sliderBodyKey());
+    this->sliderBodiesIntoMemory();
     fSliderBodyScale = fScale;
     fSliderBodiesStale = false;
     fFrame.damageAll("slider bodies rebuilt");
@@ -2076,6 +2082,45 @@ private:
   // are precomputed once into textures through SkSL, which llvmpipe's JIT
   // handles better than a CPU rasteriser would, and drawing those textures
   // into a raster canvas would mean reading them back every frame.
+  // What the slider bodies are built with.
+  //
+  // The GPU, which is what SkSL is for, except in a browser that is going to
+  // draw them on the CPU. There they are built on the CPU from the start,
+  // and the reason is not taste: moving them off the GPU afterwards is a
+  // read of the canvas, a browser with fingerprinting protection refuses
+  // that -- "Blocked ... from extracting canvas data" -- and what follows is
+  // not a failed call this code could answer, it is the program stopping
+  // where the read happened. A failure that cannot be observed cannot be
+  // fallen back from, so the way that works is taken first.
+  [[nodiscard]] skia::GrDirectContext *sliderBodyContext() const {
+    if constexpr (platform::capabilities::kBrowser) {
+      if (fSettings.choice("renderer") == 1) {
+        return nullptr;
+      }
+    }
+    return fContext.get();
+  }
+
+  // And into memory, when they were built on the GPU and will be drawn on
+  // the CPU. Nothing to do when they were built there to begin with.
+  void sliderBodiesIntoMemory() {
+    if (fSettings.choice("renderer") != 1 ||
+        this->sliderBodyContext() == nullptr) {
+      return;
+    }
+    if (fSkin.flattenBodiesToRaster(fContext.get())) {
+      return;
+    }
+    if (!fBodiesMustBeBuiltOnTheCpu) {
+      fBodiesMustBeBuiltOnTheCpu = true;
+      std::println(std::cerr,
+                   "[render] the slider bodies cannot be read back off the "
+                   "GPU here; building them on the CPU instead");
+    }
+    fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale, nullptr,
+                                 this->sliderBodyKey());
+  }
+
   [[nodiscard]] bool ensureRasterSurface() {
     if (fFrame.fRasterSurface &&
         fFrame.fRasterSurface->width() == fWin.fPixelW &&

@@ -450,13 +450,23 @@ public:
   // stack JITs better than a CPU rasteriser draws, but drawing the result on
   // a CPU canvas would read it back every frame -- so it is read back here
   // instead, at load.
-  void flattenBodiesToRaster(skia::GrDirectContext *grContext) {
+  // Whether every one of them is now in memory.
+  //
+  // Reading a texture back can be refused -- a browser with fingerprinting
+  // protection blocks reading pixels out of its canvas, and says so -- and
+  // an image that stays on the GPU cannot be drawn by a CPU canvas at all:
+  // Skia stops the program rather than draw nothing. So the answer is
+  // returned, and whoever asked decides what to do about it.
+  [[nodiscard]] bool flattenBodiesToRaster(skia::GrDirectContext *grContext) {
+    bool all = true;
     for (auto &[key, body] : fPrecomputedBodies) {
       if (!body.image || !body.image->isTextureBacked()) {
         continue;
       }
       if (auto raster = body.image->makeRasterImage(grContext)) {
         body.image = std::move(raster);
+      } else {
+        all = false;
       }
     }
     // The cached copy is the one the next visit to this map will be handed,
@@ -464,6 +474,7 @@ public:
     if (!fBodyCache.empty()) {
       fBodyCache.front().fBodies = fPrecomputedBodies;
     }
+    return all;
   }
 
   void drawSlider(skia::SkCanvas *canvas, const osu::Slider &s,
