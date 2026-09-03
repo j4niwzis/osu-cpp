@@ -567,7 +567,11 @@ if(EMSCRIPTEN_BUILD)
     "SHELL:-msimd128"
     # ccall among them: the page hands the client the path of an archive it
     # has just written, and a string argument is what ccall is for.
-    "SHELL:-sEXPORTED_RUNTIME_METHODS=['GL','callMain','FS','ccall']"
+    # getExceptionMessage among them: asking for the helpers by their own
+    # setting left them out of the build, and the page that asks what was
+    # thrown got nothing. A runtime method that is named is a runtime method
+    # that is there.
+    "SHELL:-sEXPORTED_RUNTIME_METHODS=['GL','callMain','FS','ccall','getExceptionMessage']"
     "SHELL:-sFETCH"
     "SHELL:-lidbfs.js"
     "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/shell.html"

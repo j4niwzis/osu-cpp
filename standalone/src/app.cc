@@ -839,6 +839,12 @@ private:
     if (fSkinDialog.takeInstalled()) {
       fSkin.load(fSkin.root());
       fFrame.damageAll("optional skin installed");
+      // A browser keeps what a filesystem was told to keep, and it is only
+      // told when something asks. A skin downloaded and never flushed is a
+      // skin that is downloaded again on the next visit.
+      if constexpr (platform::capabilities::kBrowser) {
+        platform::web::syncMapStorage();
+      }
     }
 
     // Overlays are drawn after the screen, over most of it, so appearance and

@@ -65,6 +65,26 @@
       },
     };
 
+    // A C++ exception that escapes into JavaScript arrives as an object
+    // holding a pointer. The runtime can say what it was, when the build
+    // carries the helpers for it, so it is asked rather than left as
+    // "uncaught CppException".
+    window.addEventListener('error', function (event) {
+      var thrown = event.error;
+      if (!thrown || typeof thrown !== 'object' || !('excPtr' in thrown)) {
+        return;
+      }
+      if (!Module.getExceptionMessage) {
+        console.error('a C++ exception escaped, and this build cannot say what it was');
+        return;
+      }
+      try {
+        console.error('C++ exception: ' + Module.getExceptionMessage(thrown).join(': '));
+      } catch (error) {
+        console.error('a C++ exception escaped and could not be read: ' + error);
+      }
+    });
+
     // An audio context may not start until the page has been interacted
     // with, and the browser is the one keeping count.
     function resumeAudio() {
