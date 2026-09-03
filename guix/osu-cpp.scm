@@ -177,8 +177,15 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
               ;; toolchain input instead of trying to rediscover wrapper
               ;; state from `clang++ -v`.
               (let* ((toolchain (assoc-ref inputs "gcc-toolchain"))
+                     ;; Following symbolic links, because a Guix toolchain
+                     ;; is a tree of them: include/c++ is a directory made
+                     ;; of several inputs, and the target-specific part of
+                     ;; it -- where bits/c++config.h is -- is a link to the
+                     ;; compiler's own output. Not following them is why
+                     ;; that header was reported as absent while the
+                     ;; compiler was reading it every day.
                      (std-files
-                      (find-files toolchain "^std\\.cc$"))
+                      (find-files toolchain "^std\\.cc$" #:stat stat))
                      (std
                       (find (lambda (file)
                               (string-contains file "/bits/std.cc"))
@@ -187,11 +194,19 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                   (error "libstdc++ bits/std.cc is not in the GCC toolchain"))
                 (let* ((std-directory (dirname (dirname std)))
                        (config-files
-                        (find-files toolchain "^c\\+\\+config\\.h$"))
+                        (find-files toolchain "^c\\+\\+config\\.h$"
+                                    #:stat stat))
                        (config
                         (find (lambda (file)
                                 (string-contains file "/bits/c++config.h"))
                               config-files))
+                       ;; Without it the headers above have no configuration
+                       ;; to read, and what answers <bits/c++config.h> is
+                       ;; then whichever other standard library is on the
+                       ;; include path. That is the failure this phase
+                       ;; exists to prevent, so it is an error here.
+                       (_ (unless config
+                            (error "no bits/c++config.h in the GCC toolchain")))
                        (directories
                         (delete-duplicates
                          (filter identity
@@ -208,6 +223,33 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                   ;; put the same standard-library paths on CMake's command
                   ;; line so module dependency scanning sees them too.
                   (setenv "CXXFLAGS" include-flags)
+                  ;; And the same standard library, only.
+                  ;;
+                  ;; Clang comes with libstdc++ include paths of its own --
+                  ;; another GCC's -- and Guix hands them to it through
+                  ;; CPLUS_INCLUDE_PATH, which no -isystem on the command
+                  ;; line removes. What that produced was one compile with
+                  ;; two standard libraries in it: <type_traits> from the
+                  ;; toolchain named above and <bits/c++config.h> from
+                  ;; Clang's, which is a GCC old enough not to define the
+                  ;; macro that header uses --
+                  ;;
+                  ;;   type_traits:897: error: expected unqualified-id
+                  ;;
+                  ;; -- an unexpanded _GLIBCXX26_DEPRECATED_SUGGEST, and
+                  ;; every probe of an installed library failing because of
+                  ;; it. So the C++ entries of that variable are replaced by
+                  ;; this toolchain's; everything else in it -- the C
+                  ;; library, the inputs' headers -- stays.
+                  (let* ((existing (or (getenv "CPLUS_INCLUDE_PATH") ""))
+                         (others (filter (lambda (directory)
+                                           (not (string-contains
+                                                 directory "/include/c++")))
+                                         (string-split existing #\:)))
+                         (wanted (string-join
+                                  (append directories others) ":")))
+                    (setenv "CPLUS_INCLUDE_PATH" wanted)
+                    (format #t "C++ include path: ~a~%" wanted))
                   (format #t "std module source: ~a~%" std)
                   (format #t "standard library include flags: ~a~%"
                           include-flags)
