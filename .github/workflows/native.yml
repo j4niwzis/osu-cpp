@@ -29,7 +29,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 26.04 rather than whatever ubuntu-latest is today, because libskia
+    # first appears there: 24.04 has no Skia to take, so the system run
+    # would build it from source and prove nothing about taking it.
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     # The same sources, answered two ways.
     #
@@ -80,24 +83,45 @@ jobs:
       # What a desktop build reaches through rather than builds: the window
       # system, the GPU stack and the sound server are the machine's, and
       # their headers have to be here for a port to find them.
+      #
+      # libgles-dev is separate from libegl-dev and from libgl-dev, and Skia
+      # includes <GLES2/gl2.h> from the EGL interface it builds for the gl
+      # feature. Without it the build stops seven hundred objects in, on a
+      # header rather than on anything that says which library wanted it.
       - name: what the system provides
         run: |
           sudo apt-get install -y \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             libxkbcommon-dev libwayland-dev wayland-protocols libgl-dev \
-            libegl-dev libasound2-dev libpulse-dev libdbus-1-dev
+            libegl-dev libgles-dev libasound2-dev libpulse-dev libdbus-1-dev
 
       # Only for the run that is allowed to take them. Runner images carry
       # the runtime of most of these and the headers of almost none, which
       # is why a build here compiles things the machine appears to have.
+      #
+      # libzip's programs among them, and not because anything here runs
+      # them: libzip-dev installs a CMake config that names /usr/bin/zipcmp
+      # as an imported target, and Ubuntu ships that program as its own
+      # package. Reading that config without it is a fatal error inside a
+      # file this project does not own, so a machine with half of libzip
+      # installed cannot configure at all.
       - name: what a machine with development packages has
         if: matrix.answer == 'system'
         run: |
           sudo apt-get install -y \
             zlib1g-dev libpng-dev libjpeg-dev libfreetype-dev libexpat1-dev \
-            libsndfile1-dev libmpg123-dev libopenal-dev libzip-dev \
+            libsndfile1-dev libmpg123-dev libopenal-dev \
+            libzip-dev \
             libvorbis-dev libogg-dev libflac-dev libopus-dev liblzma-dev \
-            libharfbuzz-dev libsystemd-dev libglfw3-dev libboost-all-dev
+            libharfbuzz-dev libsystemd-dev libglfw3-dev libboost-all-dev \
+            libskia-dev
+          # The programs libzip's CMake config declares as imported targets,
+          # each its own package here. Separately, because which of the three
+          # that config names is a property of the distribution's packaging
+          # and not something to guess at.
+          for tool in zipcmp zipmerge ziptool; do
+            sudo apt-get install -y "$tool" || true
+          done
 
       - name: cmake
         run: |
