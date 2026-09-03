@@ -187,6 +187,28 @@ jobs:
         if: always()
         run: cat build/cme-report.txt || true
 
+      # The same list of libraries, in the spelling flatpak-builder reads.
+      #
+      # The lock is written by a build that had a network; a Flatpak module
+      # has none, so what it may use has to be declared in the manifest.
+      # These two files are generated from the lock and committed, the way a
+      # Nix build's sources are.
+      - name: what a Flatpak build would have to be given
+        if: matrix.answer == 'ports'
+        run: |
+          python3 build/_cme/tools/lock-to-flatpak.py standalone/cme-lock.json \
+            --sources flatpak/cme-sources.json --ports flatpak/cme-ports || true
+          ls -la flatpak/cme-sources.json flatpak/cme-ports | head -30
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.answer == 'ports'
+        with:
+          name: flatpak-sources
+          path: |
+            flatpak/cme-sources.json
+            flatpak/cme-ports
+          if-no-files-found: warn
+
       - uses: actions/upload-artifact@v4
         if: success()
         with:
