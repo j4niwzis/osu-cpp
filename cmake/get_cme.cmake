@@ -8,10 +8,24 @@
 # A revision and its digest, not a branch. What resolves every dependency of
 # this project is a dependency of this project.
 
-set(CME_VERSION "4fe91e3ef109e36f6873fee54b096464e66d6e9f" CACHE STRING
-  "cmake-everywhere revision")
-set(CME_SHA256 "8879c994afa29d7de735589c14ed5cbff1b646e5f17b211d3c790c3833231f3f" CACHE STRING
-  "The digest of that revision's archive")
+# The pin this project carries, and the pin this build was last given.
+#
+# CME_VERSION is a cache entry, and a cache entry is not overwritten by the
+# default beside it: raising the pin here changed nothing in a build
+# directory that already had one, silently, and the build went on using the
+# revision from before the change. So the pin that was applied is
+# remembered, and a pin that differs from it wins -- while -DCME_VERSION=
+# on the command line still stands until this file says something else.
+set(CME_PINNED "399297abfc4ba1bd5c6cdd023221bf50607a03f8")
+set(CME_PINNED_SHA256 "732ad543f0818acf4cbff4621edcba0353ce173b7602cca7b276c9d9e5ef0720")
+if(NOT "${CME_PIN_APPLIED}" STREQUAL "${CME_PINNED}")
+  set(CME_VERSION "${CME_PINNED}" CACHE STRING
+    "cmake-everywhere revision" FORCE)
+  set(CME_SHA256 "${CME_PINNED_SHA256}" CACHE STRING
+    "The digest of that revision's archive" FORCE)
+  set(CME_PIN_APPLIED "${CME_PINNED}" CACHE INTERNAL
+    "The pin this build directory was given")
+endif()
 set(CME_SOURCE_DIR "${CMAKE_BINARY_DIR}/_cme" CACHE PATH
   "Where it is unpacked")
 
