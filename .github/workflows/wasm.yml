@@ -31,7 +31,7 @@ on:
         default: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: wasm-${{ github.ref }}${{ inputs.suffix }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
