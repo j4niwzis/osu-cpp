@@ -43,7 +43,32 @@ endif()
 
 if(NOT EXISTS "${CME_SOURCE_DIR}/cmake-everywhere.cmake"
    OR NOT cme_have STREQUAL "${CME_VERSION}")
+  # An archive somebody else fetched.
+  #
+  # A build with no network cannot download this, and the ones that have no
+  # network are exactly the ones that are careful about what they build:
+  # flatpak-builder gives a module no network at all. Such a build declares
+  # the archive among its own sources -- by the same URL and the same digest
+  # -- and says where it put it.
+  set(CME_ARCHIVE "" CACHE FILEPATH
+    "An already-fetched archive of that revision, for a build with no network")
   set(archive "${CMAKE_BINARY_DIR}/cme-${CME_VERSION}.tar.gz")
+  if(CME_ARCHIVE)
+    if(NOT EXISTS "${CME_ARCHIVE}")
+      message(FATAL_ERROR
+        "cmake-everywhere: CME_ARCHIVE is ${CME_ARCHIVE}, and there is no "
+        "such file")
+    endif()
+    file(SHA256 "${CME_ARCHIVE}" have)
+    if(NOT have STREQUAL CME_SHA256)
+      message(FATAL_ERROR
+        "cmake-everywhere: ${CME_ARCHIVE} hashes to ${have}, and this project "
+        "asks for ${CME_SHA256}. It is not the revision this build was "
+        "written against.")
+    endif()
+    message(STATUS "cmake-everywhere: taking ${CME_VERSION} from ${CME_ARCHIVE}")
+    file(COPY_FILE "${CME_ARCHIVE}" "${archive}")
+  else()
   if(cme_have)
     message(STATUS
       "cmake-everywhere: fetching ${CME_VERSION}, replacing ${cme_have}")
@@ -57,6 +82,7 @@ if(NOT EXISTS "${CME_SOURCE_DIR}/cmake-everywhere.cmake"
   if(NOT code EQUAL 0)
     list(GET status 1 reason)
     message(FATAL_ERROR "cmake-everywhere: cannot fetch ${CME_VERSION}: ${reason}")
+  endif()
   endif()
   file(ARCHIVE_EXTRACT INPUT "${archive}"
        DESTINATION "${CMAKE_BINARY_DIR}/_cme-unpack")
