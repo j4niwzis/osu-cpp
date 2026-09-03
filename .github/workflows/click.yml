@@ -181,6 +181,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-22 \
             -DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json \
             -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON \
             -DOSU_WAYLAND=ON \
             -DOPENGL_opengl_LIBRARY=/usr/lib/aarch64-linux-gnu/libOpenGL.so \
             -DOPENGL_glx_LIBRARY=/usr/lib/aarch64-linux-gnu/libGLX.so \

@@ -279,6 +279,7 @@ jobs:
             -DOSU_ANDROID_APKSIGNER_JAR="$NDK/tools/apksigner.jar" \
             -DCME_BOOST_ARCHIVE=ON \
             -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON \
             -DOSU_ANDROID_KEY_ALIAS="${OSU_KEY_ALIAS:-androiddebugkey}" \
             -DOSU_ANDROID_KEY_PASSWORD="${OSU_KEY_PASSWORD:-android}" \
             -DOSU_ANDROID_TEST_KEY="${OSU_ANDROID_TEST_KEY:-ON}" \
