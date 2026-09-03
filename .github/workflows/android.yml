@@ -85,7 +85,9 @@ jobs:
       - name: clang 22 and libc++
         run: |
           sudo apt-get update || true
-          sudo apt-get install -y ninja-build python3 openjdk-17-jdk unzip \
+          # A runtime rather than a kit: nothing here compiles Java any more.
+          # What still needs a JVM is apksigner, which is a jar.
+          sudo apt-get install -y ninja-build python3 openjdk-17-jre-headless unzip \
             curl ccache lsb-release software-properties-common gnupg
           curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
           chmod +x /tmp/llvm.sh
@@ -253,7 +255,6 @@ jobs:
             -DOSU_ANDROID_NATIVE_APP_GLUE_DIR="$NDK/src/ndk/sources/android/native_app_glue" \
             -DOSU_ANDROID_FRAMEWORK_RES_APK="$NDK/tools/framework-res.apk" \
             -DOSU_ANDROID_APKSIGNER_JAR="$NDK/tools/apksigner.jar" \
-            -DOSU_ANDROID_SYSTEM_FILE_PICKER=OFF \
             -DCME_BOOST_ARCHIVE=ON \
             -DCME_STORE_ENABLED=ON \
             -DOSU_ANDROID_KEY_ALIAS="${OSU_KEY_ALIAS:-androiddebugkey}" \
