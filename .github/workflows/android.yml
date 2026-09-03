@@ -166,6 +166,31 @@ jobs:
           key: android-deps-${{ hashFiles('cmake/get_cme.cmake') }}-${{ github.sha }}
           restore-keys: android-deps-${{ hashFiles('cmake/get_cme.cmake') }}-
 
+      # CI signs with a key it makes itself, which is a test key and says so
+      # in its certificate. A release is signed elsewhere, with a key that
+      # does not come here.
+      #
+      # ANDROID_KEYSTORE_BASE64, if it is ever set, holds a keystore to sign
+      # with instead; the alias and password go beside it.
+      - name: the signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p build-android/apk
+          if [ -n "$KEYSTORE" ]; then
+            printf %s "$KEYSTORE" | base64 -d > build-android/apk/debug.keystore
+            echo "OSU_KEY_ALIAS=${KEY_ALIAS:-androiddebugkey}" >> "$GITHUB_ENV"
+            echo "OSU_KEY_PASSWORD=${KEY_PASSWORD:-android}" >> "$GITHUB_ENV"
+            echo "OSU_ANDROID_TEST_KEY=OFF" >> "$GITHUB_ENV"
+            echo "signing with the keystore this repository holds"
+          else
+            echo "no keystore is set: this run signs with a test key of its"
+            echo "own, and the file it signs is named for that"
+          fi
+
+
       - name: configure
         env:
           CCACHE_DIR: ~/.cache/ccache
@@ -179,7 +204,10 @@ jobs:
             -DOSU_ANDROID_APKSIGNER_JAR="$NDK/tools/apksigner.jar" \
             -DOSU_ANDROID_SYSTEM_FILE_PICKER=OFF \
             -DCME_BOOST_ARCHIVE=ON \
-            -DCME_STORE_ENABLED=ON
+            -DCME_STORE_ENABLED=ON \
+            -DOSU_ANDROID_KEY_ALIAS="${OSU_KEY_ALIAS:-androiddebugkey}" \
+            -DOSU_ANDROID_KEY_PASSWORD="${OSU_KEY_PASSWORD:-android}" \
+            -DOSU_ANDROID_TEST_KEY="${OSU_ANDROID_TEST_KEY:-ON}"
 
       # ninja prints a line when it starts an edge, not when it finishes, so
       # a log that stops moving means four long compilations are in flight
@@ -196,6 +224,20 @@ jobs:
         if: always()
         run: cat build-android/cme-report.txt || true
 
+
+      # The signature is an insertion, and removing it is the inverse of
+      # adding it -- so the file that comes back out of the signed APK is the
+      # package, byte for byte. That is what makes a release signed with a
+      # key nobody here has checkable against a build nobody there ran.
+      - name: the way back from signed to unsigned
+        run: |
+          python3 tools/apk-strip-signature.py \
+            build-android/apk/osu-cpp-test-signed.apk /tmp/stripped.apk
+          a=$(sha256sum /tmp/stripped.apk | cut -d' ' -f1)
+          b=$(sha256sum build-android/apk/osu-cpp-unsigned.apk | cut -d' ' -f1)
+          echo "stripped  $a"
+          echo "unsigned  $b"
+          test "$a" = "$b"
 
       - uses: actions/upload-artifact@v4
         if: success()
@@ -215,4 +257,7 @@ jobs:
         if: success() && github.event_name == 'push'
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: build-android/apk/*.apk
+          # The unsigned package, not the signed file. What this workflow
+          # built is the package; who released it is what a signature says,
+          # and that is a different claim made by a different party.
+          subject-path: build-android/apk/osu-cpp-unsigned.apk
