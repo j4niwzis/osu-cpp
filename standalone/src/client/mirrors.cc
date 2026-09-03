@@ -138,23 +138,24 @@ public:
     }
   }
 
-  // Mirrors, in the order they are tried. None of them serves the whole
-  // filter set, so each says what it can do and the rest is applied to the
-  // page after it arrives.
+  // Mirrors, in the order they are tried. Neither serves the whole filter
+  // set, so each says what it can do and the rest is applied to the page
+  // after it arrives.
   //
   // Verified by hand against each API:
-  //   nerinyan   q, m, s (name), sort, e (video/storyboard), nsfw, p/ps
   //   osu.direct q, mode, status (id), sort (<field>:<dir>), amount/offset
   //   mino       query, mode, status (id), limit/offset
-  enum class MirrorStyle : std::uint8_t { kNerinyan, kOsuDirect, kMino };
+  //
+  // There were three. Nerinyan answers every request with 530 -- the host
+  // its name resolves to is not there -- and a mirror that is not there is
+  // not a fallback, it is a delay in front of the one that answers.
+  enum class MirrorStyle : std::uint8_t { kOsuDirect, kMino };
   struct Mirror {
     const char *fName;
     MirrorStyle fStyle;
     const char *fDownload; // {} takes the set id
   };
-  static constexpr std::array<Mirror, 3> kMirrors{
-      Mirror{"nerinyan", MirrorStyle::kNerinyan,
-             "https://api.nerinyan.moe/d/{}"},
+  static constexpr std::array<Mirror, 2> kMirrors{
       Mirror{"osu.direct", MirrorStyle::kOsuDirect,
              "https://osu.direct/api/d/{}"},
       Mirror{"mino", MirrorStyle::kMino, "https://catboy.best/d/{}"}};
@@ -206,28 +207,6 @@ public:
     }
   }
 
-  [[nodiscard]] static const char *statusName(listing::Category c) {
-    using Category = listing::Category;
-    switch (c) {
-    case Category::kRanked:
-      return "ranked";
-    case Category::kQualified:
-      return "qualified";
-    case Category::kLoved:
-      return "loved";
-    case Category::kPending:
-      return "pending";
-    case Category::kWip:
-      return "wip";
-    case Category::kGraveyard:
-      return "graveyard";
-    case Category::kLeaderboard:
-      return "leaderboard";
-    default:
-      return "";
-    }
-  }
-
   // lazer's criteria mapped onto what each mirror calls them. An empty string
   // means the mirror cannot sort by it and the listing does it itself.
   [[nodiscard]] static std::string
@@ -270,28 +249,6 @@ public:
     const int status = statusId(f.fCategory);
     std::string url;
     switch (mirror.fStyle) {
-    case MirrorStyle::kNerinyan: {
-      url =
-          std::format("https://api.nerinyan.moe/search?q={}&m={}&ps={}&p={}", q,
-                      f.fRuleset, kSearchPageSize, offset / kSearchPageSize);
-      if (const char *name = statusName(f.fCategory); *name != '\0') {
-        url += std::format("&s={}", name);
-      }
-      // Extra and explicit content are server-side here, and only here.
-      std::string extra;
-      if (f.fExtra[0]) {
-        extra += "video";
-      }
-      if (f.fExtra[1]) {
-        extra += extra.empty() ? "storyboard" : ".storyboard";
-      }
-      if (!extra.empty()) {
-        url += "&e=" + extra;
-      }
-      url += f.fExplicit == listing::Explicit::kShow ? "&nsfw=true"
-                                                     : "&nsfw=false";
-      break;
-    }
     case MirrorStyle::kOsuDirect:
       url = std::format(
           "https://osu.direct/api/v2/search?q={}&mode={}&amount={}&offset={}",
@@ -593,16 +550,12 @@ public:
     // An offset counts entries in the mirror's list, so advancing it by the
     // page size when a page came back short steps over entries that were
     // never received -- a request for every page and results that appear
-    // late and with gaps in them. Nerinyan is the exception: what it takes
-    // is a page number, so there the page is what advances.
+    // late and with gaps in them.
     //
     // And there is more to ask for exactly when something came back. Half a
     // page used to be the test, which ends a listing at the first mirror
     // that answers a little less than it was asked for.
-    fSearchOffset =
-        offset + (kMirrors[fMirror].fStyle == MirrorStyle::kNerinyan
-                      ? kSearchPageSize
-                      : std::max(returned, 1));
+    fSearchOffset = offset + std::max(returned, 1);
     // Something came back, and some of it was new: a page of nothing but
     // sets already here is a mirror that is not paging, and asking it again
     // only produces the same page.
