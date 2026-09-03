@@ -34,6 +34,21 @@
             + revision + ".tar.gz";
           sha256 = digest;
         };
+        # nixpkgs currently carries milestone 144. Skiff follows Skia's
+        # milestone-148 gradient API, so keep the nixpkgs recipe and update
+        # only its pinned source. This remains a normal Nix package and uses
+        # the same system-library policy as the repository recipe.
+        skia153 = pkgs.skia.overrideAttrs (_: {
+          version = "153-unstable-2026";
+          src = pkgs.fetchurl {
+            name = "skia-153.tar.gz";
+            url = "https://codeload.github.com/google/skia/tar.gz/9d07e5bad9e3e21da2426946e589daa647218271";
+            hash = "sha512-nBaCGU5nHdSesRMfYb1qHUjNMvQfjfd7Jtk6ZQks0sj1xS0xAa/IBLMDU3wid7wbpG3rmsBHshMtWcKLPm7dGA==";
+          };
+          # The nixpkgs loongarch patch targets milestone 144; its fix is in
+          # the newer source and the old patch no longer applies.
+          patches = [ ];
+        });
         # libstdc++ ships module sources but no CMake manifest. The same
         # compiler and manifest are used for the separately installed module
         # libraries and for their final consumer.
@@ -82,7 +97,7 @@
           version = "0.1-ae89eae";
           src = componentSources.skiff;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
-          propagatedBuildInputs = with pkgs; [ skia libGL ];
+          propagatedBuildInputs = [ skia153 pkgs.libGL ];
           preConfigure = moduleSetup;
           cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" "-DSKIFF_INSTALL=ON" ];
           postInstall = ''
@@ -105,6 +120,9 @@
         };
       in
       {
+        # Exposed separately so CI can finish and cache this expensive build
+        # before compiling either of its consumers.
+        packages.skia = skia153;
         packages.skiff = skiff;
         packages.skiff-widgets = skiff-widgets;
         # Clang, because this is compiled with Clang everywhere else and
@@ -126,7 +144,7 @@
             libGL libglvnd libxkbcommon wayland wayland-protocols
             xorg.libX11 xorg.libXrandr xorg.libXinerama xorg.libXcursor
             xorg.libXi alsa-lib libpulseaudio dbus systemd
-            boost skia libzip libsndfile mpg123 openal glfw
+            boost skia153 libzip libsndfile mpg123 openal glfw
             xz zlib libpng libjpeg_turbo freetype expat
             flac fmt libogg opus libvorbis vulkan-headers
             skiff skiff-widgets
