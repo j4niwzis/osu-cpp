@@ -242,7 +242,7 @@ jobs:
           # target and the sysroot among it. These are appended to it.
           extra=()
           if [ "${{ inputs.release }}" = "true" ]; then
-            tuned="-O3 -DNDEBUG -flto=full -ffunction-sections -fdata-sections"
+            tuned="-O3 -DNDEBUG -flto=full -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden"
             # Full LTO hands its partitions back to LLD from worker threads.
             # Their completion order changed the dynamic-symbol and PLT order
             # between otherwise identical links. One linker thread fixes the
