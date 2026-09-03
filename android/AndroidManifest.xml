@@ -14,6 +14,21 @@
         android:label="osu!cpp"
         android:resizeableActivity="false"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <!-- Landscape, asked of the system, because a system that turns
+             its screen gives a window that is already the right way up:
+             nothing is composed, nothing is turned, and the renderer draws
+             into the display. Where the window arrives portrait instead,
+             the buffer is turned a quarter during composition, which costs
+             no second render target.
+
+             A display can also be set to turn only when a person turns it,
+             and then this request is answered by letterboxing: waydroid,
+             whose screen is 1080x2340, gave this activity 1080x534 at the
+             top of it and left the rest black. That is the display setting
+             "fixed to user rotation", it is not visible from inside the
+             application (every way of asking how large the display is
+             answers with the letterbox), and on waydroid it is turned off
+             with: wm fixed-to-user-rotation disabled. -->
         <activity
             android:name="@OSU_ANDROID_ACTIVITY@"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
