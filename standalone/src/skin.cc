@@ -477,6 +477,15 @@ public:
     return all;
   }
 
+  // Drop them, when they could not be moved off the GPU. What is left there
+  // cannot be drawn by a thread with no context, and a body that is not
+  // precomputed is built where it is met -- slower, and something that can
+  // actually be drawn.
+  void forgetPrecomputedBodies() {
+    fPrecomputedBodies.clear();
+    fBodyCache.clear();
+  }
+
   void drawSlider(skia::SkCanvas *canvas, const osu::Slider &s,
                   std::size_t index, const osu::SliderPath &path,
                   double spanDuration, double tickDistance, double now,
