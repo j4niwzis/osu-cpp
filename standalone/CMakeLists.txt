@@ -519,10 +519,15 @@ endif()
 option(OSU_VIDEO_LIBAV "Encode exported video with libavcodec" OFF)
 if(OSU_VIDEO_LIBAV)
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_VIDEO_LIBAV=1)
-  # By what is used of it: MPEG-4 into an MP4, and the raw frames the
-  # encoder is fed. Asking for the codecs by name is what makes them be
-  # there -- an FFmpeg built with none of them links and encodes nothing.
-  find_package(FFmpeg REQUIRED COMPONENTS mpeg4 rawvideo mp4)
+  # By what is used of it: H.264 into an MP4, and the raw frames the encoder
+  # is fed. Asking for the codecs by name is what makes them be there -- an
+  # FFmpeg built with none of them links and encodes nothing.
+  #
+  # H.264 through libx264, which is GPL: this program is under the AGPL, so
+  # that is a licence it can carry. What it buys is a file anything will
+  # play at a size anything will accept -- MPEG-4 part 2 is neither, and it
+  # stays as what the encoder falls back to where x264 was not built.
+  find_package(FFmpeg REQUIRED COMPONENTS x264 mpeg4 rawvideo mp4)
   target_link_libraries(${PROJECT_NAME}
     FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil
     FFmpeg::swscale FFmpeg::swresample)
