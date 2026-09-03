@@ -198,7 +198,7 @@ jobs:
           cat build/cme-report.txt || true
           # And what a kept module library says about itself, which is the
           # part a consumer reads to compile its interface units.
-          for u in ~/.cache/cmake-everywhere/store/skiff*/*/use.cmake; do
+          for u in ~/.cache/cmake-everywhere/store/{skiff*,openal-soft}/*/use.cmake; do
             [ -f "$u" ] || continue
             echo "=== $u"
             cat "$u"
