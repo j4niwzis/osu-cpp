@@ -70,6 +70,20 @@ public:
   // Progress lives on the transfer handles; a card just reads a float, and
   // one whose number moved says so. That is what keeps a download from being
   // worth the whole screen on every frame of it.
+  // A page that failed everywhere, once its few seconds are up. The screen
+  // calls this every frame anyway, and without it the retry would wait for a
+  // scroll that has nothing left to scroll.
+  void pollSearchRetry() {
+    if (fSearchPending || !fMoreAvailable || fSearchAgainAt <= 0.0) {
+      return;
+    }
+    if (platform::clock::milliseconds() < fSearchAgainAt) {
+      return;
+    }
+    fSearchAgainAt = 0.0;
+    this->fetchPage();
+  }
+
   void pollProgress() {
     for (std::size_t i = 0; i < fFound.size(); ++i) {
       auto &e = fFound[i];
@@ -306,12 +320,14 @@ public:
   void startSearch(const listing::Filters &filters) {
     fFilters = filters;
     fMirrorsTried = 0;
+    fSearchAgainAt = 0.0;
     // A search begun now does not start on a host that was silent a moment
     // ago, whichever one the setting prefers.
     if (fMirrorSilentUntil[fMirror] > platform::clock::milliseconds()) {
       fMirror = this->nextLikelyMirror(fMirror);
     }
     fSearchOffset = 0;
+    fSeenSets.clear();
     fMoreAvailable = true;
     // Pages already in flight belong to the previous query; without this they
     // arrive afterwards and are appended to the new results.
@@ -327,6 +343,17 @@ public:
     if (fSearchPending || !fMoreAvailable) {
       return;
     }
+    // Not yet, when the last attempt at this page failed everywhere: a
+    // listing that asks again on every frame is the same burst that made the
+    // mirrors refuse in the first place.
+    if (platform::clock::milliseconds() < fSearchAgainAt) {
+      return;
+    }
+    // This page has not been refused by anybody yet. Counted per page rather
+    // than per search: three failures spread over three pages used to end
+    // the search as surely as three failures of one page, so a listing that
+    // had one bad page stopped loading any more of itself.
+    fMirrorsTried = 0;
     fSearchPending = true;
     fDownloadStatus = fSearchOffset == 0 ? "Searching..." : "Loading more...";
     const int offset = fSearchOffset;
@@ -380,13 +407,18 @@ public:
         return;
       }
       fDownloadStatus = "Search failed: " + r.fError;
-      fMoreAvailable = false; // stop the scroll from asking again every frame
+      // Asked again in a few seconds rather than never. What refused was a
+      // moment -- every mirror answering at once is not the same as a search
+      // that has run out of results, and only the second of those is a
+      // reason to stop asking.
+      fSearchAgainAt = platform::clock::milliseconds() + 5000.0;
       fHooks.fNotify("search failed: " + r.fError,
                      skia::colorSetARGB(255, 255, 110, 110));
       return;
     }
-    // It answered, so it is not down.
+    // It answered, so it is not down, and this page needs no retry.
     fMirrorSilentUntil[fMirror] = 0.0;
+    fSearchAgainAt = 0.0;
     const auto parsed = bjson::tryParse(r.fBody);
     if (!parsed) {
       fDownloadStatus = "Search failed: malformed JSON";
@@ -438,6 +470,7 @@ public:
 
     if (offset == 0) {
       fFound.clear();
+      fSeenSets.clear();
     }
     const std::size_t before = fFound.size();
     for (const auto &e : *arr) {
@@ -542,12 +575,38 @@ public:
           std::ranges::sort(d.fDiffs, {}, &listing::Entry::Difficulty::fStars);
         }
       }
+      // A set already in the listing is not added twice. Mirrors differ in
+      // what they do with a paging parameter they do not like, and one that
+      // answers every page with the same page would otherwise fill the
+      // listing with copies for as long as it was scrolled.
+      if (!fSeenSets.insert(d.fSetId).second) {
+        continue;
+      }
       fFound.push_back(std::move(d));
     }
     this->markOwnedResults();
     const std::size_t added = fFound.size() - before;
-    fSearchOffset = offset + kSearchPageSize;
-    fMoreAvailable = added >= static_cast<std::size_t>(kSearchPageSize) / 2;
+    const auto returned = static_cast<int>(arr->size());
+
+    // Moved on by what the mirror sent, not by what it was asked for.
+    //
+    // An offset counts entries in the mirror's list, so advancing it by the
+    // page size when a page came back short steps over entries that were
+    // never received -- a request for every page and results that appear
+    // late and with gaps in them. Nerinyan is the exception: what it takes
+    // is a page number, so there the page is what advances.
+    //
+    // And there is more to ask for exactly when something came back. Half a
+    // page used to be the test, which ends a listing at the first mirror
+    // that answers a little less than it was asked for.
+    fSearchOffset =
+        offset + (kMirrors[fMirror].fStyle == MirrorStyle::kNerinyan
+                      ? kSearchPageSize
+                      : std::max(returned, 1));
+    // Something came back, and some of it was new: a page of nothing but
+    // sets already here is a mirror that is not paging, and asking it again
+    // only produces the same page.
+    fMoreAvailable = returned > 0 && added > 0;
     fDownloadStatus = std::format("{} results", fFound.size());
   }
 
@@ -952,7 +1011,10 @@ private:
   bool fSearchPending = false;
   int fSearchOffset = 0; // how much of the current search is loaded
   std::uint32_t fSearchGeneration = 0; // older queries are dropped
+  std::unordered_set<long> fSeenSets; // what is already in the listing
   bool fMoreAvailable = true; // a full page came back, so ask for the next
+  // When the page that every mirror refused is worth asking for again.
+  double fSearchAgainAt = 0.0;
   std::string fDownloadStatus;
   // Track previews come from osu!'s own preview endpoint and play on their
   // own source, so the menu music is untouched.
