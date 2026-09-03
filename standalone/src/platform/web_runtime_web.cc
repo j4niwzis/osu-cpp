@@ -73,9 +73,15 @@ inline void initializeMapStorage() {
   });
 }
 
-[[nodiscard]] inline bool mapStorageReady() {
-  return gMapStorageReady.load(std::memory_order_acquire);
-}
+// Not inline, and neither is the one below.
+//
+// Both read state that lives in this file's anonymous namespace, and an
+// exported inline function that touches a name only this translation unit
+// has is a function every importer compiles its own copy of, against its
+// own copy of that name. The callback set the flag here and the client read
+// one that was false for ever: "Syncing local storage..." with the storage
+// mounted, read and reported on the console.
+[[nodiscard]] bool mapStorageReady();
 
 inline void syncMapStorage() {
   EM_ASM({
@@ -102,10 +108,7 @@ inline void requestBeatmapArchive() {
 }
 
 // What the page has put there since the last frame asked.
-[[nodiscard]] inline std::vector<std::string> takePendingImports() {
-  const std::scoped_lock lock(gImportMutex);
-  return std::exchange(gPendingImports, std::vector<std::string>{});
-}
+[[nodiscard]] std::vector<std::string> takePendingImports();
 
 inline void setCursorVisible(bool visible) {
   EM_ASM({ Module.setCursorVisible(!!$0); }, visible ? 1 : 0);
@@ -141,3 +144,13 @@ inline void cancelMainLoop() { emscripten_cancel_main_loop(); }
 }
 
 } // namespace platform::web
+
+// One definition each, in the module rather than in everyone who imports it.
+bool platform::web::mapStorageReady() {
+  return gMapStorageReady.load(std::memory_order_acquire);
+}
+
+std::vector<std::string> platform::web::takePendingImports() {
+  const std::scoped_lock lock(gImportMutex);
+  return std::exchange(gPendingImports, std::vector<std::string>{});
+}
