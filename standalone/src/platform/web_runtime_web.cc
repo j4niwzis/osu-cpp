@@ -50,6 +50,7 @@ inline void initializeMapStorage() {
   EM_ASM({
     var home = '/home/web_user';
     var mounted = false;
+    console.log('storage: mounting ' + home);
     try {
       FS.mkdirTree(home);
       FS.mount(IDBFS, {}, home);
