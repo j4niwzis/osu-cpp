@@ -36,8 +36,6 @@ the file name" ON)
     CACHE FILEPATH "APK signing keystore")
   option(OSU_ANDROID_SYSTEM_FILE_PICKER
     "Build the DEX bridge for Android's system document picker" ON)
-  set(OSU_ANDROID_D8_JAR "" CACHE FILEPATH
-    "R8 jar containing com.android.tools.r8.D8")
 
   # The modification time every entry this build adds to the APK is given.
   #
@@ -114,39 +112,29 @@ the file name" ON)
   set(dex_dependencies)
   set(dex_package_command)
   if(OSU_ANDROID_SYSTEM_FILE_PICKER)
-    find_program(javac NAMES javac REQUIRED)
-    if(OSU_ANDROID_D8_JAR)
-      if(NOT EXISTS "${OSU_ANDROID_D8_JAR}")
-        message(FATAL_ERROR
-          "OSU_ANDROID_D8_JAR does not exist: ${OSU_ANDROID_D8_JAR}")
-      endif()
-      set(d8_command "${java}" -cp "${OSU_ANDROID_D8_JAR}"
-        com.android.tools.r8.D8)
-    else()
-      find_program(d8 NAMES d8 REQUIRED)
-      set(d8_command "${d8}")
-    endif()
+    # The classes Android loads, written out by this project.
+    #
+    # There was a JDK and twenty megabytes of somebody else's compiler here,
+    # for three classes and a hundred and twenty instructions -- and the
+    # compiler was one of the two things in this build that could not be
+    # built from source the way everything else is. android/dex writes the
+    # file directly; the Java beside it stays as the statement of what these
+    # classes do, which is what a reader should read.
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(dex_writer "${android_dir}/dex/dex.py")
     set(java_source
       "${android_dir}/java/io/github/j4niwzis/osu_cpp/OsuNativeActivity.java")
-    file(GLOB_RECURSE java_stubs CONFIGURE_DEPENDS
-      "${android_dir}/java-stubs/*.java")
-    set(java_classes "${apk_dir}/java-classes")
     set(dex_dir "${apk_dir}/dex")
     set(classes_dex "${dex_dir}/classes.dex")
     set(OSU_ANDROID_ACTIVITY
       "io.github.j4niwzis.osu_cpp.OsuNativeActivity")
     set(OSU_ANDROID_HAS_CODE true)
     list(APPEND dex_commands
-      COMMAND "${CMAKE_COMMAND}" -E rm -rf "${java_classes}" "${dex_dir}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${java_classes}" "${dex_dir}"
-      COMMAND "${javac}" -encoding UTF-8 -source 8 -target 8
-        -d "${java_classes}" "${java_source}" ${java_stubs}
-      COMMAND ${d8_command} --release --min-api "${OSU_ANDROID_MIN_API}"
-        --output "${dex_dir}"
-        "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity.class"
-        "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity\$1.class"
-        "${java_classes}/io/github/j4niwzis/osu_cpp/OsuNativeActivity\$2.class")
-    list(APPEND dex_dependencies "${java_source}" ${java_stubs})
+      COMMAND "${CMAKE_COMMAND}" -E rm -rf "${dex_dir}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${dex_dir}"
+      COMMAND "${Python3_EXECUTABLE}" "${dex_writer}" --out "${classes_dex}")
+    list(APPEND dex_dependencies "${dex_writer}"
+      "${android_dir}/dex/dexwrite.py" "${java_source}")
     set(dex_package_command
       COMMAND "${jar}" ${jar_date} --update --file "${unaligned_apk}"
         -C "${dex_dir}" classes.dex)
