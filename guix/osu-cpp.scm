@@ -131,20 +131,26 @@ $CPM_SOURCE_CACHE > guix/sources.scm")))
                                    "cme_declare_port(~%  NAME ~a~%  SOURCE_DIR \"~a\")~%"
                                    port tree)))))))
                inputs))))))
+    ;; Labelled inputs throughout, because the sources have to be labelled:
+    ;; the phase below finds them by a name it can read the port out of, and
+    ;; a list that is half labelled and half not is not two styles, it is one
+    ;; invalid input.
     (native-inputs
      (append
-      (map needed (list "cmake" "ninja" "pkg-config" "python" "gn" "meson"
-                        "gperf" "clang-toolchain" "tar" "gzip" "xz" "bzip2"))
+      (map (lambda (name) (list name (needed name)))
+           (list "cmake" "ninja" "pkg-config" "python" "gn" "meson"
+                 "gperf" "clang-toolchain" "tar" "gzip" "xz" "bzip2"))
       ;; Every library the lock names, under a name the phase reads the port
       ;; out of.
       (map (lambda (entry)
              (list (string-append "cme-source-" (first entry)) (third entry)))
            %sources)))
     (inputs
-     (map needed (list "mesa" "libglvnd" "libxkbcommon" "wayland"
-                       "wayland-protocols" "libx11" "libxrandr" "libxinerama"
-                       "libxcursor" "libxi" "alsa-lib" "pulseaudio" "dbus"
-                       "elogind")))
+     (map (lambda (name) (list name (needed name)))
+          (list "mesa" "libglvnd" "libxkbcommon" "wayland"
+                "wayland-protocols" "libx11" "libxrandr" "libxinerama"
+                "libxcursor" "libxi" "alsa-lib" "pulseaudio" "dbus"
+                "elogind")))
     (home-page "https://github.com/j4niwzis/osu-cpp")
     (synopsis "Native client for osu! beatmaps")
     (description
