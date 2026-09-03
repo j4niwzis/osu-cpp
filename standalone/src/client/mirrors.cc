@@ -5,6 +5,7 @@ import skia;
 import skin;
 import bjson;
 import platform.audio_engine;
+import platform.capabilities;
 import client.http;
 import client.listing;
 import client.palette;
@@ -473,6 +474,9 @@ public:
             if (sr == nullptr || !sr->is_number()) {
               continue;
             }
+            if (d.fMapId < 0) {
+              d.fMapId = static_cast<long>(getNum(*bo, "id"));
+            }
             const auto v = static_cast<float>(sr->to_number<double>());
             listing::Entry::Difficulty diff;
             diff.fStars = v;
@@ -530,7 +534,16 @@ public:
       fHooks.fDuck();
       fMusicDucked = true;
     }
-    const std::string url = std::format("https://b.ppy.sh/preview/{}.mp3", id);
+    // Same story as the artwork: b.ppy.sh sends no header a page may read
+    // by, so in a browser this is asked of a mirror -- osu.direct by beatmap
+    // when the search said which one, and mino by set otherwise.
+    const std::string url =
+        !platform::capabilities::kBrowser
+            ? std::format("https://b.ppy.sh/preview/{}.mp3", id)
+            : (fFound[idx].fMapId >= 0
+                   ? std::format("https://osu.direct/api/media/preview/{}",
+                                 fFound[idx].fMapId)
+                   : std::format("https://catboy.best/preview/audio/{}", id));
     std::println(std::cerr, "[preview] fetching {}", url);
     auto handle = std::make_shared<http::Handle>();
     http::get(url, std::move(handle), [this, id, generation](http::Response r) {
@@ -576,6 +589,98 @@ public:
     return static_cast<float>(fPreview.positionSec() / duration);
   }
 
+  // Artwork and previews come from ppy's own hosts, which answer without an
+  // Access-Control-Allow-Origin header -- fine for a program holding a
+  // socket, refused for a page, which is why a browser showed a listing of
+  // blank panels while the searching and the downloading beside it worked.
+  // osu.direct serves both and does send the header, so in a browser the
+  // artwork is asked of it. It has one image per set rather than the two
+  // crops, so both the card and the page cover are that image.
+  // Artwork kept at the size it is used, not the size it arrived at.
+  //
+  // The host a browser is allowed to read serves the full background of a
+  // beatmap -- 1920 by 1080 and up -- where ppy's own hosts serve a crop cut
+  // for the card. Held at that size, every panel on screen was a full
+  // picture minified by the rasteriser on every frame, and the frame rate
+  // fell everywhere, menu included.
+  [[nodiscard]] static skia::Sp<skia::SkImage>
+  atMost(skia::Sp<skia::SkImage> image, int width) {
+    if (!image || image->width() <= width || image->width() <= 0) {
+      return image;
+    }
+    const double scale =
+        static_cast<double>(width) / static_cast<double>(image->width());
+    const int height =
+        std::max(1, static_cast<int>(image->height() * scale + 0.5));
+    skia::SkBitmap small;
+    if (!small.tryAllocPixels(skia::SkImageInfo::Make(
+            width, height, skia::kRGBA_8888_SkColorType,
+            skia::kPremul_SkAlphaType))) {
+      return image;
+    }
+    skia::SkCanvas into(small);
+    skia::SkPaint paint;
+    paint.setAntiAlias(false);
+    into.drawImageRect(
+        image.get(),
+        skia::SkRect::MakeWH(static_cast<float>(width),
+                             static_cast<float>(height)),
+        skia::SkSamplingOptions(skia::SkFilterMode::kLinear), &paint);
+    return skia::RasterFromBitmap(small);
+  }
+
+  // Where the artwork for a set can be asked for, in the order it is asked.
+  //
+  // ppy's own hosts answer without an Access-Control-Allow-Origin header, so
+  // a page cannot read them however well they work for a program holding a
+  // socket. The mirrors serve the same material and do send the header --
+  // but they serve what they happen to hold, and none of them holds
+  // everything, so a refusal is not an answer about the set. It moves on to
+  // the next host, and only a set no host has leaves the panel blank.
+  //
+  // This is deliberately not tied to the mirror the search went to: which
+  // mirror answers a search and which one happens to hold a picture are
+  // different questions.
+  [[nodiscard]] static std::string coverUrl(const listing::Entry &entry,
+                                            const std::string &given,
+                                            std::uint8_t host) {
+    if constexpr (!platform::capabilities::kBrowser) {
+      return host == 0 ? given : std::string{};
+    }
+    switch (host) {
+    case 0:
+      // osu.direct serves the background of a beatmap, not of a set.
+      return entry.fMapId >= 0
+                 ? std::format("https://osu.direct/api/media/background/{}",
+                               entry.fMapId)
+                 : std::string{};
+    case 1:
+      return std::format("https://catboy.best/preview/background/{}",
+                         entry.fSetId);
+    case 2:
+      return std::format("https://api.nerinyan.moe/bg/{}", entry.fSetId);
+    default:
+      return {};
+    }
+  }
+
+  // The next host that has an address for this set, or none left.
+  [[nodiscard]] static bool nextCoverHost(const listing::Entry &entry,
+                                          const std::string &given,
+                                          std::uint8_t &host) {
+    for (int step = 0; step < 8; ++step) {
+      ++host;
+      if (coverUrl(entry, given, host).empty()) {
+        if (host > 3) {
+          return false;
+        }
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
   // The page shows covers.cover@2x (1920x360), not the card crop.
   void requestPageCover(std::size_t idx) {
     if (idx >= fFound.size()) {
@@ -585,25 +690,38 @@ public:
     if (d.fPageCoverSt != listing::Entry::Cover::kNone) {
       return;
     }
-    d.fPageCoverSt = listing::Entry::Cover::kFetching;
     const long id = d.fSetId;
-    const std::string url =
+    const std::string given =
         d.fFullCover.empty()
             ? std::format(
                   "https://assets.ppy.sh/beatmaps/{}/covers/cover@2x.jpg", id)
             : d.fFullCover;
+    std::string url = coverUrl(d, given, d.fPageCoverHost);
+    if (url.empty() && !nextCoverHost(d, given, d.fPageCoverHost)) {
+      d.fPageCoverSt = listing::Entry::Cover::kFailed;
+      return;
+    }
+    if (url.empty()) {
+      url = coverUrl(d, given, d.fPageCoverHost);
+    }
+    d.fPageCoverSt = listing::Entry::Cover::kFetching;
     auto handle = std::make_shared<http::Handle>();
-    http::get(url, std::move(handle), [this, id](http::Response r) {
+    http::get(url, std::move(handle), [this, id, given](http::Response r) {
       for (auto &e : fFound) {
         if (e.fSetId != id) {
           continue;
         }
         if (r.fOk && r.fBody.size() > 256) {
           const std::vector<std::uint8_t> bytes(r.fBody.begin(), r.fBody.end());
-          e.fPageCover = loadImage(bytes);
+          e.fPageCover = atMost(loadImage(bytes), 1280);
         }
-        e.fPageCoverSt = e.fPageCover ? listing::Entry::Cover::kReady
-                                      : listing::Entry::Cover::kFailed;
+        if (e.fPageCover) {
+          e.fPageCoverSt = listing::Entry::Cover::kReady;
+        } else if (nextCoverHost(e, given, e.fPageCoverHost)) {
+          e.fPageCoverSt = listing::Entry::Cover::kNone; // asked again
+        } else {
+          e.fPageCoverSt = listing::Entry::Cover::kFailed;
+        }
         break;
       }
     });
@@ -617,24 +735,46 @@ public:
     if (d.fThumbSt != listing::Entry::Thumb::kNone) {
       return;
     }
+    // The search comes first. In a browser the artwork is fetched from the
+    // same host that answers the search, a browser opens only so many
+    // connections to one host, and a screenful of covers queued ahead of the
+    // next page of results is a listing that says "Searching..." for as long
+    // as they take -- with nothing in flight to show for it.
+    if (fSearchPending) {
+      return;
+    }
+
+    // How many are asked for at once. Four was chosen for a client holding
+    // its own sockets, and a browser will happily have more in flight than
+    // it has connections -- but not so many that the host has nothing left
+    // for anything else.
+    constexpr int kAtOnce = platform::capabilities::kBrowser ? 6 : 8;
     int inflight = 0;
     for (const auto &e : fFound) {
       if (e.fThumbSt == listing::Entry::Thumb::kFetching) {
         ++inflight;
       }
     }
-    if (inflight >= 4) {
+    if (inflight >= kAtOnce) {
       return; // retry on a later frame
     }
-    d.fThumbSt = listing::Entry::Thumb::kFetching;
     const long id = d.fSetId;
-    const std::string url =
+    const std::string given =
         d.fCardCover.empty()
             ? std::format(
                   "https://assets.ppy.sh/beatmaps/{}/covers/card@2x.jpg", id)
             : d.fCardCover;
+    std::string url = coverUrl(d, given, d.fThumbHost);
+    if (url.empty() && !nextCoverHost(d, given, d.fThumbHost)) {
+      d.fThumbSt = listing::Entry::Thumb::kFailed;
+      return;
+    }
+    if (url.empty()) {
+      url = coverUrl(d, given, d.fThumbHost);
+    }
+    d.fThumbSt = listing::Entry::Thumb::kFetching;
     auto handle = std::make_shared<http::Handle>();
-    http::get(url, std::move(handle), [this, id](http::Response r) {
+    http::get(url, std::move(handle), [this, id, given](http::Response r) {
       for (std::size_t i = 0; i < fFound.size(); ++i) {
         auto &e = fFound[i];
         if (e.fSetId != id) {
@@ -642,9 +782,12 @@ public:
         }
         if (r.fOk && r.fBody.size() > 256) {
           std::vector<std::uint8_t> bytes(r.fBody.begin(), r.fBody.end());
-          e.fThumb = loadImage(bytes);
-          e.fThumbSt = e.fThumb ? listing::Entry::Thumb::kReady
-                                : listing::Entry::Thumb::kFailed;
+          e.fThumb = atMost(loadImage(bytes), 512);
+        }
+        if (e.fThumb) {
+          e.fThumbSt = listing::Entry::Thumb::kReady;
+        } else if (nextCoverHost(e, given, e.fThumbHost)) {
+          e.fThumbSt = listing::Entry::Thumb::kNone; // asked of the next host
         } else {
           e.fThumbSt = listing::Entry::Thumb::kFailed;
         }

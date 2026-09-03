@@ -153,8 +153,15 @@ public:
       // The track is given a moment to start before its silence counts as
       // having ended; OpenAL reports a source as stopped until it does.
       // Paused for a preview is not the same as finished.
+      // How long silence is given before it counts as a track that ended.
+      // Decoding a song is hundreds of milliseconds on a desktop and can be
+      // several times that in a browser, where it shares a single thread
+      // with everything else; a second was short enough there that the track
+      // was declared over before it began, and the menu started it again.
+      constexpr double kStartingGraceMs =
+          platform::capabilities::kBrowser ? 5000.0 : 1000.0;
       if (!fApp.fAudio.playing() && !fApp.fMirrors.ducked() &&
-          fApp.wallMs() - fApp.fMenuTrackWall > 1000.0 &&
+          fApp.wallMs() - fApp.fMenuTrackWall > kStartingGraceMs &&
           fApp.fState != State::kResults) {
         // The results screen belongs to the map that was just played, and
         // moving on from it would move the selection out from under the
@@ -226,26 +233,36 @@ public:
   // long as there is anything else in the library.
   void nextMenuTrack() {
     fApp.fFrame.requestRedraw(fApp.wallMs(), 1500.0);
-    if (fApp.fLibrary.visible().size() > 1) {
-      // One draw, uniform over everything except the one just heard. Drawing
-      // again until the draw differs is unbiased but can fail, and failing
-      // eight times in a row meant playing the same track over again -- which
-      // is the opposite of what this is for.
-      std::size_t current = fApp.fLibrary.visible().size();
-      for (std::size_t i = 0; i < fApp.fLibrary.visible().size(); ++i) {
-        if (fApp.fLibrary.visible()[i] == fApp.fLibrary.selSet()) {
-          current = i;
-          break;
-        }
+    const std::vector<int> &visible = fApp.fLibrary.visible();
+    if (visible.size() > 1) {
+      // Every set once before any of them a second time.
+      //
+      // A draw taken fresh each time is uniform and that is exactly the
+      // complaint: some sets come up three times in an evening and others
+      // never. What is left to play is kept instead, the one drawn is taken
+      // out of it, and when nothing is left the whole listing goes back in.
+      // A listing that changed -- a filter, a search, an import -- fills the
+      // bag again from what is now there.
+      if (fApp.fMenuBagRevision != fApp.fLibrary.visibleRevision()) {
+        fApp.fMenuBagRevision = fApp.fLibrary.visibleRevision();
+        fApp.fMenuBag.clear();
       }
-      const bool skipping = current < fApp.fLibrary.visible().size();
+      if (fApp.fMenuBag.empty()) {
+        fApp.fMenuBag.assign(visible.begin(), visible.end());
+      }
       std::uniform_int_distribution<std::size_t> pick(
-          0, fApp.fLibrary.visible().size() - (skipping ? 2 : 1));
-      std::size_t idx = pick(fApp.fUiRng);
-      if (skipping && idx >= current) {
-        ++idx; // the gap left by the one being skipped closes over it
+          0, fApp.fMenuBag.size() - 1);
+      std::size_t at = pick(fApp.fUiRng);
+      // The one just heard is not the one to play next, unless it is all
+      // that is left in the bag.
+      if (fApp.fMenuBag.size() > 1 &&
+          fApp.fMenuBag[at] == fApp.fLibrary.selSet()) {
+        at = (at + 1) % fApp.fMenuBag.size();
       }
-      fApp.fLibrary.selSet() = fApp.fLibrary.visible()[idx];
+      const int chosen = fApp.fMenuBag[at];
+      fApp.fMenuBag.erase(fApp.fMenuBag.begin() +
+                          static_cast<std::ptrdiff_t>(at));
+      fApp.fLibrary.selSet() = chosen;
       fApp.fLibrary.selDiff() = 0; // the carousel follows the selection on its own
       fApp.fMenuTrackWall = fApp.wallMs();
       return;
