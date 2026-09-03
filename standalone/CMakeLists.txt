@@ -167,31 +167,41 @@ endif()
 # Everything the client draws with comes from here; nothing in there knows
 # what a beatmap is. It lives in a repository of its own now, pinned to a
 # commit -- moving to a newer skiff should be a visible change here.
+# Half a declaration each: where they come from, which is what this project
+# knows because this project chose them. What they are -- what they need,
+# what they produce, what they are licensed under -- each says in its own
+# tree, and that is read once the provider has fetched it.
+#
+# OSU_SKIFF_SOURCE_DIR and OSU_SKIFF_WIDGETS_SOURCE_DIR still name a checkout
+# to build instead, for a build with no network.
 set(OSU_SKIFF_SOURCE_DIR "" CACHE PATH
   "Existing skiff checkout; avoids fetching it during offline builds")
+set(OSU_SKIFF_WIDGETS_SOURCE_DIR "" CACHE PATH
+  "Existing skiff-widgets checkout; avoids fetching it during offline builds")
+
 if(OSU_SKIFF_SOURCE_DIR)
-  CPMAddPackage(NAME skiff SOURCE_DIR "${OSU_SKIFF_SOURCE_DIR}")
+  cme_declare_port(NAME skiff PROVIDES skiff SOURCE_DIR "${OSU_SKIFF_SOURCE_DIR}")
 else()
-  CPMAddPackage(
+  cme_declare_port(
     NAME skiff
+    PROVIDES skiff
     GITHUB_REPOSITORY j4niwzis/skiff
     GIT_TAG d22f098c914e4aff1163ecedf5da756e176ae1ee
   )
 endif()
-
-# The widgets that sit on it, one module each. Pulls skiff in behind it.
-set(OSU_SKIFF_WIDGETS_SOURCE_DIR "" CACHE PATH
-  "Existing skiff-widgets checkout; avoids fetching it during offline builds")
 if(OSU_SKIFF_WIDGETS_SOURCE_DIR)
-  CPMAddPackage(NAME skiff_widgets
-    SOURCE_DIR "${OSU_SKIFF_WIDGETS_SOURCE_DIR}")
+  cme_declare_port(NAME skiff-widgets PROVIDES skiff-widgets skiff_widgets
+                   SOURCE_DIR "${OSU_SKIFF_WIDGETS_SOURCE_DIR}")
 else()
-  CPMAddPackage(
-    NAME skiff_widgets
+  cme_declare_port(
+    NAME skiff-widgets
+    PROVIDES skiff-widgets skiff_widgets
     GITHUB_REPOSITORY j4niwzis/skiff-widgets
     GIT_TAG 065ff975ef99fe197b9b2b5d2762c060e91c5af2
   )
 endif()
+
+find_package(skiff-widgets REQUIRED)
 
 # ---- Create binary ----
 
@@ -499,10 +509,24 @@ option(OSU_MODULE_DEBUG_INFO
   "Compile this project's module libraries with debug information" OFF)
 if(NOT OSU_MODULE_DEBUG_INFO)
   foreach(osu_module_target skiff skiff-widgets osucpp ${PROJECT_NAME})
-    if(TARGET ${osu_module_target})
-      target_compile_options(${osu_module_target} PRIVATE
-        $<$<COMPILE_LANGUAGE:CXX>:-g0>)
+    if(NOT TARGET ${osu_module_target})
+      continue()
     endif()
+    # A library that came from the store or from the system is not compiled
+    # by this build, and how it was compiled is not this build's to change:
+    # what is here is an imported target, or an alias for one, and neither
+    # takes compile options. Only the ones this build builds are told
+    # anything.
+    get_target_property(osu_alias ${osu_module_target} ALIASED_TARGET)
+    if(osu_alias)
+      set(osu_module_target "${osu_alias}")
+    endif()
+    get_target_property(osu_imported ${osu_module_target} IMPORTED)
+    if(osu_imported)
+      continue()
+    endif()
+    target_compile_options(${osu_module_target} PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:-g0>)
   endforeach()
 endif()
 
