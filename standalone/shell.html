@@ -50,7 +50,29 @@
       // to stderr, and a browser answers every console.error with a stack
       // trace of the runtime, which buries the line it was printing.
       printErr: function (text) { console.log(text); },
-      setStatus: function (text) { if (text) { note.textContent = text; } },
+      // What the runtime says, with its numbers made to mean one thing.
+      //
+      // The two it reports while a file arrives are different measures when
+      // the server compresses it: what has been received is counted after
+      // decompression, and the total is Content-Length, which is the
+      // compressed size. Twenty-one megabytes of beatmap assets arriving as
+      // twelve reads as "(17799341/12119431)" -- more than all of it. So a
+      // total that has already been passed is not shown at all.
+      setStatus: function (text) {
+        if (!text) {
+          return;
+        }
+        var parts = text.match(/^(.*?)\s*\((\d+)\/(\d+)\)$/);
+        if (!parts) {
+          note.textContent = text;
+          return;
+        }
+        var loaded = parseInt(parts[2], 10);
+        var total = parseInt(parts[3], 10);
+        note.textContent = loaded <= total
+          ? parts[1] + ' ' + Math.round(100 * loaded / total) + '%'
+          : parts[1] + ' ' + (loaded / 1048576).toFixed(1) + ' MB';
+      },
       onRuntimeInitialized: function () {
         loading.classList.add('hidden');
         canvas.focus();
