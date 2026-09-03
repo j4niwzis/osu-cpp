@@ -239,16 +239,27 @@ private:
     return fContext != EGL_NO_CONTEXT;
   }
 
-  // The activity's window is portrait even when the task is landscape, so the
-  // buffer is allocated with the two dimensions swapped and handed to
-  // SurfaceFlinger with a quarter turn: it rotates during composition and the
-  // renderer never pays for a second render target.
+  // The buffer, named rather than left to the window's own default.
   //
-  // Requesting the buffer size pins it: the window can be resized underneath
-  // and both ANativeWindow_getWidth and eglQuerySurface keep answering with
-  // what was asked for here. So a resize is answered by asking again, from
-  // the render thread, between frames -- no buffer is dequeued while the two
-  // requests are in flight.
+  // Zero for both dimensions means "whatever the window's default is", and
+  // there is at least one system where that default is not the window:
+  // waydroid gave a buffer a quarter of the window's area and composed it at
+  // the top left, unscaled, for as long as the geometry was left at zero.
+  // Asking for the size the window reports is what filled it before, and on
+  // a device whose default already is its own size this asks for exactly
+  // what it would have been given.
+  //
+  // Where the system will not give this activity the landscape window the
+  // manifest asks for, the window arrives portrait: then the buffer is
+  // allocated with its dimensions swapped and handed to SurfaceFlinger with
+  // a quarter turn, which rotates during composition and costs the renderer
+  // no second render target.
+  //
+  // Naming a size pins it -- ANativeWindow_getWidth and eglQuerySurface
+  // afterwards answer with what was asked for -- so a resize is heard as an
+  // event and answered by asking again, from the render thread, between
+  // frames: that is what the zero at the top of this function is for. No
+  // buffer is dequeued while the two requests are in flight.
   [[nodiscard]] bool applyGeometryLocked(ANativeWindow *window) {
     // Zero restores the window's own dimensions, which is the only way to
     // read them back after this process has requested its own.
@@ -260,9 +271,26 @@ private:
     if (windowWidth <= 0 || windowHeight <= 0) {
       return false;
     }
+    // Turned only when the window is the other way up.
+    //
+    // It was turned every time, and on a device that had already given this
+    // activity a landscape window the quarter turn was the second one: a
+    // buffer allocated with the dimensions swapped and then composed into a
+    // window they were not swapped for is the picture squashed along one
+    // axis.
+    const bool turned = windowWidth < windowHeight;
+    fTurned.store(turned, std::memory_order_release);
+    const int bufferWidth = turned ? windowHeight : windowWidth;
+    const int bufferHeight = turned ? windowWidth : windowHeight;
+    // Through the log rather than through stderr, which on Android goes
+    // nowhere.
+    this->log(std::format("[gfx] window {}x{}, buffer {}x{}{}", windowWidth,
+                          windowHeight, bufferWidth, bufferHeight,
+                          turned ? ", turned a quarter" : ""));
     return ANativeWindow_setBuffersTransform(
-               window, ANATIVEWINDOW_TRANSFORM_ROTATE_90) == 0 &&
-           ANativeWindow_setBuffersGeometry(window, windowHeight, windowWidth,
+               window, turned ? ANATIVEWINDOW_TRANSFORM_ROTATE_90
+                              : ANATIVEWINDOW_TRANSFORM_IDENTITY) == 0 &&
+           ANativeWindow_setBuffersGeometry(window, bufferWidth, bufferHeight,
                                             fFormat) == 0;
   }
 
@@ -288,6 +316,7 @@ private:
       return;
     }
     fAttachedSize = packed;
+    this->log(std::format("[gfx] surface {}x{}", width, height));
     fPendingResize.store(packed, std::memory_order_release);
     if (fApp != nullptr && fApp->looper != nullptr) {
       ALooper_wake(fApp->looper);
@@ -448,6 +477,11 @@ private:
       break;
     case APP_CMD_WINDOW_RESIZED:
     case APP_CMD_CONFIG_CHANGED:
+    // The window can be given its final size without a resize command --
+    // this is the one that arrives when a desktop window manager decides how
+    // large the activity is -- and a pinned buffer does not notice on its
+    // own.
+    case APP_CMD_CONTENT_RECT_CHANGED:
       self->noteGeometryStale();
       break;
     case APP_CMD_INIT_WINDOW:
@@ -519,10 +553,18 @@ private:
     return fTouchId >= 0;
   }
 
+  // A touch is reported in the window's coordinates, and what the game is
+  // drawn in is the buffer's. They are the same thing when the buffer was
+  // not turned, and a quarter turn apart when it was -- so this is the same
+  // decision as the one above, read from where it was made rather than
+  // assumed a second time.
   void moveTouch(AInputEvent *event, std::size_t index) {
-    const float x = AMotionEvent_getY(event, index);
-    const float y = static_cast<float>(fTouchSurfaceHeight) -
-                    AMotionEvent_getX(event, index);
+    const bool turned = fTurned.load(std::memory_order_acquire);
+    const float x = turned ? AMotionEvent_getY(event, index)
+                           : AMotionEvent_getX(event, index);
+    const float y = turned ? static_cast<float>(fTouchSurfaceHeight) -
+                                 AMotionEvent_getX(event, index)
+                           : AMotionEvent_getY(event, index);
     fCursorX.store(x, std::memory_order_release);
     fCursorY.store(y, std::memory_order_release);
     this->push({wallMs(), EventType::kCursorMove, 0, 0, x, y});
@@ -646,6 +688,10 @@ private:
   std::atomic<float> fCursorX{0.0f};
   std::atomic<float> fCursorY{0.0f};
   int fTouchSurfaceHeight = 1;
+  // Whether the buffer is being turned a quarter, decided when its geometry
+  // is applied on the render thread and read when a touch arrives on
+  // another.
+  std::atomic<bool> fTurned{true};
   std::int32_t fTouchId = -1;
 };
 

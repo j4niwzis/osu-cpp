@@ -18,6 +18,7 @@
             android:name="@OSU_ANDROID_ACTIVITY@"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
             android:exported="true"
+            android:screenOrientation="sensorLandscape"
             android:launchMode="singleTask"
             android:resizeableActivity="false">
             <meta-data

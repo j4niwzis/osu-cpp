@@ -86,6 +86,7 @@ export using ::eglSwapInterval;
 export using ::eglTerminate;
 
 export using ::APP_CMD_CONFIG_CHANGED;
+export using ::APP_CMD_CONTENT_RECT_CHANGED;
 export using ::APP_CMD_DESTROY;
 export using ::APP_CMD_GAINED_FOCUS;
 export using ::APP_CMD_INIT_WINDOW;
@@ -143,6 +144,7 @@ export inline constexpr int kLineBuffered = _IOLBF;
 export inline constexpr int kUnbuffered = _IONBF;
 export using ::stdout;
 export using ::stderr;
+export using ::ANATIVEWINDOW_TRANSFORM_IDENTITY;
 export using ::ANATIVEWINDOW_TRANSFORM_ROTATE_90;
 export using ::ANATIVEACTIVITY_HIDE_SOFT_INPUT_NOT_ALWAYS;
 export using ::ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED;
