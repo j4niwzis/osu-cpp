@@ -1,6 +1,7 @@
 export module platform.audio_engine;
 
 import std;
+import platform.capabilities;
 import platform.audio;
 
 namespace platform::sound::detail {
@@ -233,8 +234,57 @@ public:
       std::println(std::cerr, "[audio] play with no source");
       return;
     }
+    // The buffer may be the tail of the track rather than the track: from
+    // the beginning means the whole of it again.
+    if (fBaseSec > 0.0 && this->playFrom(0.0)) {
+      return;
+    }
     audio::alSourcePlay(fSource);
     alFailed("alSourcePlay");
+  }
+
+  // Play from a point in the track, by giving the device a buffer that
+  // begins there.
+  //
+  // A browser's OpenAL cannot start a source anywhere but at the beginning
+  // of its buffer. Resuming a paused source rebuilds the playback and reads
+  // the offset from a field its own scheduler has just cleared, so the music
+  // came back at zero however it was asked not to -- with the offset set
+  // before the resume, after it, and checked in between. What it does do
+  // correctly is play a buffer from its start, so the remainder of the track
+  // is made into one.
+  bool playFrom(double sec) {
+    if (fSource == 0 || fInterleaved.empty() || fRate <= 0 || fChannels <= 0) {
+      return false;
+    }
+    const auto frame =
+        static_cast<std::size_t>(std::max(0.0, sec) *
+                                 static_cast<double>(fRate));
+    const std::size_t at = frame * static_cast<std::size_t>(fChannels);
+    if (at >= fInterleaved.size()) {
+      return false;
+    }
+    audio::alSourceStop(fSource);
+    audio::alSourcei(fSource, audio::kBuffer, 0);
+    if (fBuffer != 0) {
+      audio::alDeleteBuffers(1, &fBuffer);
+      fBuffer = 0;
+    }
+    audio::alGetError();
+    audio::alGenBuffers(1, &fBuffer);
+    audio::alBufferData(
+        fBuffer, alFormat(fChannels), fInterleaved.data() + at,
+        static_cast<audio::ALsizei>((fInterleaved.size() - at) *
+                                    sizeof(std::int16_t)),
+        fRate);
+    if (alFailed("alBufferData(from)")) {
+      return false;
+    }
+    audio::alSourcei(fSource, audio::kBuffer,
+                     static_cast<audio::ALint>(fBuffer));
+    fBaseSec = static_cast<double>(frame) / static_cast<double>(fRate);
+    audio::alSourcePlay(fSource);
+    return !alFailed("alSourcePlay(from)");
   }
 
   void setVolume(float gain) {
@@ -255,17 +305,70 @@ public:
       return;
     audio::ALint state = audio::kInitial;
     audio::alGetSourcei(fSource, audio::kSourceState, &state);
-    if (state == audio::kPlaying)
+    if (state == audio::kPlaying) {
+      fPausedAtSec = this->positionSec();
+      fHavePausedAt = true;
       audio::alSourcePause(fSource);
+    }
+    if constexpr (platform::capabilities::kBrowser) {
+      // Nothing is resumed there, so nothing needs to stay paused: what
+      // comes next is a new buffer either way.
+      audio::alSourceStop(fSource);
+    }
   }
 
+  // Resumed where it was stopped, and told so rather than trusted to know.
+  //
+  // A source is not a file being read here: in a browser it is a Web Audio
+  // node, and resuming builds a new one. Where that one starts is up to the
+  // implementation, and the implementation started it at the beginning --
+  // pausing and continuing put the music back to zero. The offset is kept on
+  // this side and seeked to, which is a no-op wherever the device already
+  // got it right.
   void resume() {
     if (fSource == 0)
       return;
+    // Where the device cannot be resumed, the track is played again from
+    // where it stopped.
+    if constexpr (platform::capabilities::kBrowser) {
+      if (fHavePausedAt && this->playFrom(fPausedAtSec)) {
+        return;
+      }
+    }
     audio::ALint state = audio::kInitial;
     audio::alGetSourcei(fSource, audio::kSourceState, &state);
-    if (state == audio::kPaused)
-      audio::alSourcePlay(fSource);
+    if (state != audio::kPaused)
+      return;
+    // Told where to carry on from before being told to carry on.
+    //
+    // Resuming builds the playback afresh -- in a browser that is a new Web
+    // Audio node -- from the offset the source is holding at that moment. So
+    // the offset has to be right first: set afterwards, it is a seek of
+    // something that has already started from the beginning, which is what
+    // made the music restart every time the game was unpaused.
+    if (fHavePausedAt) {
+      audio::alGetError();
+      audio::alSourcef(fSource, audio::kSecOffset,
+                       static_cast<audio::ALfloat>(fPausedAtSec));
+      if (const auto trouble = audio::alGetError(); trouble != 0) {
+        std::println(std::cerr, "[audio] cannot seek to {:.2f}s (error {})",
+                     fPausedAtSec, trouble);
+      }
+    }
+    audio::alSourcePlay(fSource);
+    if (!fHavePausedAt) {
+      return;
+    }
+    // And checked, because "resumed" is not a thing to take on trust after
+    // this much of it turned out to be untrue.
+    const double at = this->positionSec();
+    if (std::abs(at - fPausedAtSec) > 0.2) {
+      audio::alSourcef(fSource, audio::kSecOffset,
+                       static_cast<audio::ALfloat>(fPausedAtSec));
+      std::println(std::cerr,
+                   "[audio] resumed at {:.2f}s rather than {:.2f}s, now {:.2f}s",
+                   at, fPausedAtSec, this->positionSec());
+    }
   }
 
   void stop() {
@@ -291,7 +394,9 @@ public:
       return 0.0;
     audio::ALfloat sec = 0.0f;
     audio::alGetSourcef(fSource, audio::kSecOffset, &sec);
-    return static_cast<double>(sec);
+    // Where the buffer begins in the track, plus how far into the buffer the
+    // device has got: those differ once the track has been resumed.
+    return fBaseSec + static_cast<double>(sec);
   }
 
   [[nodiscard]] bool playing() const {
@@ -305,6 +410,15 @@ public:
 private:
   audio::ALuint fBuffer = 0;
   audio::ALuint fSource = 0;
+  // Where the track was when it was paused, kept because the device does not
+  // always come back to it.
+  double fPausedAtSec = 0.0;
+  bool fHavePausedAt = false;
+  // The material as it was uploaded, and where the uploaded buffer begins in
+  // it. Kept only where a source cannot be resumed.
+  std::vector<std::int16_t> fInterleaved;
+  double fBaseSec = 0.0;
+  int fChannels = 0;
   std::vector<std::int16_t> fMono;
   int fRate = 0;
 
@@ -313,6 +427,14 @@ private:
     // Downmix a mono copy for analysis before handing the interleaved data
     // to OpenAL (one extra int16 per frame; a five-minute track costs ~26 MB).
     fRate = rate;
+    fChannels = channels;
+    fBaseSec = 0.0;
+    // And the material itself, where a source cannot be resumed: see
+    // playFrom. Only in a browser, where that is the case, and it costs what
+    // the buffer handed to the device costs.
+    if constexpr (platform::capabilities::kBrowser) {
+      fInterleaved = samples;
+    }
     fMono.clear();
     if (channels <= 1) {
       fMono = samples;
@@ -358,6 +480,10 @@ private:
     }
     fMono.clear();
     fMono.shrink_to_fit();
+    fInterleaved.clear();
+    fInterleaved.shrink_to_fit();
+    fBaseSec = 0.0;
+    fChannels = 0;
     fRate = 0;
   }
 };
