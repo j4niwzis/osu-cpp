@@ -543,6 +543,11 @@ private:
     // library is scanned once the flag flips (see frameSongSelect).
     platform::web::initializeMapStorage();
 
+    // The same offer every other build makes on a first run. It is about the
+    // skin directory, which the library has nothing to do with, so it does
+    // not wait for storage to be read.
+    fSkinDialog.showIfNeeded();
+
     fState = State::kMainMenu;
     fStateEnterWall = wallMs();
     // A CLI-provided .osz reaches the wasm build too (preloaded); jump to it.
@@ -1644,7 +1649,28 @@ private:
 
 
   static void emscriptenFrameProc(void *arg) {
-    static_cast<App *>(arg)->emscriptenFrame();
+    // A frame that throws in a browser is a client that stops drawing and
+    // says nothing: the runtime reports "uncaught CppException" and a
+    // pointer, the loop keeps being scheduled, and the last picture stays on
+    // the screen for ever. What was thrown is a sentence somebody wrote, so
+    // it is printed, once per distinct message -- a frame that fails tends
+    // to fail sixty times a second.
+    try {
+      static_cast<App *>(arg)->emscriptenFrame();
+    } catch (const std::exception &trouble) {
+      static std::string last;
+      if (last != trouble.what()) {
+        last = trouble.what();
+        std::println(std::cerr, "[frame] {}", last);
+      }
+    } catch (...) {
+      static bool said = false;
+      if (!said) {
+        said = true;
+        std::println(std::cerr, "[frame] something not derived from "
+                                "std::exception was thrown");
+      }
+    }
   }
 
   void emscriptenFrame() {
@@ -2070,13 +2096,25 @@ private:
     fFullscreenToggleRequest.store(true, std::memory_order_release);
   }
 
+  // Written, and then told to the browser that a file was written.
+  //
+  // A mounted filesystem is memory until something flushes it, so a page
+  // closed after changing a setting kept nothing. Everywhere else this is
+  // the write itself and there is nothing to flush.
+  void saveSettings() {
+    fSettings.save();
+    if constexpr (platform::capabilities::kBrowser) {
+      platform::web::syncMapStorage();
+    }
+  }
+
   void pollFullscreenRequest() {
     if (!fFullscreenToggleRequest.exchange(false, std::memory_order_acquire)) {
       return;
     }
     const bool wanted = !fSettings.flag("fullscreen");
     fSettings.set("fullscreen", wanted ? 1.0f : 0.0f);
-    fSettings.save();
+    this->saveSettings();
     this->setFullscreen(wanted);
   }
 

@@ -29,7 +29,7 @@ public:
   void toggleSettings() {
     fApp.fSettingsPanel.toggle(fApp.wallMs());
     if (!fApp.fSettingsPanel.open()) {
-      fApp.fSettings.save();
+      fApp.saveSettings();
       this->applySettings();
     }
   }
@@ -37,7 +37,7 @@ public:
   void closeSettings() {
     if (fApp.fSettingsPanel.open()) {
       fApp.fSettingsPanel.close(fApp.wallMs());
-      fApp.fSettings.save();
+      fApp.saveSettings();
       this->applySettings();
     }
   }
@@ -72,7 +72,7 @@ public:
     if (hit == client::SettingsPanel::Hit::kChanged) {
       this->applySettings();
       if (!pressed || !fApp.fSettingsPanel.dragging()) {
-        fApp.fSettings.save();
+        fApp.saveSettings();
       }
     }
     if (!pressed) {

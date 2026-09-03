@@ -33,27 +33,29 @@ export namespace platform::web {
 using FrameCallback = void (*)(void *);
 struct CanvasExtent { int fWidth = 0; int fHeight = 0; };
 
-// The maps directory, kept in the browser's own storage between visits.
+// The home directory, kept in the browser's own storage between visits.
 //
-// Every step of this can fail -- the directory may already be mounted, a
-// private window may refuse IndexedDB -- and the one thing that must not
-// happen is failing quietly: the client waits for the answer before it will
-// draw a library, so a mount that throws left "Syncing" on the screen for
-// ever. Whatever happens, the answer comes back, and what went wrong is on
-// the console.
+// All of it, rather than the maps alone: the settings file, the replays and
+// the skin sit beside the library under the same home, and a browser that
+// keeps one of those and forgets the rest is a client that starts from
+// nothing every time except its beatmaps. One mount, and every path the
+// client already uses is persistent.
+//
+// Every step of this can fail -- a private window refuses IndexedDB -- and
+// the one thing that must not happen is failing quietly: the client waits
+// for the answer before it will show a library, so a mount that throws left
+// "Syncing" on the screen for ever. Whatever happens, the answer comes back,
+// and what happened is on the console.
 inline void initializeMapStorage() {
   EM_ASM({
+    var home = '/home/web_user';
     var mounted = false;
     try {
-      try {
-        FS.mkdir('/maps');
-      } catch (e) {
-        // It is there already, which is the usual case on a second call.
-      }
-      FS.mount(IDBFS, {}, '/maps');
+      FS.mkdirTree(home);
+      FS.mount(IDBFS, {}, home);
       mounted = true;
     } catch (e) {
-      console.error('map storage: ' + e);
+      console.error('storage: cannot mount ' + home + ': ' + e);
     }
     if (!mounted) {
       Module._osu_maps_synced();
@@ -61,7 +63,9 @@ inline void initializeMapStorage() {
     }
     FS.syncfs(true, function(err) {
       if (err) {
-        console.error('map storage: ' + err);
+        console.error('storage: cannot read what was kept: ' + err);
+      } else {
+        console.log('storage: ' + home + ' is what was kept last time');
       }
       Module._osu_maps_synced();
     });
@@ -117,18 +121,21 @@ inline void cancelMainLoop() { emscripten_cancel_main_loop(); }
 // this build sets in answer to this question. The page sizes the element
 // with CSS and says nothing else, so the element's laid-out size times the
 // display's ratio is what the client should be drawing.
+// How large the canvas is being shown, in CSS pixels.
+//
+// Not multiplied by the display's ratio. Drawing at the device's own
+// resolution is four times the pixels on a ratio of two -- which is what the
+// frame rate went to -- and everything the client draws is sized in the
+// pixels it is given, so the whole interface came out half the size it had
+// been. A browser scales the result for us; this is the size to draw.
 [[nodiscard]] inline CanvasExtent canvasExtent() {
   return {EM_ASM_INT({
             var canvas = Module.canvas;
-            var ratio = window.devicePixelRatio || 1;
-            var shown = canvas.clientWidth || canvas.width;
-            return Math.max(1, Math.round(shown * ratio));
+            return Math.max(1, Math.round(canvas.clientWidth || canvas.width));
           }),
           EM_ASM_INT({
             var canvas = Module.canvas;
-            var ratio = window.devicePixelRatio || 1;
-            var shown = canvas.clientHeight || canvas.height;
-            return Math.max(1, Math.round(shown * ratio));
+            return Math.max(1, Math.round(canvas.clientHeight || canvas.height));
           })};
 }
 

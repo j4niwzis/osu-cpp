@@ -58,10 +58,18 @@ jobs:
       # All of them. The two CJK faces are twenty of these twenty-one
       # megabytes, and leaving them out is a page that draws Japanese titles
       # as empty boxes -- which is most of the titles.
-      - name: the fonts the web build carries
+      - name: what the client reads at run time
         run: |
-          mkdir -p /tmp/wasm-data
-          cp -a standalone/assets/fonts /tmp/wasm-data/fonts
+          # All of assets, not the fonts alone: the licence of the skin this
+          # offers to download is read from assets/licenses, and a build
+          # without it shows "LICENCE FILE NOT FOUND" where the licence
+          # should be -- in the dialog that asks you to accept it.
+          #
+          # Under assets/, which is where the client looks for both. Copying
+          # it to the root as well doubled a twenty-one megabyte download for
+          # a second spelling of the same files.
+          mkdir -p /tmp/wasm-data/assets
+          cp -a standalone/assets/. /tmp/wasm-data/assets/
           du -sh /tmp/wasm-data
 
       - name: configure
@@ -101,3 +109,4 @@ jobs:
             build-wasm/*.wasm
             build-wasm/*.data
             build-wasm/*.html
+            standalone/coi.js
