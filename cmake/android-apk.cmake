@@ -159,6 +159,29 @@ the file name" ON)
         "${library}" "${native_dir}/")
   endforeach()
 
+  # What goes into the package, which is not everything beside the sources.
+  #
+  # A device already has the fonts its own configuration names -- Noto CJK
+  # among them -- and Skia reads that configuration here, so carrying copies
+  # of them means eleven of a package's seventeen megabytes are a second copy
+  # of something already on the machine. They are left out, and a device that
+  # somehow has none of those scripts draws them as it draws any character it
+  # has no font for.
+  set(OSU_ANDROID_ASSETS_LEFT_OUT
+    "fonts/NotoSansJP.ttf" "fonts/NotoSansKR.ttf"
+    "fonts/OFL-NotoSansJP.txt" "fonts/OFL-NotoSansKR.txt"
+    CACHE STRING "Assets the device provides, so the package does not")
+  set(assets_source "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+  set(assets_packaged "${apk_dir}/assets")
+  set(stage_assets
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${assets_packaged}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+      "${assets_source}" "${assets_packaged}")
+  foreach(left_out IN LISTS OSU_ANDROID_ASSETS_LEFT_OUT)
+    list(APPEND stage_assets
+      COMMAND "${CMAKE_COMMAND}" -E rm -f "${assets_packaged}/${left_out}")
+  endforeach()
+
   file(GLOB_RECURSE packaged_assets CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/*")
   file(GLOB_RECURSE android_resources CONFIGURE_DEPENDS
@@ -198,13 +221,14 @@ the file name" ON)
     COMMAND "${aapt2}" compile
       --dir "${android_dir}/res"
       -o "${compiled_resources}"
+    ${stage_assets}
     COMMAND "${aapt2}" link
       -o "${unaligned_apk}"
       -I "${OSU_ANDROID_FRAMEWORK_RES_APK}"
       --manifest "${android_manifest}"
       --min-sdk-version "${OSU_ANDROID_MIN_API}"
       --target-sdk-version "${OSU_ANDROID_TARGET_API}"
-      -A "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+      -A "${assets_packaged}"
       "${compiled_resources}"
     COMMAND "${jar}" ${jar_date} --update --file "${unaligned_apk}"
       -C "${stage_dir}" lib
