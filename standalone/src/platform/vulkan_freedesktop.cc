@@ -866,7 +866,23 @@ private:
       return false;
     }
 
-    std::uint32_t images = capabilities.minImageCount + 1;
+    // Two more than the driver's minimum. One more is the usual advice for
+    // waiting on the display; where frames are shown as soon as they are
+    // ready, the client runs ahead of the compositor and waits for an image
+    // to come back, which is what the time in acquire is.
+    std::uint32_t images =
+        capabilities.minImageCount + (fWaitForDisplay ? 1u : 2u);
+    // Both of these are worth measuring on a machine rather than deciding
+    // here: how deep the queue of images is and how they reach the screen
+    // decide how long a frame waits for one, and what is best depends on the
+    // compositor as much as on the driver. OSU_VULKAN_IMAGES and
+    // OSU_VULKAN_PRESENT say so for one run.
+    if (const char *said = std::getenv("OSU_VULKAN_IMAGES")) {
+      const int asked = std::atoi(said);
+      if (asked > 0) {
+        images = static_cast<std::uint32_t>(asked);
+      }
+    }
     if (capabilities.maxImageCount != 0 &&
         images > capabilities.maxImageCount) {
       images = capabilities.maxImageCount;
@@ -957,8 +973,23 @@ private:
                 VK_PRESENT_MODE_FIFO_RELAXED_KHR,
                 VK_PRESENT_MODE_IMMEDIATE_KHR};
     } else {
-      wanted = {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR,
+      // Mailbox first, and that is a measurement rather than a preference:
+      // on a phone running phosh with Turnip the three arrangements came out
+      // at 11.0, 11.9 and 11.2 milliseconds a frame, with mailbox lowest and
+      // its submit a third cheaper. It also shows whole frames, where
+      // immediate can tear -- so where they are this close, the one that
+      // does not tear wins.
+      wanted = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR,
                 VK_PRESENT_MODE_FIFO_RELAXED_KHR, VK_PRESENT_MODE_FIFO_KHR};
+    }
+    if (const char *said = std::getenv("OSU_VULKAN_PRESENT")) {
+      const std::string_view named(said);
+      const auto asked =
+          named == "immediate"  ? VK_PRESENT_MODE_IMMEDIATE_KHR
+          : named == "mailbox"  ? VK_PRESENT_MODE_MAILBOX_KHR
+          : named == "relaxed"  ? VK_PRESENT_MODE_FIFO_RELAXED_KHR
+                                : VK_PRESENT_MODE_FIFO_KHR;
+      wanted.insert(wanted.begin(), asked);
     }
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     bool settled = false;
