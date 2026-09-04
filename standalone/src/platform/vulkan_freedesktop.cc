@@ -424,6 +424,12 @@ public:
     present_info.pImageIndices = &fImage;
     const VkResult presented = fApi.fQueuePresent(fQueue, &present_info);
     const auto afterPresent = std::chrono::steady_clock::now();
+    // This image now holds this frame, which is what makes it n frames old
+    // when it comes back around.
+    ++fFrames;
+    if (fImage < fShownAt.size()) {
+      fShownAt[fImage] = fFrames;
+    }
     fSlot = -1;
 
     // Where a frame went, for whoever is asking. Off unless
@@ -460,6 +466,25 @@ public:
       return false;
     }
     return true;
+  }
+
+  // How old the contents of the image this frame draws into are, in frames.
+  //
+  // The same question EGL_EXT_buffer_age answers for a GL client, asked of a
+  // swapchain: zero means what is in the image is not this client's -- it has
+  // never been drawn, or the swapchain was remade -- and n means it holds the
+  // frame from n frames ago. What the client does with that is repaint only
+  // what has changed since.
+  [[nodiscard]] int bufferAge() const {
+    if (fSlot < 0 || fImage >= fShownAt.size() || fShownAt[fImage] == 0) {
+      return 0;
+    }
+    // Counting from the frame being drawn, which is the one after the last
+    // one presented. An image carrying the frame immediately before this one
+    // is one frame old, not none -- and none is what says "nothing of ours
+    // is in here". Off by one the other way, the client repaints the union
+    // of one frame too few, and what is left is the picture from before it.
+    return static_cast<int>(fFrames + 1 - fShownAt[fImage]);
   }
 
   // Whether the swapchain has been told it no longer matches the window.
@@ -1098,6 +1123,9 @@ private:
       }
     }
     fSlots.assign(fImages.size(), Slot{});
+    // A new swapchain is new images: nothing in them is this client's, and
+    // the first frame into each has to be a whole one.
+    fShownAt.assign(fImages.size(), 0);
     VkSemaphoreCreateInfo semaphore{};
     semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     for (Slot &slot : fSlots) {
@@ -1156,6 +1184,8 @@ private:
   std::int64_t fSnapUs = 0;
   std::int64_t fSubmitUs = 0;
   std::int64_t fPresentUs = 0;
+  std::uint64_t fFrames = 0;
+  std::vector<std::uint64_t> fShownAt;
   std::int64_t fWaitUs = 0;
   std::int64_t fDrawUs = 0;
   std::chrono::steady_clock::time_point fDrawFrom{};
