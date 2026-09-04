@@ -121,7 +121,7 @@ if(COMMAND cme_declare_port)
     VERSION ${PROJECT_VERSION}
     GITHUB_REPOSITORY j4niwzis/osu-cpp
     GIT_TAG cmake-everywhere
-    LICENSE AGPL-3.0-or-later
+    LICENSE AGPL-3.0-only
     DEPENDS xz
     TARGETS osucpp::osucpp
   )
