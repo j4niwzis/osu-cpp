@@ -453,7 +453,7 @@ private:
     this->loadComboInfo();
     fSkin.setComboColors(fPlay.fMap->fComboColors);
     fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale,
-                                 this->sliderBodyContext(),
+                                 this->sliderBodySurfaces(),
                                  this->sliderBodyKey());
     fSliderBodyScale = fScale;
     fSliderBodiesStale = false;
@@ -1645,7 +1645,7 @@ private:
                        fBeatmapFilename, fScale,
                        fSettings.choice("renderer"),
                        (fBodiesMustBeBuiltOnTheCpu ||
-                        this->sliderBodyContext() == nullptr)
+                        !this->sliderBodiesOnGpu())
                            ? ":cpu"
                            : "");
   }
@@ -1662,7 +1662,7 @@ private:
       return;
     }
     fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale,
-                                 this->sliderBodyContext(),
+                                 this->sliderBodySurfaces(),
                                  this->sliderBodyKey());
     this->sliderBodiesIntoMemory();
     fSliderBodyScale = fScale;
@@ -2393,20 +2393,44 @@ private:
   // not a failed call this code could answer, it is the program stopping
   // where the read happened. A failure that cannot be observed cannot be
   // fallen back from, so the way that works is taken first.
-  [[nodiscard]] skia::GrDirectContext *sliderBodyContext() const {
+  [[nodiscard]] Skin::Surfaces sliderBodySurfaces() {
     if constexpr (platform::capabilities::kBrowser) {
       if (fSettings.choice("renderer") == 1) {
-        return nullptr;
+        return {};
       }
     }
-    return fContext.get();
+    if (fOnVulkan) {
+      return [this](int width, int height) {
+        return fVulkan.offscreen(width, height);
+      };
+    }
+    if (!fContext) {
+      return {};
+    }
+    return [context = fContext.get()](int width, int height) {
+      return skia::RenderTarget(
+          context, skia::kNo,
+          skia::SkImageInfo::Make(width, height, skia::kRGBA_8888_SkColorType,
+                                  skia::kPremul_SkAlphaType));
+    };
+  }
+
+  // Whether the bodies can be built on the GPU at all here, which is what
+  // the cache key and the read back ask. Said without making a surface
+  // maker, so that a const caller can ask it.
+  [[nodiscard]] bool sliderBodiesOnGpu() const {
+    if constexpr (platform::capabilities::kBrowser) {
+      if (fSettings.choice("renderer") == 1) {
+        return false;
+      }
+    }
+    return fOnVulkan || static_cast<bool>(fContext);
   }
 
   // And into memory, when they were built on the GPU and will be drawn on
   // the CPU. Nothing to do when they were built there to begin with.
   void sliderBodiesIntoMemory() {
-    if (fSettings.choice("renderer") != 1 ||
-        this->sliderBodyContext() == nullptr) {
+    if (fSettings.choice("renderer") != 1 || !this->sliderBodiesOnGpu()) {
       return;
     }
     if (fSkin.flattenBodiesToRaster(fContext.get())) {
@@ -2418,7 +2442,7 @@ private:
                    "[render] the slider bodies cannot be read back off the "
                    "GPU here; building them on the CPU instead");
     }
-    fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale, nullptr,
+    fSkin.precomputeSliderBodies(*fPlay.fMap, fComboInfo, fScale, {},
                                  this->sliderBodyKey());
   }
 

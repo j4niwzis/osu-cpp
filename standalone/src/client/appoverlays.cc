@@ -310,8 +310,12 @@ public:
                             static_cast<float>(osu::kPlayfieldWidth),
                         static_cast<float>(request.fOptions.fHeight) /
                             static_cast<float>(osu::kPlayfieldHeight));
+    // Built where this program draws, and read back into memory below: the
+    // render thread has no context of its own, so what it draws has to be in
+    // memory by the time it starts.
     fApp.fSkin.precomputeSliderBodies(*fApp.fPlay.fMap, fApp.fComboInfo,
-                                     exportScale, fApp.fContext.get());
+                                     exportScale,
+                                     fApp.sliderBodySurfaces());
     if (!fApp.fSkin.flattenBodiesToRaster(fApp.fContext.get())) {
       // The render runs on a thread with no GL context, so a body still on
       // the GPU is not something it can draw -- Skia stops the program
