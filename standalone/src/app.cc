@@ -8,6 +8,8 @@ import platform.clock;
 import platform.input;
 import platform.configuration;
 import platform.web_runtime;
+import platform.system;
+import platform.vulkan;
 import platform.capabilities;
 import skia;
 import skin;
@@ -126,6 +128,11 @@ private:
   // Window / GL / Skia
   platform::WindowRuntime fWindowRuntime;
   skia::Sp<skia::GrDirectContext> fContext;
+  // The other backend, where this build has one and the setting asks for it.
+  // Both cannot be running: a window is made with a context or without one,
+  // which is decided before it is made.
+  platform::vulkan::Presenter fVulkan;
+  bool fOnVulkan = false;
   client::FrameState fFrame;
   skiff::scene::InputRouter fInputRouter;
   // The window and where the pointer is in it. What a resize changes and
@@ -533,8 +540,60 @@ private:
   }
 
   [[nodiscard]] int runWindowed() {
-    if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); })) {
+    // The settings, before there is a window, because one of them decides
+    // what kind of window this is. They are read again when the library is
+    // opened -- that is the moment a browser's storage has answered and the
+    // file can be read at all -- and reading them twice costs a file and
+    // changes nothing: nobody can have altered a setting before the window
+    // exists.
+    fSettings.load(platform::system::mapsDirectory().parent_path() /
+                   "settings.json");
+
+    // Which backend draws is decided here, once, because a window is made
+    // with a graphics context or without one and that cannot be changed
+    // afterwards. Asking for Vulkan and not getting it is not a failure to
+    // report: the window is made again the ordinary way and the client draws
+    // through GL, which is what it did before there was a choice.
+    const bool wantsVulkan = fSettings.choice("renderer") == 2 &&
+                            platform::vulkan::supported();
+    if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); },
+                             wantsVulkan)) {
       return 1;
+    }
+    // What the window actually is. Whether the machine has a Vulkan loader
+    // is a question for the window system once it has started, so it is the
+    // window that answers it, and a window made with a context is one this
+    // client draws into through GL whatever the setting says.
+    bool onVulkan = fWindowRuntime.madeForVulkan();
+    const auto extent = fWindowRuntime.initialExtent();
+    if (onVulkan && !fVulkan.start(fWindowRuntime.nativeWindow(),
+                                   extent.fWidth, extent.fHeight)) {
+      // What it did make comes down before the window does: the surface it
+      // holds is this window's, and destroying the window under it is
+      // destroying something the driver is still being asked about.
+      fVulkan.stop();
+      fWindowRuntime.close();
+      onVulkan = false;
+      if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); })) {
+        return 1;
+      }
+    }
+    fOnVulkan = onVulkan;
+    if (fSettings.choice("renderer") == 2 && !fOnVulkan) {
+      // Said once, because the setting will still read Vulkan while the
+      // client draws through GL -- and said differently for the two reasons,
+      // because one of them is a build and the other is a machine. A build
+      // without the backend cannot say anything about the driver: there is
+      // nothing compiled in to ask it with.
+      if (!platform::vulkan::supported()) {
+        std::println(std::cerr,
+                     "[gfx] this build has no vulkan backend in it "
+                     "(configure with -DOSU_VULKAN=ON); drawing through GL");
+      } else {
+        std::println(std::cerr,
+                     "[gfx] vulkan was asked for and this machine would not "
+                     "give it; drawing through GL");
+      }
     }
     const auto initial = fWindowRuntime.initialExtent();
     fWin.fPixelW = initial.fWidth;
@@ -543,7 +602,9 @@ private:
     platform::web::setCursorVisible(true);
 
     if constexpr (!platform::capabilities::kThreadedWindowLoop) {
-    fWindowRuntime.makeContextCurrent();
+    if (!fOnVulkan) {
+      fWindowRuntime.makeContextCurrent();
+    }
 
     if (!this->initSkia()) {
       fWindowRuntime.close();
@@ -593,7 +654,11 @@ private:
   }
 
   void renderThreadMain() {
-    fWindowRuntime.makeContextCurrent();
+    // A window made without a graphics context has none to make current, and
+    // asking for one is an error glfw reports rather than ignores.
+    if (!fOnVulkan) {
+      fWindowRuntime.makeContextCurrent();
+    }
 
     if (!this->initSkia()) {
       fWindowRuntime.setExitCode(1);
@@ -634,7 +699,12 @@ private:
     }
     fWindowRuntime.setExitCode(0);
     this->requestQuit();
-    fWindowRuntime.releaseContext();
+    // The device outlives the frames and not the window: everything it holds
+    // -- surfaces wrapping swapchain images among it -- is gone with it.
+    fVulkan.stop();
+    if (!fOnVulkan) {
+      fWindowRuntime.releaseContext();
+    }
   }
 
   void requestQuit() {
@@ -1156,6 +1226,39 @@ private:
     fFrame.fLastDrawWall = wallMs();
     fFrame.fDiag.fFrameStart = std::chrono::steady_clock::now();
 
+    // On Vulkan the window's surface is a swapchain image, and which image
+    // that is is decided now: it is acquired here and presented at the end of
+    // the frame. A frame that cannot have one -- the swapchain is being
+    // remade, or the window has no area -- is not drawn at all, and the next
+    // one asks again.
+    if (fOnVulkan) {
+      if (fVulkan.takeStale()) {
+        fWindowItself.reset();
+      }
+      skia::Sp<skia::SkSurface> image =
+          fVulkan.beginFrame(fWindowW, fWindowH);
+      if (!image) {
+        fFrame.fDrawing = false;
+        return;
+      }
+      fWindowItself = std::move(image);
+      if (fPresentTurn == 0) {
+        fFrame.fWindowSurface = fWindowItself;
+      } else if (!fFrame.fWindowSurface ||
+                 fFrame.fWindowSurface->width() != fWin.fPixelW ||
+                 fFrame.fWindowSurface->height() != fWin.fPixelH) {
+        fFrame.fWindowSurface = fVulkan.offscreen(fWin.fPixelW, fWin.fPixelH);
+        if (!fFrame.fWindowSurface) {
+          fPresentTurn = 0;
+          fFrame.fWindowSurface = fWindowItself;
+        }
+      }
+      // A different image every frame, and what is in it is whatever was
+      // shown two frames ago. Nothing carries over, so nothing may be
+      // carried over.
+      fFrame.damageAll("a swapchain image is not the last one");
+    }
+
     // The renderer is chosen per frame, because only the UI screens may use
     // the CPU one: gameplay draws precomputed GPU textures.
     // Gameplay draws on the CPU as well when asked to: the slider bodies it
@@ -1380,8 +1483,10 @@ private:
           }
         }
       }
-      fContext->flushAndSubmit(fFrame.fWindowSurface.get());
-    } else {
+      if (fContext) {
+        fContext->flushAndSubmit(fFrame.fWindowSurface.get());
+      }
+    } else if (fContext) {
       fContext->flushAndSubmit(fFrame.fSurface.get());
     }
 
@@ -1416,7 +1521,9 @@ private:
                                     skia::SkCanvas::kStrict_SrcRectConstraint);
         windowCanvas->restore();
       }
-      fContext->flushAndSubmit(fWindowItself.get());
+      if (fContext) {
+        fContext->flushAndSubmit(fWindowItself.get());
+      }
     }
 
     fDrawnMouseX = fWin.fMouseX;
@@ -1429,6 +1536,24 @@ private:
     // The same claim, made to the compositor instead of to the blit: these
     // rectangles are what changed since the buffer coming back was last ours,
     // which is only knowable from a reported age.
+    if (fOnVulkan) {
+      // The recording is played into the image, the image is handed to the
+      // window system, and that is the whole of what a swap was. There is no
+      // damage to report: what a compositor is told about here is a buffer
+      // the client owned before, and a swapchain image is not that.
+      if (!fVulkan.endFrame(fWindowItself.get())) {
+        std::println(std::cerr, "[gfx] the frame did not reach the screen");
+      }
+      fWindowItself.reset();
+      fLastSwapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - beforeSwap)
+                        .count();
+      fFrame.reportCost(frameStart, beforeSwap, fWin.fPixelW, fWin.fPixelH,
+                        this->partialRedraw());
+      fFrame.fDrawing = false;
+      return;
+    }
+
     std::vector<std::array<int, 4>> damage;
     if (fFrame.fAgeReported && !fFrame.fComputedClipFull &&
         !fFrame.fComputedClip.empty()) {
@@ -2138,6 +2263,18 @@ private:
   }
 
   bool initSkia() {
+    if (fOnVulkan) {
+      // Nothing to assemble: the device was made before the first frame, and
+      // what the cached subtrees draw into comes from its recorder. There is
+      // no submit to do afterwards -- the recorder already took the calls,
+      // and they are played when the frame is.
+      skiff::nodes::CachedContainer::setSurfaces(
+          {.fMake = [this](int width,
+                           int height) { return fVulkan.offscreen(width, height); },
+           .fDone = [this](skia::SkSurface *surface) { fVulkan.finish(surface); }});
+      this->wireScreenPainters();
+      return true;
+    }
     // Two ways to get a GL interface, and the second is the one that always
     // exists.
     //
@@ -2183,6 +2320,14 @@ private:
     // client still owns what one looks like, and hands it over here.
     // The artwork behind the menu is the client's: it owns the beatmap and
     // the view that scales it. The screen draws everything else itself.
+    this->wireScreenPainters();
+    return static_cast<bool>(fContext);
+  }
+
+  // What the screens draw, which has nothing to do with which backend draws
+  // it: the carousel owns where a panel is and when it has to be repainted,
+  // and the client owns what one looks like.
+  void wireScreenPainters() {
     fMainMenu.setArtworkPainter([this](skia::SkCanvas *canvas) {
       fView.drawBackground(this->gameplayCtx(canvas), canvas);
     });
@@ -2200,7 +2345,6 @@ private:
                                selected, hovered, corner);
       }
     });
-    return static_cast<bool>(fContext);
   }
 
 
@@ -2317,6 +2461,30 @@ private:
     }
     const int windowW = fWindowW;
     const int windowH = fWindowH;
+
+    if (fOnVulkan) {
+      // Nothing to wrap: what a frame draws into is a swapchain image, and
+      // which image that is is decided when the frame starts. The swapchain
+      // itself is remade for this size by the first frame that asks.
+      fWindowItself.reset();
+      fFrame.fWindowSurface.reset();
+      fFrame.fSurface.reset();
+      fFrame.fRasterSurface.reset();
+      fFrame.fBlitHistory.clear();
+      fLastResizeWall = wallMs();
+      if (fSliderBodyScale > 0.0f &&
+          std::abs(fScale - fSliderBodyScale) > fSliderBodyScale * 0.01f) {
+        fSliderBodiesStale = true;
+      }
+      std::println(std::cerr,
+                   "[gfx] drawing {}x{} into a {}x{} window on vulkan, "
+                   "turned {} degrees",
+                   fWin.fPixelW, fWin.fPixelH, windowW, windowH, fPresentTurn);
+      fFrame.damageAll("resize", /*buffersGone=*/true);
+      fView.invalidate();
+      fView.preScaleBackground(this->gameplayCtx(nullptr));
+      return;
+    }
 
     skia::GrGLFramebufferInfo info;
     info.fFBOID = 0;

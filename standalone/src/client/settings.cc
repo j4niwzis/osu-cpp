@@ -63,9 +63,16 @@ public:
                {"whatever the window is", "landscape", "portrait"}});
     // A list rather than a switch: there is no reason to assume these two
     // are the only renderers this client will ever have.
-    this->add({1, "renderer", "Renderer", SettingKind::kChoice, 0.0f, 1.0f,
+    // Which of the three draws is read every frame for the first two -- a
+    // menu may be drawn on the CPU while gameplay is not -- and once at
+    // start for the third: a window is made with a graphics context or
+    // without one, and Vulkan is the one that wants it without. Choosing it
+    // therefore takes effect the next time this client is started, and where
+    // the machine has no driver it goes on drawing through GL and says so.
+    this->add({1, "renderer", "Renderer", SettingKind::kChoice, 0.0f, 2.0f,
                1.0f, 0.0f, "",
-               {"GPU (OpenGL)", "CPU (Skia raster)"}});
+               {"GPU (OpenGL)", "CPU (Skia raster)",
+                "GPU (Vulkan, needs a restart)"}});
     // Off by default: it wins where pixels cost, which is the CPU renderer,
     // and loses where draw calls do.
     this->add({1, "partial", "Repaint only what changed",
