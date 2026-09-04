@@ -1,0 +1,157 @@
+# One file, and nothing outside it.
+#
+# Every library this client uses, the window system it opens a window with,
+# and the graphics drivers it draws through are linked into the binary; it
+# opens nothing at run time, because there is nothing in it that could. What
+# comes out runs on a machine that has neither the libraries it was built
+# against nor the loader that would find them.
+#
+# On musl, in a container, because that is what makes this comparable: the
+# machines this is developed on run musl, and a build that differs in its C
+# library differs in everything.
+name: static
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      suffix:
+        type: string
+        default: ""
+      fresh:
+        type: boolean
+        default: false
+
+concurrency:
+  group: static-${{ github.ref }}${{ inputs.suffix }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Alpine is musl, and everything below is built against it. edge because
+    # this needs a clang that compiles C++23 modules.
+    container: alpine:edge
+    timeout-minutes: 350
+    steps:
+      - name: what a build needs
+        run: |
+          apk add --no-cache \
+            build-base clang clang-static lld llvm-dev compiler-rt \
+            cmake samurai ninja-build meson python3 py3-mako py3-packaging \
+            git patch pkgconf bison flex linux-headers \
+            musl-dev libstdc++-dev curl bash tar xz
+          ln -sf /usr/bin/samu /usr/local/bin/ninja || true
+
+      - uses: actions/checkout@v4
+
+      # Where libstdc++ keeps the source of its std module, which is what
+      # `import std` compiles. Alpine's g++ ships it and no manifest, so the
+      # path is found rather than asked for.
+      - name: what import std reads from libstdc++
+        run: |
+          std=$(ls /usr/include/c++/*/bits/std.cc | sort -V | tail -1)
+          cat > /tmp/libstdc++.modules.json <<EOF
+          {
+            "version": 1,
+            "revision": 1,
+            "modules": [
+              { "logical-name": "std", "source-path": "$std",
+                "is-std-library": true },
+              { "logical-name": "std.compat",
+                "source-path": "${std%std.cc}std.compat.cc",
+                "is-std-library": true }
+            ]
+          }
+          EOF
+
+      # LLVM and Mesa are hours the first time and nothing every time after.
+      # The store keeps what was built, keyed by what it was built from.
+      - name: what was built before
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cmake-everywhere/sources
+            ~/.cache/cmake-everywhere/store
+          key: static-${{ hashFiles('cmake/get_cme.cmake', 'standalone/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: static-${{ hashFiles('cmake/get_cme.cmake', 'standalone/CMakeLists.txt') }}-
+
+      - name: configure
+        run: |
+          # The same tuning a release gets, and one thing more: link-time
+          # optimisation in a single partition.
+          #
+          # Full LTO hands the whole program to the optimiser at once, which
+          # is what makes it worth the wait here -- a binary with LLVM, Mesa
+          # and Skia in it has a great deal of code nothing reaches, and this
+          # is what finds it. One partition because the number of them is the
+          # number of threads, and code split differently is code compiled
+          # differently: two builds of the same source have to be the same
+          # file, and that is worth more than the minutes.
+          tuned="-O3 -DNDEBUG -flto=full -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden"
+          linked="-flto=full -Wl,--lto-partitions=1 -Wl,--gc-sections -Wl,-s"
+          cmake -S standalone -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS_RELEASE="$tuned" \
+            -DCMAKE_CXX_FLAGS_RELEASE="$tuned" \
+            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="$linked" \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libstdc++" \
+            -DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json \
+            -DCME_PROFILE=static \
+            -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON \
+            -DOSU_STATIC_DEPS=ON \
+            -DOSU_VULKAN=ON
+
+      - name: build
+        run: cmake --build build
+
+      # What the whole thing is for, asked of the file itself.
+      #
+      # A static program has no interpreter and no needed libraries, and a
+      # program that opens nothing does not name the functions that open
+      # things. Both are questions with one answer each, so both are asked.
+      - name: nothing outside it
+        run: |
+          file build/osu_client
+          if ldd build/osu_client 2>&1 | grep -qv "not a dynamic executable"; then
+            echo "this binary needs libraries from the machine:"
+            ldd build/osu_client || true
+            exit 1
+          fi
+          if readelf -d build/osu_client 2>/dev/null | grep -q NEEDED; then
+            echo "this binary names libraries to load:"
+            readelf -d build/osu_client | grep NEEDED
+            exit 1
+          fi
+          for symbol in dlopen dlsym; do
+            if nm -u build/osu_client 2>/dev/null | grep -qw "$symbol"; then
+              echo "this binary still asks for $symbol"
+              exit 1
+            fi
+          done
+          echo "one file, and nothing outside it"
+
+      # And which drivers ended up in it, said out loud: this is the part
+      # that is easy to build without and hard to notice missing.
+      - name: the drivers in it
+        run: |
+          for driver in amd intel nouveau software; do
+            if nm build/osu_client 2>/dev/null \
+               | grep -qw "osu_vulkan_driver_$driver"; then
+              echo "vulkan: $driver"
+            fi
+          done
+          nm build/osu_client 2>/dev/null | grep -c "radeonsi\|iris_\|llvmpipe" \
+            | xargs -I{} echo "gallium symbols: {}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osu-cpp-static${{ inputs.suffix }}
+          path: build/osu_client
+          if-no-files-found: error

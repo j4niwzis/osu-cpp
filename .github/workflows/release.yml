@@ -89,6 +89,15 @@ jobs:
       fresh: true
     secrets: inherit
 
+  static:
+    uses: ./.github/workflows/static.yml
+
+  static-again:
+    uses: ./.github/workflows/static.yml
+    with:
+      suffix: "-again"
+      fresh: true
+
   flatpak:
     uses: ./.github/workflows/flatpak.yml
     with:
@@ -109,7 +118,7 @@ jobs:
   # reason that says nothing about the build. The unsigned package is what
   # this workflow attests, and it is what is compared.
   reproducible:
-    needs: [native, native-again, wasm, wasm-again, click, click-again, apk, apk-again, flatpak, flatpak-again]
+    needs: [native, native-again, wasm, wasm-again, click, click-again, apk, apk-again, flatpak, flatpak-again, static, static-again]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -156,6 +165,11 @@ jobs:
           # mean every file and all of its metadata are equal.
           compare passes/osu-cpp-flatpak/osu-cpp.flatpak.commit \
                   passes/osu-cpp-flatpak-again/osu-cpp.flatpak.commit
+          # The static build, which is the one where reproducibility is
+          # hardest to hold: it contains LLVM, Mesa and every driver, all
+          # optimised across the whole program at once.
+          compare passes/osu-cpp-static/osu_client \
+                  passes/osu-cpp-static-again/osu_client
           exit "$differs"
 
   # And what was built for the browser becomes the page.
