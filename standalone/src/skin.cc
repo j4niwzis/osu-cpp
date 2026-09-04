@@ -374,9 +374,18 @@ public:
   // a retry, above all -- costs a lookup instead of a second of work. The
   // scale belongs in it too: the same map at a different playfield size is a
   // different set of pictures.
+  // Where an offscreen surface for a slider body comes from.
+  //
+  // Not a context: which kind of context this program made is the program's
+  // business, and this only needs somewhere to draw a body once. Empty means
+  // there is nowhere -- a build with no GPU backend, or a renderer that is
+  // going to draw on the CPU anyway -- and then the body is built into a
+  // bitmap, which is slower to make and the same to draw.
+  using Surfaces = std::function<skia::Sp<skia::SkSurface>(int, int)>;
+
   void precomputeSliderBodies(const osu::Beatmap &map,
                               const osu::ComboInfo &comboInfo, float scale,
-                              skia::GrDirectContext *grContext,
+                              const Surfaces &surfaces,
                               const std::string &key = {}) {
     if (!key.empty()) {
       for (std::size_t i = 0; i < fBodyCache.size(); ++i) {
@@ -401,7 +410,7 @@ public:
         precomputeSliderBody(*s, i, map.fSliderPaths[i],
                              map.sliderSpanDuration(*s),
                              map.sliderTickDistance(*s), map.fDiff.fCs,
-                             comboInfo.fIndices[i], scale, grContext);
+                             comboInfo.fIndices[i], scale, surfaces);
       }
     }
     fBodySegCache.clear(); // scratch, and it is per-map by construction
@@ -625,7 +634,7 @@ public:
                             const osu::SliderPath &path, double spanDuration,
                             double tickDistance, double cs,
                             std::size_t comboIndex, float scale,
-                            skia::GrDirectContext *grContext) {
+                            const Surfaces &surfaces) {
     const double radius = detail::circleVisualRadius(cs);
     const double total = s.fPixelLength;
     const auto points = path.points();
@@ -676,11 +685,8 @@ public:
       skia::Sp<skia::SkSurface> gpuSurface;
       std::unique_ptr<skia::SkCanvas> rasterCanvas;
       skia::SkCanvas *oc = nullptr;
-      if (grContext) {
-        gpuSurface = skia::RenderTarget(
-            grContext, skia::kNo,
-            skia::SkImageInfo::Make(imgW, imgH, skia::kRGBA_8888_SkColorType,
-                                    skia::kPremul_SkAlphaType));
+      if (surfaces) {
+        gpuSurface = surfaces(imgW, imgH);
       }
       if (gpuSurface) {
         oc = gpuSurface->getCanvas();
