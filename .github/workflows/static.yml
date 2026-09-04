@@ -13,7 +13,10 @@ name: static
 
 on:
   push:
-    branches: [main]
+    # And the branch this is being brought up on, because there is no other
+    # way to build it: it is not on main yet, and a pull request would build
+    # everything else beside it for no reason.
+    branches: [main, static]
   pull_request:
   workflow_dispatch:
   workflow_call:
