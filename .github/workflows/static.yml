@@ -13,10 +13,7 @@ name: static
 
 on:
   push:
-    # And the branch this is being brought up on, because there is no other
-    # way to build it: it is not on main yet, and a pull request would build
-    # everything else beside it for no reason.
-    branches: [main, static]
+    branches: [main]
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -50,7 +47,7 @@ jobs:
             clang22 clang22-dev clang22-static lld22 llvm22 llvm22-dev \
             compiler-rt \
             cmake samurai meson python3 py3-mako py3-packaging \
-            git patch pkgconf bison flex linux-headers \
+            git patch pkgconf bison flex linux-headers binutils \
             musl-dev curl bash tar xz make
           ln -sf /usr/bin/samu /usr/local/bin/ninja || true
           echo "/usr/lib/llvm22/bin" >> "$GITHUB_PATH"
@@ -87,6 +84,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
             -DCME_STORE_ENABLED=ON \
             -DCME_SOURCES_ENABLED=ON
           cmake --build build/toolchain
@@ -104,7 +102,10 @@ jobs:
           # differently: two builds of the same source have to be the same
           # file, and that is worth more than the minutes.
           tuned="-O3 -DNDEBUG -flto=full -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden"
-          linked="-flto=full -Wl,--lto-partitions=1 -Wl,--gc-sections -Wl,-s"
+          # lld by name: the flag that holds LTO to a single partition is
+          # lld's, and clang links with whatever the distribution put at
+          # /usr/bin/ld unless it is told.
+          linked="-fuse-ld=lld -flto=full -Wl,--lto-partitions=1 -Wl,--gc-sections -Wl,-s"
           cmake -S standalone -B build -G Ninja \
             --toolchain "$PWD/build/toolchain/cme-toolchain.cmake" \
             -DCMAKE_BUILD_TYPE=Release \
