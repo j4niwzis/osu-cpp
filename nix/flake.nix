@@ -94,7 +94,7 @@
 
         skiff = pkgs.llvmPackages_latest.stdenv.mkDerivation {
           pname = "skiff";
-          version = "0.1-0e50ea8";
+          version = "0.1-4884907";
           src = componentSources.skiff;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
           propagatedBuildInputs = [ skia153 pkgs.libGL ];

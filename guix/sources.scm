@@ -476,9 +476,9 @@
     (origin
       (method git-fetch)
       (uri (git-reference (url "https://github.com/j4niwzis/skiff.git")
-                          (commit "0e50ea82fcab5be6eb6045673542032720dee7e2")))
+                          (commit "4884907b6209aec96a03d5b1164c1374035e9082")))
       (file-name "skiff--checkout")
-      (sha256 (base32 "0fhs1yq7l6z41gk8qmn5rc9s4kn8v7pzh8j7kqmm48y4sd44gk56"))))
+      (sha256 (base32 "0wf4djzh7ix6bkqvriz7a65j3fsc6fd9lqnysnh60mbhvi92qd3v"))))
   (list "skiff-widgets" ""
     (origin
       (method git-fetch)
