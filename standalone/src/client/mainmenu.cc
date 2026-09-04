@@ -409,6 +409,9 @@ public:
     bool fHasArtwork = false;  // the client has a background to draw
     bool fLibraryEmpty = true; // no beatmaps at all: lazer's own backdrop
     bool fAudioPlaying = false;
+    // What the renderer this frame is drawn by charges for: see the logo's
+    // own field of the same name.
+    bool fDrawsAreExpensive = false;
     std::span<const std::int16_t> fSamples;
     int fSampleRate = 0;
     // Asked for rather than handed over, because it is only wanted every
@@ -805,7 +808,8 @@ private:
   [[nodiscard]] client::logo::Logo::Ctx logoCtx(const Ctx &ctx) const {
     return {ctx.fFont,       ctx.fMouseX,       ctx.fMouseY, ctx.fDtMs,
             ctx.fVisualiser, ctx.fTriangles,    fLogoBase,   fLogoTarget.fX,
-            fLogoTarget.fY,  fLogoTarget.fScale};
+            fLogoTarget.fY,  fLogoTarget.fScale,
+            ctx.fDrawsAreExpensive};
   }
 
   [[nodiscard]] std::optional<Action> trigger(std::size_t index) {

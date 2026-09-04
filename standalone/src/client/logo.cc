@@ -32,6 +32,11 @@ public:
     float fTargetX = 0.0f;
     float fTargetY = 0.0f;
     float fTargetScale = 1.0f;
+    // Whether a draw call is the expensive part. On the backend that draws
+    // through a recording, a thousand small paths are a thousand entries in
+    // it and the frame is spent on them; where each draw is cheap, the
+    // shapes are better off separate. Said by whoever made the renderer.
+    bool fDrawsAreExpensive = false;
   };
 
   // Where it is going, and how fast it gets there. Separate from settle so
@@ -139,10 +144,17 @@ public:
     }
 
     // Body: vertical gradient disc, clipped triangles, then the mark.
+    //
+    // The clip is an oval rather than a path that happens to be a circle.
+    // Both describe the same shape and one of them says so: a rounded
+    // rectangle is a shape Skia clips to by arithmetic, where a path is a
+    // coverage mask it has to render into an atlas first -- which is a
+    // texture and a pass, every frame, on the backend that does not have the
+    // analytic route for paths.
     canvas->save();
-    skia::SkPathBuilder disc;
-    disc.addCircle(fX, fY, r);
-    canvas->clipPath(disc.detach(), true);
+    canvas->clipRRect(skia::SkRRect::MakeOval(skia::SkRect::MakeLTRB(
+                          fX - r, fY - r, fX + r, fY + r)),
+                      true);
     skiff::paint::verticalGradient(canvas, fRect,
                                    skia::colorSetARGB(255, 0xff, 0x66, 0xab),
                                    skia::colorSetARGB(255, 0xcc, 0x52, 0x89));
@@ -270,13 +282,21 @@ public:
     // A bar at a time, as a small convex path with antialiasing.
     //
     // Two attempts at making this cheaper both cost more, and both for
-    // reasons worth keeping written down. Collecting the bars of a round into
-    // one path takes Skia off the analytic route it has for convex shapes and
-    // onto a coverage mask over the whole circle. Sending them as vertices
-    // removes the per-draw overhead but also the antialiasing, and adding it
-    // back as a ring of transparent geometry means blending five times the
-    // triangles -- which on a software rasteriser is paid per pixel, and cost
-    // more than the draws it saved. What is here is what measured best.
+    // reasons worth keeping written down -- measured on a software
+    // rasteriser, which is where this was first made to run at all.
+    // Collecting the bars of a round into one path takes Skia off the
+    // analytic route it has for convex shapes and onto a coverage mask over
+    // the whole circle. Sending them as vertices removes the per-draw
+    // overhead but also the antialiasing, and adding it back as a ring of
+    // transparent geometry means blending five times the triangles -- which
+    // on a rasteriser is paid per pixel, and cost more than the draws it
+    // saved.
+    //
+    // Where a draw call is the expensive part rather than the pixels, that
+    // arithmetic is the other way round: a thousand calls are a thousand
+    // entries in a recording, and one path per ring is what a phone can
+    // show. Neither measurement is wrong and neither is the whole answer,
+    // so which arrangement is used follows the renderer.
     const float barLength = logoRadius * 2.0f * (600.0f / 480.0f);
     // barSize.X = size * sqrt(2 * (1 - cos(360/bars))) / 2  -- the chord.
     const float chord =
@@ -293,6 +313,16 @@ public:
     paint.setAlphaf(0.2f); // transparent_white
     paint.setBlendMode(skia::SkBlendMode::kPlus);
 
+    // One path per round where a draw call costs more than the shape does.
+    //
+    // The measurements below were made on a backend where the opposite is
+    // true, and both are still true: separate convex paths take the analytic
+    // route and are cheapest where a draw is cheap; on the other one a
+    // thousand of them are a thousand entries in a recording, and gathering
+    // each round into one path turns the frame from forty milliseconds into
+    // something a phone can show.
+    skia::SkPathBuilder gathered;
+    skia::SkPathBuilder bar;
     for (int round = 0; round < kRounds; ++round) {
       for (int i = 0; i < count; ++i) {
         const float amp = bars[static_cast<std::size_t>(i)];
@@ -309,13 +339,21 @@ public:
         const float ax = angle.fCos * barLength * amp;
         const float ay = angle.fSin * barLength * amp;
 
-        skia::SkPathBuilder bar;
-        bar.moveTo(bx - ox, by - oy);
-        bar.lineTo(bx - ox + ax, by - oy + ay);
-        bar.lineTo(bx + ox + ax, by + oy + ay);
-        bar.lineTo(bx + ox, by + oy);
-        bar.close();
-        canvas->drawPath(bar.detach(), paint);
+        // Straight into whichever path is going to be drawn. Building a
+        // path per bar and copying it into another was a thousand small
+        // allocations a frame for a shape of four points.
+        skia::SkPathBuilder &into = ctx.fDrawsAreExpensive ? gathered : bar;
+        into.moveTo(bx - ox, by - oy);
+        into.lineTo(bx - ox + ax, by - oy + ay);
+        into.lineTo(bx + ox + ax, by + oy + ay);
+        into.lineTo(bx + ox, by + oy);
+        into.close();
+        if (!ctx.fDrawsAreExpensive) {
+          canvas->drawPath(bar.detach(), paint);
+        }
+      }
+      if (ctx.fDrawsAreExpensive) {
+        canvas->drawPath(gathered.detach(), paint);
       }
     }
   }
