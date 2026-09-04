@@ -79,11 +79,15 @@ jobs:
         # must be the same library on every machine, and "whatever this
         # distribution had" is the opposite of that. The ordinary run still
         # answers both questions.
-        # And the Vulkan one, which is a third answer to the same
-        # question: a Skia with Graphite in it, which no distribution ships,
-        # so it can only be built. It is not part of a release -- nothing
-        # draws through it yet -- and it is here because a backend nobody
-        # compiles is a backend nobody knows about.
+        # And the Vulkan one, which is a third answer to the same question:
+        # a Skia with Graphite in it, which no distribution ships, so it can
+        # only be built. On an ordinary run it is its own answer, because a
+        # backend nobody compiles is a backend nobody knows about.
+        #
+        # A release does not build it separately -- it builds it in. What is
+        # released is one binary that has both backends and chooses at run
+        # time, so the machine that refuses Vulkan still has the GL renderer
+        # it always had, and the machine that does not gets the other one.
         answer: ${{ fromJSON(inputs.release && '["ports"]' || '["system", "ports", "vulkan"]') }}
     name: build (${{ matrix.answer }})
     steps:
@@ -242,7 +246,7 @@ jobs:
             -DCME_STORE_ENABLED=ON \
             -DCME_SOURCES_ENABLED=ON \
             -DCME_SYSTEM=${{ matrix.answer == 'system' && 'AUTO' || 'NEVER' }} \
-            -DOSU_VULKAN=${{ matrix.answer == 'vulkan' && 'ON' || 'OFF' }} \
+            -DOSU_VULKAN=${{ (matrix.answer == 'vulkan' || inputs.release) && 'ON' || 'OFF' }} \
             "${extra[@]}"
 
       - name: build
