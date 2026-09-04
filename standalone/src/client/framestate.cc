@@ -20,6 +20,11 @@ public:
   struct BeginOptions {
     bool fPartial = false;
     int fAssumedBufferAge = 0;
+    // What the caller knows about the buffer this frame draws into, where it
+    // knows: a backend that hands out images itself is the one that can say
+    // how old the one it just handed over is. Below zero means it does not
+    // know and the window system is asked instead.
+    int fKnownBufferAge = -1;
     std::uint64_t fReportedSize = 0;
     int fWidth = 0;
     int fHeight = 0;
@@ -135,7 +140,11 @@ public:
   void begin(const BeginOptions &opts) {
     fDrawing = true;
     fBlitRegions.clear();
-    fBufferAge = opts.fPartial ? platform::presentation::bufferAge() : -1;
+    if (opts.fKnownBufferAge >= 0) {
+      fBufferAge = opts.fPartial ? opts.fKnownBufferAge : -1;
+    } else {
+      fBufferAge = opts.fPartial ? platform::presentation::bufferAge() : -1;
+    }
     fAgeReported = fBufferAge >= 0;
     fBufferAgeAssumed = false;
     if (fBufferAge < 0 && opts.fPartial && opts.fAssumedBufferAge > 0) {

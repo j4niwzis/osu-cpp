@@ -840,6 +840,7 @@ private:
                              : fSettings.choice("bufferage");
     fFrame.begin({.fPartial = partial,
                   .fAssumedBufferAge = assumedAge,
+                  .fKnownBufferAge = fOnVulkan ? fVulkan.bufferAge() : -1,
                   .fReportedSize = fWindowRuntime.reportedSize(),
                   .fWidth = fWin.fPixelW,
                   .fHeight = fWin.fPixelH,
@@ -1261,10 +1262,11 @@ private:
           fFrame.fWindowSurface = fWindowItself;
         }
       }
-      // A different image every frame, and what is in it is whatever was
-      // shown two frames ago. Nothing carries over, so nothing may be
-      // carried over.
-      fFrame.damageAll("a swapchain image is not the last one");
+      // What is in this image is the frame that was shown in it last time
+      // round, and the presenter says how many frames ago that was. That is
+      // the same thing EGL_EXT_buffer_age tells a GL client, so the frame
+      // repaints exactly what has changed since -- and repaints the whole
+      // window when the answer is that the image is not this client's yet.
     }
 
     // The renderer is chosen per frame, because only the UI screens may use

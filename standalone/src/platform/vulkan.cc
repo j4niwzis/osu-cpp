@@ -38,6 +38,7 @@ public:
   }
   void finish(skia::SkSurface *) {}
   [[nodiscard]] bool takeStale() { return false; }
+  [[nodiscard]] int bufferAge() const { return 0; }
 };
 
 } // namespace platform::vulkan
