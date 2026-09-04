@@ -402,8 +402,8 @@
   };  # 153
   skiff = pkgs.fetchgit {
     url = "https://github.com/j4niwzis/skiff.git";
-    rev = "2bff093a16af1ca76d3848c21213c1df78d98395";
-    sha256 = "18ir5rcf2fyj3dl7wpl3lx6fl59vw1crhd00aywm3gkq897i8nsi";
+    rev = "da0760f4559b5aa02d5da9b366d4eb610c01688b";
+    sha256 = "1s38mac9vcsiwnz7adbh0fha3cii0fryyjm44xsa1y84n4nf4hnl";
     fetchSubmodules = false;
   };  # 
   skiff_widgets = pkgs.fetchgit {

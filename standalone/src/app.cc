@@ -704,8 +704,16 @@ private:
     }
     fWindowRuntime.setExitCode(0);
     this->requestQuit();
-    // The device outlives the frames and not the window: everything it holds
-    // -- surfaces wrapping swapchain images among it -- is gone with it.
+    // Everything this client holds that belongs to the device, given back
+    // before the device goes: the frame's surfaces, the window's own, and
+    // the pictures the cached subtrees keep. A surface outliving the context
+    // that made it is a hang at exit and a fault after it.
+    fFrame.fSurface.reset();
+    fFrame.fWindowSurface.reset();
+    fFrame.fRasterSurface.reset();
+    fWindowItself.reset();
+    fSkin.forgetPrecomputedBodies();
+    skiff::nodes::CachedContainer::dropSurfaces();
     fVulkan.stop();
     if (!fOnVulkan) {
       fWindowRuntime.releaseContext();
