@@ -48,25 +48,15 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      # Where libstdc++ keeps the source of its std module, which is what
-      # `import std` compiles. Alpine's g++ ships it and no manifest, so the
-      # path is found rather than asked for.
-      - name: what import std reads from libstdc++
+      # The provider, fetched once here because both builds below use it:
+      # the one that makes the toolchain and the one that uses it.
+      - name: the provider
         run: |
-          std=$(ls /usr/include/c++/*/bits/std.cc | sort -V | tail -1)
-          cat > /tmp/libstdc++.modules.json <<EOF
-          {
-            "version": 1,
-            "revision": 1,
-            "modules": [
-              { "logical-name": "std", "source-path": "$std",
-                "is-std-library": true },
-              { "logical-name": "std.compat",
-                "source-path": "${std%std.cc}std.compat.cc",
-                "is-std-library": true }
-            ]
-          }
-          EOF
+          pin=$(sed -n 's/^set(CME_PINNED "\(.*\)")$/\1/p' cmake/get_cme.cmake)
+          curl -sSL -o /tmp/cme.tar.gz \
+            "https://github.com/j4niwzis/cmake-everywhere/archive/$pin.tar.gz"
+          mkdir -p /tmp/cme
+          tar xzf /tmp/cme.tar.gz -C /tmp/cme --strip-components=1
 
       # LLVM and Mesa are hours the first time and nothing every time after.
       # The store keeps what was built, keyed by what it was built from.
@@ -78,6 +68,19 @@ jobs:
             ~/.cache/cmake-everywhere/store
           key: static-${{ hashFiles('cmake/get_cme.cmake', 'standalone/CMakeLists.txt') }}-${{ github.sha }}
           restore-keys: static-${{ hashFiles('cmake/get_cme.cmake', 'standalone/CMakeLists.txt') }}-
+
+      # The C library and the C++ runtime this build is compiled against,
+      # built first because a compiler is handed them before anything else
+      # is configured. What comes out is a prefix and a toolchain file.
+      - name: the C library and the C++ runtime
+        run: |
+          cmake -S /tmp/cme/toolchain -B build/toolchain -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON
+          cmake --build build/toolchain
 
       - name: configure
         run: |
@@ -94,14 +97,13 @@ jobs:
           tuned="-O3 -DNDEBUG -flto=full -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden"
           linked="-flto=full -Wl,--lto-partitions=1 -Wl,--gc-sections -Wl,-s"
           cmake -S standalone -B build -G Ninja \
+            --toolchain "$PWD/build/toolchain/cme-toolchain.cmake" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS_RELEASE="$tuned" \
             -DCMAKE_CXX_FLAGS_RELEASE="$tuned" \
             -DCMAKE_EXE_LINKER_FLAGS_RELEASE="$linked" \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libstdc++" \
-            -DCMAKE_CXX_STDLIB_MODULES_JSON=/tmp/libstdc++.modules.json \
             -DCME_PROFILE=static \
             -DCME_STORE_ENABLED=ON \
             -DCME_SOURCES_ENABLED=ON \
