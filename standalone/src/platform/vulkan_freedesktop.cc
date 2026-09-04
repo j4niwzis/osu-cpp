@@ -164,6 +164,82 @@ private:
 
 } // namespace platform::vulkan
 
+// The drivers this program was built with, where it was built with any.
+//
+// A Vulkan program normally finds its driver through the loader: a shared
+// object that reads a directory of manifests, opens whichever driver each
+// names, and merges them into one API. A program that opens nothing has no
+// loader and no manifests -- it has the drivers themselves, linked in, each
+// with the entry point every driver has under a name of its own.
+//
+// So this is the loader, in the only part of it a program actually needs:
+// ask each driver whether it has a device, and take the first that does.
+// One device is what a game uses; enumerating all of them across drivers is
+// what a loader does for programs that choose, and this one does not.
+#if defined(OSU_STATIC_DRIVERS)
+extern "C" {
+#define OSU_VULKAN_DRIVER(name)                                                \
+  PFN_vkVoidFunction osu_vulkan_driver_##name(VkInstance instance,             \
+                                              const char *symbol);
+#include "osu_vulkan_drivers.h"
+#undef OSU_VULKAN_DRIVER
+}
+
+namespace {
+
+struct Driver {
+  const char *fName;
+  PFN_vkGetInstanceProcAddr fProc;
+};
+
+const Driver *drivers(std::size_t *count) {
+  static const Driver known[] = {
+#define OSU_VULKAN_DRIVER(name) {#name, &osu_vulkan_driver_##name},
+#include "osu_vulkan_drivers.h"
+#undef OSU_VULKAN_DRIVER
+  };
+  *count = sizeof(known) / sizeof(known[0]);
+  return known;
+}
+
+// Whether this driver has anything to draw on.
+//
+// The only way to ask is to make an instance and count the devices, which
+// is what the loader does too. The instance is thrown away: what is kept is
+// the answer, and the entry point that gave it.
+bool driverHasDevice(const Driver &driver) {
+  auto create = reinterpret_cast<PFN_vkCreateInstance>(
+      driver.fProc(nullptr, "vkCreateInstance"));
+  if (create == nullptr) {
+    return false;
+  }
+  VkApplicationInfo application{};
+  application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+  application.apiVersion = VK_API_VERSION_1_1;
+  VkInstanceCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+  info.pApplicationInfo = &application;
+  VkInstance instance = VK_NULL_HANDLE;
+  if (create(&info, nullptr, &instance) != VK_SUCCESS) {
+    return false;
+  }
+  auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+      driver.fProc(instance, "vkEnumeratePhysicalDevices"));
+  auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(
+      driver.fProc(instance, "vkDestroyInstance"));
+  std::uint32_t devices = 0;
+  if (enumerate != nullptr) {
+    enumerate(instance, &devices, nullptr);
+  }
+  if (destroy != nullptr) {
+    destroy(instance, nullptr);
+  }
+  return devices > 0;
+}
+
+} // namespace
+#endif
+
 export namespace platform::vulkan {
 
 // Whether this build has the backend compiled into it at all. Whether the
@@ -171,6 +247,32 @@ export namespace platform::vulkan {
 // initialised -- which is after the window system has been started, not
 // before, since glfw answers "no" to everything until then.
 bool supported() { return true; }
+
+// Which driver draws, decided before anything is opened.
+//
+// glfw is told, because everything this client asks Vulkan goes through the
+// proc address glfw hands out -- and glfw's own way of getting one is to
+// open the loader, which is exactly what this build has none of. Called
+// before glfwInit, which is where glfw looks.
+//
+// Nothing to decide where the drivers are not linked in: there the loader
+// on the machine is what answers, and it is right to let it.
+void installLoader() {
+#if defined(OSU_STATIC_DRIVERS)
+  std::size_t count = 0;
+  const Driver *known = drivers(&count);
+  for (std::size_t index = 0; index < count; ++index) {
+    if (!driverHasDevice(known[index])) {
+      continue;
+    }
+    std::println(std::cerr, "[vulkan] driver: {}", known[index].fName);
+    ::glfwInitVulkanLoader(known[index].fProc);
+    return;
+  }
+  std::println(std::cerr,
+               "[vulkan] none of the drivers built in has a device here");
+#endif
+}
 
 // The window system's side of a Graphite program: a device, a swapchain, and
 // a surface per frame that Skia draws into.

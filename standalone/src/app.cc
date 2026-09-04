@@ -557,6 +557,11 @@ private:
     // through GL, which is what it did before there was a choice.
     const bool wantsVulkan = fSettings.choice("renderer") == 2 &&
                             platform::vulkan::supported();
+    // Which Vulkan driver draws, where the drivers are in the program
+    // rather than on the machine. Said before the window system starts,
+    // because that is where glfw looks for a loader it will not find.
+    platform::vulkan::installLoader();
+
     if (!fWindowRuntime.open([this] { this->requestFullscreenToggle(); },
                              wantsVulkan)) {
       return 1;

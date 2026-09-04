@@ -19,6 +19,10 @@ export namespace platform::vulkan {
 
 bool supported() { return false; }
 
+// Nothing to install: this build has no drivers in it, and no backend that
+// would ask them anything.
+void installLoader() {}
+
 class Presenter {
 public:
   Presenter() = default;

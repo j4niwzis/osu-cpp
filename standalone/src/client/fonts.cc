@@ -8,6 +8,52 @@ import platform.configuration;
 
 namespace client::font_detail {
 
+// The fonts inside this program, where they are inside it.
+//
+// A build that is one file has no share/ beside it to read from, so the
+// fonts are linked in: each is an object with the bytes between two symbols
+// the linker invented, and the build wrote down which ones there are.
+#if defined(OSU_STATIC_FONTS)
+extern "C" {
+#define OSU_FONT(file, symbol)                                                 \
+  extern const char _binary_##symbol##_start[];                                \
+  extern const char _binary_##symbol##_end[];
+#include "osu_fonts.h"
+#undef OSU_FONT
+}
+
+struct EmbeddedFont {
+  const char *fName;
+  const char *fBegin;
+  const char *fEnd;
+};
+
+[[nodiscard]] std::span<const EmbeddedFont> embeddedFonts() {
+  static const EmbeddedFont fonts[] = {
+#define OSU_FONT(file, symbol)                                                 \
+  {file, _binary_##symbol##_start, _binary_##symbol##_end},
+#include "osu_fonts.h"
+#undef OSU_FONT
+  };
+  return fonts;
+}
+
+[[nodiscard]] skia::Sp<skia::SkData> embedded(const std::string &name) {
+  for (const auto &font : embeddedFonts()) {
+    if (name != font.fName) {
+      continue;
+    }
+    return skia::SkData::MakeWithoutCopy(
+        font.fBegin, static_cast<std::size_t>(font.fEnd - font.fBegin));
+  }
+  return nullptr;
+}
+#else
+[[nodiscard]] skia::Sp<skia::SkData> embedded(const std::string &) {
+  return nullptr;
+}
+#endif
+
 [[nodiscard]] std::vector<std::filesystem::path>
 assetCandidates(const std::string &name) {
   std::vector<std::filesystem::path> candidates;
@@ -30,8 +76,35 @@ assetCandidates(const std::string &name) {
   return candidates;
 }
 
+[[nodiscard]] skia::Sp<skia::SkTypeface> typefaceFrom(skia::Sp<skia::SkData> data) {
+  if (!data || data->isEmpty()) {
+    return nullptr;
+  }
+  std::array<skia::Sp<skia::SkData>, 1> datas{std::move(data)};
+  auto manager = skia::SkFontMgr_New_Custom_Data(datas);
+  if (!manager || manager->countFamilies() == 0) {
+    return nullptr;
+  }
+  auto face = manager->matchFamilyStyle(nullptr, skia::SkFontStyle());
+  if (!face) {
+    face = manager->createStyleSet(0)->createTypeface(0);
+  }
+  return face;
+}
+
 [[nodiscard]] skia::Sp<skia::SkTypeface>
 loadTypeface(const std::string &name) {
+  // What is in the program, before what is on the machine: a build that
+  // carries its fonts is a build that does not depend on where it was
+  // installed, and a build that does not carry them falls through here
+  // without noticing.
+  if (auto face = typefaceFrom(embedded(name))) {
+    skia::SkString family;
+    face->getFamilyName(&family);
+    std::println(std::cerr, "[ui] font \"{}\" from this program",
+                 family.c_str());
+    return face;
+  }
   for (const auto &path : assetCandidates(name)) {
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
