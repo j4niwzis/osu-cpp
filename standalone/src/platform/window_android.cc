@@ -25,7 +25,12 @@ public:
   WindowRuntime &operator=(const WindowRuntime &) = delete;
   ~WindowRuntime() { this->close(); }
 
-  [[nodiscard]] bool open(std::function<void()>) {
+  // The second argument is whether to make the window without a graphics
+  // context, which is what a Vulkan program asks for on a desktop. There is
+  // no such window here: this one is an EGL surface on a buffer the system
+  // gave the activity, and the client asks the same question of every
+  // platform.
+  [[nodiscard]] bool open(std::function<void()>, bool = false) {
     fApp = android::application();
     if (fApp == nullptr) {
       this->log("NativeActivity state is unavailable");
@@ -136,6 +141,14 @@ public:
   [[nodiscard]] int exitCode() const {
     return fExitCode.load(std::memory_order_acquire);
   }
+
+  // Nothing to hand over: the Vulkan presenter is a desktop file, and what
+  // asks for this is the client, which is one file for every platform.
+  [[nodiscard]] void *nativeWindow() const { return nullptr; }
+
+  // No window here was ever made without a graphics context: this one is an
+  // EGL surface on a buffer the system gave the activity.
+  [[nodiscard]] bool madeForVulkan() const { return false; }
 
   void makeContextCurrent() {
     const std::lock_guard<std::mutex> lock(fSurfaceMutex);

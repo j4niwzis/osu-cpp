@@ -236,11 +236,33 @@ public:
 
   ~WindowRuntime() { this->close(); }
 
-  [[nodiscard]] bool open(std::function<void()> toggleFullscreen) {
+  // noClientApi: the window is made without a graphics context of its own,
+  // which is what a Vulkan program wants -- it makes the device itself and
+  // glfw's job is the window and the surface on it. Everything about GL
+  // below is then skipped, including the walk through context versions,
+  // because there is no context to ask for.
+  [[nodiscard]] bool open(std::function<void()> toggleFullscreen,
+                          bool noClientApi = false) {
     const auto configuration = platform::runtimeConfiguration();
+    // Each distinct complaint once. glfw asks every backend it was built
+    // with whether it can run here, and the ones that cannot say so -- on a
+    // Wayland session the X11 backend does, and the other way round -- which
+    // is a fact about the machine and not news that bears repeating. Some of
+    // them are asked again per frame, and a line printed sixty times a
+    // second is a log nobody can read.
     glfwSetErrorCallback([](int code, const char *message) {
-      std::println(std::cerr, "[glfw] error {}: {}", code,
-                   message != nullptr ? message : "unknown error");
+      static std::mutex saidLock;
+      static std::set<std::string> said;
+      const std::string what =
+          std::format("[glfw] error {}: {}", code,
+                      message != nullptr ? message : "unknown error");
+      {
+        const std::lock_guard<std::mutex> held(saidLock);
+        if (!said.insert(what).second) {
+          return;
+        }
+      }
+      std::println(std::cerr, "{}", what);
     });
     if (!glfwInit()) {
       std::println(std::cerr, "[glfw] initialization failed");
@@ -287,6 +309,23 @@ public:
       int fProfile;
       int fCreation;
     };
+    if (noClientApi && glfwVulkanSupported() != GLFW_TRUE) {
+      // Asked before glfwInit, this answers no whatever the machine has --
+      // which is why it is asked here and not by whoever wants Vulkan.
+      std::println(std::cerr,
+                   "[gfx] no vulkan loader on this machine; a GL window then");
+      noClientApi = false;
+    }
+    fNoClientApi = noClientApi;
+    if (noClientApi) {
+      glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+      glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+      fWindow = glfwCreateWindow(fInitial.fWidth, fInitial.fHeight,
+                                 "osu_client", monitor, nullptr);
+      if (fWindow != nullptr) {
+        std::println(std::cerr, "[gfx] context: none, the client makes one");
+      }
+    }
     const int desktopCreation = configuration.fForceEgl
                                     ? GLFW_EGL_CONTEXT_API
                                     : GLFW_NATIVE_CONTEXT_API;
@@ -304,6 +343,9 @@ public:
     const std::array<int, 4> order = preferGles ? std::array{2, 3, 0, 1}
                                                 : std::array{0, 1, 2, 3};
     for (const int index : order) {
+      if (fWindow != nullptr) {
+        break;
+      }
       const auto &choice = choices[index];
       glfwWindowHint(GLFW_CLIENT_API, choice.fApi);
       glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, choice.fMajor);
@@ -481,6 +523,15 @@ public:
 
   // Graphics and input operations stay behind this boundary so application
   // code never depends on a GLFW handle or its numeric cursor constants.
+  // The window itself, for the one caller that has to talk to the window
+  // system rather than through this: a Vulkan surface is made from the
+  // window handle and nothing else here can make it.
+  [[nodiscard]] ::GLFWwindow *nativeWindow() const { return fWindow; }
+
+  // Whether this window was made without a graphics context, which is what
+  // was asked for and what the machine allowed.
+  [[nodiscard]] bool madeForVulkan() const { return fNoClientApi; }
+
   void makeContextCurrent() { glfwMakeContextCurrent(fWindow); }
   void releaseContext() { glfwMakeContextCurrent(nullptr); }
   // A quarter turn between the window and the surface the client draws
@@ -872,6 +923,7 @@ private:
 
   GLFWwindow *fWindow = nullptr;
   bool fGlfwInitialized = false;
+  bool fNoClientApi = false;
   bool fWindowFocused = true;
   std::atomic<bool> fWindowIconified{false};
   std::atomic<bool> fWindowActive{true};
