@@ -427,6 +427,13 @@
     "dest": ".flatpak-sources/ports/vulkan-headers"
   },
   {
+    "type": "archive",
+    "url": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/eb744ea7a2b17040121b4bbb4d6f9e8a77e3cae7.tar.gz",
+    "sha512": "ff5672d64db58798f11146ad6630581229e25bc1fbc690890fa82f6ecc1893abf70c9a11b17b4432a06e17669999632ba7a0d72f7e4441da17d0d24e518a37c4",
+    "dest": ".flatpak-sources/ports/vulkan-memory-allocator-sources",
+    "archive-type": "tar-gzip"
+  },
+  {
     "type": "git",
     "url": "https://github.com/tukaani-project/xz.git",
     "commit": "9331ce4009ddc839f5191d234cc41b2d4797376d",

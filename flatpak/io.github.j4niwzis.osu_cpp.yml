@@ -327,6 +327,11 @@ modules:
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
       - -DOSU_STATIC_DEPS=ON
       - -DOSU_VIDEO_LIBAV=ON
+      # Both backends in one bundle, as the ordinary release carries them.
+      # Which one draws is a setting rather than a build, and the runtime
+      # this runs on brings the drivers: a machine whose driver refuses
+      # Vulkan has the GL renderer it always had.
+      - -DOSU_VULKAN=ON
       - -DOSU_SKIFF_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff
       - -DOSU_SKIFF_WIDGETS_SOURCE_DIR=/run/build/osu-cpp/.flatpak-sources/skiff-widgets
       - -DCPM_DOWNLOAD_LOCATION=/run/build/osu-cpp/.flatpak-sources/cpm/CPM.cmake
