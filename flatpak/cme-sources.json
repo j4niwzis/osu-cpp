@@ -405,7 +405,7 @@
   {
     "type": "git",
     "url": "https://github.com/j4niwzis/skiff.git",
-    "commit": "0e50ea82fcab5be6eb6045673542032720dee7e2",
+    "commit": "4884907b6209aec96a03d5b1164c1374035e9082",
     "dest": ".flatpak-sources/ports/skiff"
   },
   {

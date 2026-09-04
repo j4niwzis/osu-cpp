@@ -131,7 +131,32 @@ option(OSU_WAYLAND "Reach GL through EGL, and build the Wayland touch bridge"
 #
 # So no interface is asked for. A Skia built here is built without one, and a
 # Skia already installed is used whichever way it was built.
-find_package(Skia REQUIRED COMPONENTS gl png jpeg freetype)
+# The other backend, where it is asked for.
+#
+# Graphite is the one Skia is writing in place of Ganesh, and it speaks
+# Vulkan rather than GL. Which of them this client draws through is a
+# setting rather than a build, so a machine whose driver refuses Vulkan
+# still has the GL renderer it always had.
+#
+# Off by default, and the reason is what asking costs. No distribution ships
+# a Skia with Graphite in it, so a build that names this component cannot be
+# answered by the machine's own Skia at all: it builds one, which is an hour
+# of a computer for a backend the person building may not have wanted. On,
+# it is a build that has both and chooses at run time.
+#
+# Never on a phone, in a browser or in a cross build for a device: Android's
+# Vulkan is reached differently, a browser has none, and a device build
+# should not carry a backend nobody there asked for.
+set(OSU_SKIA_COMPONENTS gl png jpeg freetype)
+option(OSU_VULKAN "Draw through Graphite on Vulkan where a driver allows it"
+       OFF)
+if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN_BUILD AND
+   NOT CMAKE_CROSSCOMPILING AND OSU_VULKAN)
+  list(APPEND OSU_SKIA_COMPONENTS graphite-vulkan)
+else()
+  set(OSU_VULKAN OFF)
+endif()
+find_package(Skia REQUIRED COMPONENTS ${OSU_SKIA_COMPONENTS})
 find_package(libzip REQUIRED)
 find_package(SndFile REQUIRED)
 find_package(mpg123 REQUIRED)
@@ -196,7 +221,7 @@ else()
     NAME skiff
     PROVIDES skiff
     GITHUB_REPOSITORY j4niwzis/skiff
-    GIT_TAG 0e50ea82fcab5be6eb6045673542032720dee7e2
+    GIT_TAG 4884907b6209aec96a03d5b1164c1374035e9082
   )
 endif()
 if(OSU_SKIFF_WIDGETS_SOURCE_DIR)
@@ -283,6 +308,18 @@ if(OSU_PLATFORM_SUFFIX)
   file(GLOB_RECURSE platform_implementation_sources CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/${OSU_PLATFORM_SUFFIX}/*.cc")
   list(APPEND selected_cpp_sources ${platform_implementation_sources})
+endif()
+
+# The Vulkan presenter is a freedesktop overlay like any other, and it names
+# Skia's Graphite backend: a build that did not ask for that backend has no
+# such thing to name. Where it was not asked for, the unsuffixed file stands
+# in -- the same calls, answering that there is no device here -- which is
+# what keeps the client free of ifdefs about it.
+if(NOT OSU_VULKAN)
+  list(FILTER selected_cpp_sources EXCLUDE REGEX "/platform/vulkan_[^/]*\\.cc$")
+  list(APPEND selected_cpp_sources
+       "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/vulkan.cc")
+  list(REMOVE_DUPLICATES selected_cpp_sources)
 endif()
 
 list(REMOVE_DUPLICATES selected_cpp_sources)

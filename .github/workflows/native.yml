@@ -79,7 +79,12 @@ jobs:
         # must be the same library on every machine, and "whatever this
         # distribution had" is the opposite of that. The ordinary run still
         # answers both questions.
-        answer: ${{ fromJSON(inputs.release && '["ports"]' || '["system", "ports"]') }}
+        # And the Vulkan one, which is a third answer to the same
+        # question: a Skia with Graphite in it, which no distribution ships,
+        # so it can only be built. It is not part of a release -- nothing
+        # draws through it yet -- and it is here because a backend nobody
+        # compiles is a backend nobody knows about.
+        answer: ${{ fromJSON(inputs.release && '["ports"]' || '["system", "ports", "vulkan"]') }}
     name: build (${{ matrix.answer }})
     steps:
       - uses: actions/checkout@v4
@@ -237,6 +242,7 @@ jobs:
             -DCME_STORE_ENABLED=ON \
             -DCME_SOURCES_ENABLED=ON \
             -DCME_SYSTEM=${{ matrix.answer == 'system' && 'AUTO' || 'NEVER' }} \
+            -DOSU_VULKAN=${{ matrix.answer == 'vulkan' && 'ON' || 'OFF' }} \
             "${extra[@]}"
 
       - name: build
