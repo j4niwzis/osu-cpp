@@ -194,6 +194,19 @@ public:
     std::println(std::cerr, "[vulkan] {}", what);
   }
 
+  // Whether frames wait for the display. The client has a setting for it and
+  // this is the same question: with it on the swapchain is FIFO, which is
+  // the display's own pace; with it off the frame is shown as soon as it is
+  // ready. Changing it remakes the swapchain, since a present mode is
+  // decided when one is made.
+  void setWaitForDisplay(bool wait) {
+    if (wait == fWaitForDisplay) {
+      return;
+    }
+    fWaitForDisplay = wait;
+    fSwapchainStale = true;
+  }
+
   [[nodiscard]] bool start(::GLFWwindow *window, int width, int height) {
     fWindow = window;
     if (::glfwVulkanSupported() != GLFW_TRUE) {
@@ -893,23 +906,38 @@ private:
     const auto offers = [&present](VkPresentModeKHR mode) {
       return std::find(present.begin(), present.end(), mode) != present.end();
     };
-    // Waiting for the display first, because this client has its own frame
-    // limiter and no reason to draw faster than the screen changes; then the
-    // ones that do not wait, in the order that tears least.
+    // What the client asked for, in the order that gives it.
+    //
+    // Waiting for the display is FIFO, and mailbox is the same wait without
+    // the queue -- both hold the frame rate to the screen's. Not waiting is
+    // immediate, which is what a frame limiter that is switched off means:
+    // the client draws as fast as it can and says so. This was FIFO whatever
+    // the setting said, which is a client showing sixty frames a second with
+    // its limiter off and no way to tell why.
+    std::vector<VkPresentModeKHR> wanted;
+    if (fWaitForDisplay) {
+      wanted = {VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR,
+                VK_PRESENT_MODE_FIFO_RELAXED_KHR,
+                VK_PRESENT_MODE_IMMEDIATE_KHR};
+    } else {
+      wanted = {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR,
+                VK_PRESENT_MODE_FIFO_RELAXED_KHR, VK_PRESENT_MODE_FIFO_KHR};
+    }
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    if (!offers(mode)) {
-      if (offers(VK_PRESENT_MODE_MAILBOX_KHR)) {
-        mode = VK_PRESENT_MODE_MAILBOX_KHR;
-      } else if (offers(VK_PRESENT_MODE_FIFO_RELAXED_KHR)) {
-        mode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-      } else if (offers(VK_PRESENT_MODE_IMMEDIATE_KHR)) {
-        mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-      } else if (!present.empty()) {
-        mode = present.front();
-      } else {
+    bool settled = false;
+    for (const VkPresentModeKHR candidate : wanted) {
+      if (offers(candidate)) {
+        mode = candidate;
+        settled = true;
+        break;
+      }
+    }
+    if (!settled) {
+      if (present.empty()) {
         say("the surface offers no way of presenting an image");
         return false;
       }
+      mode = present.front();
     }
 
     VkSwapchainCreateInfoKHR create{};
@@ -1054,6 +1082,7 @@ private:
   int fFailedWidth = 0;
   int fFailedHeight = 0;
   bool fSwapchainStale = false;
+  bool fWaitForDisplay = true;
 };
 
 } // namespace platform::vulkan

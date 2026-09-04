@@ -565,6 +565,10 @@ private:
     // window that answers it, and a window made with a context is one this
     // client draws into through GL whatever the setting says.
     bool onVulkan = fWindowRuntime.madeForVulkan();
+    // Before the first swapchain is made, because a present mode is decided
+    // when one is made and the setting was only ever read again when it
+    // changed -- which, for a setting that starts as it is, is never.
+    fVulkan.setWaitForDisplay(fSettings.flag("vsync"));
     const auto extent = fWindowRuntime.initialExtent();
     if (onVulkan && !fVulkan.start(fWindowRuntime.nativeWindow(),
                                    extent.fWidth, extent.fHeight)) {
@@ -779,6 +783,10 @@ private:
     }
     fSwapInterval = wanted;
     fWindowRuntime.setSwapInterval(wanted);
+    // The same question, asked of the other backend in its own words: a
+    // swapchain waits for the display or does not, and which it does is
+    // decided when it is made.
+    fVulkan.setWaitForDisplay(wanted > 0);
     fNextFrame = std::chrono::steady_clock::now();
     std::println(std::cerr, "[gfx] swap interval {} (monitor {} Hz)", wanted,
                  fRefreshHz);
