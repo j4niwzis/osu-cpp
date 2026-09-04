@@ -252,6 +252,13 @@ public:
     if (fDevice != VK_NULL_HANDLE && fApi.fDeviceWaitIdle) {
       fApi.fDeviceWaitIdle(fDevice);
     }
+    // In the order things belong to each other. A surface wrapping a
+    // swapchain image belongs to the recorder that made it, the images it
+    // converted belong there too, and both belong to the context: dropping
+    // the context first leaves them referring to a device that is gone, and
+    // what follows is a hang and then a fault in whoever unrefs them next.
+    fSurfaces.clear();
+    fImageProvider.reset();
     fRecorder.reset();
     fContext.reset();
     this->dropSwapchain();
