@@ -402,14 +402,14 @@
   };  # 153
   skiff = pkgs.fetchgit {
     url = "https://github.com/j4niwzis/skiff.git";
-    rev = "5d3338796936bf4c6aac33feb66b3f7c0f10ce32";
-    sha256 = "0163naqlfmvziflr4zbha8rpfrph59jhfz7rn9vc0pg1nlgi03ai";
+    rev = "7bcd3b24b04b053e5cf212597f036d1601f50f62";
+    sha256 = "1h0jly6sngcdkijbw3wdvhbnvr7jvcfllxvihqnbjsrvbx7r45rn";
     fetchSubmodules = false;
   };  # 
   skiff_widgets = pkgs.fetchgit {
     url = "https://github.com/j4niwzis/skiff-widgets.git";
-    rev = "1f7a73d44475e212e2d08409c88aa988a1e06d01";
-    sha256 = "0n1ii8gwjgnc4qzphf5ab7gjf54ppnmabvkdfmj7bbscfndi9nwl";
+    rev = "7d0ac99dbfebd4c7397d84ad104a31912f7cf30a";
+    sha256 = "125b15w972b3sg9dzp5dcsr2yimpf2iz4i1hc43fijjsp3lv6s0h";
     fetchSubmodules = false;
   };  # 
   vorbis = pkgs.fetchgit {
