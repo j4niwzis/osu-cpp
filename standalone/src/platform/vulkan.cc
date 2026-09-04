@@ -26,6 +26,7 @@ public:
   Presenter &operator=(const Presenter &) = delete;
 
   [[nodiscard]] bool start(void *, int, int) { return false; }
+  void setWaitForDisplay(bool) {}
   void stop() {}
   [[nodiscard]] bool running() const { return false; }
   [[nodiscard]] skia::Sp<skia::SkSurface> beginFrame(int, int) {
