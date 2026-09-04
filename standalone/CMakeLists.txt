@@ -500,16 +500,58 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
   OSU_CLIENT_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets"
 )
 
+# The fonts, inside the program.
+#
+# A single file has no share/ beside it to read from, and the fonts are the
+# one thing this client cannot draw a frame without. They are turned into
+# objects rather than into arrays in a source file: twenty megabytes of
+# generated C is minutes of a compiler, and what the linker does with -b
+# binary is the same bytes with two symbols around them.
+#
+# Named from the file rather than from the path it was found at: the symbol
+# ld invents contains the path it was given, so it is given a bare name from
+# inside the assets directory, and two builds in two directories produce the
+# same object.
+if(OSU_STATIC_DEPS)
+  set(osu_font_objects "")
+  set(osu_fonts_header "")
+  file(GLOB osu_font_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts"
+       "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/*.ttf")
+  list(SORT osu_font_files)
+  foreach(font IN LISTS osu_font_files)
+    string(REGEX REPLACE "[^A-Za-z0-9_]" "_" symbol "${font}")
+    set(object "${CMAKE_CURRENT_BINARY_DIR}/fonts/${symbol}.o")
+    add_custom_command(
+      OUTPUT "${object}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+              "${CMAKE_CURRENT_BINARY_DIR}/fonts"
+      COMMAND ${CMAKE_LINKER} -r -b binary -o "${object}" "${font}"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/${font}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts"
+      COMMENT "the font ${font}, inside the program"
+      VERBATIM)
+    list(APPEND osu_font_objects "${object}")
+    string(APPEND osu_fonts_header "OSU_FONT(\"${font}\", ${symbol})\n")
+  endforeach()
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/osu_fonts.h"
+       "// Written by the build: the fonts linked into this program.\n"
+       "${osu_fonts_header}")
+endif()
+
 # The drivers, as objects, and the list of them.
 #
 # They are linked into the program rather than found on the machine, so they
 # are sources of it: each was made from a driver's archive with its entry
 # point renamed, and the header beside them says which ones there are.
 if(OSU_STATIC_DEPS AND osu_vulkan_driver_objects)
-  target_sources(${PROJECT_NAME} PRIVATE ${osu_vulkan_driver_objects})
+  target_sources(${PROJECT_NAME} PRIVATE ${osu_vulkan_driver_objects}
+                                         ${osu_font_objects})
   target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_STATIC_DRIVERS=1)
+  if(osu_font_objects)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_STATIC_FONTS=1)
+  endif()
   # Nothing on this machine is opened, and the linker is told to keep it that
   # way: a static program that still names a dynamic loader is a program that
   # will look for one on a machine that has none.
