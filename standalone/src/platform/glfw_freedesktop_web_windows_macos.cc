@@ -71,6 +71,10 @@ export using ::glfwSetWindowUserPointer;
 export using ::glfwSwapBuffers;
 export using ::glfwSwapInterval;
 export using ::glfwTerminate;
+// Whether this machine has a Vulkan loader. Declared without any Vulkan
+// type, unlike the calls that make a surface, so it is here with the rest of
+// glfw and not behind the header that brings Vulkan in.
+export using ::glfwVulkanSupported;
 export using ::glfwWaitEvents;
 export using ::glfwWaitEventsTimeout;
 export using ::glfwWindowHint;
@@ -91,6 +95,9 @@ export inline constexpr int GLFW_CONTEXT_VERSION_MAJOR = captured_GLFW_CONTEXT_V
 inline constexpr int captured_GLFW_CONTEXT_VERSION_MINOR = GLFW_CONTEXT_VERSION_MINOR;
 #undef GLFW_CONTEXT_VERSION_MINOR
 export inline constexpr int GLFW_CONTEXT_VERSION_MINOR = captured_GLFW_CONTEXT_VERSION_MINOR;
+inline constexpr int captured_GLFW_NO_API = GLFW_NO_API;
+#undef GLFW_NO_API
+export inline constexpr int GLFW_NO_API = captured_GLFW_NO_API;
 inline constexpr int captured_GLFW_OPENGL_API = GLFW_OPENGL_API;
 #undef GLFW_OPENGL_API
 export inline constexpr int GLFW_OPENGL_API = captured_GLFW_OPENGL_API;
