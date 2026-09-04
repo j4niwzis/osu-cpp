@@ -2162,7 +2162,23 @@ private:
       return false;
     }
     fContext = skia::MakeGL(std::move(interface));
-    skiff::nodes::CachedContainer::setContext(fContext.get());
+    // Where the cached subtrees keep their pictures. skiff asks for a surface
+    // rather than for a context, so that a node does not have to know which
+    // backend this program made: here it is Ganesh, which needs the drawing
+    // submitted once it is done.
+    skiff::nodes::CachedContainer::setSurfaces(
+        {.fMake =
+             [context = fContext.get()](int width, int height) {
+               return skia::RenderTarget(
+                   context, skia::kNo,
+                   skia::SkImageInfo::Make(width, height,
+                                           skia::kRGBA_8888_SkColorType,
+                                           skia::kPremul_SkAlphaType));
+             },
+         .fDone =
+             [context = fContext.get()](skia::SkSurface *surface) {
+               context->flushAndSubmit(surface);
+             }});
     // The carousel owns where a panel is and when it has to be repainted; the
     // client still owns what one looks like, and hands it over here.
     // The artwork behind the menu is the client's: it owns the beatmap and
