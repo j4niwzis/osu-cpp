@@ -150,12 +150,108 @@ option(OSU_WAYLAND "Reach GL through EGL, and build the Wayland touch bridge"
 set(OSU_SKIA_COMPONENTS gl png jpeg freetype)
 option(OSU_VULKAN "Draw through Graphite on Vulkan where a driver allows it"
        OFF)
+
+# One file, and nothing outside it.
+#
+# A program built this way contains every library it uses, the window system
+# it opens a window with, and the graphics drivers it draws through -- and
+# opens nothing at run time, because there is nothing in it that could. That
+# is what makes a binary which runs on a machine that has neither the
+# libraries it was built against nor the loader that would find them.
+#
+# The drivers are the part that is not obvious. A driver is a shared object
+# everywhere else: libGL opens one for the card, and so does the Vulkan
+# loader. Here they are archives, chosen at run time from what was linked --
+# which is why this build asks Mesa for every driver rather than for one.
+#
+# The name was already passed by the Flatpak manifest and the Click build,
+# and meant nothing: it means this.
+option(OSU_STATIC_DEPS "Build one file: every library, driver and window \
+system linked in, nothing opened at run time" OFF)
 if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN_BUILD AND
    NOT CMAKE_CROSSCOMPILING AND OSU_VULKAN)
   list(APPEND OSU_SKIA_COMPONENTS graphite-vulkan)
 else()
   set(OSU_VULKAN OFF)
 endif()
+# The drivers this build carries, where it carries any.
+#
+# Every driver that exists for the machine being built for, because which
+# GPU the program will meet is not known when it is built: an AMD card, an
+# Intel one, an Adreno in a phone, or none at all, which is llvmpipe. The
+# list is by architecture rather than by taste -- there is no Adreno in a
+# desktop and no radeonsi worth carrying to a phone.
+if(OSU_STATIC_DEPS)
+  set(OSU_MESA_COMPONENTS gl-software vulkan-software)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|i[3-6]86)$")
+    list(APPEND OSU_MESA_COMPONENTS
+         gl-amd gl-intel gl-nouveau vulkan-amd vulkan-intel vulkan-nouveau)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm)")
+    list(APPEND OSU_MESA_COMPONENTS
+         gl-adreno gl-mali gl-broadcom
+         vulkan-adreno vulkan-mali vulkan-broadcom)
+  endif()
+  find_package(Mesa REQUIRED COMPONENTS ${OSU_MESA_COMPONENTS})
+
+  # One name per driver, because every driver has the same one.
+  #
+  # A Vulkan driver's entry point is called vk_icdGetInstanceProcAddr -- the
+  # loader opens one shared object at a time and asks for that name, so
+  # every driver defines it, and two of them in one program is one symbol
+  # defined twice. There is no loader here and the drivers are archives, so
+  # the program is what has to tell them apart.
+  #
+  # Each archive becomes one object with that one name renamed to say which
+  # driver it is. Everything else in a driver is already prefixed with the
+  # driver's own name, and what they share -- the Vulkan runtime, NIR, the
+  # window system integration -- is one archive linked once, so nothing else
+  # collides and nothing else is hidden.
+  set(osu_vulkan_drivers "")
+  set(osu_vulkan_driver_objects "")
+  foreach(pair IN ITEMS "amd=Mesa::vulkan-amd" "intel=Mesa::vulkan-intel"
+                        "nouveau=Mesa::vulkan-nouveau"
+                        "adreno=Mesa::vulkan-adreno"
+                        "mali=Mesa::vulkan-mali"
+                        "broadcom=Mesa::vulkan-broadcom"
+                        "software=Mesa::vulkan-software")
+    string(REGEX REPLACE "^([^=]+)=(.+)$" "\\1" driver "${pair}")
+    string(REGEX REPLACE "^([^=]+)=(.+)$" "\\2" target "${pair}")
+    if(NOT TARGET ${target})
+      continue()
+    endif()
+    set(object "${CMAKE_CURRENT_BINARY_DIR}/vulkan-drivers/${driver}.o")
+    add_custom_command(
+      OUTPUT "${object}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory
+              "${CMAKE_CURRENT_BINARY_DIR}/vulkan-drivers"
+      COMMAND ${CMAKE_LINKER} -r --whole-archive "$<TARGET_FILE:${target}>"
+              -o "${object}.whole"
+      COMMAND ${CMAKE_OBJCOPY}
+              --redefine-sym
+              vk_icdGetInstanceProcAddr=osu_vulkan_driver_${driver}
+              "${object}.whole" "${object}"
+      DEPENDS ${target}
+      COMMENT "the ${driver} driver, under a name of its own"
+      VERBATIM)
+    list(APPEND osu_vulkan_drivers "${driver}")
+    list(APPEND osu_vulkan_driver_objects "${object}")
+  endforeach()
+  list(JOIN osu_vulkan_drivers " " osu_vulkan_drivers_said)
+  message(STATUS "osu-cpp: the drivers in this build: ${osu_vulkan_drivers_said}")
+
+  # And the list, said once where both the build and the program can read
+  # it. The program includes this file twice: once to declare the entry
+  # points and once to put them in a table, which is why it is a list of
+  # calls rather than a list of names.
+  set(osu_vulkan_drivers_header "")
+  foreach(driver IN LISTS osu_vulkan_drivers)
+    string(APPEND osu_vulkan_drivers_header "OSU_VULKAN_DRIVER(${driver})\n")
+  endforeach()
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/osu_vulkan_drivers.h"
+       "// Written by the build: the Vulkan drivers linked into this program.\n"
+       "${osu_vulkan_drivers_header}")
+endif()
+
 find_package(Skia REQUIRED COMPONENTS ${OSU_SKIA_COMPONENTS})
 find_package(libzip REQUIRED)
 find_package(SndFile REQUIRED)
@@ -180,7 +276,18 @@ else()
   # this project would rather set a version floor than write one. Asio's TLS
   # has no other backend, so this is the whole of that decision.
   find_package(OpenSSL 3.0 REQUIRED)
-  find_package(glfw3 REQUIRED)
+  # Which glfw, and what it may open.
+  #
+  # Its way is to open the window system when it starts; a static build has
+  # nothing to open with, so it asks for the glfw whose window system is
+  # linked instead. That component drags in Wayland, the X libraries and
+  # Mesa's EGL, which is where a context comes from when there is no libGL
+  # to find.
+  if(OSU_STATIC_DEPS)
+    find_package(glfw3 REQUIRED COMPONENTS linked-window-system)
+  else()
+    find_package(glfw3 REQUIRED)
+  endif()
   find_package(OpenAL REQUIRED)
   # GLFW has no touch API.  When Wayland development files are available a
   # small native bridge turns the first contact into the pointer events the
@@ -392,6 +499,22 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
   OSU_CLIENT_DATADIR="${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/osu_client"
   OSU_CLIENT_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets"
 )
+
+# The drivers, as objects, and the list of them.
+#
+# They are linked into the program rather than found on the machine, so they
+# are sources of it: each was made from a driver's archive with its entry
+# point renamed, and the header beside them says which ones there are.
+if(OSU_STATIC_DEPS AND osu_vulkan_driver_objects)
+  target_sources(${PROJECT_NAME} PRIVATE ${osu_vulkan_driver_objects})
+  target_include_directories(${PROJECT_NAME} PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_STATIC_DRIVERS=1)
+  # Nothing on this machine is opened, and the linker is told to keep it that
+  # way: a static program that still names a dynamic loader is a program that
+  # will look for one on a machine that has none.
+  target_link_options(${PROJECT_NAME} PRIVATE "-static")
+endif()
 
 if(NOT EMSCRIPTEN_BUILD AND WAYLAND_CLIENT_FOUND)
   target_compile_definitions(${PROJECT_NAME} PRIVATE OSU_WAYLAND_TOUCH=1)

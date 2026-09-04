@@ -30,7 +30,16 @@ struct RuntimeConfiguration {
       .fTraceRepaint =
           present("OSU_TRACE_REPAINT") || present("OSU_TRACE_RESIZE"),
       .fPreferGles = present("OSU_GLES"),
+// A context through EGL, always, where the graphics stack is inside this
+// program. The other way of getting one on X11 is GLX, which lives in a
+// libGL that would have to be found on the machine -- and the Mesa linked in
+// here is built without it, because a build that opens nothing cannot use
+// it.
+#if defined(OSU_STATIC_DRIVERS)
+      .fForceEgl = true,
+#else
       .fForceEgl = present("OSU_EGL"),
+#endif
   };
   if (const char *age = std::getenv("OSU_BUFFER_AGE"); age != nullptr) {
     int value = 0;
