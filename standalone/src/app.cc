@@ -11,6 +11,7 @@ import platform.web_runtime;
 import platform.system;
 import platform.vulkan;
 import platform.capabilities;
+import platform.presentation;
 import skia;
 import skin;
 import archive;
@@ -850,6 +851,25 @@ private:
                       fFrame.showingDamage(
                           fSettings.flag("damageoverlay")),
                   .fPlaying = fState == State::kPlaying});
+
+    // And said to the driver, where it is the driver that decides whether
+    // the rest of the buffer survives. A tile-based GPU loads a tile only
+    // when it has been told that part of it is being redrawn; without that,
+    // reading the buffer's age and drawing only what changed leaves whatever
+    // the tile happened to hold. This is the same list of rectangles the
+    // frame just decided on, in the same order the swap is given them.
+    if (!fOnVulkan && this->partialRedraw() && !fFrame.fComputedClipFull &&
+        !fFrame.fComputedClip.empty()) {
+      std::vector<std::array<int, 4>> region;
+      region.reserve(fFrame.fComputedClip.size());
+      for (const auto &rect : fFrame.fComputedClip) {
+        region.push_back({rect.fLeft, rect.fTop, rect.width(), rect.height()});
+      }
+      // Where the window system has no such extension this says no, and
+      // nothing is lost by it: the frame is drawn the same way, and the
+      // driver keeps the buffer or does not on its own terms.
+      (void)platform::presentation::setDamageRegion(fWin.fPixelH, region);
+    }
   }
 
   // The half of a screen that is not drawing: what is in the tree, where it

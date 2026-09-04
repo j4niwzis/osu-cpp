@@ -48,6 +48,17 @@ export namespace platform::presentation {
 [[nodiscard]] bool swapWithDamage(int surfaceHeight,
                                   std::span<const std::array<int, 4>> rects);
 
+// What this frame is going to draw, said before it draws it.
+//
+// A tile-based GPU -- which is every phone -- does not load the previous
+// contents of a buffer into a tile unless it has been told which part of it
+// is going to be redrawn. Reading the buffer's age and then drawing only
+// what changed, without saying so, is how a client ends up with the picture
+// from several frames ago wherever it did not draw. Desktop hardware keeps
+// the contents regardless, which is why this shows on one and not the other.
+[[nodiscard]] bool setDamageRegion(int surfaceHeight,
+                                   std::span<const std::array<int, 4>> rects);
+
 // "egl", "glx" or "none" -- for the diagnostic line, since a guess that has
 // been replaced by an answer should say so.
 [[nodiscard]] const char *backend();
@@ -60,6 +71,7 @@ namespace platform::presentation {
 int bufferAge() { return -1; }
 bool surfaceSize(void *, int *, int *) { return false; }
 bool swapWithDamage(int, std::span<const std::array<int, 4>>) { return false; }
+bool setDamageRegion(int, std::span<const std::array<int, 4>>) { return false; }
 const char *backend() { return "none"; }
 } // namespace platform::presentation
 
@@ -88,6 +100,8 @@ struct Egl {
   EGLBoolean (*querySurface)(EGLDisplay, EGLSurface, EGLint, EGLint *) = nullptr;
   const char *(*queryString)(EGLDisplay, EGLint) = nullptr;
   void *(*getProcAddress)(const char *) = nullptr;
+  EGLBoolean (*setDamageRegion)(EGLDisplay, EGLSurface, EGLint *, EGLint) =
+      nullptr;
   EGLBoolean (*swapWithDamage)(EGLDisplay, EGLSurface, EGLint *, EGLint) =
       nullptr;
   bool fHasAge = false;
@@ -179,11 +193,18 @@ struct Loaded {
                 reinterpret_cast<decltype(egl.swapWithDamage)>(
                     egl.getProcAddress(name));
           }
+          if (mentions(extensions, "EGL_KHR_partial_update")) {
+            egl.setDamageRegion =
+                reinterpret_cast<decltype(egl.setDamageRegion)>(
+                    egl.getProcAddress("eglSetDamageRegionKHR"));
+          }
         }
         std::println(std::cerr,
-                     "[present] egl: buffer age {}, swap with damage {}",
+                     "[present] egl: buffer age {}, swap with damage {}, "
+                     "damage region {}",
                      egl.fHasAge ? "yes" : "no",
-                     egl.swapWithDamage != nullptr ? "yes" : "no");
+                     egl.swapWithDamage != nullptr ? "yes" : "no",
+                     egl.setDamageRegion != nullptr ? "yes" : "no");
         if (egl.fHasAge || egl.swapWithDamage != nullptr) {
           out.fBackend = "egl";
           return out;
@@ -358,6 +379,31 @@ bool swapWithDamage(int surfaceHeight,
   }
   return state.fEgl.swapWithDamage(display, surface, flat.data(),
                                    static_cast<EGLint>(rects.size())) != 0;
+}
+
+bool setDamageRegion(int surfaceHeight,
+                     std::span<const std::array<int, 4>> rects) {
+  const Loaded &state = loaded();
+  if (state.fEgl.setDamageRegion == nullptr || rects.empty()) {
+    return false;
+  }
+  const EGLDisplay display = state.fEgl.getCurrentDisplay();
+  const EGLSurface surface = state.fEgl.getCurrentSurface(kEglDraw);
+  if (display == nullptr || surface == nullptr) {
+    return false;
+  }
+  // The same corner as everywhere else EGL is handed rectangles: it counts
+  // from the bottom left and this client counts from the top left.
+  std::vector<EGLint> flat;
+  flat.reserve(rects.size() * 4);
+  for (const auto &rect : rects) {
+    flat.push_back(rect[0]);
+    flat.push_back(surfaceHeight - (rect[1] + rect[3]));
+    flat.push_back(rect[2]);
+    flat.push_back(rect[3]);
+  }
+  return state.fEgl.setDamageRegion(display, surface, flat.data(),
+                                    static_cast<EGLint>(rects.size())) != 0;
 }
 
 const char *backend() { return loaded().fBackend; }
