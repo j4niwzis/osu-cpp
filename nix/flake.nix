@@ -92,15 +92,32 @@
           cmakeFlagsArray+=("-DCMAKE_CXX_FLAGS=$includes")
         '';
 
+        # What every dependency of these is answered by, here as everywhere
+        # else: the provider, from the archive fetched above rather than
+        # from the network a Nix build does not have, taking what this
+        # expression put in the environment and building nothing.
+        provider = [
+          "-DCME_ARCHIVE=${cme}"
+          "-DCME_OFFLINE=ON"
+          "-DCME_SYSTEM=ALWAYS"
+        ];
+
         skiff = pkgs.llvmPackages_latest.stdenv.mkDerivation {
           pname = "skiff";
-          version = "0.1-da0760f";
+          version = "0.1-5d33387";
           src = componentSources.skiff;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
           propagatedBuildInputs = [ skia153 pkgs.libGL ];
           hardeningDisable = [ "fortify" "fortify3" ];
           preConfigure = moduleSetup;
-          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" "-DSKIFF_INSTALL=ON" ];
+          # Which backend the Skia beside this has, said because a copy built
+          # on its own has no program to ask: the wrapper names Ganesh where
+          # the Skia it links has one, and this one does.
+          cmakeFlags = provider ++ [
+            "-DCMAKE_BUILD_TYPE=Release"
+            "-DSKIFF_INSTALL=ON"
+            "-DSKIFF_SKIA_COMPONENTS=gl"
+          ];
           postInstall = ''
             sed -i '/find_dependency(PkgConfig)/a find_dependency(OpenGL)' \
               "$out/lib/cmake/skiff/skiffConfig.cmake"
@@ -109,7 +126,7 @@
 
         skiff-widgets = pkgs.llvmPackages_latest.stdenv.mkDerivation {
           pname = "skiff-widgets";
-          version = "0.1-065ff97";
+          version = "0.1-1f7a73d";
           src = componentSources.skiff_widgets;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
           propagatedBuildInputs = [ skiff ];
@@ -124,9 +141,11 @@
                 'set_target_properties(''${PROJECT_NAME} PROPERTIES CXX_STANDARD 23 EXPORT_NAME widgets)'
           '';
           preConfigure = moduleSetup;
-          cmakeFlags = [
+          cmakeFlags = provider ++ [
             "-DCMAKE_BUILD_TYPE=Release"
             "-DSKIFF_WIDGETS_INSTALL=ON"
+            # The skiff this is built against is the one beside it.
+            "-DCME_SYSTEM_SKIFF=ON"
           ];
         };
       in
@@ -252,6 +271,15 @@
             "-DCME_OFFLINE=ON"
             "-DCME_SYSTEM=ALWAYS"
             "-DCME_SYSTEM_OSUCPP=OFF"
+            # These two are what this expression built, from the revisions
+            # this project pins, and installed beside the rest: the copies
+            # in the environment are the pinned ones. Said outright, because
+            # a copy installed from a source tarball carries no revision to
+            # compare with -- a checkout is what a revision is read from --
+            # and a project that pins a commit does not take a copy that
+            # cannot say it is that commit.
+            "-DCME_SYSTEM_SKIFF=ON"
+            "-DCME_SYSTEM_SKIFF-WIDGETS=ON"
             "-DCME_ARCHIVE=${cme}"
             "-DCMAKE_BUILD_TYPE=Release"
           ];
