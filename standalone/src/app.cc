@@ -2243,6 +2243,10 @@ private:
     ctx.fDtMs = fUiDt;
     ctx.fNowWall = wallMs();
     ctx.fFont = &fFont;
+    // Graphite records every draw and plays the recording; a thousand small
+    // shapes are a thousand entries in it. Ganesh and the CPU rasteriser
+    // charge for the shape rather than for the call.
+    ctx.fDrawsAreExpensive = fOnVulkan;
     ctx.fVisualiser = fSettings.flag("visualiser");
     ctx.fTriangles = fSettings.flag("menutriangles");
     ctx.fArrangement = this->arrangement();
