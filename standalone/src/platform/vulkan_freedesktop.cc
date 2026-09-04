@@ -339,6 +339,7 @@ public:
         return nullptr;
       }
     }
+    const auto beforeAcquire = std::chrono::steady_clock::now();
     const VkResult acquired = fApi.fAcquireNextImage(
         fDevice, fSwapchain, std::numeric_limits<std::uint64_t>::max(),
         fSlots[static_cast<std::size_t>(fSlot)].fAcquired, VK_NULL_HANDLE,
@@ -354,6 +355,13 @@ public:
       say("the swapchain would not hand over an image");
       return nullptr;
     }
+    const auto now = std::chrono::steady_clock::now();
+    fAcquireUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(now - beforeAcquire)
+            .count();
+    // Where the frame's drawing begins, so that what the client spends
+    // between here and the recording is accounted for too.
+    fDrawFrom = now;
     return fSurfaces[fImage];
   }
 
@@ -365,7 +373,9 @@ public:
       return false;
     }
     Slot &slot = fSlots[static_cast<std::size_t>(fSlot)];
+    const auto beforeSnap = std::chrono::steady_clock::now();
     std::unique_ptr<skia::graphite::Recording> recording = fRecorder->snap();
+    const auto afterSnap = std::chrono::steady_clock::now();
     if (!recording) {
       say("the recorder had nothing to play");
       return false;
@@ -403,6 +413,7 @@ public:
       say("the context would not submit");
       return false;
     }
+    const auto afterSubmit = std::chrono::steady_clock::now();
 
     VkPresentInfoKHR present_info{};
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -412,7 +423,33 @@ public:
     present_info.pSwapchains = &fSwapchain;
     present_info.pImageIndices = &fImage;
     const VkResult presented = fApi.fQueuePresent(fQueue, &present_info);
+    const auto afterPresent = std::chrono::steady_clock::now();
     fSlot = -1;
+
+    // Where a frame went, for whoever is asking. Off unless
+    // OSU_VULKAN_TIMING is set, because it is four numbers a frame and the
+    // only reason to want them is that something is slow.
+    if (fTiming) {
+      const auto us = [](auto from, auto to) {
+        return std::chrono::duration_cast<std::chrono::microseconds>(to - from)
+            .count();
+      };
+      fDrawUs += us(fDrawFrom, beforeSnap);
+      fSnapUs += us(beforeSnap, afterSnap);
+      fSubmitUs += us(afterSnap, afterSubmit);
+      fPresentUs += us(afterSubmit, afterPresent);
+      fWaitUs += fAcquireUs;
+      if (++fTimed >= 60) {
+        std::println(std::cerr,
+                     "[vulkan] per frame over {} frames: acquire {} us, "
+                     "draw {} us, record {} us, submit {} us, present {} us",
+                     fTimed, fWaitUs / fTimed, fDrawUs / fTimed,
+                     fSnapUs / fTimed, fSubmitUs / fTimed,
+                     fPresentUs / fTimed);
+        fTimed = 0;
+        fSnapUs = fSubmitUs = fPresentUs = fWaitUs = fDrawUs = 0;
+      }
+    }
     if (presented == VK_ERROR_OUT_OF_DATE_KHR ||
         presented == VK_SUBOPTIMAL_KHR) {
       fSwapchainStale = true;
@@ -1083,6 +1120,15 @@ private:
   int fFailedHeight = 0;
   bool fSwapchainStale = false;
   bool fWaitForDisplay = true;
+  const bool fTiming = std::getenv("OSU_VULKAN_TIMING") != nullptr;
+  std::int64_t fAcquireUs = 0;
+  std::int64_t fSnapUs = 0;
+  std::int64_t fSubmitUs = 0;
+  std::int64_t fPresentUs = 0;
+  std::int64_t fWaitUs = 0;
+  std::int64_t fDrawUs = 0;
+  std::chrono::steady_clock::time_point fDrawFrom{};
+  int fTimed = 0;
 };
 
 } // namespace platform::vulkan
