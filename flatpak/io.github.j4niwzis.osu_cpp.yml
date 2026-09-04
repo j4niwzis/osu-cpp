@@ -339,11 +339,11 @@ modules:
         path: ..
       - type: git
         url: https://github.com/j4niwzis/skiff.git
-        commit: da0760f4559b5aa02d5da9b366d4eb610c01688b
+        commit: 5d3338796936bf4c6aac33feb66b3f7c0f10ce32
         dest: .flatpak-sources/skiff
       - type: git
         url: https://github.com/j4niwzis/skiff-widgets.git
-        commit: 065ff975ef99fe197b9b2b5d2762c060e91c5af2
+        commit: 1f7a73d44475e212e2d08409c88aa988a1e06d01
         dest: .flatpak-sources/skiff-widgets
       # The provider itself, by the revision and digest cmake/get_cme.cmake
       # names. A module has no network, so what it would have fetched is
