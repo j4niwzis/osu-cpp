@@ -40,14 +40,20 @@ jobs:
     container: alpine:edge
     timeout-minutes: 350
     steps:
+      # The compiler by version rather than by whichever one the
+      # distribution calls "clang" today: what this builds -- libc++ and the
+      # source of its std module among it -- is read by this compiler, and
+      # the two have to be the same release.
       - name: what a build needs
         run: |
           apk add --no-cache \
-            build-base clang clang-static lld llvm-dev compiler-rt \
-            cmake samurai ninja-build meson python3 py3-mako py3-packaging \
+            clang22 clang22-dev clang22-static lld22 llvm22 llvm22-dev \
+            compiler-rt \
+            cmake samurai meson python3 py3-mako py3-packaging \
             git patch pkgconf bison flex linux-headers \
-            musl-dev libstdc++-dev curl bash tar xz
+            musl-dev curl bash tar xz make
           ln -sf /usr/bin/samu /usr/local/bin/ninja || true
+          echo "/usr/lib/llvm22/bin" >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v4
 
