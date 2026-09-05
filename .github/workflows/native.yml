@@ -7,6 +7,7 @@
 # minutes.
 name: native
 
+
 # A branch is built through its pull request, and main is built when
 # something lands on it. Both triggers on every push meant every commit on a
 # branch with a pull request open was built twice, identically.
@@ -234,7 +235,13 @@ jobs:
             linked="-flto=full -Wl,--gc-sections -Wl,-s"
             extra+=("-DCMAKE_C_FLAGS_RELEASE=$tuned")
             extra+=("-DCMAKE_CXX_FLAGS_RELEASE=$tuned")
-            extra+=("-DCMAKE_EXE_LINKER_FLAGS_RELEASE=$linked")
+            # A map of what the linker put where, for the executable only so
+            # that no other link overwrites it. The binary is stripped, so when
+            # the two passes of a release disagree there is nothing left to
+            # name the code that moved -- only addresses. The map names it, is
+            # written beside the binary rather than into it, and so cannot
+            # change what is compared.
+            extra+=("-DCMAKE_EXE_LINKER_FLAGS_RELEASE=$linked -Wl,-Map=osu_client.map")
             extra+=("-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=$linked")
           fi
           cmake -S standalone -B build -G Ninja \
@@ -255,6 +262,29 @@ jobs:
           CCACHE_MAXSIZE: 400M
           NINJA_STATUS: "[%f/%t %es] "
         run: cmake --build build
+
+      # Whether the link alone decides the difference. A release is built twice
+      # on two machines and the results compared; when they differ, that says
+      # only that something was not reproducible, not which step made it up.
+      # Linking a second time from the objects this job just built answers the
+      # narrower question here, in one job: everything before the link is held
+      # fixed, so a difference is the linker's (LTO among it) and nothing else.
+      #
+      # The first binary is put back afterwards, so what is uploaded and
+      # attested stays the one this job reported.
+      - name: link again from the same objects
+        if: ${{ inputs.release }}
+        run: |
+          cp build/osu_client /tmp/osu_client.first
+          rm build/osu_client
+          cmake --build build
+          if cmp -s /tmp/osu_client.first build/osu_client; then
+            echo "the link is deterministic: same objects, same binary"
+          else
+            echo "THE LINK IS NOT DETERMINISTIC: same objects, different binary"
+            cmp -l /tmp/osu_client.first build/osu_client | wc -l
+          fi
+          cp /tmp/osu_client.first build/osu_client
 
       # What a cancelled or failed run left in the store. The cache is
       # restored by the next run whatever happened to this one, so a
@@ -356,6 +386,7 @@ jobs:
           path: |
             build/osu_client
             build/cme-report.txt
+            build/osu_client.map
 
       # What this run built, bound to this workflow at this commit and
       # recorded in a public log. `gh attestation verify <file> --repo
