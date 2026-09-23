@@ -221,7 +221,7 @@ else()
     NAME skiff
     PROVIDES skiff
     GITHUB_REPOSITORY j4niwzis/skiff
-    GIT_TAG 89b80b5051f29e6a835f56af6e15b1af71fb8838
+    GIT_TAG 239da5e2e14a858ac371a883b67d298324bb8989
   )
 endif()
 if(OSU_SKIFF_WIDGETS_SOURCE_DIR)
@@ -232,7 +232,7 @@ else()
     NAME skiff-widgets
     PROVIDES skiff-widgets skiff_widgets
     GITHUB_REPOSITORY j4niwzis/skiff-widgets
-    GIT_TAG a452afe2b2d0285b49b8ba7beaf92c36d7052ab0
+    GIT_TAG 1b59a84749fa49df3afef32f70756f7e4045716e
   )
 endif()
 
