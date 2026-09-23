@@ -357,8 +357,8 @@ modules:
       # the release rather than archive/<ref>.tar.gz: the generated one is
       # made on request, and a digest taken of one stops being true.
       - type: file
-        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.0/cmake-everywhere-0.2.0.tar.gz
-        sha256: 694c4081bd13acc65e286db31c0a60fe3f36ec0c7ef343d7bc2228d6a757592d
+        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.1/cmake-everywhere-0.2.1.tar.gz
+        sha256: 37b624e1a8f56ce4b85c3511be1765beb959d8206814ac1ec6f200407a84f22f
         dest: .flatpak-sources
         dest-filename: cme.tar.gz
       - type: file
