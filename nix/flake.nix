@@ -22,16 +22,17 @@
         componentSources = pkgs.lib.filterAttrs
           (name: _: builtins.elem name [ "skiff" "skiff_widgets" ])
           (import ./sources.nix { inherit pkgs; });
-        # The provider itself, by the revision and digest cmake/get_cme.cmake
-        # pins. Fetched here because the build may not fetch.
+        # The provider itself, by the URL and digest cmake/get_cme.cmake
+        # pins. Fetched here because the build may not fetch. Read rather than
+        # rebuilt from a revision: a release is pinned by the file it uploaded,
+        # and the name of that file is not the name of a commit.
         pinned = builtins.readFile ../cmake/get_cme.cmake;
-        revision = builtins.head (builtins.match
-          ".*CME_PINNED \"([0-9a-f]{40})\".*" pinned);
+        url = builtins.head (builtins.match
+          ".*set\\(CME_PINNED_URL[[:space:]]*\"([^\"]+)\"\\).*" pinned);
         digest = builtins.head (builtins.match
           ".*CME_PINNED_SHA256 \"([0-9a-f]{64})\".*" pinned);
         cme = pkgs.fetchurl {
-          url = "https://github.com/j4niwzis/cmake-everywhere/archive/"
-            + revision + ".tar.gz";
+          inherit url;
           sha256 = digest;
         };
         # nixpkgs currently carries milestone 144. Skiff follows Skia's

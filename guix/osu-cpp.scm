@@ -90,16 +90,18 @@
         (match:substring found 1)
         (error "guix/osu-cpp.scm: cmake/get_cme.cmake does not say" pattern))))
 
-(define %cme-revision (pinned-field "CME_PINNED \"([0-9a-f]{40})\""))
+;; The file a release uploaded, by its URL and the digest of it. Read rather
+;; than rebuilt from a revision: the name of a release's file is not the name
+;; of a commit.
+(define %cme-url
+  (pinned-field "set\\(CME_PINNED_URL[[:space:]]*\"([^\"]+)\"\\)"))
 (define %cme-digest (pinned-field "CME_PINNED_SHA256 \"([0-9a-f]{64})\""))
 
 (define %cme
   (origin
     (method url-fetch)
-    (uri (string-append "https://github.com/j4niwzis/cmake-everywhere/archive/"
-                        %cme-revision ".tar.gz"))
-    (file-name (string-append "cmake-everywhere-"
-                              (string-take %cme-revision 8) ".tar.gz"))
+    (uri %cme-url)
+    (file-name (basename %cme-url))
     (sha256 (base16-string->bytevector %cme-digest))))
 
 ;; (port version origin) for every library the lock names.

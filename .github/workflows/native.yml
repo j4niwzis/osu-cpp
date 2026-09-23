@@ -102,16 +102,24 @@ jobs:
       # are compared here instead.
       - name: the flatpak manifest names the cmake-everywhere this asks for
         run: |
-          pin=$(sed -n 's/^set(CME_PINNED "\(.*\)")$/\1/p' cmake/get_cme.cmake)
-          sha=$(sed -n 's/^set(CME_PINNED_SHA256 "\(.*\)")$/\1/p' cmake/get_cme.cmake)
+          loader=cmake/get_cme.cmake
           manifest=flatpak/io.github.j4niwzis.osu_cpp.yml
-          grep -q "cmake-everywhere/archive/$pin[.]tar[.]gz" "$manifest" || {
-            echo "$manifest does not name $pin, which cmake/get_cme.cmake asks for"
-            grep -n "cmake-everywhere/archive/" "$manifest"
+          # What the loader fetches, said once there and checked here: the
+          # file a release uploaded, by its URL and the digest of it.
+          url=$(tr '\n' ' ' < "$loader" |
+                sed -n 's/.*set(CME_PINNED_URL *"\([^"]*\)").*/\1/p')
+          sha=$(sed -n 's/^set(CME_PINNED_SHA256 "\(.*\)")$/\1/p' "$loader")
+          if [ -z "$url" ] || [ -z "$sha" ]; then
+            echo "$loader names no URL or no digest"
+            exit 1
+          fi
+          grep -qF "url: $url" "$manifest" || {
+            echo "$manifest does not fetch $url, which $loader asks for"
+            grep -n "cmake-everywhere" "$manifest"
             exit 1
           }
-          grep -q "sha256: $sha" "$manifest" || {
-            echo "$manifest does not have the digest cmake/get_cme.cmake asks for: $sha"
+          grep -qF "sha256: $sha" "$manifest" || {
+            echo "$manifest does not have the digest $loader asks for: $sha"
             exit 1
           }
 
