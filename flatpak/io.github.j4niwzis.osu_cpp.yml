@@ -272,6 +272,13 @@ modules:
       # how a library missing from both becomes an error naming it rather
       # than a build hanging on a git clone that cannot happen.
       - -DCME_OFFLINE=ON
+      # Ports compiled directly rather than through the SDK's ccache, which
+      # the provider finds and uses unless told not to. What it would cache
+      # here is never kept -- the workflow saves its cache after the
+      # libraries, before this module -- and the second pass of a release is
+      # meant to compile with no cache at all, which it did not while the
+      # provider found one on its own.
+      - -DCME_COMPILER_CACHE=OFF
       - -DCME_ARCHIVE=/run/build/osu-cpp/.flatpak-sources/cme.tar.gz
       # Where each library's sources are, one declaration per library,
       # generated from the lock by tools/lock-to-flatpak.py. An overlay is
