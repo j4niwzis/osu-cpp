@@ -113,19 +113,6 @@ modules:
         commit: a74efa0d5628b74adc0426af4c5710e287fa7c2c
         tag: '3.4'
 
-  - name: boost
-    buildsystem: simple
-    build-commands:
-      - mkdir -p /app/include
-      - cp -a boost /app/include/
-    sources:
-      # The release archive is the assembled Boost tree. A clone of the
-      # superproject has more than a hundred submodules and is dramatically
-      # slower for flatpak-builder to download, especially on a phone.
-      - type: archive
-        url: https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.bz2
-        sha256: 85a33fa22621b4f314f8e85e1a5e2a9363d22e4f4992925d4bb3bc631b5a0c7a
-
   - name: zstd
     buildsystem: cmake-ninja
     subdir: build/cmake
@@ -266,48 +253,6 @@ modules:
         commit: bf1b838f2ab88b4f8fd83443325c782ea0e0f7fa
         tag: n9.0.1
 
-  - name: skia
-    buildsystem: simple
-    build-commands:
-      - test -f skia.pc
-      - >-
-        gn gen out/flatpak --args='is_official_build=true
-        cc="clang" cxx="clang++" ar="llvm-ar"
-        extra_cflags=["-O3", "-flto"]
-        skia_enable_ganesh=true skia_use_gl=true skia_use_egl=true
-        skia_use_vulkan=false skia_use_x11=false
-        skia_use_libpng_decode=true skia_use_libpng_encode=true
-        skia_use_system_libpng=true
-        skia_use_libjpeg_turbo_decode=true
-        skia_use_system_libjpeg_turbo=true
-        skia_use_libwebp_decode=true skia_use_system_libwebp=true
-        skia_use_zlib=true skia_use_system_zlib=true
-        skia_use_freetype=true skia_use_system_freetype2=true
-        skia_use_fontconfig=true
-        skia_enable_fontmgr_custom_directory=true
-        skia_enable_fontmgr_custom_embedded=true
-        skia_use_icu=false skia_use_harfbuzz=false skia_use_expat=false
-        skia_use_dng_sdk=false skia_enable_skshaper=false
-        skia_enable_skottie=false skia_enable_pdf=false
-        skia_enable_svg=false skia_enable_tools=false'
-      - ninja -C out/flatpak -j${FLATPAK_BUILDER_N_JOBS} skia
-      - install -Dm644 out/flatpak/libskia.a /app/lib/libskia.a
-      - mkdir -p /app/include/skia/include /app/include/skia/modules /app/lib/pkgconfig
-      - cp -a include/. /app/include/skia/
-      - cp -a include/. /app/include/skia/include/
-      - cp -a modules/skcms /app/include/skia/modules/
-      - install -Dm644 skia.pc /app/lib/pkgconfig/skia.pc
-    sources:
-      - type: git
-        url: https://skia.googlesource.com/skia.git
-        commit: 13ffba253fc7854fd3b34f67c82dfb2418dc2944
-      - type: git
-        url: https://skia.googlesource.com/external/github.com/google/wuffs-mirror-release-c.git
-        commit: e3f919ccfe3ef542cfc983a82146070258fb57f8
-        dest: third_party/externals/wuffs
-      - type: file
-        path: skia.pc
-
   - name: osu-cpp
     buildsystem: cmake-ninja
     subdir: standalone
@@ -319,12 +264,13 @@ modules:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CXX_COMPILER=clang++
       - -DCMAKE_CXX_STDLIB_MODULES_JSON=/run/build/osu-cpp/flatpak/libstdc++.modules.json
-      # Nothing is fetched here. A module builds without a network, and the
-      # modules above have already put every library this needs into /app --
-      # so every find_package should be answered from there, and a port that
-      # wants to build from source instead is a port whose system answer was
-      # rejected. Offline is how that becomes an error naming the library
-      # rather than a build hanging on a git clone that cannot happen.
+      # Nothing is fetched here. A module builds without a network. What the
+      # runtime and the modules above provide is answered from /app and
+      # /usr; what they do not is built here, once, from the sources declared
+      # below: Skia, because this client wants Graphite and no packaged Skia
+      # has it, the Boost the lock pins, skiff and skiff-widgets. Offline is
+      # how a library missing from both becomes an error naming it rather
+      # than a build hanging on a git clone that cannot happen.
       - -DCME_OFFLINE=ON
       - -DCME_ARCHIVE=/run/build/osu-cpp/.flatpak-sources/cme.tar.gz
       # Where each library's sources are, one declaration per library,
