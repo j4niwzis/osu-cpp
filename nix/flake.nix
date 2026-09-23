@@ -94,11 +94,27 @@
         '';
 
         # What every dependency of these is answered by, here as everywhere
-        # else: the provider, from the archive fetched above rather than
-        # from the network a Nix build does not have, taking what this
-        # expression put in the environment and building nothing.
-        provider = [
-          "-DCME_ARCHIVE=${cme}"
+        # else: the provider, from an archive fetched here rather than from
+        # the network a Nix build does not have, taking what this expression
+        # put in the environment and building nothing.
+        #
+        # Each package by the provider it pins. skiff and skiff-widgets are
+        # configured here as projects of their own, so their own
+        # get_cme.cmake runs and checks the archive against their own pin.
+        # Handed this project's, once the two pins differ, it says the
+        # archive is not the revision it was written against, and stops --
+        # rightly. So the pin is read from the tree being built.
+        pinnedProvider = tree:
+          let
+            text = builtins.readFile "${tree}/cmake/get_cme.cmake";
+          in pkgs.fetchurl {
+            url = builtins.head (builtins.match
+              ".*set\\(CME_PINNED_URL[[:space:]]*\"([^\"]+)\"\\).*" text);
+            sha256 = builtins.head (builtins.match
+              ".*CME_PINNED_SHA256 \"([0-9a-f]{64})\".*" text);
+          };
+        provider = tree: [
+          "-DCME_ARCHIVE=${pinnedProvider tree}"
           "-DCME_OFFLINE=ON"
           "-DCME_SYSTEM=ALWAYS"
         ];
@@ -114,7 +130,7 @@
           # Which backend the Skia beside this has, said because a copy built
           # on its own has no program to ask: the wrapper names Ganesh where
           # the Skia it links has one, and this one does.
-          cmakeFlags = provider ++ [
+          cmakeFlags = provider componentSources.skiff ++ [
             "-DCMAKE_BUILD_TYPE=Release"
             "-DSKIFF_INSTALL=ON"
             "-DSKIFF_SKIA_COMPONENTS=gl"
@@ -142,7 +158,7 @@
                 'set_target_properties(''${PROJECT_NAME} PROPERTIES CXX_STANDARD 23 EXPORT_NAME widgets)'
           '';
           preConfigure = moduleSetup;
-          cmakeFlags = provider ++ [
+          cmakeFlags = provider componentSources.skiff_widgets ++ [
             "-DCMAKE_BUILD_TYPE=Release"
             "-DSKIFF_WIDGETS_INSTALL=ON"
             # The skiff this is built against is the one beside it.
