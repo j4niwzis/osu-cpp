@@ -330,7 +330,7 @@ distribution packages.")
 (define-public osu-cpp
   (package
     (name "osu-cpp")
-    (version "1.0.0")
+    (version "0.1.0")
     (source (local-file %top "osu-cpp-checkout"
                         #:recursive? #t
                         #:select? (or (git-predicate %top) (const #t))))

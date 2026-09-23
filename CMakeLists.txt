@@ -12,7 +12,7 @@ set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cma
 
 project(
   osucpp
-  VERSION 1.0
+  VERSION 0.1
   LANGUAGES CXX
 )
 

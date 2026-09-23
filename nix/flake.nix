@@ -105,7 +105,7 @@
 
         skiff = pkgs.llvmPackages_latest.stdenv.mkDerivation {
           pname = "skiff";
-          version = "0.1-7bcd3b2";
+          version = "0.1.0";
           src = componentSources.skiff;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
           propagatedBuildInputs = [ skia153 pkgs.libGL ];
@@ -127,7 +127,7 @@
 
         skiff-widgets = pkgs.llvmPackages_latest.stdenv.mkDerivation {
           pname = "skiff-widgets";
-          version = "0.1-7d0ac99";
+          version = "0.1.0";
           src = componentSources.skiff_widgets;
           nativeBuildInputs = with pkgs; [ cmake ninja pkg-config ];
           propagatedBuildInputs = [ skiff ];
@@ -163,7 +163,7 @@
         # derivation is built with -- the stdenv is.
         packages.default = pkgs.llvmPackages_latest.stdenv.mkDerivation {
           pname = "osu-cpp";
-          version = "1.0.0";
+          version = "0.1.0";
           src = ../.;
 
           nativeBuildInputs = with pkgs; [
