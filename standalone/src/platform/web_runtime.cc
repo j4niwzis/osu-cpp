@@ -21,5 +21,9 @@ inline void wantPointerLock(bool) {}
 inline void runMainLoop(FrameCallback, void *) {}
 inline void cancelMainLoop() {}
 [[nodiscard]] inline CanvasExtent canvasExtent() { return {}; }
+// How far behind the reported position the listener hears it. Only a browser
+// has a number to give here; a desktop device reports what it is playing,
+// within the few milliseconds nobody sees on a visualiser.
+[[nodiscard]] inline double outputLatencySec() { return 0.0; }
 
 } // namespace platform::web

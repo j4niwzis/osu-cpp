@@ -216,6 +216,32 @@ inline void cancelMainLoop() { emscripten_cancel_main_loop(); }
           })};
 }
 
+// How far behind the reported position the listener hears it.
+//
+// OpenAL here is written over Web Audio, and the offset it reports is counted
+// on the context's own clock -- the one sound is scheduled against, not the
+// one it comes out of the speaker on. Between the two is the latency of the
+// output, which the context states: baseLatency for its own processing,
+// outputLatency for everything after it, and that second one is a few tens of
+// milliseconds on a laptop and a quarter of a second on a Bluetooth headset.
+// Anything drawn to the reported position moves that much before the music
+// does. Browsers that do not state one are taken at their word, as nothing.
+[[nodiscard]] inline double outputLatencySec() {
+  return EM_ASM_DOUBLE({
+    try {
+      var c = (typeof AL !== 'undefined' && AL.currentCtx) ? AL.currentCtx.audioCtx
+                                                          : null;
+      if (!c) return 0;
+      var out = typeof c.outputLatency === 'number' ? c.outputLatency : 0;
+      var base = typeof c.baseLatency === 'number' ? c.baseLatency : 0;
+      var sum = out + base;
+      return (isFinite(sum) && sum > 0 && sum < 1) ? sum : 0;
+    } catch (e) {
+      return 0;
+    }
+  });
+}
+
 } // namespace platform::web
 
 // One definition each, in the module rather than in everyone who imports it.

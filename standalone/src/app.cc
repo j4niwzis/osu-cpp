@@ -2285,7 +2285,13 @@ private:
     ctx.fAudioPlaying = fAudio.playing();
     ctx.fSamples = fAudio.monoSamples();
     ctx.fSampleRate = fAudio.sampleRate();
-    ctx.fAudioPositionMs = [this] { return fAudio.positionSec() * 1000.0; };
+    // Where the track is heard, not where the device has got to scheduling
+    // it: in a browser those are a whole output latency apart, and the logo
+    // and its bars pulsed ahead of the beat they were drawn from. Only the
+    // menu reads this; gameplay keeps the offset its player calibrated.
+    ctx.fAudioPositionMs = [this] {
+      return (fAudio.positionSec() - platform::web::outputLatencySec()) * 1000.0;
+    };
     fMainMenu.update(ctx);
 
     if (const char *reason = fMainMenu.takeFullDamage()) {
