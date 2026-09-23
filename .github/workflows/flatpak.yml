@@ -117,12 +117,12 @@ jobs:
       # Checked, because what it guards against is silent: a library the
       # store did not answer is built here from its sources and the build
       # succeeds -- it only takes as long again, the way Skia was built
-      # twice. The provider says "will be kept as" for a library it builds
-      # and "is not kept" for one it builds and cannot keep. Either of them
-      # here, for anything but skiff and skiff-widgets, fails this step and
-      # says which -- except "is not kept" for a library that is only
-      # headers, which the provider says of every such library in every
-      # build, and which nothing compiles.
+      # twice. The provider says "will be kept as" for each library it
+      # compiles, and that here, for anything but skiff and skiff-widgets,
+      # fails this step and says which. Not "is not kept": the provider says
+      # that of a library there is nothing to compile in -- Boost's headers,
+      # the Vulkan allocator's sources that Skia compiles into itself -- and
+      # says it in every build.
       #
       # --force-clean again: it empties the directory the application is
       # assembled in, which the stage above left behind, and nothing else.
@@ -140,9 +140,8 @@ jobs:
             "${cache[@]}" --repo=repo build-flatpak \
             flatpak/io.github.j4niwzis.osu_cpp.yml 2>&1 | tee client.log
           test "${PIPESTATUS[0]}" -eq 0
-          built=$(grep -E "cmake-everywhere: [^ ]+ (will be kept as|is not kept)" \
-                    client.log | grep -v "is a INTERFACE_LIBRARY" |
-                  grep -oE "cmake-everywhere: [^ ]+" | awk '{print $2}' |
+          built=$(grep -oE "cmake-everywhere: [^ ]+ will be kept as" \
+                    client.log | awk '{print $2}' |
                   grep -vxE "skiff|skiff-widgets" | sort -u || true)
           if [ -n "$built" ]; then
             echo "::error::built in the client's module rather than taken" \
