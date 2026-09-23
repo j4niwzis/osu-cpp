@@ -405,13 +405,13 @@
   {
     "type": "git",
     "url": "https://github.com/j4niwzis/skiff.git",
-    "commit": "89b80b5051f29e6a835f56af6e15b1af71fb8838",
+    "commit": "e2a4cd97a7c6ab947cc3b48da0bf983a8bc01281",
     "dest": ".flatpak-sources/ports/skiff"
   },
   {
     "type": "git",
     "url": "https://github.com/j4niwzis/skiff-widgets.git",
-    "commit": "a452afe2b2d0285b49b8ba7beaf92c36d7052ab0",
+    "commit": "13d1c1ba4e90aed6188b05061e7930f859de3c48",
     "dest": ".flatpak-sources/ports/skiff-widgets"
   },
   {
