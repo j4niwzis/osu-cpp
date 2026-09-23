@@ -321,8 +321,8 @@ modules:
         path: ../cmake/CPM.cmake
         dest: cmake
       - type: file
-        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.3/cmake-everywhere-0.2.3.tar.gz
-        sha256: 068577af54d85627ce57c96ec8c60c921ffc6241a1ec96435032a7505032f60a
+        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.4/cmake-everywhere-0.2.4.tar.gz
+        sha256: 69aeac7197a3533a23310a08a1201403a37c49802a6e98c12a5ed529c27af507
         dest: .flatpak-sources
         dest-filename: cme.tar.gz
       - type: file
@@ -399,8 +399,8 @@ modules:
       # the release rather than archive/<ref>.tar.gz: the generated one is
       # made on request, and a digest taken of one stops being true.
       - type: file
-        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.3/cmake-everywhere-0.2.3.tar.gz
-        sha256: 068577af54d85627ce57c96ec8c60c921ffc6241a1ec96435032a7505032f60a
+        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.4/cmake-everywhere-0.2.4.tar.gz
+        sha256: 69aeac7197a3533a23310a08a1201403a37c49802a6e98c12a5ed529c27af507
         dest: .flatpak-sources
         dest-filename: cme.tar.gz
       - type: file
