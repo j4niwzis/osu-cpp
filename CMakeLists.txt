@@ -35,6 +35,18 @@ endif()
 
 
 
+# ---- The language ----
+#
+# C++23 as the standard of every target made here, and not only as a compile
+# feature of the library. CMake builds `import std` a second time for whoever
+# will import this library's modules, and that second build takes the
+# directory's standard rather than the library's features: left at the
+# default it was C++17, which a module cannot be compiled as, and the library
+# could not be configured on its own -- which is what a consumer fetching it
+# through cmake-everywhere does.
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # ---- Include guards ----
 
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
@@ -44,30 +56,6 @@ if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
   )
 endif()
 
-# ---- Add dependencies via CPM ----
-# see https://github.com/TheLartians/CPM.cmake for more info
-
-# The one thing this option needs that is not in this repository is
-# PackageProject.cmake, which comes from a repository -- so it is off by
-# default in a build that has said it may not fetch. A Flatpak, Nix or Guix
-# build embeds this library rather than packaging it, and stopped here on an
-# unknown command packageProject: the fetch that defines it cannot happen.
-set(osu_package_library ON)
-if(CME_OFFLINE)
-  set(osu_package_library OFF)
-endif()
-option(OSU_INSTALL_LIBRARY_PACKAGE
-  "Generate and install the standalone osucpp CMake package"
-  ${osu_package_library})
-
-if(OSU_INSTALL_LIBRARY_PACKAGE)
-  include(cmake/CPM.cmake)
-endif()
-
-# PackageProject.cmake will be used to make our target installable
-if(OSU_INSTALL_LIBRARY_PACKAGE)
-  CPMAddPackage(NAME PackageProject.cmake GIT_REPOSITORY "https://github.com/j4niwzis/PackageProject.cmake" GIT_TAG master)
-endif()
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files
@@ -103,8 +91,14 @@ target_sources(${PROJECT_NAME} PUBLIC FILE_SET CXX_MODULES FILES ${sources})
 # One call, and where it comes from is not this project's business: the
 # system's liblzma when there is one, and a pinned source build when there
 # is not. See cmake/get_cme.cmake.
+#
+# In this build only. LibLZMA::LibLZMA may be an alias of a target a port made,
+# and an export writes what an alias stands for rather than the alias -- the
+# installed package named liblzma::liblzma, a target nothing on another
+# machine makes. So the installed config asks for liblzma the way that
+# machine can answer, and puts the name it gets back on the target itself.
 find_package(LibLZMA REQUIRED)
-target_link_libraries(${PROJECT_NAME} PUBLIC LibLZMA::LibLZMA)
+target_link_libraries(${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:LibLZMA::LibLZMA>)
 
 
 # ---- What this library is, said by the library ----
@@ -120,31 +114,56 @@ if(COMMAND cme_declare_port)
     PROVIDES osucpp
     VERSION ${PROJECT_VERSION}
     GITHUB_REPOSITORY j4niwzis/osu-cpp
-    GIT_TAG cmake-everywhere
+    GIT_TAG main
     LICENSE AGPL-3.0-only
     DEPENDS xz
     TARGETS osucpp::osucpp
   )
 endif()
 
-# ---- Create an installable target ----
-# this allows users to install and find the library via `find_package()`.
-
-# the location where the project's version header will be placed should match the project's regular
-# header paths
-
+# ---- Installing it ----
+#
+# The module interface units go with it: a consumer of a C++ module library
+# compiles its own binary module interface from the source, so an installed
+# library that kept its sources to itself could not be imported at all.
+#
+# Written out rather than handed to PackageProject.cmake, which was fetched at
+# configure time from a branch -- unpinned, and a download in a build that may
+# not have a network -- and which is not where module file sets are installed.
+# Installing is what a build of this library does; a build that embeds it, as
+# the client does, does not.
+option(OSU_INSTALL_LIBRARY_PACKAGE
+  "Install osucpp and its CMake package" ${PROJECT_IS_TOP_LEVEL})
 if(OSU_INSTALL_LIBRARY_PACKAGE)
-  packageProject(
-    NAME ${PROJECT_NAME}
+  include(GNUInstallDirs)
+  include(CMakePackageConfigHelpers)
+  install(TARGETS ${PROJECT_NAME}
+    EXPORT osucppTargets
+    FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_LIBDIR}/osucpp/modules
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(EXPORT osucppTargets
+    NAMESPACE osucpp::
+    CXX_MODULES_DIRECTORY modules
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/osucpp)
+  # What the exported target names has to be found again by whoever includes
+  # this, in the same words: liblzma, the one thing it links. A consumer with a
+  # dependency provider has this call answered by it; one with nothing but a
+  # prefix has it answered by CMake's own FindLibLZMA.
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/osucppConfig.cmake"
+    "include(CMakeFindDependencyMacro)\n"
+    "find_dependency(LibLZMA)\n"
+    "include(\"\${CMAKE_CURRENT_LIST_DIR}/osucppTargets.cmake\")\n"
+    "set_property(TARGET osucpp::osucpp APPEND PROPERTY\n"
+    "             INTERFACE_LINK_LIBRARIES LibLZMA::LibLZMA)\n")
+  write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/osucppConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    NAMESPACE ${PROJECT_NAME}
-    BINARY_DIR ${PROJECT_BINARY_DIR}
-
-    COMPATIBILITY SameMajorVersion
-  )
-else()
-  # The standalone client links the namespaced target whether osucpp is being
-  # packaged or embedded. Flatpak embeds it and deliberately avoids fetching
-  # PackageProject.cmake during its network-isolated build.
-  add_library(osucpp::osucpp ALIAS osucpp)
+    COMPATIBILITY SameMajorVersion)
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/osucppConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/osucppConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/osucpp)
 endif()
+
+# The name a consumer links, whether this is installed or embedded.
+add_library(osucpp::osucpp ALIAS osucpp)
