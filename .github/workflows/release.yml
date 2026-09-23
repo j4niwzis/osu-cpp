@@ -160,19 +160,25 @@ jobs:
 
   # And what was built for the browser becomes the page.
   #
-  # The branch is what GitHub Pages serves, so publishing is a commit on it
-  # -- the same five files every time, taken from the run that just made
-  # them rather than from a build somebody did by hand.
+  # Deployed, not committed. A branch of builds keeps every build it was
+  # given -- a forty-megabyte module per release, in history that every clone
+  # of this repository downloads -- and the old one also committed the
+  # downloaded artifact beside the page, so each release was on it twice. A
+  # Pages deployment keeps the one the page serves. The five files are taken
+  # from the run that just made them, as before.
   page:
     needs: wasm
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: page
-
       - uses: actions/download-artifact@v4
         with:
           name: osu-cpp-wasm
@@ -180,21 +186,17 @@ jobs:
 
       - name: what the page serves
         run: |
-          cp built/build-wasm/osu_client.js .
-          cp built/build-wasm/osu_client.wasm .
-          cp built/build-wasm/osu_client.data .
-          cp built/build-wasm/osu_client.html index.html
-          cp built/standalone/coi.js .
-          ls -l index.html coi.js osu_client.js osu_client.wasm osu_client.data
+          mkdir site
+          cp built/build-wasm/osu_client.js site/
+          cp built/build-wasm/osu_client.wasm site/
+          cp built/build-wasm/osu_client.data site/
+          cp built/build-wasm/osu_client.html site/index.html
+          cp built/standalone/coi.js site/
+          ls -l site
 
-      - name: publish
-        run: |
-          git config user.name j4niwzis
-          git config user.email j4niwzis@proton.me
-          git add -A
-          if git diff --cached --quiet; then
-            echo "the page already serves this build"
-            exit 0
-          fi
-          git commit -m "The release build, as the page serves it Built by the release workflow from ${{ github.sha }}."
-          git push
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
