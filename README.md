@@ -7,14 +7,18 @@ beatmaps, records and replays your plays, and turns a replay into a video.
 
 <p align="center">
   <img src="docs/screenshots/main-menu.jpg" width="49%" alt="Main menu with the audio visualiser">
+  <img src="docs/screenshots/song-select.jpg" width="49%" alt="Song select, with a set's difficulties and their star ratings">
+</p>
+<p align="center">
   <img src="docs/screenshots/gameplay.jpg" width="49%" alt="Gameplay with live pp">
-</p>
-<p align="center">
-  <img src="docs/screenshots/beatmap-set.jpg" width="49%" alt="A beatmap set page with its difficulties">
-  <img src="docs/screenshots/settings.jpg" width="49%" alt="The settings panel">
-</p>
-<p align="center">
   <img src="docs/screenshots/pause.jpg" width="49%" alt="The pause menu">
+</p>
+<p align="center">
+  <img src="docs/screenshots/beatmap-listing.jpg" width="49%" alt="Browsing beatmaps to download">
+  <img src="docs/screenshots/beatmap-set.jpg" width="49%" alt="A beatmap set page with its difficulties">
+</p>
+<p align="center">
+  <img src="docs/screenshots/settings.jpg" width="49%" alt="The settings panel">
 </p>
 
 ## What it does
