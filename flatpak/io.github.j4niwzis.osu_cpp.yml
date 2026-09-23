@@ -350,13 +350,15 @@ modules:
         url: https://github.com/j4niwzis/skiff-widgets.git
         commit: a452afe2b2d0285b49b8ba7beaf92c36d7052ab0
         dest: .flatpak-sources/skiff-widgets
-      # The provider itself, by the revision and digest cmake/get_cme.cmake
-      # names. A module has no network, so what it would have fetched is
-      # declared here instead -- and flatpak-builder checks the digest, which
-      # is the same check that file(DOWNLOAD) would have made.
+      # The provider itself, by the URL and digest cmake/get_cme.cmake names.
+      # A module has no network, so what it would have fetched is declared
+      # here instead -- and flatpak-builder checks the digest, which is the
+      # same check that file(DOWNLOAD) would have made. The file uploaded to
+      # the release rather than archive/<ref>.tar.gz: the generated one is
+      # made on request, and a digest taken of one stops being true.
       - type: file
-        url: https://github.com/j4niwzis/cmake-everywhere/archive/900e7ca8766e9e40851309a454e2f7b6530bc173.tar.gz
-        sha256: 1b0d8fa7f6020873e0f5ead83ad4055a063dd099a11fd2482d0a446d4f5c6860
+        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.0/cmake-everywhere-0.2.0.tar.gz
+        sha256: 694c4081bd13acc65e286db31c0a60fe3f36ec0c7ef343d7bc2228d6a757592d
         dest: .flatpak-sources
         dest-filename: cme.tar.gz
       - type: file

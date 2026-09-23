@@ -5,7 +5,7 @@
 #
 #   set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
 #
-# A revision and its digest, not a branch. What resolves every dependency of
+# A release and its digest, not a branch. What resolves every dependency of
 # this project is a dependency of this project.
 
 # The pin this project carries, and the pin this build was last given.
@@ -16,16 +16,27 @@
 # revision from before the change. So the pin that was applied is
 # remembered, and a pin that differs from it wins -- while -DCME_VERSION=
 # on the command line still stands until this file says something else.
-set(CME_PINNED "900e7ca8766e9e40851309a454e2f7b6530bc173")
-set(CME_PINNED_SHA256 "1b0d8fa7f6020873e0f5ead83ad4055a063dd099a11fd2482d0a446d4f5c6860")
+#
+# Taken from the file uploaded to the release rather than from
+# archive/<ref>.tar.gz: the generated one is made on request, and when the
+# compression behind it changed every digest pinned against it broke at once.
+# A file uploaded to a release is stored as it was uploaded.
+set(CME_PINNED "v0.2.0")
+set(CME_PINNED_SHA256 "694c4081bd13acc65e286db31c0a60fe3f36ec0c7ef343d7bc2228d6a757592d")
+set(CME_PINNED_URL
+  "https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.0/cmake-everywhere-0.2.0.tar.gz")
 if(NOT "${CME_PIN_APPLIED}" STREQUAL "${CME_PINNED}")
   set(CME_VERSION "${CME_PINNED}" CACHE STRING
-    "cmake-everywhere revision" FORCE)
+    "cmake-everywhere release" FORCE)
   set(CME_SHA256 "${CME_PINNED_SHA256}" CACHE STRING
-    "The digest of that revision's archive" FORCE)
+    "The digest of that release's archive" FORCE)
+  set(CME_URL "${CME_PINNED_URL}" CACHE STRING
+    "Where that archive is fetched from" FORCE)
   set(CME_PIN_APPLIED "${CME_PINNED}" CACHE INTERNAL
     "The pin this build directory was given")
 endif()
+set(CME_URL "${CME_PINNED_URL}" CACHE STRING
+  "Where that archive is fetched from")
 set(CME_SOURCE_DIR "${CMAKE_BINARY_DIR}/_cme" CACHE PATH
   "Where it is unpacked")
 
@@ -75,9 +86,17 @@ if(NOT EXISTS "${CME_SOURCE_DIR}/cmake-everywhere.cmake"
   else()
     message(STATUS "cmake-everywhere: fetching ${CME_VERSION}")
   endif()
-  file(DOWNLOAD
-    "https://github.com/j4niwzis/cmake-everywhere/archive/${CME_VERSION}.tar.gz"
-    "${archive}" STATUS status EXPECTED_HASH SHA256=${CME_SHA256})
+  # Where it comes from: the release asset this project pinned, and the
+  # generated archive of a revision only where somebody asked for one by
+  # setting CME_URL empty and CME_VERSION to a commit.
+  if(CME_URL)
+    set(cme_from "${CME_URL}")
+  else()
+    set(cme_from
+      "https://github.com/j4niwzis/cmake-everywhere/archive/${CME_VERSION}.tar.gz")
+  endif()
+  file(DOWNLOAD "${cme_from}" "${archive}"
+    STATUS status EXPECTED_HASH SHA256=${CME_SHA256})
   list(GET status 0 code)
   if(NOT code EQUAL 0)
     list(GET status 1 reason)
