@@ -190,37 +190,62 @@ public:
       std::vector<CachedDifficulty> fDiffs;
     };
     std::vector<std::optional<ParsedArchive>> parsed(misses.size());
-    if (!misses.empty()) {
-      const auto threads =
-          std::max(1u, std::min(std::thread::hardware_concurrency(),
-                                static_cast<unsigned>(misses.size())));
-      std::println(std::cerr, "[library] parsing {} new sets on {} threads",
-                   misses.size(), threads);
-      std::atomic<std::size_t> next{0};
-      std::vector<std::thread> pool;
-      pool.reserve(threads);
-      for (unsigned t = 0; t < threads; ++t) {
-        pool.emplace_back([&] {
-          for (;;) {
-            const std::size_t i = next.fetch_add(1);
-            if (i >= misses.size()) {
-              return;
-            }
-            try {
-              const auto set = loadBeatmapSet(misses[i]);
-              Entry entry;
-              entry.fPath = misses[i];
-              entry.fInfos = set.fBeatmaps;
-              parsed[i].emplace(std::move(entry), cacheRecordFor(set));
-            } catch (const std::exception &e) {
-              std::println(std::cerr, "[library] skipping {}: {}",
-                           misses[i].filename().string(), e.what());
-            }
-          }
-        });
+    const auto parseOne = [&](std::size_t i) {
+      try {
+        const auto set = loadBeatmapSet(misses[i]);
+        Entry entry;
+        entry.fPath = misses[i];
+        entry.fInfos = set.fBeatmaps;
+        parsed[i].emplace(std::move(entry), cacheRecordFor(set));
+      } catch (const std::exception &e) {
+        std::println(std::cerr, "[library] skipping {}: {}",
+                     misses[i].filename().string(), e.what());
       }
-      for (auto &thread : pool) {
-        thread.join();
+    };
+
+    if (!misses.empty()) {
+      // On the web this runs on the browser's own thread, and there a thread
+      // is a Web Worker: starting one needs a turn of the event loop, and the
+      // loop is this call. Waiting for a worker that cannot start is not a
+      // wait either -- the main thread has nothing to block on, so it spins
+      // pumping its proxy queue -- and the page burns a core until the
+      // browser kills the script for taking too long. So the work is done
+      // here, where the caller already is.
+      //
+      // Off the web, one worker for one archive is the same trade made worse:
+      // a thread created and joined to do what this thread is about to wait
+      // for anyway.
+      unsigned threads = 0;
+#ifndef __EMSCRIPTEN__
+      threads = std::max(1u, std::min(std::thread::hardware_concurrency(),
+                                      static_cast<unsigned>(misses.size())));
+#endif
+      if (threads <= 1) {
+        std::println(std::cerr, "[library] parsing {} new sets here",
+                     misses.size());
+        for (std::size_t i = 0; i < misses.size(); ++i) {
+          parseOne(i);
+        }
+      } else {
+        std::println(std::cerr, "[library] parsing {} new sets on {} threads",
+                     misses.size(), threads);
+        std::atomic<std::size_t> next{0};
+        std::vector<std::thread> pool;
+        pool.reserve(threads);
+        for (unsigned t = 0; t < threads; ++t) {
+          pool.emplace_back([&] {
+            for (;;) {
+              const std::size_t i = next.fetch_add(1);
+              if (i >= misses.size()) {
+                return;
+              }
+              parseOne(i);
+            }
+          });
+        }
+        for (auto &thread : pool) {
+          thread.join();
+        }
       }
     }
 
