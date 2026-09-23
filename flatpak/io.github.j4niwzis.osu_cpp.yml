@@ -27,9 +27,18 @@ cleanup:
 build-options:
   append-path: /usr/lib/sdk/llvm22/bin
   prepend-ld-library-path: /usr/lib/sdk/llvm22/lib
-  cflags: -O3 -flto
-  cxxflags: -O3 -flto
-  ldflags: -flto -fuse-ld=lld
+  # What comes out carries no symbol table and no debug information, as the
+  # native release does: -g0 after the SDK's -g, and the linker strips. And
+  # flatpak-builder is told not to split debug information off, because
+  # splitting it leaves the CRC of the split-off file in the binary. That
+  # file is not in the bundle; its CRC was. The two passes of the release of
+  # 23 September built osu_client byte for byte the same but for the four
+  # bytes of that CRC in .gnu_debuglink, and those four bytes were the whole
+  # difference between their commits.
+  cflags: -O3 -flto -g0
+  cxxflags: -O3 -flto -g0
+  ldflags: -flto -fuse-ld=lld -Wl,-s
+  no-debuginfo: true
   env:
     CC: clang
     CXX: clang++
