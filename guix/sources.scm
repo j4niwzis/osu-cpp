@@ -476,16 +476,16 @@
     (origin
       (method git-fetch)
       (uri (git-reference (url "https://github.com/j4niwzis/skiff.git")
-                          (commit "89b80b5051f29e6a835f56af6e15b1af71fb8838")))
+                          (commit "3e1f8a5daa420d3471ca02392f1ebec7db3fa399")))
       (file-name "skiff--checkout")
-      (sha256 (base32 "1yw199y0ib4q1pa9vs5y0ympgx1308sdixxwg8mzij9iwjynglb0"))))
+      (sha256 (base32 "04f6591jn1npkb55f4r2jg4bfl00gwhdfgrqfh4wyg641zp8gl4k"))))
   (list "skiff-widgets" ""
     (origin
       (method git-fetch)
       (uri (git-reference (url "https://github.com/j4niwzis/skiff-widgets.git")
-                          (commit "a452afe2b2d0285b49b8ba7beaf92c36d7052ab0")))
+                          (commit "5a24a73a86e5210aaab408c1e17f09b85e61dae2")))
       (file-name "skiff-widgets--checkout")
-      (sha256 (base32 "1yw70k1ivk4fd8r18aq097x56hmzx8dsddsab6v7pca0fi1ibm52"))))
+      (sha256 (base32 "0yqk7qawxq2nsh0d8pj36r78w61k0x7ajrf2ywkhwizmjb6r5adk"))))
   (list "vorbis" "1.3.7"
     (origin
       (method git-fetch)
