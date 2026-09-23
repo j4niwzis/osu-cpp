@@ -86,9 +86,14 @@ jobs:
             flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-
             flatpak-
 
-      # Everything this client is built against that the runtime lacks and
-      # a distribution would package, and not the client: cmake, gn and
-      # ffmpeg are most of it.
+      # Everything this client is built against that the runtime lacks, and
+      # not the client: the tools, the libraries a distribution would
+      # package, and the ports module, which builds the rest through the
+      # provider -- Skia most of all -- and keeps it in the provider's store.
+      # A module whose sources are what they were in the run the cache came
+      # from is taken from the cache, and the ports module reads nothing of
+      # the client: on a commit that changes only the client, this stage
+      # builds nothing.
       - name: the libraries
         run: |
           cache=()
@@ -106,11 +111,16 @@ jobs:
           path: .flatpak-builder
           key: flatpak-${{ hashFiles('flatpak/io.github.j4niwzis.osu_cpp.yml') }}-${{ github.sha }}-libraries
 
-      # And the client, with what only it asks for built inside it: Skia with
-      # Graphite, the pinned Boost, skiff and skiff-widgets. Skia is most of
-      # this stage. It used to be built a second time up there as a module
-      # of its own, without Graphite, and the provider rightly passed over
-      # that one: ten minutes of each pass went to a library nothing linked.
+      # And the client, which takes every library from the store the ports
+      # module filled and builds only itself, skiff and skiff-widgets.
+      #
+      # Checked, because what it guards against is silent: a library the
+      # store did not answer is built here from its sources and the build
+      # succeeds -- it only takes as long again, the way Skia was built
+      # twice. The provider says "will be kept as" for a library it builds
+      # and "is not kept" for one it builds and cannot keep. Either of them
+      # here, for anything but skiff and skiff-widgets, fails this step and
+      # says which.
       #
       # --force-clean again: it empties the directory the application is
       # assembled in, which the stage above left behind, and nothing else.
@@ -126,15 +136,27 @@ jobs:
           flatpak-builder --user --force-clean --disable-rofiles-fuse \
             --override-source-date-epoch="$SOURCE_DATE_EPOCH" \
             "${cache[@]}" --repo=repo build-flatpak \
-            flatpak/io.github.j4niwzis.osu_cpp.yml
+            flatpak/io.github.j4niwzis.osu_cpp.yml 2>&1 | tee client.log
+          test "${PIPESTATUS[0]}" -eq 0
+          built=$(grep -oE "cmake-everywhere: [^ ]+ (will be kept as|is not kept)" \
+                    client.log | awk '{print $2}' |
+                  grep -vxE "skiff|skiff-widgets" | sort -u || true)
+          if [ -n "$built" ]; then
+            echo "::error::built in the client's module rather than taken" \
+                 "from the store:" $built
+            exit 1
+          fi
 
       # Saved once, after the libraries. A second copy of the same six
       # gigabytes is what pushed every other workflow's cache out of the ten
       # a repository is given.
 
+      # What the provider said while configuring the client: where each
+      # library came from. Read from the log, because the report it writes is
+      # in a build directory flatpak-builder has removed by now.
       - name: what the build decided
         if: always()
-        run: cat .flatpak-builder/build/osu-cpp*/build*/cme-report.txt || true
+        run: grep "cmake-everywhere:" client.log || true
 
       # What is being kept, by part. A repository is given ten gigabytes of
       # cache in total and the least recently used entry is evicted to stay

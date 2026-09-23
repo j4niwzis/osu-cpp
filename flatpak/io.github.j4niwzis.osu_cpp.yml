@@ -23,6 +23,9 @@ cleanup:
   - /share/man
   - '*.a'
   - '*.la'
+  # The provider's store: what the ports module built, which the client's
+  # module linked. Nothing reads it once the client is built.
+  - /cme-store
 
 build-options:
   append-path: /usr/lib/sdk/llvm22/bin
@@ -253,6 +256,80 @@ modules:
         commit: bf1b838f2ab88b4f8fd83443325c782ea0e0f7fa
         tag: n9.0.1
 
+  # Every library the client asks the provider for and the runtime does not
+  # have, built through the provider -- Skia most of all -- and kept in its
+  # store under /app. The client's module below takes each of them from
+  # there and builds none. flatpak/ports/CMakeLists.txt says how: it asks
+  # with the file the client asks with.
+  #
+  # Only files, archives and commits as sources, and no directory. A `dir`
+  # source is given a random checksum by flatpak-builder -- it does not try
+  # to hash a directory, so it builds the module again every time -- and a
+  # module with one could never be taken from the cache. With these, what
+  # this module reads is what decides the libraries and nothing of the
+  # client, so a commit that changes the client finds it built already.
+  #
+  # Configured like the client's module, option for option: the store keeps
+  # a library under how it was built, and the client has to be asking for
+  # the same one.
+  - name: ports
+    buildsystem: cmake-ninja
+    subdir: flatpak/ports
+    build-options:
+      cxxflags: -Wp,-U_FORTIFY_SOURCE
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_CXX_COMPILER=clang++
+      - -DCMAKE_CXX_STDLIB_MODULES_JSON=/run/build/ports/flatpak/libstdc++.modules.json
+      - -DCME_OFFLINE=ON
+      - -DCME_COMPILER_CACHE=OFF
+      - -DCME_ARCHIVE=/run/build/ports/.flatpak-sources/cme.tar.gz
+      - -DCPM_SOURCE_CACHE=/run/build/ports/.flatpak-sources/cme
+      - -DCPM_DOWNLOAD_LOCATION=/run/build/ports/.flatpak-sources/cpm/CPM.cmake
+      - -DCME_STORE=/app/cme-store
+      - -DOSU_VIDEO_LIBAV=ON
+      - -DOSU_VULKAN=ON
+    # The provider's own target for everything it keeps, and nothing else:
+    # no client here to build or to install.
+    make-args:
+      - cme_store
+    no-make-install: true
+    sources:
+      - cme-sources.json
+      - type: file
+        path: ports/CMakeLists.txt
+        dest: flatpak/ports
+      - type: file
+        path: sources.cmake
+        dest: flatpak
+      - type: file
+        path: cme-sources.json
+        dest: flatpak
+      - type: file
+        path: libstdc++.modules.json
+        dest: flatpak
+      - type: file
+        path: ../standalone/dependencies.cmake
+        dest: standalone
+      - type: file
+        path: ../cmake/get_cme.cmake
+        dest: cmake
+      - type: file
+        path: ../cmake/import-std.cmake
+        dest: cmake
+      - type: file
+        path: ../cmake/CPM.cmake
+        dest: cmake
+      - type: file
+        url: https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.3/cmake-everywhere-0.2.3.tar.gz
+        sha256: 068577af54d85627ce57c96ec8c60c921ffc6241a1ec96435032a7505032f60a
+        dest: .flatpak-sources
+        dest-filename: cme.tar.gz
+      - type: file
+        url: https://github.com/cpm-cmake/CPM.cmake/releases/download/v0.42.1/CPM.cmake
+        sha256: f3a6dcc6a04ce9e7f51a127307fa4f699fb2bade357a8eb4c5b45df76e1dc6a5
+        dest: .flatpak-sources/cpm
+
   - name: osu-cpp
     buildsystem: cmake-ninja
     subdir: standalone
@@ -265,12 +342,13 @@ modules:
       - -DCMAKE_CXX_COMPILER=clang++
       - -DCMAKE_CXX_STDLIB_MODULES_JSON=/run/build/osu-cpp/flatpak/libstdc++.modules.json
       # Nothing is fetched here. A module builds without a network. What the
-      # runtime and the modules above provide is answered from /app and
-      # /usr; what they do not is built here, once, from the sources declared
-      # below: Skia, because this client wants Graphite and no packaged Skia
-      # has it, the Boost the lock pins, skiff and skiff-widgets. Offline is
-      # how a library missing from both becomes an error naming it rather
-      # than a build hanging on a git clone that cannot happen.
+      # runtime and the modules above provide is answered from /usr and /app,
+      # and what the ports module built from the provider's store; built here
+      # are skiff and skiff-widgets, which are this client's own, and the
+      # client. The workflow checks that: a library built here is one the
+      # store did not answer. Offline is how a library missing from all of
+      # them becomes an error naming it rather than a build hanging on a git
+      # clone that cannot happen.
       - -DCME_OFFLINE=ON
       # Ports compiled directly rather than through the SDK's ccache, which
       # the provider finds and uses unless told not to. What it would cache
@@ -280,11 +358,11 @@ modules:
       # provider found one on its own.
       - -DCME_COMPILER_CACHE=OFF
       - -DCME_ARCHIVE=/run/build/osu-cpp/.flatpak-sources/cme.tar.gz
-      # Where each library's sources are, one declaration per library,
-      # generated from the lock by tools/lock-to-flatpak.py. An overlay is
-      # read before the registry, so this says where to look and the registry
-      # still says what each library is and how it is built.
-      - -DCME_OVERLAYS=/run/build/osu-cpp/flatpak/cme-ports
+      # Where each library's sources are, declared by the project from the
+      # list below rather than by overlays: flatpak/sources.cmake says why.
+      - -DCMAKE_PROJECT_osu_client_INCLUDE=/run/build/osu-cpp/flatpak/sources.cmake
+      # And what the ports module built.
+      - -DCME_STORE=/app/cme-store
       - -DCPM_SOURCE_CACHE=/run/build/osu-cpp/.flatpak-sources/cme
       - -DOSU_INSTALL_LIBRARY_PACKAGE=OFF
       - -DOSU_STATIC_DEPS=ON
@@ -300,7 +378,9 @@ modules:
     sources:
       # Everything the ports fetch, by the URL and the digest or commit the
       # lock names. Generated beside this file; regenerate it with
-      # tools/lock-to-flatpak.py after a build that had a network.
+      # tools/lock-to-flatpak.py after a build that had a network. The
+      # directory of ports it writes as well is not read any more:
+      # flatpak/sources.cmake declares the same from this list.
       - cme-sources.json
       - type: dir
         path: ..
