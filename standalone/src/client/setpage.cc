@@ -207,15 +207,23 @@ struct SetPageTheme {
           .rule(scene::select<nodes::Text, style::DownloadText,
                               style::DownloadDone>(),
                 {.colour = listing::kContent2})
+          // Placed by an offset from the corner it hangs on, not by a
+          // margin: a margin is read by a flow or a grid laying out its
+          // children, and nothing reads one on a drawable that anchors
+          // itself. Said as a margin, this one did nothing -- the tiles sat
+          // flush against the right edge of the window and the last one was
+          // cut in half by the header's own masking.
           .rule(scene::select<nodes::FillFlow, style::Picker>(),
                 {.anchor = scene::Anchor::kTopRight,
                  .origin = scene::Anchor::kTopRight,
+                 .x = -kHorizontalPadding,
+                 .y = kYPadding,
                  .width = kRightWidth,
-                 .autoSize = scene::Axes::kY,
-                 .margin = scene::Margin{kYPadding, kHorizontalPadding, 0.0f,
-                                         0.0f}})
+                 .autoSize = scene::Axes::kY})
           .rule(scene::select<nodes::Text, style::PickerSummary>(),
-                {.colour = listing::kContent2, .fontSize = 12.0f})
+                {.colour = listing::kContent2,
+                 .fontSize = 12.0f,
+                 .maxWidth = kRightWidth})
           .rule(scene::select<nodes::FillFlow, style::Tiles>(),
                 {.width = kRightWidth, .autoSize = scene::Axes::kY})
           .rule(scene::select<nodes::Clickable, style::Tile>(),
@@ -245,10 +253,14 @@ struct SetPageTheme {
           .rule(scene::select<nodes::Text, style::TileText>().when(
                     scene::StyleState::kSelected),
                 {.colour = listing::kContent1, .fontBold = true})
+          // A difficulty is named by whoever made it, and some of those
+          // names are a sentence. Kept inside the column and cut with an
+          // ellipsis rather than drawn past the edge of the window.
           .rule(scene::select<nodes::Text, style::DifficultyName>(),
                 {.colour = listing::kContent1,
                  .fontSize = 16.0f,
-                 .fontBold = true})
+                 .fontBold = true,
+                 .maxWidth = kRightWidth})
           .rule(scene::select<nodes::Box, style::Info>(),
                 {.width = 1.0f,
                  .relativeSize = scene::Axes::kX,
@@ -743,10 +755,11 @@ private:
     }
 
     if (!e.fDiffs.empty()) {
-      right->add<nodes::Text>(
+      auto *name = right->add<nodes::Text>(
           {.roles = {scene::role<style::DifficultyName>}},
           e.fDiffs[static_cast<std::size_t>(fSelected)].fVersion, 16.0f,
           listing::kContent1, true);
+      name->setElided(true);
     }
     return right;
   }
